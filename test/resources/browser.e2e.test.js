@@ -88,6 +88,24 @@ test('browser installs a local ZIP without upload, serves cached audio Range, cl
   await page.reload();
   await page.waitForFunction(() => window.gameReady);
   assert.equal(await page.$('.resource-dialog'), null);
+  // complete: 导出 ZIP gives the pack back (no save dialog here: built in memory and downloaded) — it imports again
+  await page.evaluate(() => {
+    window.showSaveFilePicker = undefined;
+    URL.createObjectURL = blob => { window.__exported = blob; return 'blob:exported'; };
+  });
+  await page.click('#resource-manager-open');
+  await page.waitForSelector('[data-action="export"]:not(:disabled)');
+  await page.click('[data-action="export"]');
+  await page.waitForFunction(() => document.querySelector('.resource-message')?.textContent.includes('已导出'));
+  const exported = await page.evaluate(async () => {
+    const zipjs = await import('/vendor/zip.module.js');
+    const reader = new zipjs.ZipReader(new zipjs.BlobReader(window.__exported));
+    const names = (await reader.getEntries()).map(e => e.filename);
+    await reader.close();
+    return names;
+  });
+  assert.deepEqual(exported.sort(), ['assets/a.mp3', 'assets/b.png']);
+  await page.click('[data-action="continue"]');
   assert.deepEqual(errors, []);
   const skipping = await browser.createBrowserContext();
   const skipped = await skipping.newPage();
@@ -101,6 +119,7 @@ test('browser installs a local ZIP without upload, serves cached audio Range, cl
   await skipped.click('#resource-manager-open');
   await skipped.waitForSelector('.resource-dialog[open]');
   await skipped.waitForFunction(() => document.querySelector('.resource-stat')?.textContent.startsWith('0 / 2'));
+  assert.equal(await skipped.$eval('[data-action="export"]', node => node.disabled), true, 'nothing to export yet');
   await skipping.close();
   noManifest = true;
   const fresh = await browser.createBrowserContext();

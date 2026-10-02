@@ -1,4 +1,4 @@
-import { checkAbort, validateResourceUrl } from './common.js';
+import { checkAbort, matchesResource, readBoundedResponse, validateResourceUrl, verifyBytes } from './common.js';
 
 const MAX_READ_BYTES = 16 * 1024 * 1024;
 
@@ -60,5 +60,40 @@ export async function importResourceZip(blob, store, { signal, onProgress = () =
     throw new Error(`ZIP resource import: ${error.message}${error.reason ? ` (${error.reason})` : ''}`, { cause: error });
   } finally {
     await reader.close();
+  }
+}
+
+/** ZIP entry name of a manifest URL ('/assets/a%20b.png' → 'assets/a b.png'), as tools/resource-pack.mjs writes it. */
+export const resourceZipName = url => decodeURIComponent(url.slice(1));
+
+/** Write the complete local resources as the pack `npm run resources:pack` makes (stored entries, same names), so a
+ * player can hand it to friends straight from the site. `writable`: the save dialog's file stream; none ⇒ a Blob.
+ * Every file is read back from the cache and checked against the manifest first.
+ */
+export async function exportResourceZip(store, { writable = null, signal, onProgress = () => {}, zipjs } = {}) {
+  checkAbort(signal);
+  zipjs ??= await import('/vendor/zip.module.js');
+  const status = await store.status();
+  if (!status.complete) throw new Error('资源还没有全部保存：先在线下载或导入，再导出');
+  const cache = await store.caches.open(store.cacheName);
+  const writer = new zipjs.ZipWriter(writable ?? new zipjs.BlobWriter('application/zip'), {
+    level: 0, useWebWorkers: false, lastModDate: new Date('2020-01-01T00:00:00Z'), extendedTimestamp: false,
+  });
+  let count = 0, bytes = 0;
+  try {
+    for (const file of store.manifest.files) {
+      checkAbort(signal);
+      const cached = await cache.match(file.url);
+      if (!matchesResource(cached, file)) throw new Error(`本地资源已被浏览器清理（${file.url}），请重新下载后再导出`);
+      const data = await readBoundedResponse(cached, file.size, signal);
+      await verifyBytes(file, data);
+      await writer.add(resourceZipName(file.url), new zipjs.Uint8ArrayReader(data), { signal });
+      count++; bytes += file.size;
+      onProgress({ ...status, count, bytes, phase: 'export', file: file.url });
+    }
+    return await writer.close();
+  } catch (error) {
+    await writable?.abort?.(error).catch(() => {});
+    throw error;
   }
 }
