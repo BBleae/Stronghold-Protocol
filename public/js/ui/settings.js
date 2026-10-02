@@ -1,4 +1,4 @@
-// Player settings (BGM/SFX volume, mute, damage numbers, render quality): a tiny observable store
+// Player settings (BGM/SFX/voice volume, voice language, mute, damage numbers, render quality): a tiny observable store
 // persisted in localStorage (`sp.pref.settings`), applied to the audio manager on every change, plus
 // the settings modal.
 
@@ -6,11 +6,12 @@ import { useState } from '../../vendor/hooks.module.js';
 import { html, Modal, Button, Icon, MicroLabel } from './components.js';
 import { createStore, useStore, loadPref, savePref } from '../store.js';
 import { sanitizeSettings } from './gameLogic.js';
-import { audio } from '../audio.js';
+import { audio, voiceLangsIn } from '../audio.js';
+import { data } from '../data.js';
 import { openGuide } from './guide.js';
 import { detectFeatures } from './device.js';
 
-/** Settings store: { bgm, sfx, muted, damageNumbers, quality }. */
+/** Settings store: { bgm, sfx, voice, voiceLang, muted, damageNumbers, quality }. */
 export const settingsStore = createStore(sanitizeSettings(loadPref('settings', null)));
 
 settingsStore.subscribe((s) => {
@@ -55,6 +56,9 @@ export function SettingsModal({ open, onClose }) {
   const s = useSettings();
   const [tested, setTested] = useState(false);
   const [touchUi] = useState(() => detectFeatures().coarse && !detectFeatures().fine);
+  // the voice languages this site has (data/assets.json audio.voice); a saved one it lacks shows as the first offered
+  const voiceLangs = voiceLangsIn(data.get('assets'));
+  const voiceLang = s.voiceLang === 'off' || voiceLangs.some(([k]) => k === s.voiceLang) ? s.voiceLang : (voiceLangs[0]?.[0] ?? 'off');
   return html`<${Modal} open=${open} onClose=${onClose} title="设置" micro="SETTINGS" width="7.4rem"
     actions=${html`<${Button} variant="secondary" icon="book" class="set-guide" onClick=${() => openGuide(0)}>玩法说明<//>
       <${Button} variant="primary" icon="check" onClick=${onClose}>完成<//>`}>
@@ -62,6 +66,15 @@ export function SettingsModal({ open, onClose }) {
       <${Slider} label="背景音乐" micro="BGM" icon="play" value=${s.bgm} onInput=${(v) => updateSettings({ bgm: v })} />
       <${Slider} label="音效" micro="SFX" icon="signal" value=${s.sfx}
         onInput=${(v) => { updateSettings({ sfx: v }); if (!tested) { setTested(true); setTimeout(() => setTested(false), 400); audio.sfx('click'); } }} />
+      ${voiceLangs.length ? html`<${Slider} label="角色语音" micro="VOICE" icon="user" value=${s.voice} onInput=${(v) => updateSettings({ voice: v })} />
+        <div class="set-row">
+          <span class="set-row__label">语音语言<${MicroLabel}>VOICE LANGUAGE<//></span>
+          <div class="set-seg" role="radiogroup">
+            ${[...voiceLangs, ['off', '关闭']].map(([id, label]) => html`<button key=${id} type="button" role="radio"
+              aria-checked=${voiceLang === id ? 'true' : 'false'} class=${voiceLang === id ? 'is-on' : ''}
+              onClick=${() => updateSettings({ voiceLang: id })}>${label}</button>`)}
+          </div>
+        </div>` : null}
       <${Toggle} label="静音" micro="MUTE" value=${s.muted} onChange=${(v) => updateSettings({ muted: v })} />
       <${Toggle} label="显示伤害数字" micro="DAMAGE NUMBERS" value=${s.damageNumbers} onChange=${(v) => updateSettings({ damageNumbers: v })} />
       <div class="set-row">

@@ -10,7 +10,7 @@
 // jsDelivr mirror fallback. Spine atlases get `size:` (and `pma: true` for
 // enemies); every skeleton is parsed to resolve animation roles.
 //
-// Usage: node tools/fetch-assets.mjs [--concurrency=16] [--force] [--offline]
+// Usage: node tools/fetch-assets.mjs [--concurrency=16] [--force] [--offline] [--voice=cn,jp]
 //                                    [--dry-run] [--refresh-index] [--prune] [--help]
 
 import { readFile, writeFile, mkdir, rename, readdir, unlink } from 'node:fs/promises';
@@ -18,13 +18,14 @@ import { existsSync } from 'node:fs';
 import { dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Downloader } from './assets/downloader.mjs';
-import { loadIndexes } from './assets/cache.mjs';
+import { loadIndexes, loadCharWords } from './assets/cache.mjs';
 import { indexAudio } from './assets/audio.mjs';
 import { buildPlan } from './assets/plan.mjs';
 import { processModels } from './assets/spine.mjs';
 import { collectLeaves, downloadLeaves, resolveTemplate, totalBytes, contentHash, MANIFEST_VERSION } from './assets/manifest.mjs';
 import { fontJobs, buildFonts } from './assets/fonts.mjs';
 import { skelParserAvailable } from './assets/skel.mjs';
+import { parseVoiceLangs, indexCharWords } from './assets/voice.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const ASSETS = join(ROOT, 'public', 'assets');
@@ -40,6 +41,7 @@ const HELP = `Usage: node tools/fetch-assets.mjs [options]
   --dry-run         print the plan and exit
   --refresh-index   re-download audio_data.json / models_data.json indexes
   --prune           delete files under public/assets that the manifest no longer references
+  --voice=LANGS     operator battle voice: cn,jp (default, ~73 MB), cn (~32 MB), jp (~41 MB) or none
   --help            this text`;
 
 /**
@@ -57,6 +59,7 @@ function parseArgs(argv) {
     else if (k === '--dry-run') o.dryRun = true;
     else if (k === '--refresh-index') o.refreshIndex = true;
     else if (k === '--prune') o.prune = true;
+    else if (k === '--voice') o.voice = parseVoiceLangs(v);
     else if (k === '--help' || k === '-h') o.help = true;
     else throw new Error(`unknown option ${a}\n${HELP}`);
   }
@@ -121,6 +124,7 @@ function countStats(m, bytes, files) {
     skills: Object.keys(m.skills || {}).length,
     ui: Object.keys(m.ui || {}).length,
     sfxUnits: Object.keys(m.audio?.sfx?.units || {}).length,
+    voice: Object.fromEntries(Object.entries(m.audio?.voice || {}).map(([lang, per]) => [lang, Object.keys(per).length])),
   };
 }
 
@@ -151,6 +155,14 @@ async function main() {
   ]);
   const { audioData, modelsData } = await loadIndexes(ROOT, { refresh: opts.refreshIndex && !opts.offline, offline: opts.offline, log });
   const audio = indexAudio(audioData);
+  // operator voice (optional): charword_table.json names each operator's voice folder and lines
+  const voiceLangs = opts.voice ?? parseVoiceLangs(undefined);
+  let voice = null;
+  if (voiceLangs.length) {
+    try {
+      voice = { index: indexCharWords(await loadCharWords(ROOT, { refresh: opts.refreshIndex && !opts.offline, offline: opts.offline, log })), langs: voiceLangs };
+    } catch (e) { log(`[voice] skipped: ${e.message}`); }
+  }
   // The game data built by tools/build-data.mjs (when present) may reference more
   // spawnable enemies/tokens than research lists (e.g. 机变 enemy swaps): cover them too.
   const [dataEnemies, dataTokens, dataBosses] = await Promise.all(
@@ -162,6 +174,7 @@ async function main() {
     extraEnemyIds: Object.keys(dataEnemies || {}),
     extraTokenIds: Object.keys(dataTokens || {}),
     extraHandbook,
+    voice,
   });
   const leaves = collectLeaves(plan.template);
   log(`[plan] ${leaves.length} files + ${plan.models.size} Spine models ` +
@@ -245,6 +258,7 @@ async function main() {
   log(`on disk (manifest)  : ${mb(s.bytes)} in ${s.files} files`);
   log(`chars ${s.chars} (Back model ${s.charsWithBack}) · enemies ${s.enemies} (Spine ${s.enemiesWithSpine}) · tokens ${s.tokens} (Spine ${s.tokensWithSpine}) · Spine models ${s.spineModels}`);
   log(`bonds ${s.bonds} · items ${s.items} · bands ${s.bands} · skill icons ${s.skills} · UI ${s.ui} · units with SFX ${s.sfxUnits}`);
+  if (voice) log(`voice: ${Object.entries(s.voice).map(([l, n]) => `${l} ${n} operators`).join(' · ') || 'none on disk'}`);
   log(`fonts: ${Object.values(fonts.files).map((f) => f.woff2 || f.original).join(', ') || 'none'}`);
   if (resolved.fallbacks.length) { log(`fallbacks used (${resolved.fallbacks.length}):`); for (const f of resolved.fallbacks.slice(0, 20)) log(`  ${f}`); }
   if (downloadErrors.length) log(`download errors (${downloadErrors.length}, re-run to retry): ${downloadErrors.slice(0, 10).join(', ')}`);
