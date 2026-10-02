@@ -1,6 +1,8 @@
 # Cloudflare 部署
 
-**只通过你自己的域名访问。** `workers.dev` 在中国大陆基本无法访问，所以 `wrangler.jsonc` 关闭了 `workers_dev` 和预览地址，只绑定一个自定义域名。这个域名需要托管在部署所用的 Cloudflare 账号下（不需要备案）。部署前把 `routes` 里的占位域名 `play.example.com` 改成你的域名。账号由 `wrangler login` 决定，也可以用环境变量 `CLOUDFLARE_ACCOUNT_ID` 指定，配置里不写死。
+**入口：[卫.rinko.ai](https://xn--rlr.rinko.ai)**（punycode `xn--rlr.rinko.ai`，两种写法是同一个地址）。`workers.dev` 在中国大陆基本无法访问，所以 `wrangler.jsonc` 关闭了 `workers_dev` 和预览地址，只绑定这一个自定义域名。`rinko.ai` 需要托管在部署所用的 Cloudflare 账号下（不需要备案）。账号由 `wrangler login` 决定，也可以用环境变量 `CLOUDFLARE_ACCOUNT_ID` 指定，配置里不写死。
+
+发到群里时用 `https://xn--rlr.rinko.ai/` 这种写法：微信 / QQ 不一定能把中文域名识别成链接。游戏里复制的房间邀请链接（`?room=`）本来就是这种写法。
 
 适用场景：4–20 位朋友，分为多个最多 4 人的游戏房间。静态页面、游戏代码和素材由 **Workers Static Assets** 分发；每个房间使用独立的 **SQLite Durable Object + WebSocket**，复用原有房间、经济、回合和战斗协议。玩家浏览器计算正常战斗，AI / 掉线玩家由服务端处理。
 
@@ -24,7 +26,7 @@ npm run assets       # 已有素材的旧目录：补下战斗语音（只下载
 npx wrangler login   # 浏览器里登录要部署到的 Cloudflare 账号
 ```
 
-然后编辑 `wrangler.jsonc`，把 `routes` 里的 `play.example.com` 换成你的域名（例如 `game.你的域名.com`；Wrangler 会自动创建 DNS 记录并签发证书）。本地试玩用 `npm run dev:worker`，访问它输出的 localhost 地址；Windows 上先停止 `dev:worker` 再部署，避免它的目录监视器占用构建输出。部署：
+`wrangler.jsonc` 的 `routes` 已经是 `xn--rlr.rinko.ai`（卫.rinko.ai），第一次部署时 Wrangler 会自动创建 DNS 记录并签发证书；这个主机名事先不能有别的 DNS 记录。换域名就改这一行（中文域名要写成 punycode，可以用 `node -e "console.log(new URL('https://卫.rinko.ai').hostname)"` 换算）。本地试玩用 `npm run dev:worker`，访问它输出的 localhost 地址；Windows 上先停止 `dev:worker` 再部署，避免它的目录监视器占用构建输出。部署：
 
 ```powershell
 npm run deploy:worker
