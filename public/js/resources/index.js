@@ -71,8 +71,8 @@ function showManager(context, firstTime = false) {
     // zip.js and the trusted manifest validate the selected file's actual contents.
     dialog.innerHTML = `<div class="resource-card">
       <p class="resource-kicker">STRONGHOLD PROTOCOL / RESOURCE MANAGER</p>
-      <h2 id="resource-heading">${firstTime ? '准备游戏资源' : '资源管理'}</h2>
-      <p class="resource-intro">完整资源约 ${mib(context.manifest.totalBytes)}。提前保存可减少对局中的等待；在线模式支持按文件继续下载。</p>
+      <h2 id="resource-heading"></h2>
+      <p class="resource-intro"></p>
       <div class="resource-stat" aria-live="polite">正在检查本地资源…</div>
       <progress class="resource-progress" max="1" value="0" aria-label="资源安装进度"></progress>
       <p class="resource-message" role="status"></p>
@@ -84,14 +84,17 @@ function showManager(context, firstTime = false) {
       </div>
       <input type="file" hidden aria-label="选择本地资源 ZIP" />
       <p class="resource-note">ZIP 只在本机读取，不会上传。仅导入与本站清单匹配的资源。浏览器可能自动清理缓存，之后可重新补齐。</p>
-      <button type="button" class="resource-continue" data-action="continue">${firstTime ? '暂时跳过，按需加载' : '返回游戏'}</button>
+      <button type="button" class="resource-continue" data-action="continue"></button>
     </div>`;
     document.body.append(dialog);
     const $ = selector => dialog.querySelector(selector);
+    $('#resource-heading').textContent = firstTime ? '准备游戏资源' : '资源管理';
+    $('.resource-intro').textContent = `完整资源约 ${mib(context.manifest.totalBytes)}。提前保存可减少对局中的等待；在线模式支持按文件继续下载。`;
     const buttons = [...dialog.querySelectorAll('.resource-actions button')];
     const message = $('.resource-message');
     message.textContent = context.startupError ?? '';
     const continueButton = $('[data-action="continue"]');
+    continueButton.textContent = firstTime ? '暂时跳过，按需加载' : '返回游戏';
     let controller, operation, completed = false, closing = false;
     function progress(status) {
       completed = status.complete;

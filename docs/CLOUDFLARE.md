@@ -20,7 +20,7 @@
 ```powershell
 npm ci
 npm run setup
-bun x wrangler@latest login
+npx wrangler login
 npm run build:worker
 npm run dev:worker
 ```
@@ -28,8 +28,12 @@ npm run dev:worker
 `wrangler.jsonc` 当前指向用户选择的「晴猫」账号，Worker 名为 `stronghold-protocol`，通过 Custom Domain 绑定 `stronghold.lunar.ag`；`workers_dev` 与 `preview_urls` 均为 `false`。迁移到其他账号前应修改 `account_id` 和域名路由。开发访问 Wrangler 输出的 localhost 地址。Windows 上先停止 `dev:worker` 再部署，避免它的目录监视器占用构建输出。部署：
 
 ```powershell
-bun x wrangler@latest deploy
+npm run deploy:worker
 ```
+
+这些命令使用 `npm ci` 按 `package-lock.json` 安装的项目内 Wrangler，使本地开发、配置校验与部署使用相同版本。更新 Wrangler 时，应更新锁文件并完成构建与测试后再部署。
+
+若已安装 Bun，也可在完成上述 `npm ci` 后运行 `bun run dev:worker` 和 `bun run deploy:worker`，同样调用项目内 Wrangler；Bun 是可选工具，不是部署前提。
 
 Wrangler 执行构建、上传本地静态文件，并初始化两个 SQLite DO 绑定：`ROOMS`（房间）和 `ADMISSION`（短期 IP 限流）。Cloudflare 插件可用于账号、Worker 配置和部署版本的管理、检查；本地批量文件上传使用 Wrangler。
 
