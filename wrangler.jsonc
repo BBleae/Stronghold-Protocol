@@ -7,6 +7,8 @@
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": false,
   "preview_urls": false,
+  // Allow Workers Builds previews; no preview-specific room bindings are configured.
+  "previews": {},
   // Custom domains and routes are managed in the Cloudflare dashboard.
   // Omit route/routes so deployments preserve those bindings.
   "build": { "command": "npm run build:worker" },
