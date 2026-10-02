@@ -3,6 +3,8 @@ import { APP_VERSION } from '../shared/constants.js';
 import { CODE_ALPHABET } from '../server/lobby.js';
 import { normalizeIp, limitKeyOf, TokenBucket } from '../server/net.js';
 import { RoomRuntime, validCode } from './room-runtime.js';
+import { handleAuth, authenticate, accountOf, directoryOf } from './accounts/auth.js';
+import { handleAccountRoutes } from './accounts/routes.js';
 
 const json = (body, status = 200, headers = {}) => Response.json(body, { status,
   headers: { 'Cache-Control': 'no-store', ...headers } });
@@ -20,6 +22,10 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     const path = url.pathname;
+    const auth = await handleAuth(request, env);
+    if (auth) return auth;
+    const accountResponse = await handleAccountRoutes(request, env);
+    if (accountResponse) return accountResponse;
     if (path === '/healthz') return request.method === 'GET'
       ? json({ ok: true, runtime: 'cloudflare', version: APP_VERSION }) : error(405, 'BAD_MSG');
     // Internal endpoints are only invoked on a DO stub; the public entry point never forwards them.
@@ -27,12 +33,25 @@ export default {
     if (path === '/api/rooms') {
       if (request.method !== 'POST') return error(405, 'BAD_MSG');
       if (!sameOrigin(request)) return error(403, 'BAD_MSG', 'origin mismatch');
+      const session = env.ACCOUNTS ? await authenticate(request, env) : null;
+      if (env.ACCOUNTS && !session) return error(401, 'LOGIN_REQUIRED');
+      if (session && request.headers.get('Origin') !== url.origin) return error(403, 'BAD_MSG');
+      if (session && await accountOf(env, session.accountId).getActiveSeat()) return error(409, 'ALREADY_SEATED');
       const limited = await admit(env, edgeIp(request), 'reserve');
       if (limited) return limited;
       for (let i = 0; i < 12; i++) {
         const code = Array.from({ length: 4 }, () => CODE_ALPHABET[randomInt(CODE_ALPHABET.length)]).join('');
-        const response = await roomStub(env, code).fetch(new Request(`https://room.internal/_reserve?room=${code}`, { method: 'POST' }));
-        if (response.status !== 409) return response;
+        const response = await roomStub(env, code).fetch(new Request(`https://room.internal/_reserve?room=${code}`, {
+          method: 'POST', headers: session ? {'X-Account-ID':session.accountId} : {} }));
+        if (response.status !== 409) {
+          if (response.ok && session) {
+            const route=await response.clone().json(), claimId=crypto.randomUUID();
+            const claim=await accountOf(env,session.accountId).claimSeat({claimId,expiresAt:Date.now()+120000,
+              seat:{roomId:route.code,roomGeneration:route.generation,matchId:null,seatId:null}});
+            if (!claim.ok) return error(409,'ALREADY_SEATED');
+          }
+          return response;
+        }
       }
       return error(503, 'INTERNAL', 'room capacity unavailable');
     }
@@ -52,13 +71,16 @@ export default {
       if (!validCode(code)) return error(400, 'BAD_MSG', 'invalid room code');
       if (!sameOrigin(request)) return error(403, 'BAD_MSG', 'origin mismatch');
       const ip = edgeIp(request);
+      const session = env.ACCOUNTS ? await authenticate(request,env) : null;
+      if (env.ACCOUNTS && !session) return error(401,'LOGIN_REQUIRED');
       const limited = await admit(env, ip, 'connect');
       if (limited) return limited;
       const dest = new URL('https://room.internal/_ws');
       dest.searchParams.set('room', code);
       const ticket = url.searchParams.get('ticket');
       if (ticket && /^[0-9a-f]{32}$/.test(ticket)) dest.searchParams.set('ticket', ticket);
-      return roomStub(env, code).fetch(new Request(dest, { headers: { Upgrade: 'websocket', 'X-Room-IP': ip } }));
+      return roomStub(env, code).fetch(new Request(dest, { headers: { Upgrade: 'websocket', 'X-Room-IP': ip,
+        ...(session ? {'X-Account-ID':session.accountId,'X-Session-ID':session.sessionId} : {}) } }));
     }
     if (path.startsWith('/api/')) return error(404, 'ROOM_NOT_FOUND');
     return env.ASSETS ? env.ASSETS.fetch(request) : error(404, 'ROOM_NOT_FOUND');
@@ -122,7 +144,7 @@ export class RoomDurableObject {
         snapshot = JSON.parse(keys.map((k) => chunks.get(k)).join(''));
       }
       this.parts = meta?.parts || 0;
-      this.runtime = new RoomRuntime({ snapshot, onChange: () => this.queuePersist() });
+      this.runtime = new RoomRuntime({ snapshot, accounts: !!env.ACCOUNTS, onChange: () => this.queuePersist() });
       for (const ws of ctx.getWebSockets()) {
         // Closing sockets may still be enumerated; never rebind one over its replacement.
         if (ws.readyState !== 1) continue;
@@ -195,9 +217,18 @@ export class RoomDurableObject {
       if (url.pathname === '/_reserve' && request.method === 'POST') {
         const code = url.searchParams.get('room');
         if (!validCode(code)) return error(400, 'BAD_MSG');
-        const ticket = rt.reserve(code);
+        const ticket = rt.reserve(code, request.headers.get('X-Account-ID'));
         await this.persist();
-        return ticket ? json({ code, ticket }, 201) : error(409, 'ROOM_FULL');
+        return ticket ? json({ code, ticket, ...(rt.accounts ? {generation:rt.generation} : {}) }, 201) : error(409, 'ROOM_FULL');
+      }
+      if (url.pathname === '/_account') {
+        const accountId=request.headers.get('X-Account-ID');
+        if (request.headers.get('X-Room-Generation')!==rt.generation || !rt.hasAccount(accountId)) return error(404,'ROOM_NOT_FOUND');
+        if (request.method==='POST') {
+          const ticket=rt.resumeAccount(accountId); await this.persist();
+          return ticket ? json({code:rt.code,ticket}) : error(404,'ROOM_NOT_FOUND');
+        }
+        return json({activeSeat:{roomId:rt.code,roomGeneration:rt.generation},status:rt.status()});
       }
       if (url.pathname === '/_status' && request.method === 'GET') {
         const status = rt.status();
@@ -214,13 +245,19 @@ export class RoomDurableObject {
       this.ctx.acceptWebSocket(server);
       const adapter = new SocketAdapter(server);
       this.sockets.set(server, adapter);
-      rt.connect(adapter, { ip, ticket: url.searchParams.get('ticket') });
+      rt.connect(adapter, { ip, ticket: url.searchParams.get('ticket'), accountId: request.headers.get('X-Account-ID'),
+        sessionId:request.headers.get('X-Session-ID') });
       await this.persist();
       return new Response(null, { status: 101, webSocket: client });
     });
   }
   async webSocketMessage(ws, message) {
     await this.ready;
+    if (this.env.ACCOUNTS) {
+      const adapter=this.sockets.get(ws), meta=adapter && this.runtime.socketMeta.get(adapter);
+      const session=meta?.sessionId && await directoryOf(this.env).getSession(meta.sessionId);
+      if (!session || session.accountId!==meta.accountId || session.expiresAt<=Date.now()) { adapter?.close(4003,'login required'); return; }
+    }
     return this.ctx.blockConcurrencyWhile(async () => {
       const adapter = this.sockets.get(ws);
       if (adapter) this.runtime.message(adapter, message);

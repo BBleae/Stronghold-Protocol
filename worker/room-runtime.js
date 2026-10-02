@@ -12,7 +12,20 @@ export const validCode = (s) => typeof s === 'string' && s.length === 4 && [...s
 class RoomNetwork extends Network {
   onHelloMsg(conn, msg, now) {
     const prefix = `${this.roomRuntime.code}.`;
-    const token = typeof msg.token === 'string' && msg.token.startsWith(prefix) ? msg.token.slice(prefix.length) : undefined;
+    let token = typeof msg.token === 'string' && msg.token.startsWith(prefix) ? msg.token.slice(prefix.length) : undefined;
+    if (this.roomRuntime.accounts) {
+      const meta = this.roomRuntime.socketMeta.get(conn.ws);
+      if (!meta?.accountId) { conn.close(4003, 'login required'); return; }
+      const previous = [...this.registry.all()].find(s => s.accountId === meta.accountId);
+      const presented = token && this.registry.byToken(token);
+      if (presented && presented.accountId !== meta.accountId) {
+        this.reply(conn, {t: 'error', code: ERR.BAD_MSG, detail: 'account mismatch', rid: msg.rid}); return;
+      }
+      if (previous && !conn.session && !meta.takeover && token !== previous.token) {
+        this.reply(conn, {t: 'error', code: ERR.BAD_MSG, detail: 'resume required', rid: msg.rid}); return;
+      }
+      token = previous?.token;
+    }
     super.onHelloMsg(conn, { ...msg, token }, now);
   }
   reply(conn, msg) {
@@ -48,7 +61,10 @@ class AlarmLobby extends Lobby {
 }
 
 export class RoomRuntime {
-  constructor({ snapshot, now = Date.now, onChange = () => {} } = {}) {
+  constructor({ snapshot, now = Date.now, onChange = () => {}, accounts = false } = {}) {
+    this.accounts = accounts;
+    this.generation = snapshot?.generation || randomBytes(16).toString('hex');
+    this.resumeTickets = new Map(snapshot?.resumeTickets || []);
     this.now = now;
     this.code = snapshot?.code || null;
     this.reservation = snapshot?.reservation || null;
@@ -60,6 +76,12 @@ export class RoomRuntime {
     this.lobby.onChange = onChange;
     const handler = {
       onHello: (s, info) => {
+        const meta = this.socketMeta.get(s.ws);
+        if (this.accounts && meta?.accountId) {
+          s.accountId = meta.accountId;
+          if (!info.repeat) s.connectionEpoch = (s.connectionEpoch || 0) + 1;
+          meta.connectionEpoch = s.connectionEpoch;
+        }
         if (this.socketMeta.get(s.ws)?.canCreate && this.reservation) s.canCreate = true;
         this.lobby.onHello(s, info);
         if (this.interruptedUntil > this.now()) sendSession(s, { t: 'room.closed', reason: 'restart' });
@@ -108,12 +130,23 @@ export class RoomRuntime {
     }
   }
 
-  reserve(code) {
+  reserve(code, accountId = null) {
     this.sweep();
     if (!validCode(code) || !this.isEmpty()) return null;
     this.code = code;
     const ticket = randomBytes(16).toString('hex');
-    this.reservation = { ticket, expiresAt: this.now() + ROOM_LIMITS.reservationMs };
+    this.reservation = { ticket, accountId, expiresAt: this.now() + ROOM_LIMITS.reservationMs };
+    return ticket;
+  }
+  hasAccount(accountId) {
+    return !!accountId && (this.reservation?.accountId === accountId ||
+      [...this.registry.all()].some(s => s.accountId === accountId && this.lobby.roomOf(s)));
+  }
+  resumeAccount(accountId) {
+    if (!this.hasAccount(accountId)) return null;
+    if (this.reservation?.accountId===accountId) return this.reservation.ticket;
+    const ticket=randomBytes(16).toString('hex');
+    this.resumeTickets.set(ticket,{accountId,expiresAt:this.now()+30000});
     return ticket;
   }
   status() {
@@ -132,11 +165,18 @@ export class RoomRuntime {
     if ([...this.socketMeta.values()].filter((m) => m.key === key).length >= ROOM_LIMITS.socketsPerIp) return 'per-address';
     return null;
   }
-  connect(ws, { ip = '0.0.0.0', ticket, attachment } = {}) {
+  connect(ws, { ip = '0.0.0.0', ticket, attachment, accountId, sessionId, takeover = false } = {}) {
     if (!attachment && this.admission(ip)) { ws.close(1013, 'connection limit'); return; }
     const normalized = normalizeIp(ip) || '0.0.0.0';
+    const resume=this.resumeTickets.get(ticket);
+    if (resume && resume.accountId===accountId && resume.expiresAt>this.now()) {
+      takeover=true; this.resumeTickets.delete(ticket);
+    }
     this.socketMeta.set(ws, { ip: normalized, key: limitKeyOf(normalized),
-      canCreate: !!attachment?.canCreate || !!(ticket && this.reservation && ticket === this.reservation.ticket) });
+      accountId: attachment?.accountId || accountId, takeover,
+      sessionId:attachment?.sessionId || sessionId, connectionEpoch:attachment?.connectionEpoch,
+      canCreate: !!attachment?.canCreate || !!(ticket && this.reservation && ticket === this.reservation.ticket &&
+        (!this.accounts || this.reservation.accountId===accountId)) });
     this.network.handleConnection(ws, { socket: { remoteAddress: normalized }, headers: {} });
     ws.on('close', () => this.socketMeta.delete(ws));
     const conn = this.network.conns.get(ws);
@@ -164,6 +204,9 @@ export class RoomRuntime {
   message(ws, message) {
     const conn = this.network.conns.get(ws);
     if (!conn) return;
+    if (conn.closing || ws.readyState !== 1) return;
+    if (this.accounts && conn.session && (conn.session.ws !== ws ||
+        this.socketMeta.get(ws)?.connectionEpoch !== conn.session.connectionEpoch)) return;
     const binary = typeof message !== 'string';
     const bytes = binary ? message.byteLength : Buffer.byteLength(message, 'utf8');
     if (bytes > ROOM_LIMITS.messageBytes) { ws.close(1009, 'message exceeds 64 KiB'); return; }
@@ -175,6 +218,7 @@ export class RoomRuntime {
     this.socketMeta.delete(ws);
   }
   sweep() {
+    for (const [ticket,value] of this.resumeTickets) if (value.expiresAt<=this.now()) this.resumeTickets.delete(ticket);
     for (const conn of this.network.conns.values()) {
       if (!conn.session && this.now() - conn.openedAt >= this.network.opts.helloTimeoutMs) conn.close(4002, 'hello timeout');
       else if (conn.session && this.now() - conn.session.lastSeen >= ROOM_LIMITS.idleSocketMs) conn.close(1001, 'idle connection');
@@ -196,6 +240,7 @@ export class RoomRuntime {
   snapshot() {
     const room = this.lobby.getRoom(this.code);
     const base = { version: 1, at: this.now(), code: this.code, reservation: this.reservation,
+      generation:this.generation,resumeTickets:[...this.resumeTickets],
       interruptedUntil: this.interruptedUntil, running: !!room?.match };
     if (base.running) return base;
     return { ...base, sessions: [...this.registry.all()].map(({ ws, ...s }) => ({ ...s,
