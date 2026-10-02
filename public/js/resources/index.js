@@ -67,6 +67,8 @@ function showManager(context, firstTime = false) {
     const dialog = document.createElement('dialog');
     dialog.className = 'resource-dialog';
     dialog.setAttribute('aria-labelledby', 'resource-heading');
+    // Omit accept: iOS file providers can label ZIPs with an unexpected type.
+    // zip.js and the trusted manifest validate the selected file's actual contents.
     dialog.innerHTML = `<div class="resource-card">
       <p class="resource-kicker">STRONGHOLD PROTOCOL / RESOURCE MANAGER</p>
       <h2 id="resource-heading">${firstTime ? '准备游戏资源' : '资源管理'}</h2>
@@ -80,7 +82,7 @@ function showManager(context, firstTime = false) {
         <button type="button" data-action="cancel" hidden>暂停</button>
         <button type="button" data-action="clear">清理本地资源</button>
       </div>
-      <input type="file" accept=".zip,application/zip" hidden aria-label="选择本地资源 ZIP" />
+      <input type="file" hidden aria-label="选择本地资源 ZIP" />
       <p class="resource-note">ZIP 只在本机读取，不会上传。仅导入与本站清单匹配的资源。浏览器可能自动清理缓存，之后可重新补齐。</p>
       <button type="button" class="resource-continue" data-action="continue">${firstTime ? '暂时跳过，按需加载' : '返回游戏'}</button>
     </div>`;
