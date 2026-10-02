@@ -1,12 +1,15 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "stronghold-protocol",
-  "account_id": "04c35e69fed6151decdffdd2952f7771",
+  // No account_id: Wrangler deploys to the account of `wrangler login` (or CLOUDFLARE_ACCOUNT_ID). docs/CLOUDFLARE.md
   "main": "dist/worker/index.mjs",
   "compatibility_date": "2026-10-01",
   "compatibility_flags": ["nodejs_compat"],
-  "workers_dev": true,
+  // workers.dev is unreachable from mainland China: the game is served only on your own domain (a zone of the same
+  // account). Replace play.example.com with it before the first deploy.
+  "workers_dev": false,
   "preview_urls": false,
+  "routes": [{ "pattern": "play.example.com", "custom_domain": true }],
   "build": { "command": "npm run build:worker" },
   "assets": {
     "directory": "./dist/client",
