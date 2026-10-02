@@ -4,6 +4,7 @@ import { randomBytes } from 'node:crypto';
 import { Lobby, Room, CODE_ALPHABET } from '../server/lobby.js';
 import { Network, Session, SessionRegistry, sendSession, normalizeIp, limitKeyOf } from '../server/net.js';
 import { ERR } from '../shared/constants.js';
+import { RecordedMatch, exportMatch, restoreMatch } from '../server/match/checkpoint.js';
 
 export const ROOM_LIMITS = Object.freeze({ sockets: 16, socketsPerIp: 8, sessions: 32, messageBytes: 65_536,
   reservationMs: 120_000, idleSocketMs: 90_000 });
@@ -71,7 +72,8 @@ export class RoomRuntime {
     this.interruptedUntil = snapshot?.interruptedUntil || 0;
     this.socketMeta = new Map();
     this.registry = new SessionRegistry({ now, maxSessions: ROOM_LIMITS.sessions });
-    this.lobby = new AlarmLobby({ registry: this.registry, now, options: { maxRooms: 1 } });
+    this.lobby = new AlarmLobby({ registry: this.registry, now, options: { maxRooms: 1 },
+      ...(accounts ? {MatchClass:RecordedMatch} : {}) });
     this.lobby.genCode = () => this.code;
     this.lobby.onChange = onChange;
     const handler = {
@@ -103,7 +105,7 @@ export class RoomRuntime {
       options: { autoTimers: false, trustProxy: false, maxConnections: ROOM_LIMITS.sockets,
         maxConnectionsPerAddr: ROOM_LIMITS.socketsPerIp, maxSessions: ROOM_LIMITS.sessions } });
     this.network.roomRuntime = this;
-    if (snapshot?.running) {
+    if (snapshot?.running && !snapshot.matchCheckpoint) {
       // Match memory and timers cannot be recovered after a deployment/eviction. Invalidate all secrets.
       this.reservation = null;
       this.interruptedUntil = now() + ROOM_LIMITS.reservationMs;
@@ -127,6 +129,15 @@ export class RoomRuntime {
         }
       }
       for (const [id, at] of snapshot.deadlines || []) this.lobby.deadlines.set(id, at);
+      if (snapshot.matchCheckpoint && snapshot.room) {
+        const room=this.lobby.getRoom(this.code), checkpoint=snapshot.matchCheckpoint;
+        room.matchCount=Math.max(0,room.matchCount-1);
+        const Original=this.lobby.MatchClass;
+        this.lobby.MatchClass=class {constructor(options) {return restoreMatch(checkpoint,options);}};
+        const result=this.lobby.startMatch(room,room.matchKey);
+        this.lobby.MatchClass=Original;
+        if (result.error || !room.match) throw new Error('MATCH_RESTORE_FAILED');
+      }
     }
   }
 
@@ -228,8 +239,13 @@ export class RoomRuntime {
     if (this.reservation && this.reservation.expiresAt <= this.now()
       && ![...this.registry.all()].some((s) => s.canCreate && s.connected)) this.reservation = null;
   }
+  pump(now=this.now()) {return this.lobby.getRoom(this.code)?.match?.pump?.(now) || 0;}
   nextAlarm() {
     const deadlines = [...this.lobby.deadlines.values()];
+    const match=this.lobby.getRoom(this.code)?.match;
+    if (match?.recording) {
+      const next=match.sched.nextAt(); if(next!=null) deadlines.push(next);
+    }
     if (this.reservation) deadlines.push(Math.max(this.now() + 30_000, this.reservation.expiresAt));
     if (this.interruptedUntil > this.now()) deadlines.push(this.interruptedUntil);
     for (const c of this.network.conns.values()) deadlines.push(c.session
@@ -242,7 +258,8 @@ export class RoomRuntime {
     const base = { version: 1, at: this.now(), code: this.code, reservation: this.reservation,
       generation:this.generation,resumeTickets:[...this.resumeTickets],
       interruptedUntil: this.interruptedUntil, running: !!room?.match };
-    if (base.running) return base;
+    if (base.running && !room.match.recording) return base;
+    if (room?.match?.recording) base.matchCheckpoint=exportMatch(room.match);
     return { ...base, sessions: [...this.registry.all()].map(({ ws, ...s }) => ({ ...s,
       resyncAt: Number.isFinite(s.resyncAt) ? s.resyncAt : null })), deadlines: [...this.lobby.deadlines],
     room: room ? { code: room.code, mode: room.mode, difficulty: room.difficulty, hostId: room.hostId,

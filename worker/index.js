@@ -111,7 +111,7 @@ export class AdmissionDurableObject {
 
 // Adapt the Workers WebSocket surface to the existing Network's small EventEmitter-like contract.
 class SocketAdapter {
-  constructor(socket) { this.socket = socket; this.handlers = new Map(); this.closed = false; }
+  constructor(socket, buffered=false) { this.socket = socket; this.handlers = new Map(); this.closed = false; this.buffered=buffered; this.pending=[]; }
   get readyState() { return this.closed ? 3 : this.socket.readyState; }
   get bufferedAmount() { return this.socket.bufferedAmount || 0; }
   on(type, fn) {
@@ -119,7 +119,8 @@ class SocketAdapter {
     this.handlers.get(type).push(fn);
   }
   emit(type, ...args) { for (const fn of this.handlers.get(type) || []) fn(...args); }
-  send(data, callback) { this.socket.send(data); callback?.(); }
+  send(data, callback) { if(this.buffered) this.pending.push(data); else this.socket.send(data); callback?.(); }
+  flush() {if(!this.closed) for(const data of this.pending) this.socket.send(data); this.pending=[];}
   close(code, reason) {
     if (this.closed) return;
     this.closed = true;
@@ -143,15 +144,21 @@ export class RoomDurableObject {
         const chunks = await ctx.storage.get(keys);
         snapshot = JSON.parse(keys.map((k) => chunks.get(k)).join(''));
       }
+      if(snapshot?.matchCheckpoint?.eventLogId) {
+        const c=snapshot.matchCheckpoint;
+        c.events=ctx.storage.sql.exec('SELECT payload FROM match_events WHERE match_id=? ORDER BY seq',c.eventLogId).toArray().map(r=>JSON.parse(r.payload));
+        if(c.events.length!==c.eventCount) throw new Error('INCOMPLETE_MATCH_LOG');
+        this.persistedLogId=c.eventLogId;this.persistedEventCount=c.events.length;
+      }
       this.parts = meta?.parts || 0;
       this.runtime = new RoomRuntime({ snapshot, accounts: !!env.ACCOUNTS, onChange: () => this.queuePersist() });
       for (const ws of ctx.getWebSockets()) {
         // Closing sockets may still be enumerated; never rebind one over its replacement.
         if (ws.readyState !== 1) continue;
-        if (snapshot?.running) { try { ws.close(1012, 'active match interrupted by server restart'); } catch {} continue; }
+        if (snapshot?.running && !snapshot.matchCheckpoint) { try { ws.close(1012, 'active match interrupted by server restart'); } catch {} continue; }
         const attachment = ws.deserializeAttachment();
         if (!attachment) { try { ws.close(1011, 'missing session'); } catch {} continue; }
-        const adapter = new SocketAdapter(ws);
+        const adapter = new SocketAdapter(ws,!!env.ACCOUNTS);
         this.sockets.set(ws, adapter);
         this.runtime.connect(adapter, { ip: attachment.ip, attachment });
       }
@@ -177,10 +184,10 @@ export class RoomDurableObject {
     if (active && !this.activeTimer) {
       // An untimed solo phase still owns live match memory. Explicitly prevent hibernation until it ends.
       this.activeTimer = setInterval(() => {
-        this.refreshAutoResponses();
-        rt.sweep();
-        this.queuePersist();
-      }, 30_000);
+        this.ctx.waitUntil(this.ctx.blockConcurrencyWhile(async () => {
+          this.refreshAutoResponses(); rt.pump(); rt.sweep(); await this.persist();
+        }));
+      }, this.env.ACCOUNTS ? 100 : 30_000);
     } else if (!active && this.activeTimer) { clearInterval(this.activeTimer); this.activeTimer = null; }
     for (const [ws, adapter] of this.sockets) {
       const attachment = rt.attachment(adapter);
@@ -194,15 +201,28 @@ export class RoomDurableObject {
       return;
     }
     // KV values have a size limit. Chunk by UTF-16 characters so even non-ASCII names stay below it.
-    const source = JSON.stringify(rt.snapshot());
+    const snapshot=rt.snapshot(), checkpoint=snapshot.matchCheckpoint;
+    let newEvents=[], logId=null;
+    if(checkpoint) {
+      logId=rt.generation + ':' + checkpoint.options.matchNo;
+      const offset=this.persistedLogId===logId ? this.persistedEventCount || 0 : 0;
+      newEvents=checkpoint.events.slice(offset).map((value,i)=>({seq:offset+i,payload:JSON.stringify(value)}));
+      checkpoint.eventCount=checkpoint.events.length;checkpoint.eventLogId=logId;
+      delete checkpoint.events;
+      this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS match_events (match_id TEXT NOT NULL, seq INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(match_id,seq))');
+    }
+    const source = JSON.stringify(snapshot);
     const count = Math.ceil(source.length / 16_000);
     const entries = { 'snapshot-meta': { parts: count } };
     for (let i = 0; i < count; i++) entries[`snapshot-${i}`] = source.slice(i * 16_000, (i + 1) * 16_000);
     await this.ctx.storage.transaction(async (txn) => {
+      for(const row of newEvents) this.ctx.storage.sql.exec('INSERT INTO match_events VALUES (?,?,?)',logId,row.seq,row.payload);
       await txn.put(entries);
       if (count < this.parts) await txn.delete(Array.from({ length: this.parts - count }, (_, i) => `snapshot-${i + count}`));
     });
     this.parts = count;
+    if(checkpoint) {this.persistedLogId=logId;this.persistedEventCount=checkpoint.eventCount;}
+    for(const adapter of this.sockets.values()) adapter.flush();
     const at = rt.nextAlarm();
     if (at) await this.ctx.storage.setAlarm(at);
     else await this.ctx.storage.deleteAlarm();
@@ -243,7 +263,7 @@ export class RoomDurableObject {
       const pair = new WebSocketPair();
       const [client, server] = Object.values(pair);
       this.ctx.acceptWebSocket(server);
-      const adapter = new SocketAdapter(server);
+      const adapter = new SocketAdapter(server,!!this.env.ACCOUNTS);
       this.sockets.set(server, adapter);
       rt.connect(adapter, { ip, ticket: url.searchParams.get('ticket'), accountId: request.headers.get('X-Account-ID'),
         sessionId:request.headers.get('X-Session-ID') });
@@ -278,6 +298,7 @@ export class RoomDurableObject {
     await this.ready;
     return this.ctx.blockConcurrencyWhile(async () => {
       this.refreshAutoResponses();
+      this.runtime.pump();
       this.runtime.sweep();
       await this.persist();
     });
