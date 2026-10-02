@@ -56,6 +56,7 @@ export const NET_DEFAULTS = Object.freeze({
   heavyPerSec: 2,               // refill of the bucket for resend-heavy intents (HEAVY_TYPES)
   heavyBurst: 6,
   trustProxy: 'auto',           // forwarding headers: 'auto' = from loopback/private peers only, true = always, false = never
+  autoTimers: true,             // Workers use platform alarms instead of keeping an idle object awake
 });
 
 /**
@@ -513,11 +514,13 @@ export class Network {
     /** @type {Map<string, number>} open sockets per client network key */
     this.connsPerKey = new Map();
     this.closed = false;
-    this.heartbeatTimer = setInterval(() => this.heartbeat(), this.opts.heartbeatMs);
-    this.heartbeatTimer.unref?.();
-    const sweepMs = Math.max(20, Math.min(15_000, Math.floor(this.opts.reconnectWindowMs / 4)));
-    this.sweepTimer = setInterval(() => this.sweep(), sweepMs);
-    this.sweepTimer.unref?.();
+    if (this.opts.autoTimers) {
+      this.heartbeatTimer = setInterval(() => this.heartbeat(), this.opts.heartbeatMs);
+      this.heartbeatTimer.unref?.();
+      const sweepMs = Math.max(20, Math.min(15_000, Math.floor(this.opts.reconnectWindowMs / 4)));
+      this.sweepTimer = setInterval(() => this.sweep(), sweepMs);
+      this.sweepTimer.unref?.();
+    }
   }
 
   /** Number of open sockets. */

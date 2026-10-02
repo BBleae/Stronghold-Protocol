@@ -832,4 +832,11 @@ export function createIdentity(deps = {}) {
 export const identity = createIdentity();
 
 /** Browser connection singleton (created lazily-safe: nothing touches the network until connect()). */
-export const net = new Net({ getToken: () => identity.getToken() });
+export let net = new Net({ getToken: () => identity.getToken() });
+
+/** Select a hosting-specific transport before main.js starts the connection. */
+export function configureTransport(factory) {
+  if (net.ws) throw new Error('The transport must be configured before connecting');
+  net = factory({ getToken: () => identity.getToken() });
+  return net;
+}
