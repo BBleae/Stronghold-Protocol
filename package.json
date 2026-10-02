@@ -32,12 +32,19 @@
     "postinstall": "node tools/vendor.mjs",
     "setup": "node tools/setup.mjs",
     "doctor": "node tools/doctor.mjs",
-    "launch": "node scripts/launch.mjs"
+    "launch": "node scripts/launch.mjs",
+    "build:worker": "node tools/build-worker.mjs",
+    "dev:worker": "wrangler dev",
+    "deploy:worker": "wrangler deploy",
+    "resources:manifest": "node tools/resource-pack.mjs --manifest-only",
+    "resources:pack": "node tools/resource-pack.mjs"
   },
   "engines": {
     "node": ">=22"
   },
   "dependencies": {
+    "@zip.js/zip.js": "^2.22.0",
+    "fflate": "^0.8.3",
     "htm": "^3.1.1",
     "pixi-spine": "^4.0.6",
     "pixi.js": "^7.4.2",
@@ -46,6 +53,9 @@
     "ws": "^8.22.0"
   },
   "devDependencies": {
-    "puppeteer-core": "^25.12.0"
+    "esbuild": "^0.28.2",
+    "miniflare": "^5.20261001.0-alpha",
+    "puppeteer-core": "^25.12.0",
+    "wrangler": "^4.147.0"
   }
 }

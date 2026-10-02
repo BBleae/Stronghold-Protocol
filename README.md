@@ -60,6 +60,10 @@ English summary: [below](#english).
 
 ## 快速开始
 
+### Cloudflare Workers 部署
+
+本 fork 支持 Workers Static Assets 分发资源、每个房间一个 Durable Object 的 WebSocket 联机，以及浏览器资源包下载 / 本地 ZIP 导入。原来的 Node.js 启动方式继续可用。构建、部署、资源包分发与运行限制见 [Cloudflare 部署指南](docs/CLOUDFLARE.md)。
+
 ### 方式一：整合包（推荐）
 
 整合包里已经包含代码、运行依赖和全部美术 / 音频（含官方 3D 棋盘贴图），解压就能玩，不需要再下载任何东西。
