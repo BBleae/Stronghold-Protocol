@@ -221,3 +221,20 @@ test('a complete local installation exports the pack the import accepts (Blob or
   await zipModule.importResourceZip(new Blob(chunks), fromStream, { zipjs });
   assert.equal((await fromStream.status()).complete, true);
 });
+
+test('a pack of another deployment imports the files that match and skips the rest', async () => {
+  const a = entry('/assets/a.mp3', 'abc');
+  const b = entry('/assets/b.mp3', 'def');
+  const c = entry('/assets/c.mp3', 'ghi');
+  const store = new storeModule.ResourceStore(manifest([a, b, c]), { caches: new MemoryCaches() });
+  // a matches; b has other bytes of the same size; c is absent; old.mp3 is not on this site
+  const pack = zipSync({ 'assets/a.mp3': bytes('abc'), 'assets/b.mp3': bytes('XYZ'), 'assets/old.mp3': bytes('old') });
+  const status = await zipModule.importResourceZip(new Blob([pack]), store, { zipjs: await import('@zip.js/zip.js') });
+  assert.equal(status.imported, 1);
+  assert.equal(status.skipped, 2);
+  assert.equal(status.complete, false);
+  assert.deepEqual([...(await store.status()).present], ['/assets/a.mp3']);
+  // nothing matches at all: refused, so the player knows the pack is for another version
+  const other = new storeModule.ResourceStore(manifest([b]), { caches: new MemoryCaches() });
+  await assert.rejects(zipModule.importResourceZip(new Blob([pack]), other, { zipjs: await import('@zip.js/zip.js') }), /清单/);
+});

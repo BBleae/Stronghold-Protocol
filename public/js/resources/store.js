@@ -53,19 +53,29 @@ export class ResourceStore {
     status.complete = status.count === status.total;
     return status;
   }
-  async download({ signal, onProgress = () => {} } = {}) {
+  /** Several files at a time: thousands of small files over a long round trip are slow one by one. */
+  async download({ signal, onProgress = () => {}, concurrency = 6 } = {}) {
     const status = await this.reuse({ signal, onProgress });
     onProgress({ ...status, phase: 'download' });
-    for (const file of this.manifest.files) {
-      checkAbort(signal);
-      if (status.present.has(file.url)) continue;
-      // A failed request leaves earlier files committed; retry simply resumes here.
-      const response = await this.fetcher(file.url, { signal, cache: 'no-store' });
-      const data = await readBoundedResponse(response, file.size, signal);
-      await this.put(file, data, { signal });
-      status.present.add(file.url); status.count++; status.bytes += file.size;
-      onProgress({ ...status, complete: status.count === status.total, phase: 'download', file: file.url });
-    }
+    const queue = this.manifest.files.filter(file => !status.present.has(file.url));
+    let failure = null;
+    const next = async () => {
+      while (queue.length && !failure) {
+        const file = queue.shift();
+        try {
+          checkAbort(signal);
+          // A failed request leaves the other files committed; retry simply resumes with the missing ones.
+          const response = await this.fetcher(file.url, { signal, cache: 'no-store' });
+          const data = await readBoundedResponse(response, file.size, signal);
+          await this.put(file, data, { signal });
+        } catch (error) { failure ??= error; return; }
+        status.present.add(file.url); status.count++; status.bytes += file.size;
+        onProgress({ ...status, complete: status.count === status.total, phase: 'download', file: file.url });
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(concurrency, queue.length) }, next));
+    checkAbort(signal); // a pause wins over the error of a file that was in flight meanwhile
+    if (failure) throw failure;
     status.complete = status.count === status.total;
     return status;
   }

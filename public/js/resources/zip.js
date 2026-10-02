@@ -9,6 +9,9 @@ export function zipPathToUrl(name) {
 
 /** zip.js owns ZIP parsing and decompression. We only apply the site's resource contract.
  * BlobReader seeks by range; bounded writes hold at most one trusted manifest file.
+ * A pack made for another deployment still helps: a well-formed entry the site's manifest does not list, or whose size
+ * or hash differs, is skipped (`status.skipped`) and the online download fetches those files. Only a malformed archive
+ * (bad paths, duplicates, forged sizes) or one without any matching file is refused.
  */
 export async function importResourceZip(blob, store, { signal, onProgress = () => {}, zipjs } = {}) {
   checkAbort(signal);
@@ -16,6 +19,7 @@ export async function importResourceZip(blob, store, { signal, onProgress = () =
   if (blob.size > store.manifest.totalBytes * 1.1 + store.manifest.files.length * 2048 + 1024 * 1024) throw new Error('ZIP size / 大小超出资源清单限制');
   const expected = new Map(store.manifest.files.map(file => [file.url, file]));
   const seen = new Set();
+  let imported = 0, skipped = 0;
   const status = await store.status();
   const source = new zipjs.BlobReader(blob);
   const readRange = source.readUint8Array.bind(source);
@@ -31,13 +35,14 @@ export async function importResourceZip(blob, store, { signal, onProgress = () =
   try {
     for await (const entry of reader.getEntriesGenerator()) {
       checkAbort(signal);
+      if (entry.directory) continue;
       const url = zipPathToUrl(entry.filename);
-      const trusted = expected.get(url);
-      if (!trusted) throw new Error(`Unknown ZIP resource / 清单外文件: ${entry.filename}`);
       if (seen.has(url)) throw new Error(`Duplicate ZIP resource path: ${entry.filename}`);
       seen.add(url);
-      if (entry.directory || entry.symlink || entry.encrypted) throw new Error('Unsupported ZIP resource entry');
-      if (entry.uncompressedSize !== trusted.size || !Number.isSafeInteger(entry.compressedSize) || entry.compressedSize < 0 || entry.compressedSize > trusted.size * 1.1 + 65536) throw new Error(`ZIP resource size / 大小不符: ${entry.filename}`);
+      if (entry.symlink || entry.encrypted) throw new Error('Unsupported ZIP resource entry');
+      const trusted = expected.get(url);
+      if (!trusted || entry.uncompressedSize !== trusted.size) { skipped++; continue; } // another version's file
+      if (!Number.isSafeInteger(entry.compressedSize) || entry.compressedSize < 0 || entry.compressedSize > trusted.size * 1.1 + 65536) throw new Error(`ZIP resource size / 大小不符: ${entry.filename}`);
       const data = new Uint8Array(trusted.size);
       let size = 0;
       await entry.getData(new WritableStream({
@@ -48,13 +53,15 @@ export async function importResourceZip(blob, store, { signal, onProgress = () =
         },
       }), { signal });
       if (size !== data.length) throw new Error(`ZIP resource size / 大小不符: ${entry.filename}`);
+      try { await verifyBytes(trusted, data); } catch { skipped++; continue; } // same size, other content
       await store.put(trusted, data, { signal });
+      imported++;
       if (!status.present.has(url)) { status.present.add(url); status.count++; status.bytes += size; }
       onProgress({ ...status, complete: status.count === status.total, phase: 'import', file: url });
     }
-    if (!seen.size) throw new Error('Empty ZIP resource pack');
+    if (!imported) throw new Error(seen.size ? '没有与本站清单一致的文件（资源包版本不同）' : 'Empty ZIP resource pack');
     status.complete = status.count === status.total;
-    return status;
+    return { ...status, imported, skipped };
   } catch (error) {
     if (error.name === 'AbortError' || error.name === 'QuotaExceededError') throw error;
     throw new Error(`ZIP resource import: ${error.message}${error.reason ? ` (${error.reason})` : ''}`, { cause: error });

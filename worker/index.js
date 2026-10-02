@@ -3,6 +3,7 @@ import { APP_VERSION } from '../shared/constants.js';
 import { CODE_ALPHABET } from '../server/lobby.js';
 import { normalizeIp, limitKeyOf, TokenBucket } from '../server/net.js';
 import { RoomRuntime, validCode } from './room-runtime.js';
+import { PACK_PATH, servePack } from './pack.js';
 
 const json = (body, status = 200, headers = {}) => Response.json(body, { status,
   headers: { 'Cache-Control': 'no-store', ...headers } });
@@ -60,6 +61,7 @@ export default {
       if (ticket && /^[0-9a-f]{32}$/.test(ticket)) dest.searchParams.set('ticket', ticket);
       return roomStub(env, code).fetch(new Request(dest, { headers: { Upgrade: 'websocket', 'X-Room-IP': ip } }));
     }
+    if (path === PACK_PATH) return servePack(request, env);
     if (path.startsWith('/api/')) return error(404, 'ROOM_NOT_FOUND');
     return env.ASSETS ? env.ASSETS.fetch(request) : error(404, 'ROOM_NOT_FOUND');
   },
