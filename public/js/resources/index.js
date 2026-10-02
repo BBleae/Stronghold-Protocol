@@ -1,6 +1,6 @@
 import { validateManifest } from './common.js';
 import { ResourceStore } from './store.js';
-import { importResourceZip } from './zip.js';
+import { exportResourceZip, importResourceZip } from './zip.js';
 
 const MODE_KEY = 'stronghold-resource-mode';
 let contextPromise, openDialog;
@@ -79,11 +79,12 @@ function showManager(context, firstTime = false) {
       <div class="resource-actions">
         <button type="button" class="resource-primary" data-action="download">在线下载 / 继续下载</button>
         <button type="button" data-action="import">导入本地 ZIP</button>
+        <button type="button" data-action="export" disabled>导出 ZIP（发给朋友）</button>
         <button type="button" data-action="cancel" hidden>暂停</button>
         <button type="button" data-action="clear">清理本地资源</button>
       </div>
       <input type="file" hidden aria-label="选择本地资源 ZIP" />
-      <p class="resource-note">ZIP 只在本机读取，不会上传。仅导入与本站清单匹配的资源。浏览器可能自动清理缓存，之后可重新补齐。</p>
+      <p class="resource-note">ZIP 只在本机读取，不会上传。仅导入与本站清单匹配的资源。资源全部保存后可以导出 ZIP 发给朋友，对方在这里导入即可。浏览器可能自动清理缓存，之后可重新补齐。</p>
       <button type="button" class="resource-continue" data-action="continue"></button>
     </div>`;
     document.body.append(dialog);
@@ -101,9 +102,10 @@ function showManager(context, firstTime = false) {
       $('.resource-stat').textContent = `${status.count} / ${status.total} 个文件 · ${mib(status.bytes)} / ${mib(status.totalBytes)}`;
       $('.resource-progress').value = status.totalBytes ? status.bytes / status.totalBytes : 1;
       continueButton.textContent = completed ? '资源已就绪，进入游戏' : firstTime ? '暂时跳过，按需加载' : '返回游戏';
+      if (!operation) $('[data-action="export"]').disabled = !completed || !context.store;
     }
     function busy(value) {
-      for (const button of buttons) button.disabled = value || !context.store;
+      for (const button of buttons) button.disabled = value || !context.store || (button.dataset.action === 'export' && !completed);
       $('[data-action="cancel"]').hidden = !value;
       $('[data-action="cancel"]').disabled = false;
     }
@@ -111,7 +113,7 @@ function showManager(context, firstTime = false) {
       if (context.store) progress(await context.store.status());
       else { $('.resource-stat').textContent = '按需加载可用'; message.textContent = context.unavailable; busy(false); }
     }
-    async function run(action) {
+    async function run(action, doneText) {
       if (operation || !context.store) return;
       controller = new AbortController();
       busy(true); message.textContent = '正在准备，请稍候…';
@@ -122,7 +124,7 @@ function showManager(context, firstTime = false) {
           const status = await action({ signal: controller.signal, onProgress: progress });
           preference('install');
           if (status) progress(status);
-          message.textContent = status?.complete ? '全部资源已保存，可进入游戏。' : '操作已完成。';
+          message.textContent = doneText ?? (status?.complete ? '全部资源已保存，可进入游戏。' : '操作已完成。');
         } catch (error) { message.textContent = readableError(error); }
         finally {
           await refresh().catch(error => { message.textContent = readableError(error); });
@@ -145,6 +147,23 @@ function showManager(context, firstTime = false) {
     }
     $('[data-action="download"]').onclick = () => run(options => context.store.download(options));
     $('[data-action="import"]').onclick = () => $('input').click();
+    // the save dialog streams the ZIP to disk (Chrome / Edge); elsewhere it is built in memory and downloaded
+    $('[data-action="export"]').onclick = async () => {
+      if (operation || !completed) return;
+      const name = `stronghold-resources-${context.manifest.version.slice(0, 12)}.zip`;
+      let writable = null;
+      if (typeof window.showSaveFilePicker === 'function') {
+        try {
+          const handle = await window.showSaveFilePicker({ suggestedName: name, types: [{ description: 'ZIP', accept: { 'application/zip': ['.zip'] } }] });
+          writable = await handle.createWritable();
+        } catch (error) { if (error?.name === 'AbortError') return; }
+      }
+      await run(async options => {
+        const blob = await exportResourceZip(context.store, { ...options, writable });
+        if (!writable) saveBlob(blob, name);
+        return context.store.status();
+      }, `已导出 ${name}（${mib(context.manifest.totalBytes)}），发给朋友后在这里「导入本地 ZIP」即可。`);
+    };
     $('input').onchange = () => {
       const file = $('input').files[0];
       if (file) void run(options => importResourceZip(file, context.store, options));
@@ -159,6 +178,14 @@ function showManager(context, firstTime = false) {
     refresh().catch(error => { message.textContent = readableError(error); }).finally(() => busy(false));
   });
   return openDialog;
+}
+
+function saveBlob(blob, name) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url; link.download = name; link.hidden = true;
+  document.body.append(link); link.click(); link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
 
 /** Call before the game boots. No manifest (ordinary Node mode) means immediate continuation. */

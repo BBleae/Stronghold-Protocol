@@ -1,6 +1,7 @@
 // Cached upstream JSON indexes needed by the asset pipeline:
 //   .cache/gamedata/excel/audio_data.json  (Kengxxiao/ArknightsGameData, zh_CN)
 //   .cache/ark-models/models_data.json      (isHarryh/Ark-Models enemy Spine index)
+//   .cache/gamedata/excel/charword_table.json (operator voice lines; only when voice is wanted)
 // Downloaded once when missing (or with --refresh-index), then reused.
 
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
@@ -67,4 +68,19 @@ export async function loadIndexes(root, opts = {}) {
     log: opts.log,
   });
   return { audioData, modelsData };
+}
+
+/**
+ * Load charword_table.json (official operator voice lines, ~11 MB; voice.mjs).
+ * @param {string} root project root
+ * @param {{refresh?:boolean, offline?:boolean, log?:(m:string)=>void}} [opts]
+ */
+export function loadCharWords(root, opts = {}) {
+  return cachedJson({
+    cacheFile: join(root, '.cache', 'gamedata', 'excel', 'charword_table.json'),
+    url: RAW.gamedata + 'excel/charword_table.json',
+    refresh: opts.refresh,
+    offline: opts.offline,
+    log: opts.log,
+  });
 }

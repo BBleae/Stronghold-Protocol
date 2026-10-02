@@ -13,6 +13,7 @@ import {
   boardTargets, dropIntent, normalizeDraft, normalizeSp, groupEnemies, factionTypes, snapHud, bossFrac, attackInterval, fmtNum,
   rangeGridBox, shortcutFor, sanitizeSettings, DEFAULT_SETTINGS, normalizeResult, cycleField, fieldLabel, homeFieldId,
   activeBubbles, sortedPlayers, tileKey, prepCapsuleLabel, prepCamera, dropFailureReason,
+  pieceCharId, boardOperators, voiceLeader,
 } from '../../public/js/ui/gameLogic.js';
 import { pairPlayers } from '../../server/match/finalAssault.js';
 import { PHASE, GEO } from '../../shared/constants.js';
@@ -445,8 +446,10 @@ describe('keyboard & settings', () => {
   });
   test('sanitizeSettings', () => {
     assert.deepEqual(sanitizeSettings(null), { ...DEFAULT_SETTINGS });
-    assert.deepEqual(sanitizeSettings({ bgm: 3, sfx: -1, muted: 'yes', damageNumbers: false, quality: 'ultra' }),
-      { bgm: 1, sfx: 0, muted: false, damageNumbers: false, quality: 'high' });
+    assert.deepEqual(sanitizeSettings({ bgm: 3, sfx: -1, voice: 2, voiceLang: 'fr', muted: 'yes', damageNumbers: false, quality: 'ultra' }),
+      { bgm: 1, sfx: 0, voice: 1, voiceLang: 'cn', muted: false, damageNumbers: false, quality: 'high' });
+    assert.equal(sanitizeSettings({ voiceLang: 'jp' }).voiceLang, 'jp');
+    assert.equal(sanitizeSettings({ voiceLang: 'off' }).voiceLang, 'off');
     assert.equal(sanitizeSettings({ bgm: 0.333 }).bgm, 0.33);
     assert.equal(sanitizeSettings({ quality: 'low' }).quality, 'low');
   });
@@ -513,4 +516,29 @@ describe('equipment dropped on a tile goes to the unit on it', () => {
     // an Art is used on the tile under the pointer itself
     assert.deepEqual(dropIntent(ctx, art.uid, { area: 'board', row: 11, col: 3 }), { t: 'g.art', fields: { itemUid: art.uid, row: 11, col: 3 } });
   });
+});
+
+describe('operator voice', () => {
+  const CHESS = {
+    a: { charId: 'char_a', rarity: 4, tier: 2 }, a_b: { charId: 'char_a', rarity: 4, tier: 2, isGolden: true },
+    b: { charId: 'char_b', rarity: 5, tier: 3 }, c: { charId: 'char_c', rarity: 5, tier: 4 },
+  };
+  const getChess = (id) => CHESS[id] || null;
+  const priv = (board, hand = [], temp = []) => ({ board, hand, temp });
+  const chess = (uid, id, o = {}) => ({ uid, kind: 'chess', id, ...o });
+
+  test('pieceCharId / boardOperators: own chess pieces only', () => {
+    assert.equal(pieceCharId(chess(1, 'a'), getChess), 'char_a');
+    assert.equal(pieceCharId({ uid: 2, kind: 'item', id: 'a' }, getChess), null);
+    assert.equal(pieceCharId(chess(3, 'zzz'), getChess), null);
+    assert.deepEqual(boardOperators(priv([chess(1, 'a', { row: 1, col: 1 }), { uid: 9, kind: 'token', id: 't' }]), getChess).map((o) => o.charId), ['char_a']);
+  });
+
+  test('voiceLeader: rarest, then 精锐, then highest tier, then board order', () => {
+    assert.equal(voiceLeader(priv([]), getChess), null);
+    assert.equal(voiceLeader(priv([chess(1, 'a'), chess(2, 'b'), chess(3, 'c')]), getChess), 'char_c');
+    assert.equal(voiceLeader(priv([chess(1, 'b'), chess(2, 'c', { golden: false }), chess(3, 'b', { golden: true })]), getChess), 'char_b');
+    assert.equal(voiceLeader(priv([chess(1, 'a'), chess(2, 'a_b')]), getChess), 'char_a');
+  });
+
 });

@@ -71,3 +71,11 @@ node --test test/worker-browser.e2e.test.js
 ```
 
 资源浏览器测试使用系统 Chrome，可用 `CHROME_PATH` 指定路径。后端集成测试使用生产打包方式与 Miniflare / workerd。部署后应检查 `/healthz`、清单和素材响应，并实测两个玩家加入同一房间、准备、开局与断线重连。
+
+## 网页构建与资源导出
+
+可以在 Cloudflare 控制台连接本仓库，选择要部署的生产分支；构建命令使用 `npm run assets`，部署命令使用 `npm run deploy:worker`。部署目标沿用本 fork 的配置，请勿使用来源仓库的账号或域名。
+
+`npm run build:worker` 会检查 `data/assets.json` 引用的素材，缺失时自动运行 `tools/fetch-assets.mjs` 下载。下载失败或资源目录为空时构建失败。`SP_SKIP_ASSETS=1` 可跳过自动下载，但不会跳过空素材检查。干员战斗语音包含中文和日文，可在游戏设置中选择；旧素材目录运行 `npm run assets` 补齐。
+
+资源管理窗口下载完成后，可点击「导出 ZIP（发给朋友）」。Chrome / Edge 支持直接保存到磁盘；其他浏览器在内存中生成 ZIP 后下载。接收方在相同版本站点导入即可。导出前会核对缓存文件及 SHA-256，缺失或损坏时需先重新下载。

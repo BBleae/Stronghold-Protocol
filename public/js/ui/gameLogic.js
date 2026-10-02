@@ -742,6 +742,42 @@ export function indexPieces(priv) {
   return map;
 }
 
+// ---- operator voice (js/audio.js AudioManager.voice) ---------------------------------------------------------------
+
+/** charId of an own chess piece (its 精锐 shares it), else null. */
+export function pieceCharId(piece, getChess) {
+  if (!isObj(piece) || piece.kind !== 'chess') return null;
+  const c = typeof getChess === 'function' ? getChess(piece.id) : null;
+  return typeof c?.charId === 'string' ? c.charId : null;
+}
+
+/** The operators deployed on the own board: [{ charId, rarity, tier, golden }] in board order. */
+export function boardOperators(priv, getChess) {
+  const out = [];
+  for (const p of Array.isArray(priv?.board) ? priv.board : []) {
+    const charId = pieceCharId(p, getChess);
+    if (!charId) continue;
+    const c = getChess(p.id);
+    out.push({ charId, rarity: Number(c?.rarity) || 0, tier: Number(c?.tier) || 0, golden: !!(p.golden || c?.isGolden) });
+  }
+  return out;
+}
+
+/**
+ * The operator who speaks for the squad (行动开始, the end-of-operation lines — the squad leader 队长 of a normal
+ * stage, who has no slot in this mode): the rarest deployed operator (then 精锐, then the highest tier; the first on
+ * the board breaks a tie).
+ * @returns {string|null} charId
+ */
+export function voiceLeader(priv, getChess) {
+  let best = null;
+  for (const o of boardOperators(priv, getChess)) {
+    if (!best || o.rarity > best.rarity || (o.rarity === best.rarity && (o.golden && !best.golden
+      || (o.golden === best.golden && o.tier > best.tier)))) best = o;
+  }
+  return best ? best.charId : null;
+}
+
 /**
  * Build the placement context for `canPlace`. The deploy tiles include the player's stage overrides (terrain 机变
  * cards, `stageOverrides`), like the server's per-player deploy map, on the field the pieces are deployed on
@@ -1255,8 +1291,10 @@ export function shortcutBlocked(act, { modal = false, drawer = false } = {}) {
 
 // ---- settings ------------------------------------------------------------------------------------------------------
 
-export const DEFAULT_SETTINGS = Object.freeze({ bgm: 0.6, sfx: 0.8, muted: false, damageNumbers: true, quality: 'high' });
+export const DEFAULT_SETTINGS = Object.freeze({ bgm: 0.6, sfx: 0.8, voice: 0.8, voiceLang: 'cn', muted: false, damageNumbers: true, quality: 'high' });
 const QUALITIES = ['high', 'medium', 'low'];
+/** Operator voice languages (js/audio.js VOICE_LANGS) + 'off'. */
+const VOICE_LANG_KEYS = ['cn', 'jp', 'off'];
 
 /**
  * Sanitize persisted settings.
@@ -1269,6 +1307,8 @@ export function sanitizeSettings(raw) {
   return {
     bgm: vol(r.bgm, DEFAULT_SETTINGS.bgm),
     sfx: vol(r.sfx, DEFAULT_SETTINGS.sfx),
+    voice: vol(r.voice, DEFAULT_SETTINGS.voice),
+    voiceLang: VOICE_LANG_KEYS.includes(r.voiceLang) ? r.voiceLang : DEFAULT_SETTINGS.voiceLang,
     muted: typeof r.muted === 'boolean' ? r.muted : DEFAULT_SETTINGS.muted,
     damageNumbers: typeof r.damageNumbers === 'boolean' ? r.damageNumbers : DEFAULT_SETTINGS.damageNumbers,
     quality: QUALITIES.includes(r.quality) ? r.quality : DEFAULT_SETTINGS.quality,

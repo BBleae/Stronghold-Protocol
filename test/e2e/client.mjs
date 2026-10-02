@@ -111,6 +111,9 @@ export class Client {
     });
     page.on('response', (r) => { if (r.status() >= 400) this.problems.push(`http ${r.status()}: ${r.url()}`); });
     page.on('dialog', (d) => d.dismiss().catch(() => {}));
+    // operator voice lines the page fetched (js/audio.js voice: fetched on first play, then cached in memory)
+    this.voiceUrls = [];
+    page.on('request', (r) => { if (r.url().includes('/assets/voice/')) this.voiceUrls.push(new URL(r.url()).pathname); });
     await page.goto(`${this.base}/${query}`, { waitUntil: 'domcontentloaded' });
     await page.waitForFunction(() => !!globalThis.__SP__ && !!document.querySelector('.screen'), { timeout: 30000 });
   }
@@ -139,6 +142,13 @@ export class Client {
         draft: pub?.draft ? { turn: pub.draft.turn, picks: Object.keys(pub.draft.picks || {}).length } : null,
       };
     });
+  }
+
+  /** Poll a local (Node-side) condition. */
+  async waitUntil(pred, what, timeout = 10000) {
+    const t0 = Date.now();
+    while (Date.now() - t0 < timeout) { if (pred()) return; await sleep(100); }
+    throw new Error(`${this.label}: timed out waiting for ${what}`);
   }
 
   async waitFor(pred, what, timeout = 60000) {

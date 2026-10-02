@@ -199,3 +199,25 @@ test('service worker only serves same-origin manifest resources and supports cac
     assert.equal(await service.handleResourceRequest(new Request(url), opts), null);
   }
 });
+
+test('a complete local installation exports the pack the import accepts (Blob or a save-dialog stream)', async () => {
+  const font = { ...entry('/fonts/x.woff2', 'font'), type: 'font/woff2' };
+  const m = manifest([entry('/assets/voice/cn/a%20b.mp3', 'abc'), font]);
+  const zipjs = await import('@zip.js/zip.js');
+  const source = new storeModule.ResourceStore(m, { caches: new MemoryCaches() });
+  await source.put(m.files[0], bytes('abc'));
+  await assert.rejects(zipModule.exportResourceZip(source, { zipjs }), /全部保存/, 'only a complete installation');
+  await source.put(font, bytes('font'));
+  const blob = await zipModule.exportResourceZip(source, { zipjs });
+  assert.deepEqual(Object.keys(unzipSync(new Uint8Array(await blob.arrayBuffer()))), ['assets/voice/cn/a b.mp3', 'fonts/x.woff2'], 'the CLI pack layout');
+  const fromBlob = new storeModule.ResourceStore(m, { caches: new MemoryCaches() });
+  await zipModule.importResourceZip(blob, fromBlob, { zipjs });
+  assert.equal((await fromBlob.status()).complete, true);
+  const chunks = [];
+  let closed = false;
+  await zipModule.exportResourceZip(source, { zipjs, writable: new WritableStream({ write(c) { chunks.push(c); }, close() { closed = true; } }) });
+  assert.ok(closed, 'the file stream is closed (committed)');
+  const fromStream = new storeModule.ResourceStore(m, { caches: new MemoryCaches() });
+  await zipModule.importResourceZip(new Blob(chunks), fromStream, { zipjs });
+  assert.equal((await fromStream.status()).complete, true);
+});

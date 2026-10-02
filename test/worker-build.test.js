@@ -32,3 +32,16 @@ test('Workers static build preserves public routes without publishing private so
     await assert.rejects(access(path.join(out, name)), { code: 'ENOENT' });
   }
 });
+
+test('missingAssets lists the files data/assets.json references that are not on disk', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'sp-missing-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const { missingAssets } = await import('../tools/build-worker.mjs');
+  assert.deepEqual(await missingAssets({ root }), ['data/assets.json']);
+  await mkdir(path.join(root, 'data'), { recursive: true });
+  await mkdir(path.join(root, 'public/assets/voice/cn'), { recursive: true });
+  await writeFile(path.join(root, 'public/assets/voice/cn/a.mp3'), 'x');
+  await writeFile(path.join(root, 'data/assets.json'), JSON.stringify({ hash: 'x', chars: { a: { avatar: '/assets/char/a.png' } },
+    audio: { voice: { cn: { a: { select: ['/assets/voice/cn/a.mp3'] } } } }, fonts: { css: '/fonts/fonts.css' } }));
+  assert.deepEqual(await missingAssets({ root }), ['/assets/char/a.png']);
+});

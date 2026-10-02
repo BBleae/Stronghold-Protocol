@@ -19,7 +19,8 @@ npm run assets       # = node tools/vendor.mjs && node tools/fetch-assets.mjs
 | `--force` | Re-download everything. |
 | `--offline` | No network. Re-runs post-processing (atlas fixes, skeleton parsing, WOFF2) on what is already on disk, then rebuilds `data/assets.json`. |
 | `--dry-run` | Print the plan (file and model counts, alias notes) and exit. |
-| `--refresh-index` | Re-download the two upstream indexes: `audio_data.json` and `models_data.json`. |
+| `--refresh-index` | Re-download the upstream indexes: `audio_data.json`, `models_data.json` and (with voice) `charword_table.json`. |
+| `--voice=LANGS` | Operator battle voice: `cn,jp` (default: 中文 and 日文, ~73 MB), `cn` (~32 MB), `jp` (~41 MB) or `none`. See [Operator voice](#operator-voice). |
 | `--prune` | Delete files under `public/assets/` that the manifest no longer references, for example after a mapping change. Without this flag they are only listed in the report. |
 
 The script is **idempotent**. A file on disk is kept, not re-downloaded, when any one of these holds:
@@ -37,7 +38,8 @@ How downloads are fetched:
 - A manifest entry with fallbacks (for example an enemy icon that falls back to its base enemy's icon) only moves on to the next alternative after a **definitive 404**. When the primary fails transiently (network error, 5xx or an invalid payload after all retries), no fallback is fetched. The path is listed under `downloadErrors` in the report, and the next run retries the primary.
 - A skeleton that fails to parse is deleted and removed from the ledger, so the next online run downloads it again.
 
-The first run downloads about **242 MiB in about 3,700 files**. It took 134 s on a ~3 MB/s link. A re-run takes about 1 s.
+The first run downloads about **306 MiB in about 6,800 files** (of which the operator voice, both languages: ~73 MB in
+2,880 files). Without voice it was 242 MiB in about 3,700 files, 134 s on a ~3 MB/s link. A re-run takes about 1 s.
 
 Outputs:
 - `data/assets.json`: the manifest (committed).
@@ -73,6 +75,7 @@ The research JSONs in `docs/research/` (03, 05, 07) define **which** ids are nee
 | Enemy Spine (PC build, premultiplied alpha) | isHarryh/Ark-Models `models_enemies/{key}/`, file names from `models_data.json` | `spine/enemy/{enemyId}/{stem}.*` |
 | BGM | AA2 `voice` branch `audio/sound_beta_2/music/**` | `audio/bgm/{file}.mp3` |
 | SFX (UI, battle, per unit) | AA2 `voice` `audio/sound_beta_2/**`, mapped from `audio_data.json` banks | `audio/sfx/{same sub-path}.mp3` |
+| Operator battle voice (中文, 日文; see below) | AA2 `voice` `audio/sound_beta_2/voice_cn/**` and `voice/**`, lines from `charword_table.json` | `voice/{cn,jp}/{wordKey}/cn_{NNN}.mp3` |
 | Fonts: Bender Regular and Light, Novecento Wide | TimWangZi/The-font-of-Arknights | `public/fonts/*.{otf,ttf,woff2}`, `public/fonts/fonts.css` |
 
 The `stem` of a Spine model is the upstream file name. Two examples: `char_107_liskam` has the stem `char_107_liskarm`, and `enemy_9032_aclionk` uses `enemy_1559_vtlionk`. The skel and atlas of a model always share one stem. pixi-spine locates the atlas by swapping the extension, so this matters.
@@ -96,6 +99,30 @@ The `stem` of a Spine model is the upstream file name. Two examples: `char_107_l
   - every group from `07-assets.json → autochessUi`: rarity, elite and chess-level sprites, the shop panel and cards, HUD, bond board, equip slot, round dialog, band choose, settlement, prepare backdrop;
   - `arts` (rarity stars, elite icons, the camp logos of pool nations, the loading illustrations used by the act2 modes, battle common sprites, act2 entry backdrops and season logo, item rarity frames);
   - extras: mode choice art, battle-ready backdrops, battle UI (speed, pause, HP slider, attack range, boss avatar frame, skill ready), `empty_skill`, the 机变 panel and cards, the equip-replace dialog, the bond detail dialog, the prep-ready panel, stage-info titles.
+
+## Operator voice
+
+`tools/assets/voice.mjs` takes each pool operator's **in-battle lines** from the official `excel/charword_table.json`
+(Kengxxiao/ArknightsGameData, cached under `.cache/gamedata/excel/`), picked by the official `placeType` — the moment the
+game plays a line — and downloads them from the ArknightsAssets2 `voice` branch:
+
+| Role | Line (placeType) | Played by the client (`public/js/audio.js`) |
+|---|---|---|
+| `select` | 选中干员1 / 2 (`BATTLE_SELECT`) | picking up or tapping an own operator: a bench card, a board piece, a deployed unit in battle |
+| `deploy` | 部署1 / 2 (`BATTLE_PLACE`) | an operator placed from the bench, once its direction is confirmed |
+| `combat` | 作战中1–4 (`BATTLE_SKILL_1..4`) | an operator's skill starts (never over a line that is playing) |
+| `start` | 行动开始 (`BATTLE_FACE_ENEMY`) | the squad leader when the own battle starts |
+| `win3` / `win` / `fail` | 3星结束行动 / 非3星结束行动 / 行动失败 (`THREE_STAR` / `TWO_STAR` / `LOSE`) | the squad leader when the own battle ends: no LP lost / LP lost / LP 0 (or the match was lost) |
+
+- The squad leader (队长) of a normal stage has no slot in this mode: it is the rarest operator on the board (then 精锐,
+  then the highest tier).
+- One line plays at a time, on its own channel (设置 → 角色语音, 语音语言 中文 / 日文 / 关闭). A player's action cuts the
+  line that is playing; summons, enemies and the reserve operators (预备干员, no voice in the game) say nothing.
+- Lines outside a battle (编入队伍, 任命队长, 行动出发, 精英化晋升, home and base lines) and 完成高难行动 (`FOUR_STAR`, 突袭
+  clears) are not downloaded.
+- Languages: `cn` = `CN_MANDARIN` (folder `voice_cn/`), `jp` = `JP` (`voice/`); a linkage operator with only its own
+  `LINKAGE` voice uses it in both. 120 of the 138 pool operators have voice: 12 lines each, ~0.26 MB (中文) and
+  ~0.34 MB (日文).
 
 ## Post-processing
 
@@ -147,7 +174,9 @@ All paths are URL paths relative to the site root, for example `/assets/char/ava
                 goodEvaluation, load, start, matchSucceed, matchFail, matchCancel, joinRoom },
       battle: { deploy, tokenDeploy, charDie, enemyDie, enemyDieHeavy, enemyHit, heal, win, lose, killCoin },
       units:  { [charId|tokenId|enemyId]: { attack?, hit?, skill?, skills?: {[skillIndex]: url}, die?, born? } }
-    }
+    },
+    // operator battle voice (tools/assets/voice.mjs; absent with --voice=none); arrays are played at random
+    voice?: { [cn|jp]: { [charId]: { select: [url], deploy: [url], combat: [url], start, win3, win, fail } } }
   },
   // units' attack / hit (tools/assets/audio.mjs pickUnitSfx): operators get normal-mode banks only — the plain
   // `attack` / `combat` ability first, never a bank holding a skill-mode file (`_d` / `_h` / `_s`; the normal attack's end
