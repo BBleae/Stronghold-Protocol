@@ -108,10 +108,10 @@ game plays a line — and downloads them from the ArknightsAssets2 `voice` branc
 
 | Role | Line (placeType) | Played by the client (`public/js/audio.js`) — voice type |
 |---|---|---|
-| `select` | 选中干员1 / 2 (`BATTLE_SELECT`) | tapping an own operator in battle (not in prep: no battle runs) — `FOCUS_CHAR` |
-| `deploy` | 部署1 / 2 (`BATTLE_PLACE`) | an operator placed from the bench, once its direction is confirmed — `PLACE_CHAR` |
-| `combat` | 作战中1–4 (`BATTLE_SKILL_1..4`) | an operator's skill starts — `SKILL_PASSIVE_IMP` (SP cost ≥ 10) / `SKILL_PASSIVE_NOR` |
-| `start` | 行动开始 (`BATTLE_FACE_ENEMY`) | once per match: the squad leader, when the first enemy of the first battle appears — `ENCOUNTER_ENEMY` |
+| `select` | 选中干员1 / 2 (`BATTLE_SELECT`) | tapping an own operator in battle — `FOCUS_CHAR` |
+| `deploy` | 部署1 / 2 (`BATTLE_PLACE`) | an operator successfully deployed from the bench in prep, once its direction is confirmed (buying or dragging one says nothing) — `PLACE_CHAR` |
+| `combat` | 作战中1–4 (`BATTLE_SKILL_1..4`) | an own operator's skill starts, after the battle's 行动开始 — `SKILL_PASSIVE_IMP` (SP cost ≥ 10) / `SKILL_PASSIVE_NOR` |
+| `start` | 行动开始 (`BATTLE_FACE_ENEMY`) | every battle: the squad leader, when its first enemy appears — `ENCOUNTER_ENEMY` |
 | `win3` / `win` / `fail` | 3星结束行动 / 非3星结束行动 / 行动失败 (`THREE_STAR` / `TWO_STAR` / `LOSE`) | once per match, on the result screen: the squad leader — won without LP lost / won / lost |
 
 - **When a line may play** follows the official battle voice rules, `audio_data.json` `battleVoice` (copied to
@@ -132,8 +132,14 @@ game plays a line — and downloads them from the ArknightsAssets2 `voice` branc
   | `FOCUS_CHAR` | 10 | yes | 0 |
   | `NORMAL_ATTACK` (not used) | 5 | no | 36000 s |
 
+- **The moments follow a recording of the official mode** (卫戍协议 gameplay): buying or dragging a bench operator says
+  nothing; a successful deployment says 部署; every battle opens with the leader's 行动开始; 作战中 now and then, with
+  clear gaps; the end line only once, when the match is settled.
 - Every skill of this mode is cast automatically (技能策略), so 作战中 uses the passive types, important or normal by
-  the equipped skill's SP cost. A match is one operation: 行动开始 and the end line are said once each.
+  the equipped skill's SP cost. Operators may cast from 3 s into a battle, the moment 行动开始 is due: no 作战中 is
+  said before the battle's 行动开始 (at most 15 s), so the two never collide.
+- Only own operators speak: a teammate's operator on a shared field (最终攻势) or a watched one (前往查看) says nothing
+  on this client.
 - The squad leader (队长) of a normal stage has no slot in this mode: it is the rarest operator on the board (then 精锐,
   then the highest tier) when a battle starts.
 - Voice has its own channel (设置 → 角色语音, 语音语言 中文 / 日文 / 关闭). Summons, enemies and the reserve operators

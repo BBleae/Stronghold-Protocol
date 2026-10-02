@@ -30,12 +30,14 @@
 //   time, by the official battle voice rules (audio_data.json `battleVoice` → data/assets.json audio.voiceRules,
 //   BATTLE_VOICE when absent): every line has a voice type with a priority, a cooldown and whether a line of the same
 //   priority replaces the one playing (`overlap`); a lower priority never cuts in; lines cross-fade (0.1 s).
-//   选中干员 (FOCUS_CHAR) — tapping an own operator in battle (not in prep); 部署 (PLACE_CHAR) — an operator placed
-//   from the bench; 作战中 — an operator's skill starts: every skill of this mode is cast automatically (技能策略), so it
-//   is SKILL_PASSIVE_IMP (SP cost ≥ 10) / SKILL_PASSIVE_NOR, each at most once per 10 s and never over a line of its
-//   own priority. A match is one operation: the squad leader says 行动开始 (ENCOUNTER_ENEMY) once, when the first
-//   enemy of the first battle appears (not before minTimeDeltaForEnemyEncounter after its start), and the end line
-//   once, on the result screen (3星结束行动 without LP lost in the match / 非3星结束行动 / 行动失败; matchEnd).
+//   The moments follow the official mode (a recording of 卫戍协议): buying or dragging a bench operator says nothing;
+//   部署 (PLACE_CHAR) — an operator successfully deployed from the bench (prep); 行动开始 (ENCOUNTER_ENEMY) — every
+//   battle, the squad leader, at its first enemy and not before minTimeDeltaForEnemyEncounter after its start, and no
+//   作战中 before it in that battle (operators may cast from 3 s on: the two never collide); 作战中 — an own operator's
+//   skill starts: every skill of this mode is cast automatically (技能策略), so it is SKILL_PASSIVE_IMP (SP cost ≥ 10) /
+//   SKILL_PASSIVE_NOR, at most once per 10 s each; 选中干员 (FOCUS_CHAR) — tapping an own operator in battle; the end
+//   line once, on the result screen (3星结束行动 without LP lost in the match / 非3星结束行动 / 行动失败; matchEnd).
+//   Teammates' operators (a shared or watched field) never speak on this client.
 //
 // `bgmKeyFor(route, pub)` picks the track for the current screen/phase (main.js calls `audio.install()`,
 // which follows the store).
@@ -75,6 +77,8 @@ export const BATTLE_VOICE = Object.freeze({
   ]),
 });
 const RESULT_VOICE = Object.freeze({ priority: 100, overlap: true, cooldown: 0 });
+/** 作战中 waits for the battle's 行动开始 at most this long (a battle whose first enemy never shows up). */
+const HOLD_SKILLS_MS = 15000;
 /** The voice type of each role (作战中 is picked by SP cost: skillVoiceType). */
 const ROLE_VOICE_TYPE = Object.freeze({ select: 'FOCUS_CHAR', deploy: 'PLACE_CHAR', start: 'ENCOUNTER_ENEMY', win3: 'RESULT', win: 'RESULT', fail: 'RESULT' });
 /** Voice languages the settings offer, in order (tools/assets/voice.mjs VOICE_LANGS). */
@@ -320,6 +324,8 @@ export class AudioManager {
     this.getManifest = typeof opts.getManifest === 'function' ? opts.getManifest : () => null;
     // (chessId, skillIndex) → the equipped skill's record ({ spCost }), for 作战中's voice type (installAudio)
     this.getSkill = typeof opts.getSkill === 'function' ? opts.getSkill : () => null;
+    // the own player id: only own operators speak in battle (installAudio)
+    this.getPlayerId = typeof opts.getPlayerId === 'function' ? opts.getPlayerId : () => null;
     this.win = opts.win ?? (typeof window !== 'undefined' ? window : null);
     this.ctx = null;
     this.master = null;
@@ -332,7 +338,9 @@ export class AudioManager {
     this.voiceToken = 0;      // newest requested line (a slower buffer load never plays over a newer line)
     this.voiceLast = new Map(); // voice type → when its last line started (cooldowns)
     this.squadLeader = null;  // charId of the latest battle's squad leader (行动开始, the end line)
-    this.encounter = null;    // { at } the first battle of a match started: 行动开始 is due at its first enemy
+    this.encounter = null;    // { at } a battle started: 行动开始 is due at its first enemy
+    this.holdSkillsUntil = 0; // no 作战中 before the battle's 行动开始 (performance.now ms; a safety bound)
+    this.voiceLog = [];       // the lines started: { role, charId, type } (latest 200; the browser E2E reads it)
     this.buffers = new Map(); // url → Promise<AudioBuffer|null> (insertion order = LRU)
     this.warned = new Set();
     this.limiter = new SfxLimiter();
@@ -688,6 +696,8 @@ export class AudioManager {
       const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
       if (!voiceMayStart(opt, this.voiceWant ?? this.voiceNow, this.voiceLast.get(type), now)) return false;
       this.voiceLast.set(type, now);
+      this.voiceLog.push({ role, charId, type });
+      if (this.voiceLog.length > 200) this.voiceLog.shift();
       const token = ++this.voiceToken;
       this.voiceWant = { token, priority: opt.priority };
       const loaded = () => { if (this.voiceWant?.token === token) this.voiceWant = null; };
@@ -743,23 +753,28 @@ export class AudioManager {
   }
 
   /**
-   * A battle of the own field starts: its squad leader (gameLogic voiceLeader) is remembered; the first battle of a
-   * match makes 行动开始 due at its first enemy (handleBattleEvents).
-   * @param {string|null} leader @param {{ first?: boolean }} [o]
+   * A battle of the own field starts: its squad leader (gameLogic voiceLeader) says 行动开始 at its first enemy
+   * (handleBattleEvents → _encounter); 作战中 waits for it (at most HOLD_SKILLS_MS).
+   * @param {string|null} leader
    */
-  battleStart(leader, o = {}) {
-    if (typeof leader === 'string') this.squadLeader = leader;
-    if (o.first) this.encounter = { at: typeof performance !== 'undefined' ? performance.now() : Date.now() };
+  battleStart(leader) {
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    this.squadLeader = typeof leader === 'string' ? leader : null;
+    this.encounter = this.squadLeader ? { at: now } : null;
+    this.holdSkillsUntil = this.squadLeader ? now + HOLD_SKILLS_MS : 0;
   }
 
-  /** The first enemy of the first battle appeared: the leader's 行动开始, not before minTimeDeltaForEnemyEncounter. */
+  /** The battle's first enemy appeared: the leader's 行动开始, not before minTimeDeltaForEnemyEncounter. */
   _encounter() {
     const e = this.encounter;
     if (!e) return;
     this.encounter = null;
     const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
     const wait = Math.max(0, e.at + voiceRulesOf(this.getManifest()).encounterDelay * 1000 - now);
-    const say = () => { if (this.squadLeader) this.voice(this.squadLeader, 'start'); };
+    const say = () => {
+      this.holdSkillsUntil = 0;
+      if (this.squadLeader) this.voice(this.squadLeader, 'start');
+    };
     if (wait > 0) setTimeout(say, wait); else say();
   }
 
@@ -769,6 +784,7 @@ export class AudioManager {
    */
   matchEnd(r) {
     this.encounter = null;
+    this.holdSkillsUntil = 0;
     if (this.squadLeader) this.voice(this.squadLeader, endVoiceRole(r));
   }
 
@@ -787,7 +803,14 @@ export class AudioManager {
     // UnitInfo.spine is the model id (charId / tokenId / enemyId) — the key of sfx.units; kind/defId pick the
     // official class sounds (operator vs summon vs device)
     this.units.set(u.id, { def: u.spine || u.defId, defId: u.defId ?? null, kind: u.kind ?? null, side: u.side, boss: !!u.boss,
+      ownerId: u.ownerId ?? null,
       skillIndex: Number.isInteger(u.skillIndex) ? u.skillIndex : null });
+  }
+
+  /** An own unit (its owner is this player; units without an owner count as own: single-player tools, tests). */
+  _own(u) {
+    const me = this.getPlayerId();
+    return !me || u.ownerId == null || u.ownerId === me;
   }
 
   /** Play a resolved battle sound for a unit event, limited like unit sounds. */
@@ -830,8 +853,9 @@ export class AudioManager {
         } else if (kind === 'skill' && e[2]) {
           const u = this.units.get(e[1]);
           if (u) this.unit(u.def, 'skill', e[1], u.skillIndex ?? undefined);
-          // 作战中: an operator (not a summon or enemy) starting a skill; important or normal by its SP cost
-          if (u && u.side !== 'enemy' && unitSoundClass(u) === 'char') {
+          // 作战中: an own operator (not a summon, an enemy or a teammate's) starting a skill — not before the battle's
+          // 行动开始; important or normal by its SP cost
+          if (u && u.side !== 'enemy' && unitSoundClass(u) === 'char' && this._own(u) && now >= this.holdSkillsUntil) {
             const sp = this.getSkill(u.defId, u.skillIndex)?.spCost;
             this.voice(u.def, 'combat', skillVoiceType(sp, voiceRulesOf(this.getManifest())));
           }
@@ -883,6 +907,7 @@ export function installAudio(deps) {
   try {
     manifestGetter = typeof deps?.getManifest === 'function' ? deps.getManifest : manifestGetter;
     if (typeof deps?.getSkill === 'function') audio.getSkill = deps.getSkill;
+    if (typeof deps?.getState === 'function') audio.getPlayerId = () => deps.getState()?.me?.playerId ?? null;
     audio.install();
     if (deps?.settings) audio.setVolumes(deps.settings);
     if (typeof deps?.subscribe === 'function' && typeof deps?.getState === 'function') {

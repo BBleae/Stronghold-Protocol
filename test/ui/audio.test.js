@@ -312,7 +312,7 @@ describe('operator voice', () => {
     assert.equal(endVoiceRole({ victory: false, lpLost: 0 }), 'fail');
   });
 
-  async function voiceRig(m = vm, getSkill = () => null) {
+  async function voiceRig(m = vm, getSkill = () => null, playerId = null) {
     const fw = fakeWindow();
     const urls = [];
     const origFetch = globalThis.fetch;
@@ -320,7 +320,7 @@ describe('operator voice', () => {
     let now = 1000;
     globalThis.performance = { now: () => now };
     globalThis.fetch = async (u) => { urls.push(u); return { ok: true, arrayBuffer: async () => new ArrayBuffer(8) }; };
-    const a = new AudioManager({ win: fw.win, getManifest: () => m, getSkill });
+    const a = new AudioManager({ win: fw.win, getManifest: () => m, getSkill, getPlayerId: () => playerId });
     a.install();
     fw.fire('pointerdown');
     const settle = (ms = 5) => new Promise((r) => setTimeout(r, ms));
@@ -348,26 +348,64 @@ describe('operator voice', () => {
     } finally { restore(); }
   });
 
-  test('行动开始 once per match, at the first enemy of the first battle, not before 3 s; the end line on the result', async () => {
+  test('行动开始 every battle, at its first enemy and not before 3 s, before any 作战中; the end line on the result', async () => {
     const { a, urls, settle, advance, restore } = await voiceRig();
     try {
-      a.battleStart(LEADER, { first: true });
-      a.setFieldUnits([]);
+      a.battleStart(LEADER);
+      a.setFieldUnits([{ id: 1, side: 'ally', kind: 'chess', spine: OP, defId: 'c' }]);
       advance(1000);
       a.handleBattleEvents([['spawn', { id: 7, side: 'enemy', kind: 'enemy', spine: 'enemy_x' }]]);
       await settle();
       assert.equal(urls.length, 0, 'waits until 3 s after the start');
       advance(2000);
-      await settle(2050);
-      assert.deepEqual(urls, [line('cn', '020', LEADER)]);
-      a.stopVoice();
-      a.battleStart(OP, { first: false });
-      a.handleBattleEvents([['spawn', { id: 8, side: 'enemy', kind: 'enemy', spine: 'enemy_x' }]]);
+      a.handleBattleEvents([['skill', 1, true]]);
       await settle();
-      assert.equal(urls.length, 1, 'later battles: no 行动开始');
+      assert.equal(urls.length, 0, 'no 作战中 before the battle\'s 行动开始 (operators cast from 3 s on)');
+      await settle(2050);
+      assert.deepEqual(urls, [line('cn', '020', LEADER)], '行动开始');
+      a.stopVoice();
+      // the next battle: its own leader, its own 行动开始
+      a.battleStart(OP);
+      a.handleBattleEvents([['spawn', { id: 8, side: 'enemy', kind: 'enemy', spine: 'enemy_x' }]]);
+      advance(3000);
+      await settle(3050);
+      assert.equal(urls.at(-1), line('cn', '020', OP), 'every battle');
+      assert.deepEqual(a.voiceLog.map((l) => l.role), ['start', 'start']);
+      a.stopVoice();
       a.matchEnd({ victory: true, lpLost: 2 });
       await settle();
       assert.equal(urls.at(-1), line('cn', '031', OP), 'the latest leader: 非3星结束行动');
+    } finally { restore(); }
+  });
+
+  test('a battle without an enemy releases 作战中 after 15 s; nobody on the board ⇒ no 行动开始 and no wait', async () => {
+    const { a, settle, advance, restore } = await voiceRig();
+    try {
+      a.setFieldUnits([{ id: 1, side: 'ally', kind: 'chess', spine: OP, defId: 'c' }]);
+      a.battleStart(LEADER);
+      a.handleBattleEvents([['skill', 1, true]]);
+      assert.equal(a.voiceWant, null, 'held');
+      advance(15001);
+      a.handleBattleEvents([['skill', 1, true]]);
+      assert.ok(a.voiceWant, 'released');
+      a.stopVoice(); await settle();
+      a.battleStart(null);
+      assert.equal(a.encounter, null);
+      assert.equal(a.holdSkillsUntil, 0);
+    } finally { restore(); }
+  });
+
+  test('only own operators speak: a teammate\'s operator on a shared or watched field says nothing', async () => {
+    const { a, urls, settle, restore } = await voiceRig(vm, () => null, 'me');
+    try {
+      a.setFieldUnits([{ id: 1, side: 'ally', kind: 'chess', spine: OP, defId: 'c', ownerId: 'mate' },
+        { id: 2, side: 'ally', kind: 'chess', spine: LEADER, defId: 'c', ownerId: 'me' }]);
+      a.handleBattleEvents([['skill', 1, true]]);
+      await settle();
+      assert.equal(urls.length, 0, 'the teammate\'s operator');
+      a.handleBattleEvents([['skill', 2, true]]);
+      await settle();
+      assert.ok(urls.every((u) => u.includes(`/${LEADER}/`)) && urls.length === 1, 'the own operator');
     } finally { restore(); }
   });
 
