@@ -25,11 +25,13 @@ npm run build:worker
 npm run dev:worker
 ```
 
-`wrangler.jsonc` 当前指向用户选择的「晴猫」账号，Worker 名为 `stronghold-protocol`，通过 Custom Domain 绑定 `stronghold.lunar.ag`；`workers_dev` 与 `preview_urls` 均为 `false`。迁移到其他账号前应修改 `account_id` 和域名路由。开发访问 Wrangler 输出的 localhost 地址。Windows 上先停止 `dev:worker` 再部署，避免它的目录监视器占用构建输出。部署：
+`wrangler.jsonc` 当前指向用户选择的「晴猫」账号，Worker 名为 `stronghold-protocol`；`workers_dev` 与 `preview_urls` 均为 `false`。域名由 Cloudflare 控制台管理，配置文件不写 `route` / `routes`，后续部署会保留控制台已有的域名绑定（[官方说明](https://developers.cloudflare.com/workers/wrangler/configuration/#source-of-truth)）。迁移到其他账号前应修改 `account_id`。开发访问 Wrangler 输出的 localhost 地址。Windows 上先停止 `dev:worker` 再部署，避免它的目录监视器占用构建输出。部署：
 
 ```powershell
 npm run deploy:worker
 ```
+
+首次部署到新 Worker 后，在 **Workers & Pages → stronghold-protocol → Settings → Domains & Routes → Add → Custom domain** 中绑定自己的域名。已有 Worker 可在同一位置更换或增加域名，无需修改仓库。由于 `workers.dev` 和版本预览入口已关闭，新 Worker 绑定域名前没有公开访问入口。不要用 `"routes": []` 代替省略字段，否则部署会移除已有路由。
 
 这些命令使用 `npm ci` 按 `package-lock.json` 安装的项目内 Wrangler，使本地开发、配置校验与部署使用相同版本。更新 Wrangler 时，应更新锁文件并完成构建与测试后再部署。
 
