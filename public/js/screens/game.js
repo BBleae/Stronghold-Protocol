@@ -791,9 +791,6 @@ function MatchScreen() {
         const wasSel = pressSel.current === e.uid;
         pressSel.current = null;
         setSel(wasSel ? null : { uid: e.uid });
-        // 选中干员 (FOCUS_CHAR): tapping an operator deployed on the board (not a bench card)
-        const tapped = L.placeCtx?.pieces.get(e.uid);
-        if (!wasSel && tapped?.area === 'board') { const ch = pieceCharId(tapped.piece, getChess); if (ch) audio.voice(ch, 'select'); }
         if (wasSel) setDetail((d) => (d?.kind === 'piece' && d.uid === e.uid ? null : d));
       }),
     ];

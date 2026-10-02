@@ -30,7 +30,7 @@
 //   time, by the official battle voice rules (audio_data.json `battleVoice` → data/assets.json audio.voiceRules,
 //   BATTLE_VOICE when absent): every line has a voice type with a priority, a cooldown and whether a line of the same
 //   priority replaces the one playing (`overlap`); a lower priority never cuts in; lines cross-fade (0.1 s).
-//   选中干员 (FOCUS_CHAR) — tapping an own deployed operator (prep board, battle); 部署 (PLACE_CHAR) — an operator placed
+//   选中干员 (FOCUS_CHAR) — tapping an own operator in battle (not in prep); 部署 (PLACE_CHAR) — an operator placed
 //   from the bench; 作战中 — an operator's skill starts: every skill of this mode is cast automatically (技能策略), so it
 //   is SKILL_PASSIVE_IMP (SP cost ≥ 10) / SKILL_PASSIVE_NOR, each at most once per 10 s and never over a line of its
 //   own priority. A match is one operation: the squad leader says 行动开始 (ENCOUNTER_ENEMY) once, when the first

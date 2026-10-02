@@ -10,6 +10,10 @@ import { audio, voiceLangsIn } from '../audio.js';
 import { data } from '../data.js';
 import { openGuide } from './guide.js';
 import { detectFeatures } from './device.js';
+import { APP_VERSION } from '../../../shared/constants.js';
+
+/** The deployed commit on the Cloudflare build (index.html data-sp-build, tools/build-worker.mjs), else none. */
+const BUILD = typeof document !== 'undefined' ? document.documentElement.dataset.spBuild || '' : '';
 
 /** Settings store: { bgm, sfx, voice, voiceLang, muted, damageNumbers, quality }. */
 export const settingsStore = createStore(sanitizeSettings(loadPref('settings', null)));
@@ -87,6 +91,7 @@ export function SettingsModal({ open, onClose }) {
       ${touchUi
         ? html`<p class="set-hint">触屏操作：点击单位选中（撤退 / 出售）· 长按单位或卡牌查看详情 · 拖动部署后滑动选择朝向</p>`
         : html`<p class="set-hint">快捷键：<kbd>R</kbd> 刷新 · <kbd>F</kbd> 冻结 · <kbd>D</kbd> 升级 · <kbd>Space</kbd> 准备就绪 · <kbd>Esc</kbd> 关闭弹窗 · 右键查看详情</p>`}
+      ${BUILD ? html`<p class="set-hint">版本 ${APP_VERSION} · 构建 ${BUILD}</p>` : null}
     </div>
   <//>`;
 }
