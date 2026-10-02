@@ -185,6 +185,7 @@ const CLOSE_REASON = {
   // 'timeout' = this player was removed after staying disconnected past the lobby grace (server/lobby.js)
   host_left: '创建者已离开，同盟已解散', timeout: '由于长时间断开连接，你已离开同盟', empty: '同盟已解散',
   kicked: '你已被移出同盟', ended: '模拟已结束', expired: '同盟已过期', shutdown: '服务器维护中，同盟已关闭',
+  restart: '服务器已更新或重启，本局已结束，请重新创建房间',
 };
 
 function wireNet() {
@@ -306,6 +307,11 @@ async function boot() {
   installGlobalErrorHandlers();
   // touch / hover / fullscreen classes, zoom-gesture blocking, rotation re-layout (ui/device.js, css/devices.css)
   installDeviceSupport();
+  if (document.documentElement.dataset.spRuntime === 'cloudflare') {
+    const resources = await import('./resources/index.js');
+    await resources.prepareResources();
+    resources.installResourceManager();
+  }
   // A page restored from the back/forward cache has a dead socket and a stale token choice: start over.
   window.addEventListener('pageshow', (ev) => { if (ev.persisted) location.reload(); });
   // Pick this tab's reconnect token (asks other live tabs; ≤150 ms) while fonts load.

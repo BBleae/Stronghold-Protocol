@@ -12,6 +12,8 @@ them (with `node_modules/`, which keeps each package's own licence file).
 
 | Component | Version | Licence | Where it is used | In the repository | In the release bundle |
 |---|---|---|---|---|---|
+| [zip.js](https://github.com/gildas-lormeau/zip.js) | 2.22.0 | BSD-3-Clause | browser resource ZIP importer; notice in `public/vendor/zip-LICENSE.txt` | no (npm) | yes |
+| [fflate](https://github.com/101arrowz/fflate) | 0.8.3 | MIT | local resource ZIP pack builder (`node_modules/fflate/LICENSE`) | no (npm) | yes (`node_modules/`) |
 | [PixiJS](https://github.com/pixijs/pixijs) | 7.4.2 | MIT | browser renderer — `public/vendor/pixi.min.js` | no (npm) | yes |
 | [pixi-spine](https://github.com/pixijs/spine) | 4.0.6 | MIT banner; contains the **Spine Runtimes**, under the **Spine Runtimes License Agreement** (package licence "SEE SPINE-LICENSE") | Spine model playback — `public/vendor/pixi-spine.js` | no (npm) | yes |
 | [Preact](https://github.com/preactjs/preact) | 10.29.8 | MIT | UI — `public/vendor/preact.module.js`, `hooks.module.js` | no (npm) | yes |

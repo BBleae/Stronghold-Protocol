@@ -1,5 +1,7 @@
 # 部署指南
 
+Cloudflare Workers 部署见 [Cloudflare 部署指南](CLOUDFLARE.md)，包括 Static Assets、Durable Objects 与浏览器本地资源包。下文介绍原有 Node.js 部署方式。
+
 目标：在一台家用 Windows 小主机上长期开服，让朋友通过局域网或公网来玩。macOS / Linux / Docker 放在后面。
 所有命令都在项目根目录执行。遇到问题先运行 `node tools/doctor.mjs`（只读诊断）。
 
