@@ -119,7 +119,7 @@ test('cancelled downloads preserve finished files, and clearing does not remove 
   assert.deepEqual(await caches.keys(), ['application-unrelated']);
 });
 
-test('ZIP imports use the trusted manifest, validate hashes, reject unknown/traversal paths and retain resumable valid files', async () => {
+test('ZIP imports use the trusted manifest, validate hashes and read files by range', async () => {
   assert.equal(typeof zipModule.importResourceZip, 'function', 'bounded ZIP import must be implemented');
   const a = entry('/assets/a.mp3', 'abc');
   const b = entry('/assets/b.mp3', 'def');
@@ -130,11 +130,72 @@ test('ZIP imports use the trusted manifest, validate hashes, reject unknown/trav
   class LocalFile extends Blob { async arrayBuffer() { throw new Error('must not read whole archive'); } }
   await zipModule.importResourceZip(new LocalFile([local]), store, { zipjs: await import('@zip.js/zip.js') });
   assert.equal((await store.status()).complete, true);
-  for (const [name, content] of [['../assets/a.mp3', 'abc'], ['assets/unknown.mp3', 'abc'], ['assets/a.mp3', 'BAD'], ['assets/a.mp3', 'too big']]) {
+  for (const [name, content] of [['assets/a.mp3', 'BAD'], ['assets/a.mp3', 'too big']]) {
     const fresh = new storeModule.ResourceStore(manifest([a]), { caches: new MemoryCaches() });
     await assert.rejects(zipModule.importResourceZip(new Blob([zipSync({ [name]: bytes(content) })]), fresh, { zipjs: await import('@zip.js/zip.js') }), /path|filename|unknown|hash|integrity|size|清单|校验|大小/i);
     assert.equal((await fresh.status()).count, 0);
   }
+});
+
+test('ZIP imports skip unrelated files and directories without validating their paths or contents', async () => {
+  const a = entry('/assets/a.mp3', 'abc');
+  const b = entry('/fonts/%E5%AD%97%20font.woff2', 'font');
+  b.type = 'font/woff2';
+  const caches = new MemoryCaches();
+  const store = new storeModule.ResourceStore(manifest([a, b]), { caches });
+  const archive = zipSync({
+    'assets/audio/sfx/player/p_atk/p_atk_archet_s.mp3': bytes('unused'),
+    'assets/': new Uint8Array(),
+    'README.txt': bytes('instructions'),
+    'assets/extra.js': bytes('unused'),
+    '../assets/a.mp3': bytes('BAD'),
+    'assets/../assets/a.mp3': bytes('BAD'),
+    'assets\\a.mp3': bytes('BAD'),
+    'assets/a.mp3': bytes('abc'),
+    'fonts/字 font.woff2': bytes('font'),
+  }, { level: 0 });
+  // Corrupt an unused payload; extracting it would fail CRC validation.
+  archive[30 + bytes('assets/audio/sfx/player/p_atk/p_atk_archet_s.mp3').length] ^= 0xff;
+  const progress = [];
+  const status = await zipModule.importResourceZip(new Blob([archive]), store, {
+    zipjs: await import('@zip.js/zip.js'), onProgress: p => progress.push([p.file, p.count, p.bytes]),
+  });
+  assert.equal(status.complete, true);
+  assert.deepEqual(progress, [['/assets/a.mp3', 1, 3], ['/fonts/%E5%AD%97%20font.woff2', 2, 7]]);
+  const cache = await caches.open(store.cacheName);
+  assert.deepEqual((await cache.keys()).map(r => new URL(r.url).pathname).sort(), [a.url, b.url]);
+  assert.equal(await (await cache.match(a.url)).text(), 'abc');
+  assert.equal(await (await cache.match(b.url)).text(), 'font');
+});
+
+test('ZIP imports accept large unrelated payloads and repeated unrelated entries', async () => {
+  const a = entry('/assets/a.mp3', 'abc');
+  const store = new storeModule.ResourceStore(manifest([a]), { caches: new MemoryCaches() });
+  const parts = [];
+  const archive = new Zip((error, data) => { assert.ifError(error); parts.push(data); });
+  for (const [name, data] of [
+    ['README.txt', new Uint8Array(2 * 1024 * 1024)],
+    ['assets/a.mp3', bytes('abc')],
+    ['README.txt', bytes('duplicate unused file')],
+  ]) {
+    const file = new ZipPassThrough(name);
+    archive.add(file); file.push(data, true);
+  }
+  archive.end();
+  const status = await zipModule.importResourceZip(new Blob(parts), store, { zipjs: await import('@zip.js/zip.js') });
+  assert.equal(status.complete, true);
+  assert.equal(status.count, 1);
+  assert.equal(status.bytes, 3);
+});
+
+test('ZIP imports report no matching resources without changing existing progress', async () => {
+  const a = entry('/assets/a.mp3', 'abc');
+  const store = new storeModule.ResourceStore(manifest([a]), { caches: new MemoryCaches() });
+  await store.put(a, bytes('abc'));
+  await assert.rejects(zipModule.importResourceZip(new Blob([zipSync({ 'README.txt': bytes('unused') })]), store, {
+    zipjs: await import('@zip.js/zip.js'),
+  }), /no matching|没有.*匹配/i);
+  assert.equal((await store.status()).complete, true);
 });
 
 test('audio ranges handle closed, open and suffix ranges and reject unsatisfiable ranges', async () => {

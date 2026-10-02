@@ -83,7 +83,7 @@ function showManager(context, firstTime = false) {
         <button type="button" data-action="clear">清理本地资源</button>
       </div>
       <input type="file" hidden aria-label="选择本地资源 ZIP" />
-      <p class="resource-note">ZIP 只在本机读取，不会上传。仅导入与本站清单匹配的资源。浏览器可能自动清理缓存，之后可重新补齐。</p>
+      <p class="resource-note">ZIP 只在本机读取，不会上传。仅导入与本站清单匹配的资源，其余文件直接跳过，不解压、不校验。浏览器可能自动清理缓存，之后可重新补齐。</p>
       <button type="button" class="resource-continue" data-action="continue"></button>
     </div>`;
     document.body.append(dialog);
