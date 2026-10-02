@@ -1,6 +1,7 @@
 // Build an allowlisted public tree and bundle the existing game engine for Workers.
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import { vendor } from './vendor.mjs';
@@ -84,10 +85,40 @@ export async function copyRuntimeAssets({ root = ROOT, out = path.join(root, 'di
   return { out, count };
 }
 
+/** Files data/assets.json references (`/assets/…`) that are not under public/ (the whole manifest when it is missing). */
+export async function missingAssets({ root = ROOT } = {}) {
+  let manifest;
+  try { manifest = JSON.parse(await fs.readFile(path.join(root, 'data/assets.json'), 'utf8')); }
+  catch { return ['data/assets.json']; }
+  const urls = new Set();
+  (function walk(value) {
+    if (typeof value === 'string') { if (value.startsWith('/assets/')) urls.add(value); }
+    else if (value && typeof value === 'object') for (const v of Object.values(value)) walk(v);
+  })(manifest);
+  const missing = [];
+  for (const url of urls) {
+    try { await fs.access(path.join(root, 'public', ...decodeURIComponent(url.slice(1)).split('/'))); }
+    catch { missing.push(url); }
+  }
+  return missing;
+}
+
 export async function buildWorker({ root = ROOT } = {}) {
   vendor();
+  // The game's art and audio are not in the repository. A deployment without them is a site of placeholders with an
+  // empty resource manager (a dashboard build whose build command is not `npm run assets`): download what is missing
+  // first (tools/fetch-assets.mjs only fetches missing files), and never deploy without assets.
+  const missing = process.env.SP_SKIP_ASSETS === '1' ? [] : await missingAssets({ root });
+  if (missing.length) {
+    console.log(`Workers build: ${missing.length} game asset files missing — running tools/fetch-assets.mjs`);
+    const run = spawnSync(process.execPath, [path.join(root, 'tools/fetch-assets.mjs')], { cwd: root, stdio: 'inherit' });
+    if (run.status !== 0) throw new Error('tools/fetch-assets.mjs failed: the game assets could not be downloaded — retry the deploy');
+  }
   const { buildResourceManifest } = await import('./resource-pack.mjs');
   const manifest = await buildResourceManifest({ root });
+  if (!manifest.files.some((file) => file.url.startsWith('/assets/'))) {
+    throw new Error('No game assets under public/assets: run `npm run assets` before deploying (SP_SKIP_ASSETS=1 skips the download, not this check)');
+  }
   const assets = await copyRuntimeAssets({ root });
   await bundleWorker({ root });
   console.log(`Workers build: ${assets.count} static files; resource version ${manifest.version}, ${(manifest.totalBytes / 1024 / 1024).toFixed(1)} MiB`);
