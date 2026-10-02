@@ -13,15 +13,8 @@
 // Every getter returns null for unknown ids / missing files and takes an optional data object (default:
 // the process-wide getData() singleton).
 
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-/** Repository root (…/Stronghold-Protocol). */
-export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-
-/** Default data directory. */
-export const DATA_DIR = path.join(ROOT, 'data');
+import { ROOT, DATA_DIR, readDataDirectory } from './data-node.js';
+export { ROOT, DATA_DIR };
 
 /** Files the game expects (a warning lists the missing ones). */
 export const DATA_FILES = Object.freeze([
@@ -56,25 +49,7 @@ export function deepFreeze(root) {
  * @returns {Readonly<Record<string, any>>}
  */
 export function loadData(dir = DATA_DIR, { log = console, expected = DATA_FILES } = {}) {
-  /** @type {Record<string, any>} */
-  const out = {};
-  let names = [];
-  try {
-    names = fs.readdirSync(dir, { withFileTypes: true })
-      .filter((d) => d.isFile() && d.name.toLowerCase().endsWith('.json'))
-      .map((d) => d.name)
-      .sort();
-  } catch (e) {
-    log.warn(`[data] cannot read ${dir}: ${e.code || e.message} — running without game data`);
-  }
-  for (const file of names) {
-    const key = file.slice(0, -'.json'.length);
-    try {
-      out[key] = JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8'));
-    } catch (e) {
-      log.error(`[data] skipping ${file}: ${e.message}`);
-    }
-  }
+  const out = readDataDirectory(dir, log);
   const missing = expected.filter((k) => !(k in out));
   if (missing.length) log.warn(`[data] missing data files: ${missing.map((k) => k + '.json').join(', ')}`);
   return deepFreeze(out);

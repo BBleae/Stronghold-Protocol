@@ -37,3 +37,10 @@ desktop.ini
 .idea/
 .vscode/
 .claude/
+
+# Cloudflare build outputs and local runtime state
+dist/
+.wrangler/
+.dev.vars
+.dev.vars.*
+public/resource-manifest.json

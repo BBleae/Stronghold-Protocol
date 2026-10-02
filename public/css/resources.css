@@ -1,0 +1,11 @@
+.resource-dialog{box-sizing:border-box;width:min(560px,calc(100vw - 28px));max-height:calc(100dvh - 28px);padding:0;color:#e3eae7;background:#101a18;border:1px solid #3e6358;border-radius:12px;box-shadow:0 20px 90px #000b;font-family:system-ui,sans-serif;z-index:100000}
+.resource-dialog::backdrop{background:#050b0ad9;-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px)}
+.resource-card{padding:26px}.resource-kicker{font-size:10px;font-weight:700;letter-spacing:2px;color:#7ab29f;margin:0 0 14px}
+.resource-dialog h2{font-size:25px;line-height:1.2;margin:0 0 14px}.resource-intro{font-size:14px;line-height:1.7;color:#bfcdc7}
+.resource-stat{font-size:13px;font-variant-numeric:tabular-nums;margin:20px 0 9px}.resource-progress{display:block;width:100%;height:9px;accent-color:#4ed8af}
+.resource-message{min-height:2.8em;font-size:13px;line-height:1.5;color:#e4d8a7;overflow-wrap:anywhere}
+.resource-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px}.resource-dialog button{padding:12px 10px;border:1px solid #476357;border-radius:5px;background:#192c25;color:#e3eae7;font-size:13px;cursor:pointer}
+.resource-dialog button:focus-visible,#resource-manager-open:focus-visible{outline:2px solid #7ef7ca;outline-offset:3px}.resource-dialog button:disabled{opacity:.45;cursor:default}.resource-dialog button[hidden]{display:none}
+.resource-dialog button.resource-primary{background:#2c795e;border-color:#53b491}.resource-note{font-size:11px;line-height:1.7;color:#96a69f;margin:17px 0}.resource-dialog .resource-continue{width:100%;background:#101a18}
+#resource-manager-open{position:fixed;right:max(10px,env(safe-area-inset-right));bottom:max(10px,env(safe-area-inset-bottom));z-index:9999;padding:6px 10px;color:#b9c9c2;background:#101a18e8;border:1px solid #476357;border-radius:5px;font:11px system-ui,sans-serif;cursor:pointer;opacity:.85}
+#resource-manager-open:hover{opacity:1}@media(max-height:500px){.resource-card{padding:16px}.resource-kicker{margin-bottom:6px}.resource-dialog h2{font-size:20px}.resource-intro{margin:8px 0}.resource-stat{margin-top:10px}.resource-note{margin:10px 0}}
