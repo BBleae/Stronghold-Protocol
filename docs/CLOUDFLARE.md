@@ -17,7 +17,7 @@
 
 ## 网页一站式部署（推荐，不需要本地环境）
 
-全部在 Cloudflare 控制台里完成：Cloudflare 从 GitHub 拉代码，构建时自动下载素材（含中文 + 日文语音），再部署到 卫.rinko.ai。
+全部在 Cloudflare 控制台里完成：Cloudflare 从 GitHub 拉代码，构建时自动下载素材（含中文 + 日文语音），再部署到 卫.rinko.ai。游戏素材不在仓库里：`npm run build:worker`（`wrangler deploy` 的构建步骤）发现 `data/assets.json` 引用的文件不在磁盘上时，会先运行 `tools/fetch-assets.mjs` 补齐；下载失败或没有任何素材时构建直接失败，不会部署一个没有素材的站点。
 
 1. 打开 <https://dash.cloudflare.com>，用管理 `rinko.ai` 的账号登录。左侧 **Workers 和 Pages** → **创建** → **导入存储库（Import a repository）** → 连接 GitHub，授权仓库 `Slapq/Stronghold-Protocol`。
 2. 设置构建：
@@ -26,7 +26,7 @@
    |---|---|
    | 项目 / Worker 名称 | `stronghold-protocol`（必须与 `wrangler.jsonc` 的 `name` 一致） |
    | 生产分支 | 包含本配置的分支（例如 `claude/gallant-sagan-37hyv3`，合并后改为 `master`） |
-   | 构建命令 | `npm run assets` |
+   | 构建命令 | `npm run assets`（留空也可以：部署时缺素材会自动下载） |
    | 部署命令 | `npx wrangler deploy`（默认值） |
    | 根目录 | `/`（默认值） |
 
