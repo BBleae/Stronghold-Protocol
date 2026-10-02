@@ -6,13 +6,14 @@ import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { zipSync, unzipSync } from 'fflate';
 import { buildResourceManifest, writeResourcePack } from '../../tools/resource-pack.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const chrome = process.env.CHROME_PATH || (process.platform === 'win32' ? 'C:/Program Files/Google/Chrome/Application/chrome.exe' : '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome');
 const enabled = process.env.SP_RESOURCES_E2E === '1' && existsSync(chrome);
 
-test('browser installs a local ZIP without upload, serves cached audio Range, clears and resumes downloads, and reopens manager', { skip: !enabled, timeout: 60000 }, async t => {
+test('browser installs only matching files from a local ZIP without upload, serves cached audio Range, clears and resumes downloads, and reopens manager', { skip: !enabled, timeout: 60000 }, async t => {
   const fixture = await mkdtemp(join(tmpdir(), 'stronghold-browser-resources-'));
   t.after(() => rm(fixture, { recursive: true, force: true }));
   await mkdir(join(fixture, 'public/assets'), { recursive: true });
@@ -20,6 +21,12 @@ test('browser installs a local ZIP without upload, serves cached audio Range, cl
   await writeFile(join(fixture, 'public/assets/b.png'), 'image');
   const manifest = await buildResourceManifest({ root: fixture });
   const pack = await writeResourcePack({ root: fixture, manifest });
+  await writeFile(pack.path, zipSync({
+    'assets/': new Uint8Array(),
+    'README.txt': new TextEncoder().encode('unused'),
+    'assets/audio/sfx/player/p_atk/p_atk_archet_s.mp3': new TextEncoder().encode('unused'),
+    ...unzipSync(await readFile(pack.path)),
+  }));
   const hits = [];
   let offlineAssets = false, corrupt = false, noManifest = false;
   const server = createServer(async (request, response) => {
