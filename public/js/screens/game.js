@@ -515,10 +515,10 @@ function MatchScreen() {
     if (prev === phase) return;
     const b = phaseBanner(phase, pub);
     if (b) setBanner({ ...b, key: phaseKey });
-    // operator voice: a match is one operation — its squad leader says 行动开始 at the first enemy of the first battle
-    // (js/audio.js battleStart) and the end line on the result screen
+    // operator voice (as in the official mode): every battle, its squad leader says 行动开始 at the first enemy
+    // (js/audio.js battleStart); the end line is said once, on the result screen
     if ((phase === PHASE.COMBAT || phase === PHASE.FINAL_ASSAULT || phase === PHASE.HIDDEN_CORE) && alive) {
-      audio.battleStart(voiceLeader(live.current.priv, getChess), { first: (pub?.round ?? 1) <= 1 });
+      audio.battleStart(voiceLeader(live.current.priv, getChess));
     }
     if (phase === PHASE.ROUND_START) audio.sfx('roundStart');
     else if (phase === PHASE.PREP) audio.sfx('rest', { volume: 0.7 });
@@ -777,8 +777,9 @@ function MatchScreen() {
         const penKey = previewEnemyKey(e);
         if (penKey) { setDetail({ kind: 'enemy', id: penKey }); return; }
         if (e.unitId != null || e.unit) {
-          // 选中干员 (FOCUS_CHAR): tapping a deployed operator in battle
-          if (!e.detail && e.button !== 2 && e.unit && e.unit.side !== 'enemy' && unitSoundClass(e.unit) === 'char') audio.voice(e.unit.spine || e.unit.defId, 'select');
+          // 选中干员 (FOCUS_CHAR): tapping an own deployed operator in battle (not a teammate's)
+          const own = e.unit && e.unit.side !== 'enemy' && unitSoundClass(e.unit) === 'char' && (e.unit.ownerId == null || e.unit.ownerId === live.current.myId);
+          if (!e.detail && e.button !== 2 && own) audio.voice(e.unit.spine || e.unit.defId, 'select');
           setDetail({ kind: 'unit', unit: e.unit || null, unitId: e.unitId, uid: e.uid });
           return;
         }
@@ -890,7 +891,8 @@ function MatchScreen() {
       releaseHold(f.uid);
       return;
     }
-    // 部署: an operator placed from the hand / temporary area (moving one already on the board says nothing)
+    // 部署 (PLACE_CHAR): an operator successfully deployed from the bench / temporary area — as in the official mode;
+    // buying or dragging one says nothing, and moving one already on the board neither
     if (f.from !== 'board') { const ch = pieceCharId(f.piece, getChess); if (ch) audio.voice(ch, 'deploy'); }
     // accepted: the piece stays on the tile until m.private shows it there (or a short grace passes)
     setTimeout(() => { if (heldRef.current.has(f.uid)) releaseHold(f.uid); }, 1500);
