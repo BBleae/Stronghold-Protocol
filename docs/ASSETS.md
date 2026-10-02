@@ -106,18 +106,38 @@ The `stem` of a Spine model is the upstream file name. Two examples: `char_107_l
 (Kengxxiao/ArknightsGameData, cached under `.cache/gamedata/excel/`), picked by the official `placeType` — the moment the
 game plays a line — and downloads them from the ArknightsAssets2 `voice` branch:
 
-| Role | Line (placeType) | Played by the client (`public/js/audio.js`) |
+| Role | Line (placeType) | Played by the client (`public/js/audio.js`) — voice type |
 |---|---|---|
-| `select` | 选中干员1 / 2 (`BATTLE_SELECT`) | picking up or tapping an own operator: a bench card, a board piece, a deployed unit in battle |
-| `deploy` | 部署1 / 2 (`BATTLE_PLACE`) | an operator placed from the bench, once its direction is confirmed |
-| `combat` | 作战中1–4 (`BATTLE_SKILL_1..4`) | an operator's skill starts (never over a line that is playing) |
-| `start` | 行动开始 (`BATTLE_FACE_ENEMY`) | the squad leader when the own battle starts |
-| `win3` / `win` / `fail` | 3星结束行动 / 非3星结束行动 / 行动失败 (`THREE_STAR` / `TWO_STAR` / `LOSE`) | the squad leader when the own battle ends: no LP lost / LP lost / LP 0 (or the match was lost) |
+| `select` | 选中干员1 / 2 (`BATTLE_SELECT`) | tapping an own deployed operator (prep board, battle) — `FOCUS_CHAR` |
+| `deploy` | 部署1 / 2 (`BATTLE_PLACE`) | an operator placed from the bench, once its direction is confirmed — `PLACE_CHAR` |
+| `combat` | 作战中1–4 (`BATTLE_SKILL_1..4`) | an operator's skill starts — `SKILL_PASSIVE_IMP` (SP cost ≥ 10) / `SKILL_PASSIVE_NOR` |
+| `start` | 行动开始 (`BATTLE_FACE_ENEMY`) | once per match: the squad leader, when the first enemy of the first battle appears — `ENCOUNTER_ENEMY` |
+| `win3` / `win` / `fail` | 3星结束行动 / 非3星结束行动 / 行动失败 (`THREE_STAR` / `TWO_STAR` / `LOSE`) | once per match, on the result screen: the squad leader — won without LP lost / won / lost |
 
+- **When a line may play** follows the official battle voice rules, `audio_data.json` `battleVoice` (copied to
+  `data/assets.json` `audio.voiceRules`; `BATTLE_VOICE` in `audio.js` when absent): each voice type has a priority, a
+  cooldown and `overlapIfSamePriority`. One line plays at a time; a line of a higher priority cuts in (0.1 s
+  cross-fade), one of the same priority only when its type overlaps, a lower one is dropped. So 作战中 plays at most
+  once per 10 s per type and never over another skill line of its priority, and a tap (`FOCUS_CHAR`, priority 10)
+  never cuts a skill line.
+
+  | Voice type | Priority | Same priority replaces | Cooldown |
+  |---|---|---|---|
+  | `BATTLE_START` (行动出发, not used) | 100 | yes | 0 |
+  | `ENCOUNTER_ENEMY` | 90 | no | 0 (`minTimeDeltaForEnemyEncounter` 3 s after the battle starts) |
+  | `SKILL_ACTIVE` (a skill the player activates — none in this mode) | 70 | yes | 0 |
+  | `SKILL_PASSIVE_IMP` (`minSpCostForImportantPassiveSkill` 10) | 60 | no | 10 s |
+  | `SKILL_PASSIVE_NOR` | 50 | no | 10 s |
+  | `PLACE_CHAR` | 20 | yes | 0 |
+  | `FOCUS_CHAR` | 10 | yes | 0 |
+  | `NORMAL_ATTACK` (not used) | 5 | no | 36000 s |
+
+- Every skill of this mode is cast automatically (技能策略), so 作战中 uses the passive types, important or normal by
+  the equipped skill's SP cost. A match is one operation: 行动开始 and the end line are said once each.
 - The squad leader (队长) of a normal stage has no slot in this mode: it is the rarest operator on the board (then 精锐,
-  then the highest tier).
-- One line plays at a time, on its own channel (设置 → 角色语音, 语音语言 中文 / 日文 / 关闭). A player's action cuts the
-  line that is playing; summons, enemies and the reserve operators (预备干员, no voice in the game) say nothing.
+  then the highest tier) when a battle starts.
+- Voice has its own channel (设置 → 角色语音, 语音语言 中文 / 日文 / 关闭). Summons, enemies and the reserve operators
+  (预备干员, no voice in the game) say nothing.
 - Lines outside a battle (编入队伍, 任命队长, 行动出发, 精英化晋升, home and base lines) and 完成高难行动 (`FOUR_STAR`, 突袭
   clears) are not downloaded.
 - Languages: `cn` = `CN_MANDARIN` (folder `voice_cn/`), `jp` = `JP` (`voice/`); a linkage operator with only its own

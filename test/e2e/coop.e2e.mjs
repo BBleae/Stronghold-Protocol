@@ -791,7 +791,7 @@ async function facingTour(c, did) {
   let hand = await units();
   assert.ok(hand.length >= 1, 'bought operators');
   // operator voice (data/assets.json audio.voice, when downloaded; the default language 中文): a bench card says
-  // nothing when bought (编入队伍 is a squad-screen line), 选中干员 when picked up and 部署 once placed
+  // nothing when bought (编入队伍 is a squad-screen line) or picked up; 部署 once placed (PLACE_CHAR)
   const voiceOf = (id) => c.page.evaluate((cid) => {
     const charId = globalThis.__SP__.data.lookup('chess', cid)?.charId;
     return charId ? globalThis.__SP__.data.get('assets')?.audio?.voice?.cn?.[charId] || null : null;
@@ -825,8 +825,8 @@ async function facingTour(c, did) {
     await checkStoredDir(c, p.uid, 'UP');
     const lines = await voiceOf(p.id);
     if (lines) {
-      await c.waitUntil(() => c.voiceUrls.some((u) => lines.select.includes(u)), '选中干员 voice line fetched (picked up)', 4000);
       await c.waitUntil(() => c.voiceUrls.some((u) => lines.deploy.includes(u)), '部署 voice line fetched', 4000);
+      assert.ok(!c.voiceUrls.some((u) => lines.select.includes(u)), 'picking a bench card up is no 选中干员');
       c.note(`voice: ${c.voiceUrls.join(', ')}`);
     }
     await sleep(700);
@@ -1294,12 +1294,12 @@ describe('browser E2E against the real server', { skip: !ENABLED && 'needs Chrom
         await sleep(1500);
         await solo.shot(`combat-r${round}`);
       }
-      // operator voice (when downloaded): the squad leader's 行动开始 (cn_020) when a battle starts, and its 3星 / 非3星
-      // 结束行动 / 行动失败 (cn_030 / 031 / 032) once the own battle of rounds 1–2 ended
+      // operator voice (when downloaded): a match is one operation — the squad leader's 行动开始 (cn_020) once, at the
+      // first enemy of round 1; no 结束行动 (cn_030–032) before the result screen
       if (await solo.page.evaluate(() => !!globalThis.__SP__.data.get('assets')?.audio?.voice?.cn)) {
-        const said = (re) => solo.voiceUrls.some((u) => re.test(u));
-        assert.ok(said(/\/cn_020\.mp3$/), '行动开始 voice line');
-        assert.ok(said(/\/cn_03[012]\.mp3$/), '结束行动 voice line');
+        const said = (re) => solo.voiceUrls.filter((u) => re.test(u)).length;
+        assert.equal(said(/\/cn_020\.mp3$/), 1, '行动开始 once');
+        assert.equal(said(/\/cn_03[012]\.mp3$/), 0, 'no end line during the match');
         solo.note(`voice: ${solo.voiceUrls.map((u) => u.replace('/assets/voice/', '')).join(', ')}`);
       }
       // leave for good: exit → 放弃模拟 → lobby
