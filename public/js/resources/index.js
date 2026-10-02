@@ -119,7 +119,8 @@ function showManager(context, firstTime = false) {
           const status = await action({ signal: controller.signal, onProgress: progress });
           preference('install');
           if (status) progress(status);
-          message.textContent = doneText ?? (status?.complete ? '全部资源已保存，可进入游戏。' : '操作已完成。');
+          const text = typeof doneText === 'function' ? doneText(status) : doneText;
+          message.textContent = text ?? (status?.complete ? '全部资源已保存，可进入游戏。' : '操作已完成。');
         } catch (error) { message.textContent = readableError(error); }
         finally {
           await refresh().catch(error => { message.textContent = readableError(error); });
@@ -161,7 +162,9 @@ function showManager(context, firstTime = false) {
     };
     $('input').onchange = () => {
       const file = $('input').files[0];
-      if (file) void run(options => importResourceZip(file, context.store, options));
+      if (file) void run(options => importResourceZip(file, context.store, options), status => status?.skipped && !status.complete
+        ? `已导入 ${status.imported} 个文件；${status.skipped} 个与本站版本不一致已跳过，点「在线下载」补齐剩下的 ${status.total - status.count} 个。`
+        : undefined);
       $('input').value = '';
     };
     $('[data-action="clear"]').onclick = () => run(async () => { await context.store.clear(); return context.store.status(); });

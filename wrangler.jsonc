@@ -14,7 +14,7 @@
   "assets": {
     "directory": "./dist/client",
     "binding": "ASSETS",
-    "run_worker_first": ["/api/*", "/ws", "/healthz"],
+    "run_worker_first": ["/api/*", "/ws", "/healthz", "/stronghold-resources.zip"],
     "not_found_handling": "none"
   },
   "durable_objects": {
