@@ -790,13 +790,14 @@ async function facingTour(c, did) {
   const units = () => c.handPieces().then((h) => h.filter((p) => p.kind === 'chess'));
   let hand = await units();
   assert.ok(hand.length >= 1, 'bought operators');
-  // operator voice (data/assets.json audio.voice, when downloaded; the default language 中文): a bench card says
-  // nothing when bought (编入队伍 is a squad-screen line) or picked up; 部署 once placed (PLACE_CHAR)
+  // operator voice (data/assets.json audio.voice, when downloaded) as in the official mode: buying or picking up a
+  // bench operator says nothing, a successful deployment says 部署 (js/audio.js voiceLog: the lines started)
   const voiceOf = (id) => c.page.evaluate((cid) => {
     const charId = globalThis.__SP__.data.lookup('chess', cid)?.charId;
     return charId ? globalThis.__SP__.data.get('assets')?.audio?.voice?.cn?.[charId] || null : null;
   }, id);
-  if (!did.place) assert.deepEqual(c.voiceUrls, [], 'no voice line before an operator is picked up');
+  const voiceLog = () => c.page.evaluate(() => globalThis.__SP__.audio.voiceLog.map((l) => l.role));
+  if (!did.place) assert.deepEqual(await voiceLog(), [], 'buying operators says nothing');
   // place + choose a direction (UP: striped rotated range + 拖回中心区域取消 while held) — the unit with the widest range
   // grid shows it best (a defender's grid is its own tile only)
   if (!did.place) {
@@ -823,10 +824,9 @@ async function facingTour(c, did) {
     assert.deepEqual(sent[1], { uid: p.uid, to: { area: 'board', row: tile.row, col: tile.col, dir: 'UP' }, dir: 'UP' }, 'g.move {uid, to {…, dir}, dir: UP}');
     await c.waitFor((x) => x.board > s0.board, 'placed', 6000);
     await checkStoredDir(c, p.uid, 'UP');
-    const lines = await voiceOf(p.id);
-    if (lines) {
-      await c.waitUntil(() => c.voiceUrls.some((u) => lines.deploy.includes(u)), '部署 voice line fetched', 4000);
-      assert.ok(!c.voiceUrls.some((u) => lines.select.includes(u)), 'picking a bench card up is no 选中干员');
+    if (await voiceOf(p.id)) {
+      assert.deepEqual(await voiceLog(), ['deploy'], 'picked up: nothing; deployed: 部署');
+      await c.waitUntil(() => c.voiceUrls.length > 0, '部署 voice line fetched', 4000);
       c.note(`voice: ${c.voiceUrls.join(', ')}`);
     }
     await sleep(700);
@@ -1294,13 +1294,17 @@ describe('browser E2E against the real server', { skip: !ENABLED && 'needs Chrom
         await sleep(1500);
         await solo.shot(`combat-r${round}`);
       }
-      // operator voice (when downloaded): a match is one operation — the squad leader's 行动开始 (cn_020) once, at the
-      // first enemy of round 1; no 结束行动 (cn_030–032) before the result screen
+      // operator voice (when downloaded), as in the official mode: 部署 for deployments in prep, the squad leader's
+      // 行动开始 every battle (rounds 1–2 surely, round 3 may still be before its first enemy), 作战中 only after it, no
+      // 结束行动 before the result screen (js/audio.js voiceLog: the lines started, in order)
       if (await solo.page.evaluate(() => !!globalThis.__SP__.data.get('assets')?.audio?.voice?.cn)) {
-        const said = (re) => solo.voiceUrls.filter((u) => re.test(u)).length;
-        assert.equal(said(/\/cn_020\.mp3$/), 1, '行动开始 once');
-        assert.equal(said(/\/cn_03[012]\.mp3$/), 0, 'no end line during the match');
-        solo.note(`voice: ${solo.voiceUrls.map((u) => u.replace('/assets/voice/', '')).join(', ')}`);
+        const log = await solo.page.evaluate(() => globalThis.__SP__.audio.voiceLog.map((l) => l.role));
+        const count = (role) => log.filter((r) => r === role).length;
+        assert.ok(count('start') >= 2 && count('start') <= 3, `行动开始 every battle: ${log.join(' ')}`);
+        assert.ok(count('deploy') >= 1, '部署 in prep');
+        assert.equal(count('win3') + count('win') + count('fail'), 0, 'no end line during the match');
+        assert.ok(log.indexOf('combat') === -1 || log.indexOf('start') < log.indexOf('combat'), '作战中 only after 行动开始');
+        solo.note(`voice: ${log.join(' ')}`);
       }
       // leave for good: exit → 放弃模拟 → lobby
       await solo.click('.gtop__exit');
