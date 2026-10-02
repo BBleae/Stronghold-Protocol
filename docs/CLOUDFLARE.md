@@ -15,7 +15,28 @@
 
 参考：[Static Assets 限额](https://developers.cloudflare.com/workers/static-assets/platform/limits/)、[DO WebSocket](https://developers.cloudflare.com/durable-objects/best-practices/websockets/)、[DO 定价](https://developers.cloudflare.com/durable-objects/platform/pricing/)。静态资源和房间计算是不同的计费项，不承诺多人长时间游戏一定完全免费。本项目不会自动升级收费计划。
 
-## 构建和部署
+## 网页一站式部署（推荐，不需要本地环境）
+
+全部在 Cloudflare 控制台里完成：Cloudflare 从 GitHub 拉代码，构建时自动下载素材（含中文 + 日文语音），再部署到 卫.rinko.ai。
+
+1. 打开 <https://dash.cloudflare.com>，用管理 `rinko.ai` 的账号登录。左侧 **Workers 和 Pages** → **创建** → **导入存储库（Import a repository）** → 连接 GitHub，授权仓库 `Slapq/Stronghold-Protocol`。
+2. 设置构建：
+
+   | 项目 | 填写 |
+   |---|---|
+   | 项目 / Worker 名称 | `stronghold-protocol`（必须与 `wrangler.jsonc` 的 `name` 一致） |
+   | 生产分支 | 包含本配置的分支（例如 `claude/gallant-sagan-37hyv3`，合并后改为 `master`） |
+   | 构建命令 | `npm run assets` |
+   | 部署命令 | `npx wrangler deploy`（默认值） |
+   | 根目录 | `/`（默认值） |
+
+3. **保存并部署**。首次构建要安装依赖、从 GitHub 下载约 306 MiB 素材、上传约 8,000 个文件，几分钟内完成（上限 20 分钟）。部署时按 `wrangler.jsonc` 自动绑定 卫.rinko.ai 并签发证书。如果日志提示自定义域名无权限或冲突：Worker → **设置** → **域和路由** → **添加** → **自定义域**，填 `卫.rinko.ai`（这个主机名事先不能有别的 DNS 记录）。
+4. 打开 <https://xn--rlr.rinko.ai/healthz>，看到 `{"ok":true,…}` 即部署成功。之后每次向生产分支推送都会自动重新构建、部署；素材会重新下载（约 1 分钟），但只上传有变化的文件。
+5. 发群用的素材包也在网页上做：用电脑上的 Chrome / Edge 打开 卫.rinko.ai → 右下角 **资源管理** → **在线下载** → 完成后点 **导出 ZIP（发给朋友）**，选择保存位置即可（约 321 MiB，直接写入磁盘）。其他浏览器会先在内存里生成再下载，手机上可能内存不足。朋友打开网站后在同一个窗口点 **导入本地 ZIP**。
+
+构建失败时先看日志：从 GitHub 下载素材偶尔会被限流或超时，直接在控制台点 **重试部署**。素材有变化（重新部署后资源版本不同）时，旧 ZIP 无法导入，需要重新导出、重新发。
+
+## 本地构建和部署
 
 需要 Node.js 22+、npm、一个 Cloudflare 账号，以及托管在这个账号下的域名（Cloudflare 控制台「添加站点」，把域名的 NS 改到 Cloudflare；国内注册商的域名同样可以，不需要备案）。仓库不含受版权保护的游戏素材，先在本机准备：
 
@@ -39,6 +60,8 @@ Wrangler 执行构建、上传本地静态文件，并初始化两个 SQLite DO 
 构建只发布 `dist/client/` 以及 `dist/worker/index.mjs`。前端保持 `/data/`、`/shared/`、`/sim/` 的既有路径；Node 文件系统数据读取由构建时 JSON 导入替换。`public/dev/`、ZIP、日志、source map 和服务端私有数据读取模块不会发布。不要手动把整个仓库上传为静态站点。
 
 ## 给朋友准备资源包
+
+网页上：**资源管理** → 下载完成后 **导出 ZIP（发给朋友）**（见上文第 5 步）。本地有完整素材时也可以：
 
 ```powershell
 npm run resources:pack
