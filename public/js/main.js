@@ -330,7 +330,12 @@ async function boot() {
   installLoadoutSync({ net });
   net.attachBrowserHooks();
   // Audio: unlock on first gesture, BGM follows the route / match phase (js/audio.js).
-  installAudio({ getManifest: () => data.get('assets'), subscribe: store.subscribe, getState: store.get, selectRoute, settings: settingsStore.get() });
+  installAudio({ getManifest: () => data.get('assets'), subscribe: store.subscribe, getState: store.get, selectRoute, settings: settingsStore.get(),
+    // 作战中's voice type: the equipped skill's SP cost (battle units carry their chess id and skill index)
+    getSkill: (chessId, index) => {
+      const c = data.lookup('chess', chessId);
+      return (Number.isInteger(index) ? c?.skills?.find((k) => k.index === index) : null) ?? c?.skill ?? null;
+    } });
   data.load('assets').catch(() => {});
   // Warm the data cache in the background (missing files are tolerated).
   data.loadAll('config').catch(() => {});

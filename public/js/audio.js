@@ -26,12 +26,16 @@
 //   operator-knocked-down sound; summons use the token sounds; a summon used up by its own effect (fx `consumed`,
 //   香槟炸弹) plays its impact sound instead of a death sound.
 // - Buffers are fetched once and cached (LRU); failed fetch/decode ⇒ silent (logged once as a warning).
-// - Operator voice (audio.voice.<lang>.<charId>, tools/assets/voice.mjs): the in-battle lines of a normal stage, on
-//   their own channel and volume, one line at a time. Moments (official charword placeType): 选中干员 — picking up or
-//   tapping an own operator (bench card, board piece, a deployed unit in battle); 部署 — an operator placed from the
-//   bench (direction confirmed); 作战中 — an operator's skill starts; 行动开始 — the squad leader when the own battle
-//   starts; 3星结束行动 / 非3星结束行动 / 行动失败 — the leader when the own battle ends (no LP lost / LP lost / LP 0;
-//   battleStart / battleEnd). A player's action cuts the line that is playing; 作战中 never cuts one.
+// - Operator voice (audio.voice.<lang>.<charId>, tools/assets/voice.mjs) on its own channel and volume, one line at a
+//   time, by the official battle voice rules (audio_data.json `battleVoice` → data/assets.json audio.voiceRules,
+//   BATTLE_VOICE when absent): every line has a voice type with a priority, a cooldown and whether a line of the same
+//   priority replaces the one playing (`overlap`); a lower priority never cuts in; lines cross-fade (0.1 s).
+//   选中干员 (FOCUS_CHAR) — tapping an own deployed operator (prep board, battle); 部署 (PLACE_CHAR) — an operator placed
+//   from the bench; 作战中 — an operator's skill starts: every skill of this mode is cast automatically (技能策略), so it
+//   is SKILL_PASSIVE_IMP (SP cost ≥ 10) / SKILL_PASSIVE_NOR, each at most once per 10 s and never over a line of its
+//   own priority. A match is one operation: the squad leader says 行动开始 (ENCOUNTER_ENEMY) once, when the first
+//   enemy of the first battle appears (not before minTimeDeltaForEnemyEncounter after its start), and the end line
+//   once, on the result screen (3星结束行动 without LP lost in the match / 非3星结束行动 / 行动失败; matchEnd).
 //
 // `bgmKeyFor(route, pub)` picks the track for the current screen/phase (main.js calls `audio.install()`,
 // which follows the store).
@@ -53,6 +57,26 @@ const IMPACT_TYPES = new Set(['phys', 'arts', 'true']);
 const IMPACT_WINDOW_MS = 2500;
 /** Official operator sound files of a skill mode: `…_d` / `…_h` / `…_s` (+ digits) — the normal attack's end in `_n`. */
 const SKILL_MODE_FILE = /_(d|h|s)\d*\.mp3$/i;
+/**
+ * The official battle voice rules (audio_data.json battleVoice, 2026-10): data/assets.json audio.voiceRules overrides.
+ * RESULT (the end-of-operation lines, played on the result screen — not a battle voice type) is ours.
+ */
+export const BATTLE_VOICE = Object.freeze({
+  crossfade: 0.1, minTimeDeltaForEnemyEncounter: 3, minSpCostForImportantPassiveSkill: 10,
+  voiceTypeOptions: Object.freeze([
+    { voiceType: 'BATTLE_START', priority: 100, overlapIfSamePriority: true, cooldown: 0 },
+    { voiceType: 'ENCOUNTER_ENEMY', priority: 90, overlapIfSamePriority: false, cooldown: 0 },
+    { voiceType: 'PLACE_CHAR', priority: 20, overlapIfSamePriority: true, cooldown: 0 },
+    { voiceType: 'FOCUS_CHAR', priority: 10, overlapIfSamePriority: true, cooldown: 0 },
+    { voiceType: 'SKILL_ACTIVE', priority: 70, overlapIfSamePriority: true, cooldown: 0 },
+    { voiceType: 'SKILL_PASSIVE_IMP', priority: 60, overlapIfSamePriority: false, cooldown: 10 },
+    { voiceType: 'SKILL_PASSIVE_NOR', priority: 50, overlapIfSamePriority: false, cooldown: 10 },
+    { voiceType: 'NORMAL_ATTACK', priority: 5, overlapIfSamePriority: false, cooldown: 36000 },
+  ]),
+});
+const RESULT_VOICE = Object.freeze({ priority: 100, overlap: true, cooldown: 0 });
+/** The voice type of each role (作战中 is picked by SP cost: skillVoiceType). */
+const ROLE_VOICE_TYPE = Object.freeze({ select: 'FOCUS_CHAR', deploy: 'PLACE_CHAR', start: 'ENCOUNTER_ENEMY', win3: 'RESULT', win: 'RESULT', fail: 'RESULT' });
 /** Voice languages the settings offer, in order (tools/assets/voice.mjs VOICE_LANGS). */
 export const VOICE_LANGS = Object.freeze([['cn', '中文'], ['jp', '日文']]);
 
@@ -76,15 +100,41 @@ export function voiceUrl(manifest, lang, charId, role, rand = Math.random) {
 }
 
 /**
- * The end-of-operation line of a battle (official THREE_STAR / TWO_STAR / LOSE): failed when the LP reached 0 (or the
- * match was lost), else 3 stars only without any LP lost.
- * @param {{ lost?: boolean, dead?: boolean }} battle
- * @param {boolean} [victory] the match result, when the battle ended the match
- * @returns {'win3'|'win'|'fail'}
+ * The battle voice rules as { crossfade (s), encounterDelay (s), importantSp, types: { [voiceType]: { priority, overlap,
+ * cooldown (s) } } } — the manifest's (audio.voiceRules, the official battleVoice) or BATTLE_VOICE, plus RESULT.
  */
-export function endVoiceRole(battle, victory) {
-  if (victory === false || battle?.dead) return 'fail';
-  return battle?.lost ? 'win' : 'win3';
+export function voiceRulesOf(manifest) {
+  const raw = manifest?.audio?.voiceRules && Array.isArray(manifest.audio.voiceRules.voiceTypeOptions) ? manifest.audio.voiceRules : BATTLE_VOICE;
+  const num = (v, d) => (Number.isFinite(v) && v >= 0 ? v : d);
+  const types = { RESULT: RESULT_VOICE };
+  for (const o of raw.voiceTypeOptions) {
+    if (o && typeof o.voiceType === 'string') types[o.voiceType] = { priority: num(o.priority, 0), overlap: !!o.overlapIfSamePriority, cooldown: num(o.cooldown, 0) };
+  }
+  return { crossfade: num(raw.crossfade, 0.1), encounterDelay: num(raw.minTimeDeltaForEnemyEncounter, 3), importantSp: num(raw.minSpCostForImportantPassiveSkill, 10), types };
+}
+
+/**
+ * May a line of this voice type start now? Not within its cooldown since the last one of its type; over the line
+ * playing (or loading) only with a higher priority, or the same priority when the type overlaps.
+ * @param {{ priority: number, overlap: boolean, cooldown: number }} opt
+ * @param {{ priority: number }|null} current
+ * @param {number|undefined} lastAt when the last line of this type started (ms) @param {number} now (ms)
+ */
+export function voiceMayStart(opt, current, lastAt, now) {
+  if (opt.cooldown > 0 && Number.isFinite(lastAt) && now - lastAt < opt.cooldown * 1000) return false;
+  if (!current) return true;
+  return opt.priority > current.priority || (opt.priority === current.priority && opt.overlap);
+}
+
+/** 作战中: an automatically cast skill is an important passive one from this SP cost on (official rule). */
+export function skillVoiceType(spCost, rules) {
+  return Number.isFinite(spCost) && spCost >= rules.importantSp ? 'SKILL_PASSIVE_IMP' : 'SKILL_PASSIVE_NOR';
+}
+
+/** The end-of-operation line of a match: 行动失败 when lost, else 3星结束行动 only without any LP lost. */
+export function endVoiceRole({ victory, lpLost }) {
+  if (!victory) return 'fail';
+  return lpLost > 0 ? 'win' : 'win3';
 }
 
 /**
@@ -268,6 +318,8 @@ export class AudioManager {
    */
   constructor(opts = {}) {
     this.getManifest = typeof opts.getManifest === 'function' ? opts.getManifest : () => null;
+    // (chessId, skillIndex) → the equipped skill's record ({ spCost }), for 作战中's voice type (installAudio)
+    this.getSkill = typeof opts.getSkill === 'function' ? opts.getSkill : () => null;
     this.win = opts.win ?? (typeof window !== 'undefined' ? window : null);
     this.ctx = null;
     this.master = null;
@@ -275,12 +327,12 @@ export class AudioManager {
     this.sfxGain = null;
     this.voiceGain = null;
     this.volumes = { bgm: 0.6, sfx: 0.8, voice: 0.8, voiceLang: 'cn', muted: false };
-    this.voiceNow = null;     // { src, gain, auto } of the line playing
+    this.voiceNow = null;     // { src, gain, priority } of the line playing
+    this.voiceWant = null;    // { token, priority } of the line loading (it replaces the one playing)
     this.voiceToken = 0;      // newest requested line (a slower buffer load never plays over a newer line)
-    this.voiceLoading = 0;    // token of a player's line still loading (作战中 waits for it too)
-    // the own battle's voice state (battleStart / battleEnd): its squad leader, whether its end line is still due, and
-    // whether LP was lost / reached 0 (kept up to date by screens/game.js while the battle runs)
-    this.battleVoice = { leader: null, pending: false, lost: false, dead: false, lp0: null };
+    this.voiceLast = new Map(); // voice type → when its last line started (cooldowns)
+    this.squadLeader = null;  // charId of the latest battle's squad leader (行动开始, the end line)
+    this.encounter = null;    // { at } the first battle of a match started: 行动开始 is due at its first enemy
     this.buffers = new Map(); // url → Promise<AudioBuffer|null> (insertion order = LRU)
     this.warned = new Set();
     this.limiter = new SfxLimiter();
@@ -616,13 +668,13 @@ export class AudioManager {
   // ---- operator voice -----------------------------------------------------------------------------------------
 
   /**
-   * Play an operator voice line (see the header): `auto` lines (作战中) never cut a playing line.
+   * Play an operator voice line by the battle voice rules (see the header).
    * @param {string} charId
    * @param {string} role see voiceUrl
-   * @param {{ auto?: boolean }} [o]
-   * @returns {boolean} whether a line was started (requested)
+   * @param {string} [type] voice type (ROLE_VOICE_TYPE by default)
+   * @returns {boolean} whether the line was started (requested)
    */
-  voice(charId, role, o = {}) {
+  voice(charId, role, type = ROLE_VOICE_TYPE[role]) {
     try {
       const v = this.volumes;
       if (!this.ctx || v.muted || v.voice <= 0 || v.voiceLang === 'off' || typeof charId !== 'string') return false;
@@ -631,70 +683,93 @@ export class AudioManager {
       const lang = m?.audio?.voice?.[v.voiceLang] ? v.voiceLang : voiceLangsIn(m)[0]?.[0];
       const url = lang ? voiceUrl(m, lang, charId, role) : null;
       if (!url) return false;
-      if (o.auto && (this.voiceNow || this.voiceLoading)) return false;
-      if (!o.auto) this.stopVoice();
+      const rules = voiceRulesOf(m);
+      const opt = rules.types[type] ?? { priority: 0, overlap: true, cooldown: 0 };
+      const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+      if (!voiceMayStart(opt, this.voiceWant ?? this.voiceNow, this.voiceLast.get(type), now)) return false;
+      this.voiceLast.set(type, now);
       const token = ++this.voiceToken;
-      if (!o.auto) this.voiceLoading = token;
-      const loaded = () => { if (this.voiceLoading === token) this.voiceLoading = 0; };
+      this.voiceWant = { token, priority: opt.priority };
+      const loaded = () => { if (this.voiceWant?.token === token) this.voiceWant = null; };
       this._buffer(url).then((buf) => {
         loaded();
         if (!buf || !this.ctx || token !== this.voiceToken) return;
-        if (o.auto && this.voiceNow) return;
-        this.stopVoice();
-        try {
-          const src = this.ctx.createBufferSource();
-          src.buffer = buf;
-          const gain = this.ctx.createGain();
-          src.connect(gain); gain.connect(this.voiceGain);
-          const cur = { src, gain, auto: !!o.auto };
-          const end = () => {
-            if (this.voiceNow !== cur) return;
-            this.voiceNow = null;
-            try { gain.disconnect(); } catch { /* ignore */ }
-          };
-          src.onended = end;
-          setTimeout(end, buf.duration * 1000 + 250); // safety if onended never fires
-          this.voiceNow = cur;
-          src.start();
-        } catch { /* ignore */ }
+        this._startVoice(buf, opt.priority, rules.crossfade);
       }, loaded);
       return true;
     } catch { return false; }
   }
 
-  /** Cut the voice line that is playing (short fade). */
-  stopVoice() {
+  /** Start a decoded line, cross-fading out the one playing. */
+  _startVoice(buf, priority, crossfade) {
+    const fade = this.voiceNow ? crossfade : 0;
+    this.stopVoice(fade);
+    try {
+      const src = this.ctx.createBufferSource();
+      src.buffer = buf;
+      const gain = this.ctx.createGain();
+      if (fade > 0) {
+        const t = this.ctx.currentTime;
+        gain.gain.setValueAtTime(0, t);
+        gain.gain.linearRampToValueAtTime(1, t + fade);
+      }
+      src.connect(gain); gain.connect(this.voiceGain);
+      const cur = { src, gain, priority };
+      const end = () => {
+        if (this.voiceNow !== cur) return;
+        this.voiceNow = null;
+        try { gain.disconnect(); } catch { /* ignore */ }
+      };
+      src.onended = end;
+      setTimeout(end, buf.duration * 1000 + 250); // safety if onended never fires
+      this.voiceNow = cur;
+      src.start();
+    } catch { /* ignore */ }
+  }
+
+  /** Fade out and stop the voice line that is playing. @param {number} [fade] seconds */
+  stopVoice(fade = 0.05) {
     const cur = this.voiceNow;
     if (!cur) return;
     this.voiceNow = null;
     try {
       const t = this.ctx.currentTime;
-      cur.gain.gain.setTargetAtTime(0, t, 0.02);
-      cur.src.stop(t + 0.1);
+      cur.gain.gain.cancelScheduledValues?.(t);
+      cur.gain.gain.setValueAtTime(cur.gain.gain.value, t);
+      cur.gain.gain.linearRampToValueAtTime(0, t + fade);
+      cur.src.stop(t + fade + 0.02);
     } catch { /* ignore */ }
-    setTimeout(() => { try { cur.gain.disconnect(); } catch { /* ignore */ } }, 200);
+    setTimeout(() => { try { cur.gain.disconnect(); } catch { /* ignore */ } }, fade * 1000 + 200);
   }
 
   /**
-   * The own battle starts: its squad leader says 行动开始, and its end line becomes due (battleEnd).
-   * @param {string|null} leader charId (gameLogic voiceLeader), null without an operator on the board
-   * @param {{ lp?: number }} [o] the own LP when the battle starts (a settled loss later ⇒ not 3 stars)
+   * A battle of the own field starts: its squad leader (gameLogic voiceLeader) is remembered; the first battle of a
+   * match makes 行动开始 due at its first enemy (handleBattleEvents).
+   * @param {string|null} leader @param {{ first?: boolean }} [o]
    */
   battleStart(leader, o = {}) {
-    this.battleVoice = { leader: typeof leader === 'string' ? leader : null, pending: !!leader, lost: false, dead: false,
-      lp0: Number.isFinite(o.lp) ? o.lp : null };
-    if (leader) this.voice(leader, 'start');
+    if (typeof leader === 'string') this.squadLeader = leader;
+    if (o.first) this.encounter = { at: typeof performance !== 'undefined' ? performance.now() : Date.now() };
+  }
+
+  /** The first enemy of the first battle appeared: the leader's 行动开始, not before minTimeDeltaForEnemyEncounter. */
+  _encounter() {
+    const e = this.encounter;
+    if (!e) return;
+    this.encounter = null;
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    const wait = Math.max(0, e.at + voiceRulesOf(this.getManifest()).encounterDelay * 1000 - now);
+    const say = () => { if (this.squadLeader) this.voice(this.squadLeader, 'start'); };
+    if (wait > 0) setTimeout(say, wait); else say();
   }
 
   /**
-   * The own battle ended: the leader's end line, once per battle (see endVoiceRole).
-   * @param {{ victory?: boolean }} [o] the match result, when the battle ended the match
+   * The match ended (the result screen): the squad leader's end-of-operation line, once.
+   * @param {{ victory: boolean, lpLost?: number }} r own LP lost over the match (result stats.lpLost)
    */
-  battleEnd(o = {}) {
-    const b = this.battleVoice;
-    if (!b.pending) return;
-    b.pending = false;
-    this.voice(b.leader, endVoiceRole(b, o.victory));
+  matchEnd(r) {
+    this.encounter = null;
+    if (this.squadLeader) this.voice(this.squadLeader, endVoiceRole(r));
   }
 
   // ---- battle events ------------------------------------------------------------------------------------------
@@ -731,7 +806,11 @@ export class AudioManager {
       for (const e of ev) {
         if (!Array.isArray(e)) continue;
         const kind = e[0];
-        if (kind === 'spawn') { this._track(e[1]); continue; }
+        if (kind === 'spawn') {
+          this._track(e[1]);
+          if (this.encounter && e[1]?.side === 'enemy') this._encounter();
+          continue;
+        }
         if (kind === 'atk') {
           // a chain bounce: its first id is the previous target, whose attack sound this is not (see header)
           if (CHAIN_KINDS.has(e[3])) { this.lastAttacker.delete(e[2]); continue; }
@@ -751,8 +830,11 @@ export class AudioManager {
         } else if (kind === 'skill' && e[2]) {
           const u = this.units.get(e[1]);
           if (u) this.unit(u.def, 'skill', e[1], u.skillIndex ?? undefined);
-          // 作战中: an operator (not a summon or enemy) starting a skill — automatic, never over another line
-          if (u && u.side !== 'enemy' && unitSoundClass(u) === 'char') this.voice(u.def, 'combat', { auto: true });
+          // 作战中: an operator (not a summon or enemy) starting a skill; important or normal by its SP cost
+          if (u && u.side !== 'enemy' && unitSoundClass(u) === 'char') {
+            const sp = this.getSkill(u.defId, u.skillIndex)?.spCost;
+            this.voice(u.def, 'combat', skillVoiceType(sp, voiceRulesOf(this.getManifest())));
+          }
         } else if (kind === 'die') {
           const u = this.units.get(e[1]);
           if (!u) continue;
@@ -794,11 +876,13 @@ export const audio = new AudioManager({ getManifest: () => manifestGetter() });
 /**
  * Wire the singleton to the app (called once by main.js): manifest source, settings and store-driven BGM.
  * @param {{ getManifest: () => any, subscribe: (fn: (s:any, prev:any) => void) => () => void, getState: () => any,
- *   selectRoute: (s:any) => string, settings?: { bgm:number, sfx:number, voice?:number, voiceLang?:string, muted:boolean } }} deps
+ *   selectRoute: (s:any) => string, settings?: { bgm:number, sfx:number, voice?:number, voiceLang?:string, muted:boolean },
+ *   getSkill?: (chessId: string, skillIndex?: number) => any }} deps
  */
 export function installAudio(deps) {
   try {
     manifestGetter = typeof deps?.getManifest === 'function' ? deps.getManifest : manifestGetter;
+    if (typeof deps?.getSkill === 'function') audio.getSkill = deps.getSkill;
     audio.install();
     if (deps?.settings) audio.setVolumes(deps.settings);
     if (typeof deps?.subscribe === 'function' && typeof deps?.getState === 'function') {

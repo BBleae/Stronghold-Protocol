@@ -160,7 +160,8 @@ async function main() {
   let voice = null;
   if (voiceLangs.length) {
     try {
-      voice = { index: indexCharWords(await loadCharWords(ROOT, { refresh: opts.refreshIndex && !opts.offline, offline: opts.offline, log })), langs: voiceLangs };
+      voice = { index: indexCharWords(await loadCharWords(ROOT, { refresh: opts.refreshIndex && !opts.offline, offline: opts.offline, log })), langs: voiceLangs,
+        rules: audioData.battleVoice };
     } catch (e) { log(`[voice] skipped: ${e.message}`); }
   }
   // The game data built by tools/build-data.mjs (when present) may reference more

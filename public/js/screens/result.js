@@ -84,8 +84,9 @@ export function ResultScreen() {
   }
   useEffect(() => {
     audio.sfx(r.victory ? 'settlementSucceed' : 'settlementFail');
-    // the last battle ended the match: its squad leader's end line, unless already said when the battle ended
-    audio.battleEnd({ victory: r.victory });
+    // the match was one operation: the squad leader's 3星结束行动 (no LP lost) / 非3星结束行动 / 行动失败
+    const me = r.players.find((p) => p.playerId === myId);
+    audio.matchEnd({ victory: r.victory, lpLost: Number(me?.stats?.lpLost) || 0 });
   }, []);
   const back = () => store.set({ match: emptyMatch() });
   const boss = r.bossId ? gd.boss(r.bossId) : null;
