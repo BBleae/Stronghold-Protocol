@@ -68,6 +68,8 @@ export async function copyRuntimeAssets({ root = ROOT, out = path.join(root, 'di
   Cache-Control: no-cache
 /resource-sw.js
   Cache-Control: no-cache
+/pack/*
+  Cache-Control: public, max-age=31536000, immutable
 `);
   let count = 0;
   async function check(directory) {
@@ -120,9 +122,49 @@ export async function buildWorker({ root = ROOT } = {}) {
     throw new Error('No game assets under public/assets: run `npm run assets` before deploying (SP_SKIP_ASSETS=1 skips the download, not this check)');
   }
   const assets = await copyRuntimeAssets({ root });
+  const pack = await writePackParts({ root, manifest });
   await bundleWorker({ root });
-  console.log(`Workers build: ${assets.count} static files; resource version ${manifest.version}, ${(manifest.totalBytes / 1024 / 1024).toFixed(1)} MiB`);
-  return { assets, manifest };
+  console.log(`Workers build: ${assets.count + pack.parts.length + 1} static files; resource version ${manifest.version}, ${(manifest.totalBytes / 1024 / 1024).toFixed(1)} MiB; `
+    + `/stronghold-resources.zip ${(pack.size / 1024 / 1024).toFixed(1)} MiB in ${pack.parts.length} parts`);
+  return { assets, manifest, pack };
+}
+
+/**
+ * The complete resource pack (tools/resource-pack.mjs) for /stronghold-resources.zip (worker/pack.js): cut into parts
+ * below the 25 MiB Static Assets file limit under <out>/pack/<version>/, with <out>/pack/index.json. The ZIP itself is
+ * kept in .cache (outside the deployment) and reused while the resources do not change.
+ */
+export async function writePackParts({ root = ROOT, out = path.join(root, 'dist/client'), manifest, partSize = 24 * 1024 * 1024 } = {}) {
+  const { writeResourcePack } = await import('./resource-pack.mjs');
+  const short = manifest.version.slice(0, 12);
+  const name = `stronghold-resources-${short}.zip`;
+  const zipPath = path.join(root, '.cache', name);
+  try { if (!(await fs.stat(zipPath)).size) throw new Error('empty'); }
+  catch { await writeResourcePack({ root, manifest, output: zipPath }); }
+  const dir = path.join(out, 'pack', short);
+  await fs.mkdir(dir, { recursive: true });
+  const parts = [];
+  const file = await fs.open(zipPath, 'r');
+  try {
+    const buffer = Buffer.alloc(partSize);
+    for (let n = 0; ; n++) {
+      let filled = 0;
+      while (filled < partSize) {
+        const { bytesRead } = await file.read(buffer, filled, partSize - filled, null);
+        if (!bytesRead) break;
+        filled += bytesRead;
+      }
+      if (!filled) break;
+      const part = `part-${String(n).padStart(3, '0')}.bin`;
+      await fs.writeFile(path.join(dir, part), buffer.subarray(0, filled));
+      parts.push({ url: `/pack/${short}/${part}`, size: filled });
+      if (filled < partSize) break;
+    }
+  } finally { await file.close(); }
+  const size = parts.reduce((n, p) => n + p.size, 0);
+  const index = { name, version: manifest.version, size, parts };
+  await fs.writeFile(path.join(out, 'pack', 'index.json'), JSON.stringify(index));
+  return index;
 }
 
 export async function bundleWorker({ root = ROOT, outfile = path.join(root, 'dist/worker/index.mjs') } = {}) {
