@@ -88,6 +88,7 @@ import {
   snapHud, activeBubbles, shortcutFor, shortcutBlocked, closesOnFieldPress, phaseTotalSeconds, homeFieldId, ownFieldId, normalizeSp, sortedPlayers,
   countdownState, shopBlockReason, stageOverrides, effectiveStage, watchTarget, dropFailureReason,
   previewEnemyKey, prepCamera, deployFieldOf, panelSide, panelSlots, bondPopupPlace, chessLoadout, unitLoadout, mergeTarget,
+  pieceCharId, voiceLeader,
 } from '../ui/gameLogic.js';
 import { toast } from '../ui/toasts.js';
 import { BriefingScreen } from './briefing.js';
@@ -98,8 +99,8 @@ import { store, useStore, shallowEqual, serverNow, emptyMatch } from '../store.j
 import { battleRunner } from '../battle/runner.js';
 import { isClientCombat, observeTarget, teammateProgress, cameraLayers, layerCamera, sidesOf, resumedWatch } from '../battle/observe.js';
 import { screenStrip, playerBonds, playerLayer, detailBondOwner, toggleBond, popupView } from '../ui/watchBonds.js';
-import { data, localAsset } from '../data.js';
-import { audio } from '../audio.js';
+import { data, localAsset, getChess } from '../data.js';
+import { audio, unitSoundClass } from '../audio.js';
 import { useDocClass, FullscreenButton } from '../ui/device.js';
 
 const cx = (...p) => p.flat().filter(Boolean).join(' ');
@@ -248,6 +249,14 @@ function MatchScreen() {
     uniteLeft: leaker ? uniteRemaining(localLeft, meP?.uniteLeft) : null,
   });
   lpBaseRef.current = liveLpNow.base;
+  // the own battle's end line (js/audio.js battleEnd): any LP lost ⇒ 非3星结束行动, LP 0 ⇒ 行动失败
+  // (the pending loss of a running battle, or a settled one since it started — a boss round settles before its end)
+  const bv = audio.battleVoice;
+  if (bv.pending) {
+    const lpNow = Number.isFinite(liveLpNow.shown) ? liveLpNow.shown : priv?.lp;
+    if (liveLpNow.pending > 0 || (Number.isFinite(lpNow) && Number.isFinite(bv.lp0) && lpNow < bv.lp0)) bv.lost = true;
+    if (Number.isFinite(lpNow) && lpNow <= 0) bv.dead = true;
+  }
 
   // latest values for event handlers bound once
   const live = useRef({});
@@ -514,6 +523,10 @@ function MatchScreen() {
     if (prev === phase) return;
     const b = phaseBanner(phase, pub);
     if (b) setBanner({ ...b, key: phaseKey });
+    // operator voice of a normal stage: the own battle starts — the squad leader's 行动开始; the battle phases are over
+    // without the own battle's end having been seen (a boss round, a server-side battle) — its end line now
+    if ((phase === PHASE.COMBAT || phase === PHASE.FINAL_ASSAULT || phase === PHASE.HIDDEN_CORE) && alive) audio.battleStart(voiceLeader(live.current.priv, getChess), { lp: live.current.priv?.lp });
+    else if (isCombatPhase(prev) && !isCombatPhase(phase)) audio.battleEnd();
     if (phase === PHASE.ROUND_START) audio.sfx('roundStart');
     else if (phase === PHASE.PREP) audio.sfx('rest', { volume: 0.7 });
     else if (phase === PHASE.COMBAT) audio.sfx('battleStart');
@@ -708,7 +721,7 @@ function MatchScreen() {
       const rec = piece.kind === 'item' ? gd.item(piece.id) : piece.kind === 'token' ? gd.token(piece.id) : gd.chess(piece.id);
       holdPiece(view, piece.uid, { row: t.row, col: t.col });
       setSel(null);
-      setFacing({ uid: piece.uid, piece, row: t.row, col: t.col, grid: previewGrid(lookups, piece), name: rec?.name || '' });
+      setFacing({ uid: piece.uid, piece, from: entry.area, row: t.row, col: t.col, grid: previewGrid(lookups, piece), name: rec?.name || '' });
       audio.sfx('pick', { volume: 0.5 });
     };
     const offs = [
@@ -717,6 +730,9 @@ function MatchScreen() {
         const entry = L.placeCtx?.pieces.get(e?.uid);
         if (!entry || !L.editable) return;
         audio.sfx('pick', { volume: 0.6 });
+        // 选中干员: picking up an operator (one that was already selected by a tap has just said it)
+        const ch = pieceCharId(entry.piece, getChess);
+        if (ch && L.sel?.uid !== entry.piece.uid) audio.voice(ch, 'select');
         setSel(null);
         // a new placement: a piece's detail card (right-click / long-press) would sit beside the wheel showing another unit
         setDetail((d) => (d?.kind === 'piece' ? null : d));
@@ -770,7 +786,12 @@ function MatchScreen() {
         // an enemy of the preview pen (research 09 §2.2 "Intel": tap it for its detail card)
         const penKey = previewEnemyKey(e);
         if (penKey) { setDetail({ kind: 'enemy', id: penKey }); return; }
-        if (e.unitId != null || e.unit) { setDetail({ kind: 'unit', unit: e.unit || null, unitId: e.unitId, uid: e.uid }); return; }
+        if (e.unitId != null || e.unit) {
+          // 选中干员: tapping a deployed operator in battle
+          if (!e.detail && e.button !== 2 && e.unit && e.unit.side !== 'enemy' && unitSoundClass(e.unit) === 'char') audio.voice(e.unit.spine || e.unit.defId, 'select');
+          setDetail({ kind: 'unit', unit: e.unit || null, unitId: e.unitId, uid: e.uid });
+          return;
+        }
         if (!Number.isInteger(e.uid)) return;
         setDetail({ kind: 'piece', uid: e.uid });
         // a tap selects an own piece (underframe + range); right-click / long-press only opens its detail card. A tap on
@@ -780,6 +801,7 @@ function MatchScreen() {
         const wasSel = pressSel.current === e.uid;
         pressSel.current = null;
         setSel(wasSel ? null : { uid: e.uid });
+        if (!wasSel) { const ch = pieceCharId(L.placeCtx?.pieces.get(e.uid)?.piece, getChess); if (ch) audio.voice(ch, 'select'); }
         if (wasSel) setDetail((d) => (d?.kind === 'piece' && d.uid === e.uid ? null : d));
       }),
     ];
@@ -879,6 +901,8 @@ function MatchScreen() {
       releaseHold(f.uid);
       return;
     }
+    // 部署: an operator placed from the hand / temporary area (moving one already on the board says nothing)
+    if (f.from !== 'board') { const ch = pieceCharId(f.piece, getChess); if (ch) audio.voice(ch, 'deploy'); }
     // accepted: the piece stays on the tile until m.private shows it there (or a short grace passes)
     setTimeout(() => { if (heldRef.current.has(f.uid)) releaseHold(f.uid); }, 1500);
   }, [view, releaseHold]);
@@ -1040,6 +1064,8 @@ function MatchScreen() {
   // (client-side combat: only in 各自行动 — 联防 observers just watch the 联防 field, research 09 §3.1)
   const myDone = combat && (cc ? phase === PHASE.COMBAT && (meP?.status === 'done' || localDone) : meP?.status === 'done');
   live.current.localDone = localDone;
+  // the own battle just ended: the squad leader's 3星结束行动 / 非3星结束行动 / 行动失败
+  useEffect(() => { if (myDone) audio.battleEnd(); }, [myDone]);
   // the solo pause button: only while the own battle still runs (the server refuses it afterwards)
   const canPause = pauseAvailable(pub, { solo, alive, done: meP?.status === 'done' || localDone });
   live.current.canPause = canPause;

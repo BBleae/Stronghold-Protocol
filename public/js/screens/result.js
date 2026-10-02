@@ -82,7 +82,11 @@ export function ResultScreen() {
     for (const p of r.players) if (Number.isFinite(p.stats[k]) && p.stats[k] > 0 && (top == null || p.stats[k] > top.v)) top = { v: p.stats[k], id: p.playerId };
     if (top && r.players.length > 1) best[k] = top.id;
   }
-  useEffect(() => { audio.sfx(r.victory ? 'settlementSucceed' : 'settlementFail'); }, []);
+  useEffect(() => {
+    audio.sfx(r.victory ? 'settlementSucceed' : 'settlementFail');
+    // the last battle ended the match: its squad leader's end line, unless already said when the battle ended
+    audio.battleEnd({ victory: r.victory });
+  }, []);
   const back = () => store.set({ match: emptyMatch() });
   const boss = r.bossId ? gd.boss(r.bossId) : null;
   // the Hidden Core medal (and its corrupted leader) only once R15 was actually fought

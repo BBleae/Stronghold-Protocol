@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { bgmKeyFor, resolveBgm, SfxLimiter, AudioManager, normalAttackSfx } from '../../public/js/audio.js';
+import { bgmKeyFor, resolveBgm, SfxLimiter, AudioManager, normalAttackSfx, voiceUrl, voiceLangsIn, endVoiceRole } from '../../public/js/audio.js';
 import { PHASE } from '../../shared/constants.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -113,7 +113,8 @@ describe('AudioManager', () => {
     assert.equal(a.unit('char_x', 'attack', 1), false);
     a.handleBattleEvents([['atk', 1, 2, 'arrow'], 'junk', null]);
     a.setVolumes({ bgm: 5, sfx: -1, muted: true });
-    assert.deepEqual(a.volumes, { bgm: 1, sfx: 0, muted: true });
+    assert.deepEqual(a.volumes, { bgm: 1, sfx: 0, voice: 0.8, voiceLang: 'cn', muted: true });
+    assert.equal(a.voice('char_x', 'select'), false);
     assert.equal(a.unlocked, false);
   });
   test('unlocks on the first gesture, then plays BGM and SFX from the manifest', async () => {
@@ -258,5 +259,135 @@ describe('impact sounds (user playtest #4 item 6)', () => {
       await settle();
       assert.ok(!urls.includes(manifest.audio.sfx.units[charId].hit), '4 s later: not that attack\'s impact');
     } finally { globalThis.performance = perf; restore(); }
+  });
+});
+
+describe('operator voice', () => {
+  const OP = 'char_9_test';
+  const line = (lang, n) => `/assets/voice/${lang}/${OP}/cn_${n}.mp3`;
+  const vm = {
+    audio: {
+      voice: {
+        cn: { [OP]: { select: [line('cn', '021'), line('cn', '022')], deploy: [line('cn', '023')], combat: [line('cn', '025'), line('cn', '026')],
+          start: line('cn', '020'), win3: line('cn', '030'), win: line('cn', '031'), fail: line('cn', '032') } },
+        jp: { [OP]: { select: [line('jp', '021')] } },
+      },
+    },
+  };
+
+  test('voiceUrl picks a line of the role (arrays at random); voiceLangsIn lists the languages the manifest has', () => {
+    assert.equal(voiceUrl(vm, 'cn', OP, 'start'), line('cn', '020'));
+    assert.equal(voiceUrl(vm, 'cn', OP, 'select', () => 0), line('cn', '021'));
+    assert.equal(voiceUrl(vm, 'cn', OP, 'select', () => 0.99), line('cn', '022'));
+    assert.equal(voiceUrl(vm, 'jp', OP, 'start'), null);
+    assert.equal(voiceUrl(vm, 'off', OP, 'select'), null);
+    assert.equal(voiceUrl(null, 'cn', OP, 'select'), null);
+    assert.deepEqual(voiceLangsIn(vm).map(([k]) => k), ['cn', 'jp']);
+    assert.deepEqual(voiceLangsIn({ audio: { voice: { jp: { [OP]: {} } } } }).map(([k]) => k), ['jp']);
+    assert.deepEqual(voiceLangsIn(manifest).filter(([k]) => k !== 'cn' && k !== 'jp'), []);
+  });
+
+  test('endVoiceRole: 3星结束行动 without LP lost, 非3星结束行动 with, 行动失败 at LP 0 or a lost match', () => {
+    assert.equal(endVoiceRole({ lost: false, dead: false }), 'win3');
+    assert.equal(endVoiceRole({ lost: true, dead: false }), 'win');
+    assert.equal(endVoiceRole({ lost: true, dead: true }), 'fail');
+    assert.equal(endVoiceRole({ lost: false }, true), 'win3');
+    assert.equal(endVoiceRole({ lost: true }, true), 'win');
+    assert.equal(endVoiceRole({ lost: false }, false), 'fail');
+  });
+
+  test('battleStart: the leader says 行动开始; battleEnd: its end line, once', async () => {
+    const { a, urls, settle, restore } = await voiceRig();
+    try {
+      a.battleStart(OP, { lp: 30 });
+      await settle();
+      assert.deepEqual(urls, [line('cn', '020')]);
+      a.battleVoice.lost = true;
+      a.battleEnd();
+      a.battleEnd({ victory: true });
+      await settle();
+      assert.deepEqual(urls, [line('cn', '020'), line('cn', '031')], '非3星结束行动, once');
+      a.battleStart(OP);
+      a.battleEnd({ victory: false });
+      await settle();
+      assert.equal(urls.at(-1), line('cn', '032'), 'the match was lost: 行动失败');
+      const n = urls.length; // (the cached 行动开始 of the second battle fetched nothing)
+      a.battleStart(null);
+      a.battleEnd();
+      await settle();
+      assert.equal(urls.length, n, 'no operator on the board: silence');
+    } finally { restore(); }
+  });
+
+  async function voiceRig(m = vm) {
+    const fw = fakeWindow();
+    const urls = [];
+    const origFetch = globalThis.fetch;
+    const perf = globalThis.performance;
+    let now = 1000;
+    globalThis.performance = { now: () => now };
+    globalThis.fetch = async (u) => { urls.push(u); return { ok: true, arrayBuffer: async () => new ArrayBuffer(8) }; };
+    const a = new AudioManager({ win: fw.win, getManifest: () => m });
+    a.install();
+    fw.fire('pointerdown');
+    const settle = () => new Promise((r) => setTimeout(r, 5));
+    return { a, urls, settle, advance: (ms) => { now += ms; }, restore: () => { globalThis.fetch = origFetch; globalThis.performance = perf; } };
+  }
+
+  test('one line at a time: a player action cuts the line, 作战中 never does', async () => {
+    const { a, urls, settle, restore } = await voiceRig();
+    try {
+      assert.equal(a.voice(OP, 'start'), true);
+      await settle();
+      assert.ok(urls.includes(line('cn', '020')));
+      assert.ok(a.voiceNow, 'playing');
+      assert.equal(a.voice(OP, 'combat', { auto: true }), false, 'never over a playing line');
+      assert.equal(a.voice(OP, 'deploy'), true, 'a player action cuts it');
+      await settle();
+      assert.ok(urls.includes(line('cn', '023')));
+      a.stopVoice();
+      assert.equal(a.voice(OP, 'combat', { auto: true }), true, 'silence: 作战中 plays');
+      assert.equal(a.voice(OP, 'squad'), false, 'no such line');
+      assert.equal(a.voice('char_other', 'select'), false, 'an operator without voice');
+    } finally { restore(); }
+  });
+
+  test('作战中 never takes the place of a player\'s line that is still loading', async () => {
+    const { a, urls, settle, restore } = await voiceRig();
+    try {
+      a.battleStart(OP);
+      assert.equal(a.voice(OP, 'combat', { auto: true }), false, '行动开始 is loading');
+      await settle();
+      assert.deepEqual(urls, [line('cn', '020')]);
+      assert.ok(a.voiceNow && !a.voiceNow.auto, '行动开始 plays');
+    } finally { restore(); }
+  });
+
+  test('a skill start of an operator says 作战中; summons and enemies say nothing', async () => {
+    const { a, urls, settle, restore } = await voiceRig();
+    try {
+      a.setFieldUnits([{ id: 1, side: 'ally', kind: 'chess', spine: OP }, { id: 2, side: 'enemy', kind: 'enemy', spine: OP },
+        { id: 3, side: 'ally', kind: 'token', spine: 'token_x', defId: 'token_x' }]);
+      a.handleBattleEvents([['skill', 2, true], ['skill', 3, true]]);
+      await settle();
+      assert.ok(!urls.some((u) => u.includes('/voice/')), 'enemy / summon: no voice');
+      a.handleBattleEvents([['skill', 1, true]]);
+      await settle();
+      assert.ok(urls.some((u) => u === line('cn', '025') || u === line('cn', '026')), '作战中');
+    } finally { restore(); }
+  });
+
+  test('language: off is silent; a language the site lacks falls back to the one it has', async () => {
+    const { a, urls, settle, restore } = await voiceRig({ audio: { voice: { jp: vm.audio.voice.jp } } });
+    try {
+      a.setVolumes({ voiceLang: 'off' });
+      assert.equal(a.voice(OP, 'select'), false);
+      a.setVolumes({ voiceLang: 'cn' });
+      assert.equal(a.voice(OP, 'select'), true);
+      await settle();
+      assert.deepEqual(urls, [line('jp', '021')]);
+      a.setVolumes({ voice: 0 });
+      assert.equal(a.voice(OP, 'select'), false, 'volume 0');
+    } finally { restore(); }
   });
 });

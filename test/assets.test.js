@@ -16,6 +16,7 @@ import { normalizeAtlas, atlasInfo, parseAtlas } from '../tools/assets/atlas.mjs
 import { pngSize, isCompletePng, isMp3, validate } from '../tools/assets/formats.mjs';
 import { encodeWoff2, decodeWoff2Tables, readSfnt, uintBase128 } from '../tools/assets/woff2.mjs';
 import { assetToPath, pickUnitSfx, indexAudio } from '../tools/assets/audio.mjs';
+import { parseVoiceLangs, indexCharWords, voiceLines, VOICE_ROLES } from '../tools/assets/voice.mjs';
 import { mirrorUrl, safeName, encodePath } from '../tools/assets/sources.mjs';
 import { collectEnemyIds, skillIndicesByChar } from '../tools/assets/plan.mjs';
 import { resolveTemplate, collectLeaves } from '../tools/assets/manifest.mjs';
@@ -619,5 +620,70 @@ describe('generated manifest data/assets.json', () => {
     assert.ok(units.length > 300);
     for (const u of units) for (const v of Object.values(u)) assert.ok(typeof v === 'string' || (v && typeof v === 'object'));
     assert.ok(manifest.fonts.css && existsSync(join(PUBLIC, manifest.fonts.css)));
+  });
+});
+
+describe('operator voice lines (tools/assets/voice.mjs)', () => {
+  const words = (key, lines) => Object.fromEntries(lines.map(([title, place, n]) => [`${key}_CN_${n}`,
+    { charId: key, wordKey: key, voiceId: `CN_${n}`, voiceIndex: Number(n), voiceTitle: title, placeType: place, voiceAsset: `${key}/CN_${n}` }]));
+  const ALL = [['编入队伍', 'SQUAD', '017'], ['行动出发', 'BATTLE_START', '019'], ['行动开始', 'BATTLE_FACE_ENEMY', '020'],
+    ['选中干员2', 'BATTLE_SELECT', '022'], ['选中干员1', 'BATTLE_SELECT', '021'], ['部署1', 'BATTLE_PLACE', '023'], ['部署2', 'BATTLE_PLACE', '024'],
+    ['作战中1', 'BATTLE_SKILL_1', '025'], ['作战中2', 'BATTLE_SKILL_2', '026'], ['作战中3', 'BATTLE_SKILL_3', '027'], ['作战中4', 'BATTLE_SKILL_4', '028'],
+    ['完成高难行动', 'FOUR_STAR', '029'], ['3星结束行动', 'THREE_STAR', '030'], ['非3星结束行动', 'TWO_STAR', '031'], ['行动失败', 'LOSE', '032'],
+    ['精英化晋升1', 'EVOLVE_ONE', '013'], ['交谈1', 'HOME_PLACE', '002']];
+  const table = {
+    charWords: { ...words('char_002_amiya', ALL), ...words('char_459_tachak', [['选中干员1', 'BATTLE_SELECT', '021']]) },
+    voiceLangDict: {
+      char_002_amiya: { charId: 'char_002_amiya', dict: { CN_MANDARIN: { wordkey: 'char_002_amiya', voicePath: null }, JP: { wordkey: 'char_002_amiya', voicePath: null } } },
+      char_459_tachak: { charId: 'char_459_tachak', dict: { LINKAGE: { wordkey: 'char_459_tachak', voicePath: 'Audio/Sound_Beta_2/Voice/' } } },
+    },
+  };
+  const idx = indexCharWords(table);
+
+  test('only the in-battle lines, by their official placeType, from the language folder', () => {
+    const cn = voiceLines(idx, 'char_002_amiya', 'cn');
+    assert.deepEqual(Object.keys(cn).sort(), Object.keys(VOICE_ROLES).sort());
+    assert.deepEqual(Object.keys(cn).sort(), ['combat', 'deploy', 'fail', 'select', 'start', 'win', 'win3']);
+    assert.equal(cn.start, 'voice_cn/char_002_amiya/cn_020.mp3', '行动开始 (BATTLE_FACE_ENEMY), not 行动出发');
+    assert.deepEqual(cn.select, ['voice_cn/char_002_amiya/cn_021.mp3', 'voice_cn/char_002_amiya/cn_022.mp3']);
+    assert.deepEqual(cn.combat.map((p) => p.slice(-7, -4)), ['025', '026', '027', '028']);
+    assert.equal(cn.win3, 'voice_cn/char_002_amiya/cn_030.mp3');
+    assert.equal(cn.win, 'voice_cn/char_002_amiya/cn_031.mp3');
+    assert.equal(cn.fail, 'voice_cn/char_002_amiya/cn_032.mp3');
+    assert.equal(voiceLines(idx, 'char_002_amiya', 'jp').start, 'voice/char_002_amiya/cn_020.mp3');
+  });
+
+  test('a linkage operator uses its own voice everywhere; no voice entry ⇒ null', () => {
+    assert.deepEqual(voiceLines(idx, 'char_459_tachak', 'cn'), { select: ['voice/char_459_tachak/cn_021.mp3'] });
+    assert.deepEqual(voiceLines(idx, 'char_459_tachak', 'jp'), { select: ['voice/char_459_tachak/cn_021.mp3'] });
+    assert.equal(voiceLines(idx, 'char_600_cpione', 'cn'), null, 'reserve operators have no voice');
+    assert.equal(voiceLines(idx, 'char_002_amiya', 'kr'), null);
+  });
+
+  test('--voice option: 中文 and 日文 by default', () => {
+    assert.deepEqual(parseVoiceLangs(undefined), ['cn', 'jp']);
+    assert.deepEqual(parseVoiceLangs('cn'), ['cn']);
+    assert.deepEqual(parseVoiceLangs('JP, jp'), ['jp']);
+    assert.deepEqual(parseVoiceLangs('none'), []);
+    assert.throws(() => parseVoiceLangs('fr'), /unknown voice language/);
+  });
+
+  test('data/assets.json: both languages, the same 7 roles per operator, files on disk', () => {
+    const v = readJson('data/assets.json').audio?.voice;
+    const onDisk = existsSync(join(ROOT, 'public', 'assets', 'voice'));
+    if (!v) return; // assets fetched with --voice=none
+    for (const [lang, per] of Object.entries(v)) {
+      assert.ok(['cn', 'jp'].includes(lang), lang);
+      for (const [charId, roles] of Object.entries(per)) {
+        assert.ok(/^char_/.test(charId), charId);
+        for (const [role, urls] of Object.entries(roles)) {
+          assert.ok(VOICE_ROLES[role], `${lang}.${charId}.${role}`);
+          for (const u of [].concat(urls)) {
+            assert.match(u, new RegExp(`^/assets/voice/${lang}/char_[a-z0-9_]+/cn_\\d{3}\\.mp3$`));
+            if (onDisk) assert.ok(existsSync(join(ROOT, 'public', u)), u);
+          }
+        }
+      }
+    }
   });
 });

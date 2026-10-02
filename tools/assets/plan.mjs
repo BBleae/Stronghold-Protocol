@@ -14,11 +14,13 @@
 // act2autochess match (07 enemy list ∪ act1autochess wave/boss levels used by
 // act2 modes ∪ bosses ∪ their summons ∪ enemy units spawned by operator kits),
 // the 23 bonds, 59 shop items, 40 bands,
-// default-skill icons, profession icons, autochess UI sprites, BGM and SFX.
+// default-skill icons, profession icons, autochess UI sprites, BGM and SFX;
+// optionally the operators' battle voice lines (charword_table.json, voice.mjs).
 
 import { RAW, joinUrl, safeName, urlBase, urlDir } from './sources.mjs';
 import { kindOf } from './formats.mjs';
 import { pickUnitSfx, UI_SFX, BATTLE_SFX, resolveSpec } from './audio.mjs';
+import { voiceLines } from './voice.mjs';
 
 /** Enemies with no Spine anywhere: render them with another enemy's model (research 07 §5.6). */
 export const ENEMY_SPINE_ALIAS = Object.freeze({
@@ -200,9 +202,11 @@ export function collectEnemyIds({ assets07, enemies05, maps05, ops03 }) {
  * @param {string[]} [p.extraEnemyIds] more enemy ids that can spawn (e.g. keys of data/enemies.json)
  * @param {string[]} [p.extraTokenIds] more token ids (e.g. token_* keys of data/tokens.json)
  * @param {Record<string,string>} [p.extraHandbook] enemyId → handbook/model id (e.g. from data/bosses.json)
+ * @param {{ index: ReturnType<import('./voice.mjs').indexCharWords>, langs: string[] }|null} [p.voice] operator voice
+ *   lines to plan (voice.mjs), per client language; null/empty ⇒ no voice
  * @returns {{ template: any, models: Map<string, any>, notes: string[] }}
  */
-export function buildPlan({ assets07, ops03, enemies05, maps05, audio, modelsData, extraEnemyIds = [], extraTokenIds = [], extraHandbook = {} }) {
+export function buildPlan({ assets07, ops03, enemies05, maps05, audio, modelsData, extraEnemyIds = [], extraTokenIds = [], extraHandbook = {}, voice = null }) {
   const notes = [];
   /** @type {Map<string, any>} */
   const models = new Map();
@@ -458,9 +462,23 @@ export function buildPlan({ assets07, ops03, enemies05, maps05, audio, modelsDat
   const sfxBattle = {};
   for (const [name, spec] of Object.entries(BATTLE_SFX)) { const l = soundLeaf(resolveSpec(spec, audio.bank)); if (l) sfxBattle[name] = l; else notes.push(`battle SFX ${name}: no sound`); }
 
+  // operator voice: public/assets/voice/<lang>/<word key>/cn_NNN.mp3 (the upstream folder name dropped — voice_cn/ or voice/)
+  const voiceByLang = {};
+  for (const lang of voice?.langs || []) {
+    const per = {};
+    for (const id of charIds) {
+      const lines = voiceLines(voice.index, id, lang);
+      if (!lines) continue;
+      const one = (p) => leaf(alt(`voice/${lang}/` + p.split('/').slice(1).map(safeName).join('/'), joinUrl(RAW.aa2voice, p)));
+      per[id] = Object.fromEntries(Object.entries(lines).map(([role, v]) => [role, Array.isArray(v) ? v.map(one) : one(v)]));
+    }
+    if (Object.keys(per).length) voiceByLang[lang] = per; else notes.push(`voice ${lang}: no operator has lines`);
+  }
+
   const template = {
     chars, enemies, tokens, bonds, items, bands, skills, skillsById, ui, prof,
     audio: { bgm, bossBgm: Object.fromEntries(Object.entries(bossBgm).sort(([a], [b]) => a.localeCompare(b, 'en', { numeric: true }))), sfx: { ui: sfxUi, battle: sfxBattle, units: unitsSfx } },
   };
+  if (Object.keys(voiceByLang).length) template.audio.voice = voiceByLang;
   return { template, models, notes };
 }
