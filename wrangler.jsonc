@@ -9,6 +9,10 @@
   // account): 卫.rinko.ai, written in punycode.
   "workers_dev": false,
   "preview_urls": false,
+  // Workers Builds runs `wrangler preview` for pushes to non-production branches, which refuses to run without a
+  // previews block. An empty block is enough: no bindings are shared with Previews (each would need its own isolated
+  // Durable Object namespace), so a Preview builds and uploads but has no rooms; production uses `wrangler deploy`.
+  "previews": {},
   "routes": [{ "pattern": "xn--rlr.rinko.ai", "custom_domain": true }],
   "build": { "command": "npm run build:worker" },
   "assets": {
