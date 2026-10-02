@@ -1,5 +1,7 @@
 # Cloudflare 部署
 
+当前唯一公开入口：[stronghold.lunar.ag](https://stronghold.lunar.ag)。`workers.dev` 和版本预览入口均关闭；目前未启用密码或 Cloudflare Access。
+
 适用场景：4–20 位朋友，分为多个最多 4 人的游戏房间。静态页面、游戏代码和素材由 **Workers Static Assets** 分发；每个房间使用独立的 **SQLite Durable Object + WebSocket**，复用原有房间、经济、回合和战斗协议。玩家浏览器计算正常战斗，AI / 掉线玩家由服务端处理。
 
 ## 为什么这样分配
@@ -7,7 +9,7 @@
 - 当前素材约 313 MiB，拆分为约 5,500 个小文件。Static Assets 的限制按文件大小 / 数量计算，当前文件均小于 25 MiB、总数低于免费计划 20,000 个文件限制。素材不计入 Worker JS 包体，也不经过房间对象。
 - 当前版本不需要 R2。后续若需要公开下载数百 MiB 的完整 ZIP，或资源频繁更新且需要独立生命周期，可把完整包或素材迁往 R2 并配置自定义域名 / 缓存。完整 ZIP 不能放进 Static Assets。
 - 一个房间一个 DO 保证房间事件顺序，避免多个 Worker 实例各自保有不同状态，也无需 WebRTC 的 NAT 穿透、信令与 TURN。等待房间使用 WebSocket Hibernation，活跃对局的定时器会保持实例运行。
-- 亚太 `locationHint` 是尽力提示，不能保证落在指定地区。大陆用户的实际连通性和延迟取决于网络线路，资源本地导入只能减少素材下载等待。`workers.dev` 的可达性应由朋友实测；有域名时可后续绑定自定义域名。
+- 亚太 `locationHint` 是尽力提示，不能保证落在指定地区。大陆用户的实际连通性和延迟取决于网络线路，资源本地导入只能减少素材下载等待；请朋友实测自定义域名的可达性。
 
 参考：[Static Assets 限额](https://developers.cloudflare.com/workers/static-assets/platform/limits/)、[DO WebSocket](https://developers.cloudflare.com/durable-objects/best-practices/websockets/)、[DO 定价](https://developers.cloudflare.com/durable-objects/platform/pricing/)。静态资源和房间计算是不同的计费项，不承诺多人长时间游戏一定完全免费。本项目不会自动升级收费计划。
 
@@ -23,7 +25,7 @@ npm run build:worker
 npm run dev:worker
 ```
 
-`wrangler.jsonc` 当前指向用户选择的「晴猫」账号，Worker 名为 `stronghold-protocol`；迁移到其他账号前应修改 `account_id`。开发访问 Wrangler 输出的 localhost 地址。Windows 上先停止 `dev:worker` 再部署，避免它的目录监视器占用构建输出。部署：
+`wrangler.jsonc` 当前指向用户选择的「晴猫」账号，Worker 名为 `stronghold-protocol`，通过 Custom Domain 绑定 `stronghold.lunar.ag`；`workers_dev` 与 `preview_urls` 均为 `false`。迁移到其他账号前应修改 `account_id` 和域名路由。开发访问 Wrangler 输出的 localhost 地址。Windows 上先停止 `dev:worker` 再部署，避免它的目录监视器占用构建输出。部署：
 
 ```powershell
 bun x wrangler@latest deploy
