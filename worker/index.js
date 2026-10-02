@@ -5,6 +5,8 @@ import { normalizeIp, limitKeyOf, TokenBucket } from '../server/net.js';
 import { RoomRuntime, validCode } from './room-runtime.js';
 import { PACK_PATH, servePack } from './pack.js';
 
+// the deployed commit (tools/build-worker.mjs buildId; esbuild defines it, unbundled tests see 'local')
+const BUILD = typeof __SP_BUILD__ === 'string' ? __SP_BUILD__ : 'local';
 const json = (body, status = 200, headers = {}) => Response.json(body, { status,
   headers: { 'Cache-Control': 'no-store', ...headers } });
 const error = (status, code, detail) => json({ error: code, ...(detail ? { detail } : {}) }, status);
@@ -22,7 +24,7 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname;
     if (path === '/healthz') return request.method === 'GET'
-      ? json({ ok: true, runtime: 'cloudflare', version: APP_VERSION }) : error(405, 'BAD_MSG');
+      ? json({ ok: true, runtime: 'cloudflare', version: APP_VERSION, build: BUILD }) : error(405, 'BAD_MSG');
     // Internal endpoints are only invoked on a DO stub; the public entry point never forwards them.
     if (path.startsWith('/_')) return error(404, 'ROOM_NOT_FOUND');
     if (path === '/api/rooms') {

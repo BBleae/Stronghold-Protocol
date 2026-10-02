@@ -108,7 +108,7 @@ game plays a line — and downloads them from the ArknightsAssets2 `voice` branc
 
 | Role | Line (placeType) | Played by the client (`public/js/audio.js`) — voice type |
 |---|---|---|
-| `select` | 选中干员1 / 2 (`BATTLE_SELECT`) | tapping an own deployed operator (prep board, battle) — `FOCUS_CHAR` |
+| `select` | 选中干员1 / 2 (`BATTLE_SELECT`) | tapping an own operator in battle (not in prep: no battle runs) — `FOCUS_CHAR` |
 | `deploy` | 部署1 / 2 (`BATTLE_PLACE`) | an operator placed from the bench, once its direction is confirmed — `PLACE_CHAR` |
 | `combat` | 作战中1–4 (`BATTLE_SKILL_1..4`) | an operator's skill starts — `SKILL_PASSIVE_IMP` (SP cost ≥ 10) / `SKILL_PASSIVE_NOR` |
 | `start` | 行动开始 (`BATTLE_FACE_ENEMY`) | once per match: the squad leader, when the first enemy of the first battle appears — `ENCOUNTER_ENEMY` |

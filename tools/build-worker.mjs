@@ -25,7 +25,13 @@ async function copyTree(source, target, allow, prefix = '') {
   }
 }
 
-export async function copyRuntimeAssets({ root = ROOT, out = path.join(root, 'dist/client') } = {}) {
+/** The deployed commit (Workers Builds: WORKERS_CI_COMMIT_SHA; else git), shown by /healthz and the settings. */
+export function buildId({ root = ROOT, env = process.env } = {}) {
+  const sha = env.WORKERS_CI_COMMIT_SHA || spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).stdout?.trim();
+  return /^[0-9a-f]{7,40}$/.test(sha || '') ? sha.slice(0, 7) : 'local';
+}
+
+export async function copyRuntimeAssets({ root = ROOT, out = path.join(root, 'dist/client'), buildTag = 'local' } = {}) {
   root = path.resolve(root);
   out = path.resolve(out);
   if (out !== path.join(root, 'dist', 'client')) throw new Error('Build output must be <root>/dist/client');
@@ -44,7 +50,7 @@ export async function copyRuntimeAssets({ root = ROOT, out = path.join(root, 'di
   try { await fs.access(path.join(out, 'data/local-assets.json')); }
   catch { await fs.writeFile(path.join(out, 'data/local-assets.json'), JSON.stringify({ version: 1, source: 'none', count: 0, groups: {} })); }
   let html = await fs.readFile(path.join(out, 'index.html'), 'utf8');
-  html = html.replace('<html ', '<html data-sp-runtime="cloudflare" ');
+  html = html.replace('<html ', `<html data-sp-runtime="cloudflare" data-sp-build="${buildTag}" `);
   html = html.replace('src="/js/main.js"', 'src="/js/worker-entry.js"');
   // Local fonts and system fallbacks keep the resource gate independent of Google Fonts reachability.
   html = html.replace(/\s*<link[^>]+https:\/\/fonts\.(?:googleapis|gstatic)\.com[^>]*>/g, '');
@@ -121,9 +127,11 @@ export async function buildWorker({ root = ROOT } = {}) {
   if (!manifest.files.some((file) => file.url.startsWith('/assets/'))) {
     throw new Error('No game assets under public/assets: run `npm run assets` before deploying (SP_SKIP_ASSETS=1 skips the download, not this check)');
   }
-  const assets = await copyRuntimeAssets({ root });
+  const buildTag = buildId({ root });
+  const assets = await copyRuntimeAssets({ root, buildTag });
   const pack = await writePackParts({ root, manifest });
-  await bundleWorker({ root });
+  await bundleWorker({ root, buildTag });
+  console.log(`Workers build: commit ${buildTag}`);
   console.log(`Workers build: ${assets.count + pack.parts.length + 1} static files; resource version ${manifest.version}, ${(manifest.totalBytes / 1024 / 1024).toFixed(1)} MiB; `
     + `/stronghold-resources.zip ${(pack.size / 1024 / 1024).toFixed(1)} MiB in ${pack.parts.length} parts`);
   return { assets, manifest, pack };
@@ -167,7 +175,7 @@ export async function writePackParts({ root = ROOT, out = path.join(root, 'dist/
   return index;
 }
 
-export async function bundleWorker({ root = ROOT, outfile = path.join(root, 'dist/worker/index.mjs') } = {}) {
+export async function bundleWorker({ root = ROOT, outfile = path.join(root, 'dist/worker/index.mjs'), buildTag = 'local' } = {}) {
   const replacements = new Map([
     [path.join(root, 'server/data-node.js'), path.join(root, 'worker/data-loader.js')],
     [path.join(root, 'server/sim/nodeData.js'), path.join(root, 'worker/sim-data-loader.js')],
@@ -187,6 +195,7 @@ export async function bundleWorker({ root = ROOT, outfile = path.join(root, 'dis
     outfile,
     bundle: true, format: 'esm', platform: 'neutral', target: 'es2022',
     external: ['node:*', 'cloudflare:*'], minify: true, keepNames: true, metafile: true,
+    define: { __SP_BUILD__: JSON.stringify(buildTag) },
     plugins: [{ name: 'worker-data-loaders', setup(builder) {
       builder.onResolve({ filter: /(?:data-node|nodeData)\.js$/ }, args => {
         const replacement = replacements.get(path.resolve(args.resolveDir, args.path));
