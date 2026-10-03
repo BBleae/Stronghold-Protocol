@@ -26,6 +26,7 @@
 
 // Polyfills first (older Safari / Firefox ESR): every module evaluated after this one sees them.
 import './ui/compat.js';
+import { preferences } from './preferences.js';
 import { render } from '../vendor/preact.module.js';
 import { useErrorBoundary } from '../vendor/hooks.module.js';
 import { html, UiHosts, Button, MicroLabel, closeAllDialogs } from './ui/components.js';
@@ -312,7 +313,8 @@ async function boot() {
   // touch / hover / fullscreen classes, zoom-gesture blocking, rotation re-layout (ui/device.js, css/devices.css)
   installDeviceSupport();
   if (document.documentElement.dataset.spRuntime === 'cloudflare') {
-    await loadAccount();
+    const profile = await loadAccount();
+    if (profile.capabilities?.accountSystem) await preferences.start(account.user?.accountId);
     net.accountMode = account.enabled;
     if(account.application)net.application={...account.application,code:account.application.roomId,status:'pending'};
     const resources = await import('./resources/index.js');

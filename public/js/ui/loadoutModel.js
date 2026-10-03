@@ -1,8 +1,8 @@
 // Operator loadout model (DESIGN §16) — pure logic of the 干员调配 screen (screens/loadout.js), shared with the sync
 // (ui/loadoutSync.js) and usable by the in-match UI (shop cards / detail panel: `effectiveChoice`, `selectedSkill`).
 //
-// The per-browser loadout is `{ [baseChessId]: { skill?: skillIndex, module?: uniEquipId | 'none' } }`, persisted in
-// localStorage (`sp.pref.loadout` = { v: 1, entries }) and sent with C2S `room.loadout { entries }`. Only choices that
+// The loadout is `{ [baseChessId]: { skill?: skillIndex, module?: uniEquipId | 'none' } }`, persisted in account
+// preferences (guest fallback: `sp.pref.loadout` = { v: 1, entries }) and sent with C2S `room.loadout { entries }`. Only choices that
 // differ from the chess's defaults are kept. The legal choices come from data/chess.json (DESIGN §16): every chess has
 // `skills[]` (SkillRecord at its own skill level — the normal chess Lv4, the elite Lv7) and elites `modules[]`
 // (ModuleRecord: uniEquipId, name, typeName, attr, traitOverride, talentChanges, isDefault) — while the data lacks

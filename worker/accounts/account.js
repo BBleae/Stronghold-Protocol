@@ -1,6 +1,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import { requireId, AccountError } from '../../shared/account-protocol.js';
 import { aggregateStats } from '../../shared/history.js';
+import { validatePreferencePatch } from '../../public/js/preferenceSchema.js';
 export class AccountDurableObject extends DurableObject {
   constructor(ctx,env) {
     super(ctx,env);
@@ -9,6 +10,18 @@ export class AccountDurableObject extends DurableObject {
   }
   async setProfile(profile) { await this.ctx.storage.put('profile', profile); }
   async getProfile() { return (await this.ctx.storage.get('profile')) || null; }
+  async getPreferences() { return (await this.ctx.storage.get('preferences')) ?? null; }
+  async savePreferences(patch, initialize = false) {
+    validatePreferencePatch(patch);
+    return this.ctx.storage.transaction(async tx => {
+      const current = await tx.get('preferences');
+      // First-login migration is atomic: a stale device never replaces an existing account profile.
+      if (initialize && current != null) return current;
+      const next = { ...current, ...patch };
+      await tx.put('preferences', next);
+      return next;
+    });
+  }
   async getActiveSeat() { return (await this.ctx.storage.get('activeSeat')) || null; }
   async getApplication() {const value=await this.ctx.storage.get('application');return value?.expiresAt>Date.now()?value:null;}
   async claimApplication(value) {

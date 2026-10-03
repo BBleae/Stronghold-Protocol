@@ -9,7 +9,7 @@
 // skill (S1–S3) and, when changed, the elite's module badge. Right: the selected chess — skills (icon, name, 默认,
 // SP recovery, 初始 / 消耗 SP, duration, description at 普通 Lv.4 or 精锐 Lv.7) and the elite's modules (不装备 / X / Y …
 // with the stat bonus, the trait upgrade and the talent changes), 恢复默认; 全部恢复默认 in the top bar.
-// The loadout lives in ui/loadoutSync.js (localStorage + room.loadout); the model is ui/loadoutModel.js.
+// The loadout lives in ui/loadoutSync.js (account preferences + room.loadout); the model is ui/loadoutModel.js.
 // Keyboard: Esc closes, ←/→ move through the (filtered) roster when focus is not in the search field.
 
 import { useEffect, useMemo, useRef, useState } from '../../vendor/hooks.module.js';
@@ -17,7 +17,7 @@ import { html, Icon, MicroLabel, Button, TierChip, TextField, Countdown, Spinner
 import { Img, RichText, UnitThumb } from '../ui/gameComponents.js';
 import { chessAvatarUrl, chessPortraitUrl, subProfIconUrl, bondIconUrl, moduleTypeIconUrl } from '../ui/assetUrls.js';
 import { data, useData, localAsset } from '../data.js';
-import { useStore } from '../store.js';
+import { useStore, usePrefStatus } from '../store.js';
 import { PHASE } from '../../../shared/constants.js';
 import {
   MODULE_NONE, PROF_ORDER, PROF_NAME, rosterOf, filterRoster, recordsOf, chessOptions, effectiveChoice, setChoice, resetChoice,
@@ -274,12 +274,18 @@ function Filters({ m, filters, onFilters, bonds }) {
 // ---- screen -------------------------------------------------------------------------------------------------------------
 
 const SYNC_TEXT = {
-  idle: ['', ''], pending: ['保存中…', 'is-busy'], sending: ['同步中…', 'is-busy'], synced: ['已同步', 'is-ok'],
+  idle: ['', ''], pending: ['应用中…', 'is-busy'], sending: ['同步中…', 'is-busy'], synced: ['已同步到对局', 'is-ok'],
   locked: ['本局已锁定 · 下一局生效', 'is-warn'], error: ['同步失败', 'is-bad'],
+};
+const ACCOUNT_SYNC_TEXT = {
+  loading: ['读取账号配置…', 'is-busy'], pending: ['账号保存中…', 'is-busy'], saving: ['账号保存中…', 'is-busy'],
+  synced: ['已保存到账号', 'is-ok'], error: ['账号尚未同步', 'is-warn'],
 };
 
 /** The overlay screen. */
 function LoadoutScreen({ st }) {
+  const accountSync = usePrefStatus();
+  const [accountSyncText, accountSyncClass] = ACCOUNT_SYNC_TEXT[accountSync] || ['', ''];
   const ready = useData('chess', 'bonds', 'assets', 'local');
   const phase = useStore((s) => s.match?.public?.phase || null);
   const inMatch = useStore((s) => !!s.room?.inMatch);
@@ -356,6 +362,7 @@ function LoadoutScreen({ st }) {
       </div>
       <div class="lo-top__right">
         ${inMatch && hasDeadline(infoDeadline) ? html`<${Countdown} deadline=${infoDeadline} size="sm" gauge=${false} label="调配截止" class="lo-deadline" />` : null}
+        ${accountSyncText ? html`<span class=${cx('lo-sync', accountSyncClass)} role="status">${accountSyncText}</span>` : null}
         ${syncText ? html`<span class=${cx('lo-sync', syncCls)} role="status">${syncText}</span>` : null}
         <span class="lo-count">已调整 <b class="num">${nChanged}</b><span class="num t-dim">/${roster.length}</span></span>
         <${Button} variant="secondary" size="sm" icon="refresh" disabled=${!nChanged} onClick=${resetAll}>全部恢复默认<//>

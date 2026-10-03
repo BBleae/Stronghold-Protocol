@@ -1,6 +1,6 @@
 // Operator loadout state + server sync (DESIGN §16).
 //
-// `loadoutStore` holds the per-browser loadout (`entries`, persisted in localStorage through store.js savePref) and the
+// `loadoutStore` holds the active account's loadout (or local guest choices) through store.js savePref, and the
 // 干员调配 screen state (open / origin / selection / filters). `installLoadoutSync()` (called once by main.js) keeps the
 // server's copy current: after every `welcome` (new or resumed session — the server keeps it on the session and on the
 // seat, so joining a room needs no resend) and after every edit (debounced; a pending edit goes out at once when the
@@ -11,7 +11,7 @@
 // is logged. `sync.state` ∈ 'idle' | 'pending' | 'sending' | 'synced' | 'locked' | 'error' is mirrored into the store
 // for the screen's status line.
 
-import { createStore, loadPref, savePref } from '../store.js';
+import { createStore, loadPref, savePref, subscribePrefs } from '../store.js';
 import { data } from '../data.js';
 import { LOADOUT_PREF, parseStored, toStored, sanitizeEntries } from './loadoutModel.js';
 import { toast } from './toasts.js';
@@ -31,6 +31,11 @@ export const loadoutStore = createStore({
   sel: null,           // selected base chess id
   filters: { tier: null, prof: null, bond: null, query: '', changedOnly: false },
   sync: 'idle',
+});
+
+// Cloud hydration happens after module evaluation and can also recover after a failed initial fetch.
+subscribePrefs(key => {
+  if (key === LOADOUT_PREF) loadoutStore.set({entries:readStored()});
 });
 
 /** Replace the stored entries (persisted at once; the sync picks the change up). */

@@ -12,11 +12,12 @@ export class SiteDirectory extends DurableObject {
     this.sql.exec('CREATE TABLE IF NOT EXISTS rooms (room_id TEXT PRIMARY KEY, value TEXT NOT NULL, visible INTEGER NOT NULL, updated_at INTEGER NOT NULL, expires_at INTEGER NOT NULL)');
     this.sql.exec('CREATE TABLE IF NOT EXISTS archives (match_id TEXT PRIMARY KEY)');
   }
-  resolveGithubUser({id, login, avatarUrl}) {
+  resolveGithubUser({id, login, name, avatarUrl}) {
     if (!/^\d{1,20}$/.test(id) || typeof login !== 'string' || login.length > 80) throw new AccountError('INVALID_PROFILE');
+    const displayName = typeof name === 'string' ? name.trim().slice(0, 80) : '';
     return this.ctx.storage.transactionSync(() => {
       const old = this.sql.exec('SELECT account_id FROM users WHERE github_id=?', id).toArray()[0];
-      const profile = {accountId: old?.account_id || crypto.randomUUID(), githubId: id, name: login, avatarUrl};
+      const profile = {accountId: old?.account_id || crypto.randomUUID(), githubId: id, name: displayName || login, avatarUrl};
       this.sql.exec('INSERT INTO users VALUES (?,?,?) ON CONFLICT(github_id) DO UPDATE SET profile=excluded.profile',
         id, profile.accountId, JSON.stringify(profile));
       return profile;

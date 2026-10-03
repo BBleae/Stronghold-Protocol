@@ -250,7 +250,7 @@ export function TitleScreen() {
           <${Icon} name="key" />
           <span>收到同盟邀请</span><b class="num">${pendingJoin}</b><span class="t-lo">${account.enabled?'· 登录后申请加入':'· 输入代号后将自动加入'}</span>
         </div>` : null}
-        ${account.enabled && !account.user ? html`<${Button} variant="primary" size="xl" block=${true} disabled=${!account.loginReady}
+        ${account.enabled && !account.user ? html`<${Button} class="title-login__github" variant="primary" size="xl" block=${true} disabled=${!account.loginReady}
           onClick=${()=>location.assign('/api/auth/github/start')}>${account.loginReady?'使用 GitHub 登录':'GitHub 登录尚未配置'}<//>
           <${Button} variant="ghost" size="lg" block=${true} onClick=${()=>store.patch('session',{entered:true})}>浏览在线大厅<//>` : html`
         <${TextField} label="博士代号" micro="CALLSIGN" size="lg" icon="user" value=${name} maxLength=${NAME_MAX_LEN}

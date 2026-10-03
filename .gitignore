@@ -14,6 +14,7 @@ data/local-assets.json
 .cache/
 # the resource ZIP for friends (scripts/make-resource-pack.*, npm run resources:zip): game assets, never committed
 /stronghold-resources-*.zip
+/网页卫戍资源包baseline.zip
 
 # --- Python (optional local-client extraction) ----------------------------------------------------
 .venv*/

@@ -11,7 +11,8 @@
 .account-filters { display:flex; gap:.12rem; flex-wrap:wrap; margin-bottom:.24rem; }
 .account-stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(2.4rem,1fr)); gap:.24rem; }
 .history-list { display:flex; flex-direction:column; gap:.2rem; }
-.history-players { display:grid; grid-template-columns:repeat(auto-fit,minmax(3.2rem,1fr)); gap:.2rem; }
+/* PlayerCard uses a full-width settlement row; narrow columns collapse its lineup. */
+.history-players { display:grid; grid-template-columns:minmax(0,1fr); gap:.2rem; }
 .replay-field { position:relative; flex:1; min-height:3rem; }
 .replay-toolbar { display:flex; gap:.16rem; padding:.16rem .6rem; align-items:center; flex-wrap:wrap; }
 .replay-screen .account-body { display:flex; flex-direction:column; flex:1; min-height:0; }

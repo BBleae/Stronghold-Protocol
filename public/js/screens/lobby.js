@@ -16,7 +16,7 @@ import { LoadoutButton } from './loadout.js';
 import { net, identity } from '../net.js';
 import { account } from '../account.js';
 import { AccountMenu, PublicRooms } from '../ui/accountMenu.js';
-import { store, useStore, shallowEqual, loadPref, savePref } from '../store.js';
+import { store, useStore, shallowEqual, loadPref, savePref, usePref } from '../store.js';
 import { getConfig, getMode, getStage, useData } from '../data.js';
 
 /** Official mode texts (activity_table act2autochess.modeDataDict), fallback when config.json is absent. */
@@ -216,25 +216,23 @@ function DifficultyCard({ roomMode, difficulty, selected, onSelect }) {
 /** Lobby screen component. */
 export function LobbyScreen() {
   const me = useStore((s) => s.me, shallowEqual);
+  const displayName = account.user?.name || me.name;
   const conn = useStore((s) => s.connection, shallowEqual);
   useData('config');
-  const [roomMode, setRoomMode] = useState(() => (loadPref('lobby.mode', 'coop') === 'solo' ? 'solo' : 'coop'));
-  const [difficulty, setDifficulty] = useState(() => {
-    const d = loadPref('lobby.difficulty', 'FUNNY');
-    return DIFFICULTIES.includes(d) ? d : 'FUNNY';
-  });
+  const [savedMode, pickMode] = usePref('lobby.mode', 'coop');
+  const [savedDifficulty, pickDifficulty] = usePref('lobby.difficulty', 'FUNNY');
+  const roomMode = savedMode === 'solo' ? 'solo' : 'coop';
+  const difficulty = DIFFICULTIES.includes(savedDifficulty) ? savedDifficulty : 'FUNNY';
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState(null);
-  const [recent] = useState(recentRooms);
+  usePref('recentRooms', null);
+  const recent = recentRooms();
   const alive = useRef(true);
   const inFlight = useRef(false); // synchronous guard against double clicks (state updates are async)
   useEffect(() => () => { alive.current = false; }, []);
 
   const online = conn.status === 'online';
   const codeOk = CODE_RE.test(code);
-
-  const pickMode = (m) => { setRoomMode(m); savePref('lobby.mode', m); };
-  const pickDifficulty = (d) => { setDifficulty(d); savePref('lobby.difficulty', d); };
 
   const run = async (kind, fn) => {
     if(account.enabled && !account.user) {toast('请先使用 GitHub 登录','warn');return;}
@@ -272,9 +270,9 @@ export function LobbyScreen() {
         <${GuideButton} class="lobby-guide" variant="secondary" />
         <${LoadoutButton} from="lobby" size="sm" class="lobby-loadout" />
         <div class="me-chip">
-          <${AvatarFrame} size="sm" name=${me.name} seat=${0} self=${true} />
+          <${AvatarFrame} size="sm" name=${displayName} src=${account.user?.avatarUrl} seat=${0} self=${true} />
           <div class="me-chip__text">
-            <span class="me-chip__name">${me.name || '博士'}</span>
+            <span class="me-chip__name">${displayName || '博士'}</span>
             <${MicroLabel}>${me.playerId != null ? `DOCTOR #${doctorNo(me.playerId)}` : 'DOCTOR'}<//>
           </div>
         </div>

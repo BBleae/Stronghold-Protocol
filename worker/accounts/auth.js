@@ -77,7 +77,7 @@ export async function handleAuth(request, env, {now = Date.now, fetch: providerF
     const profile = await response.json();
     if (!Number.isSafeInteger(profile.id) || profile.id <= 0 || typeof profile.login !== 'string') throw new AccountError('OAUTH_PROVIDER_FAILED', 502);
     const avatarUrl = typeof profile.avatar_url === 'string' && /^https:\/\/avatars\.githubusercontent\.com\//.test(profile.avatar_url) ? profile.avatar_url : null;
-    const user = await directory.resolveGithubUser({id: String(profile.id), login: profile.login.slice(0, 80), avatarUrl});
+    const user = await directory.resolveGithubUser({id: String(profile.id), login: profile.login.slice(0, 80), name: profile.name, avatarUrl});
     if (env.ACCOUNTS) await accountOf(env, user.accountId).setProfile(user);
     const sessionToken = randomToken();
     await directory.saveSession(await hash(sessionToken), {accountId: user.accountId, user, expiresAt: now() + ACCOUNT_LIMITS.sessionMs});

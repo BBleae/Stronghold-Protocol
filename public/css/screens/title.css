@@ -224,6 +224,7 @@
   background: linear-gradient(90deg, var(--mint-500), transparent 60%);
 }
 .title-login .btn--xl { letter-spacing: .6em; padding-left: calc(.48rem + .3em); }
+.title-login .title-login__github { letter-spacing: normal; padding-inline: .24rem; }
 .title-invite {
   display: flex;
   align-items: center;

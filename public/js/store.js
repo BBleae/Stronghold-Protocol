@@ -21,6 +21,7 @@
 
 import { useLayoutEffect, useReducer, useRef } from '../vendor/hooks.module.js';
 import { PHASE } from '../../shared/constants.js';
+import { preferences } from './preferences.js';
 
 /**
  * Create an observable store.
@@ -145,31 +146,41 @@ export function shallowEqual(a, b) {
   return true;
 }
 
-// ---- tiny persisted preferences (localStorage, failure-tolerant) --------------------------------
+// ---- persisted preferences (account-synced allowlist; device-local fallback) --------------------
 
 /**
- * Read a JSON preference from localStorage.
+ * Read a JSON preference from the active account cache or device-local storage.
  * @template T
  * @param {string} key
  * @param {T} fallback
  * @returns {T}
  */
 export function loadPref(key, fallback) {
-  try {
-    const raw = globalThis.localStorage?.getItem(`sp.pref.${key}`);
-    return raw == null ? fallback : JSON.parse(raw);
-  } catch {
-    return fallback;
-  }
+  return preferences.load(key, fallback);
 }
 
 /**
- * Write a JSON preference to localStorage (silently ignores quota/privacy errors).
+ * Save immediately on this device and queue account-scoped preferences for server persistence.
  * @param {string} key
  * @param {any} value
  */
 export function savePref(key, value) {
-  try { globalThis.localStorage?.setItem(`sp.pref.${key}`, JSON.stringify(value)); } catch { /* ignore */ }
+  preferences.save(key, value);
+}
+
+export const subscribePrefs = listener => preferences.subscribe(listener);
+
+/** Re-render when a saved preference changes, including a delayed cloud recovery. */
+export function usePref(key, fallback) {
+  const [, render] = useReducer(n => n + 1, 0);
+  useLayoutEffect(() => subscribePrefs(changed => { if (changed === key) render(); }), [key]);
+  return [loadPref(key, fallback), value => savePref(key, value)];
+}
+
+export function usePrefStatus() {
+  const [, render] = useReducer(n => n + 1, 0);
+  useLayoutEffect(() => subscribePrefs(key => { if (key === null) render(); }), []);
+  return preferences.status;
 }
 
 const identity = (s) => s;

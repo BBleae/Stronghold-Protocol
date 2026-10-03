@@ -24,7 +24,11 @@ export async function createAccountHarness(source, {durableObjects={},bindings={
       fetch: (body) => mf.dispatchFetch('https://test.example/', { method: 'POST', body: JSON.stringify(body) }),
       request:(url,init)=>mf.dispatchFetch(url,init),
       url:()=>mf.ready,
-      async restart() { await mf.dispose(); await start(); },
+      async restart() {
+        // Keep the browser origin stable so live clients can exercise automatic reconnection.
+        options.port = Number(new URL(await mf.ready).port);
+        await mf.dispose(); await start();
+      },
       async dispose() { await mf.dispose(); await rm(dir, { recursive: true, force: true }); },
     };
   } catch (error) { await mf?.dispose(); await rm(dir, { recursive: true, force: true }); throw error; }
