@@ -327,24 +327,57 @@ describe('operator voice', () => {
     return { a, urls, settle, advance: (ms) => { now += ms; }, restore: () => { globalThis.fetch = origFetch; globalThis.performance = perf; } };
   }
 
-  test('skill lines: at most one per type every 10 s, never over a line of the same priority; taps yield to them', async () => {
+  test('作战中: one shared 10 s cooldown (start to start), never over another 作战中; taps yield to them', async () => {
     const { a, urls, settle, advance, restore } = await voiceRig(vm, (chessId) => ({ spCost: chessId === 'big' ? 20 : 5 }));
     try {
       a.setFieldUnits([{ id: 1, side: 'ally', kind: 'chess', spine: OP, defId: 'small' }, { id: 2, side: 'ally', kind: 'chess', spine: OP, defId: 'small' },
         { id: 3, side: 'ally', kind: 'chess', spine: LEADER, defId: 'big' }, { id: 4, side: 'enemy', kind: 'enemy', spine: OP }]);
       a.handleBattleEvents([['skill', 4, true], ['skill', 1, true], ['skill', 2, true]]);
       await settle();
-      assert.equal(urls.filter((u) => u.includes('/voice/')).length, 1, 'one 作战中 of a normal skill; the enemy says nothing');
+      assert.equal(urls.filter((u) => u.includes('/voice/')).length, 1, 'one 作战中; the enemy says nothing');
       assert.equal(a.voice(OP, 'select'), false, 'a tap does not cut a skill line');
       a.handleBattleEvents([['skill', 3, true]]);
       await settle();
-      assert.ok(urls.some((u) => u.includes(`/${LEADER}/cn_02`)), 'an important skill (SP ≥ 10) cuts in');
+      assert.equal(urls.length, 1, 'an important skill does not cut a normal one either');
+      a.stopVoice(); // the line ends
+      advance(9999);
+      a.handleBattleEvents([['skill', 3, true], ['skill', 1, true]]);
+      assert.equal(a.voiceWant, null, 'both types wait 10 s from the start of the last 作战中');
+      advance(2);
+      a.handleBattleEvents([['skill', 3, true]]);
+      assert.equal(a.voiceWant?.type, 'SKILL_PASSIVE_IMP', 'after 10 s');
+    } finally { restore(); }
+  });
+
+  test('a re-mounted battle screen does not arm a second 行动开始; the next battle does', async () => {
+    const { a, settle, advance, restore } = await voiceRig();
+    try {
+      a.battleStart(LEADER, 'COMBAT:3');
+      advance(3000);
+      a.handleBattleEvents([['spawn', { id: 7, side: 'enemy', kind: 'enemy', spine: 'enemy_x' }]]);
+      await settle();
       a.stopVoice();
-      a.handleBattleEvents([['skill', 1, true]]);
-      assert.equal(a.voiceWant, null, 'normal skills: still within 10 s');
-      advance(10001);
-      a.handleBattleEvents([['skill', 1, true]]);
-      assert.ok(a.voiceWant, 'after 10 s');
+      a.battleStart(LEADER, 'COMBAT:3');
+      advance(3000);
+      a.handleBattleEvents([['spawn', { id: 8, side: 'enemy', kind: 'enemy', spine: 'enemy_x' }]]);
+      await settle();
+      assert.deepEqual(a.voiceLog.map((l) => l.role), ['start'], 'the same battle: once');
+      a.battleOver();
+      a.battleStart(LEADER, 'COMBAT:4');
+      advance(3000);
+      a.handleBattleEvents([['spawn', { id: 9, side: 'enemy', kind: 'enemy', spine: 'enemy_x' }]]);
+      await settle();
+      assert.deepEqual(a.voiceLog.map((l) => l.role), ['start', 'start'], 'the next battle');
+    } finally { restore(); }
+  });
+
+  test('no line starts while the page is hidden (suspended context)', async () => {
+    const { a, restore } = await voiceRig();
+    try {
+      a.ctx.state = 'suspended';
+      assert.equal(a.voice(OP, 'deploy'), false);
+      a.ctx.state = 'running';
+      assert.equal(a.voice(OP, 'deploy'), true);
     } finally { restore(); }
   });
 

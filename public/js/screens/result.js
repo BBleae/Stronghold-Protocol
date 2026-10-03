@@ -11,7 +11,7 @@
 //                 stats: { dmgDealt, kills, leaks, gold /* funds SPENT */, refreshes, merges, bossDamage?, itemsEquipped?,
 //                          activatedLayers?, lpLost?, perfectRounds? } }] }
 
-import { useEffect } from '../../vendor/hooks.module.js';
+import { useEffect, useRef } from '../../vendor/hooks.module.js';
 import { html, Button, Icon, MicroLabel, DifficultyTag } from '../ui/components.js';
 import { useGameData, Img, UnitThumb, BandIcon, PlayerAvatar, BondGlyph, LpTower, Sprite } from '../ui/gameComponents.js';
 import { normalizeResult, fmtNum } from '../ui/gameLogic.js';
@@ -82,12 +82,17 @@ export function ResultScreen() {
     for (const p of r.players) if (Number.isFinite(p.stats[k]) && p.stats[k] > 0 && (top == null || p.stats[k] > top.v)) top = { v: p.stats[k], id: p.playerId };
     if (top && r.players.length > 1) best[k] = top.id;
   }
+  // once m.result is here: the server sends m.public (phase RESULT, which mounts this screen) before m.result, so the
+  // first render has no result yet and would always read as a defeat
+  const settled = useRef(false);
   useEffect(() => {
+    if (!res || settled.current) return;
+    settled.current = true;
     audio.sfx(r.victory ? 'settlementSucceed' : 'settlementFail');
     // the match was one operation: the squad leader's 3星结束行动 (no LP lost) / 非3星结束行动 / 行动失败
     const me = r.players.find((p) => p.playerId === myId);
     audio.matchEnd({ victory: r.victory, lpLost: Number(me?.stats?.lpLost) || 0 });
-  }, []);
+  }, [res]);
   const back = () => store.set({ match: emptyMatch() });
   const boss = r.bossId ? gd.boss(r.bossId) : null;
   // the Hidden Core medal (and its corrupted leader) only once R15 was actually fought

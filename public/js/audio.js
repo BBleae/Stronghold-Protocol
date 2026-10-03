@@ -31,13 +31,15 @@
 //   BATTLE_VOICE when absent): every line has a voice type with a priority, a cooldown and whether a line of the same
 //   priority replaces the one playing (`overlap`); a lower priority never cuts in; lines cross-fade (0.1 s).
 //   The moments follow the official mode (a recording of 卫戍协议): buying or dragging a bench operator says nothing;
-//   部署 (PLACE_CHAR) — an operator successfully deployed from the bench (prep); 行动开始 (ENCOUNTER_ENEMY) — every
-//   battle, the squad leader, at its first enemy and not before minTimeDeltaForEnemyEncounter after its start, and no
-//   作战中 before it in that battle (operators may cast from 3 s on: the two never collide); 作战中 — an own operator's
-//   skill starts: every skill of this mode is cast automatically (技能策略), so it is SKILL_PASSIVE_IMP (SP cost ≥ 10) /
-//   SKILL_PASSIVE_NOR, at most once per 10 s each; 选中干员 (FOCUS_CHAR) — tapping an own operator in battle; the end
-//   line once, on the result screen (3星结束行动 without LP lost in the match / 非3星结束行动 / 行动失败; matchEnd).
-//   Teammates' operators (a shared or watched field) never speak on this client.
+//   部署 (PLACE_CHAR) — an operator successfully deployed from the bench (prep); 行动开始 (ENCOUNTER_ENEMY) — once per
+//   battle, the squad leader, at its first enemy and not before minTimeDeltaForEnemyEncounter after its start (a
+//   re-mounted battle screen does not say it again); 作战中 — an own operator's skill starts: every skill of this mode
+//   is cast automatically (技能策略), so it is SKILL_PASSIVE_IMP (SP cost ≥ 10) / SKILL_PASSIVE_NOR. 作战中 is said now
+//   and then, with clear gaps: the two types share one 10 s cooldown (SKILL_BUCKET, start to start), one 作战中 never
+//   cuts another, and none is said before the battle's 行动开始 (skills are cast from the first second). 选中干员 (FOCUS_CHAR) — tapping an own operator during a battle phase; the end line
+//   once, on the result screen, when m.result has arrived (3星结束行动 without LP lost in the match / 非3星结束行动 /
+//   行动失败; matchEnd). All voice timing is real time (battles run at 2x). No line starts while the page is hidden
+//   (the context is suspended). Teammates' operators (a shared or watched field) never speak on this client.
 //
 // `bgmKeyFor(route, pub)` picks the track for the current screen/phase (main.js calls `audio.install()`,
 // which follows the store).
@@ -79,6 +81,11 @@ export const BATTLE_VOICE = Object.freeze({
 const RESULT_VOICE = Object.freeze({ priority: 100, overlap: true, cooldown: 0 });
 /** 作战中 waits for the battle's 行动开始 at most this long (a battle whose first enemy never shows up). */
 const HOLD_SKILLS_MS = 15000;
+/** The voice types of 作战中: one shared cooldown (SKILL_BUCKET), and one never cuts another (see the header). */
+const SKILL_TYPES = new Set(['SKILL_PASSIVE_IMP', 'SKILL_PASSIVE_NOR']);
+const SKILL_BUCKET = 'SKILL_PASSIVE';
+/** The voiceLast key of a voice type's cooldown. */
+const cooldownKey = (type) => (SKILL_TYPES.has(type) ? SKILL_BUCKET : type);
 /** The voice type of each role (作战中 is picked by SP cost: skillVoiceType). */
 const ROLE_VOICE_TYPE = Object.freeze({ select: 'FOCUS_CHAR', deploy: 'PLACE_CHAR', start: 'ENCOUNTER_ENEMY', win3: 'RESULT', win: 'RESULT', fail: 'RESULT' });
 /** Voice languages the settings offer, in order (tools/assets/voice.mjs VOICE_LANGS). */
@@ -333,13 +340,14 @@ export class AudioManager {
     this.sfxGain = null;
     this.voiceGain = null;
     this.volumes = { bgm: 0.6, sfx: 0.8, voice: 0.8, voiceLang: 'cn', muted: false };
-    this.voiceNow = null;     // { src, gain, priority } of the line playing
-    this.voiceWant = null;    // { token, priority } of the line loading (it replaces the one playing)
+    this.voiceNow = null;     // { src, gain, priority, type } of the line playing
+    this.voiceWant = null;    // { token, priority, type } of the line loading (it replaces the one playing)
     this.voiceToken = 0;      // newest requested line (a slower buffer load never plays over a newer line)
-    this.voiceLast = new Map(); // voice type → when its last line started (cooldowns)
+    this.voiceLast = new Map(); // cooldown key (cooldownKey) → when its last line started
     this.squadLeader = null;  // charId of the latest battle's squad leader (行动开始, the end line)
     this.encounter = null;    // { at } a battle started: 行动开始 is due at its first enemy
     this.encounterTimer = null; // the pending 行动开始 (cancelled by the next battle and by the match end)
+    this.battleKey = null;    // the battle battleStart armed (a re-mounted battle screen does not re-arm it)
     this.holdSkillsUntil = 0; // no 作战中 before the battle's 行动开始 (performance.now ms; a safety bound)
     this.voiceLog = [];       // the lines started: { role, charId, type } (latest 200; the browser E2E reads it)
     this.buffers = new Map(); // url → Promise<AudioBuffer|null> (insertion order = LRU)
@@ -453,7 +461,9 @@ export class AudioManager {
   _onVis() {
     try {
       if (!this.ctx) return;
-      if (this.win?.document?.hidden) this.ctx.suspend().catch(() => {});
+      // hidden: the voice line stops (its wall-clock safety timer would otherwise free the voice slot while the
+      // suspended line waits to resume, and a later line would play over it)
+      if (this.win?.document?.hidden) { this.stopVoice(0); this.ctx.suspend().catch(() => {}); }
       else if (this.ctx.state !== 'running') {
         // back on the page: resume, and keep a gesture ready in case the browser wants one first (iOS after a call)
         this._armUnlock();
@@ -687,6 +697,8 @@ export class AudioManager {
     try {
       const v = this.volumes;
       if (!this.ctx || v.muted || v.voice <= 0 || v.voiceLang === 'off' || typeof charId !== 'string') return false;
+      // hidden page (suspended context): a line started now would pile up with the paused one on return
+      if (this.ctx.state && this.ctx.state !== 'running') return false;
       const m = this.getManifest();
       // a saved language this site lacks (voice downloaded with --voice=jp only): the first one it has
       const lang = m?.audio?.voice?.[v.voiceLang] ? v.voiceLang : voiceLangsIn(m)[0]?.[0];
@@ -695,31 +707,34 @@ export class AudioManager {
       const rules = voiceRulesOf(m);
       const opt = rules.types[type] ?? { priority: 0, overlap: true, cooldown: 0 };
       const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
-      const last = this.voiceLast.get(type);
-      if (!voiceMayStart(opt, this.voiceWant ?? this.voiceNow, last, now)) return false;
-      this.voiceLast.set(type, now);
+      const key = cooldownKey(type);
+      const last = this.voiceLast.get(key);
+      const cur = this.voiceWant ?? this.voiceNow;
+      if (SKILL_TYPES.has(type) && cur && SKILL_TYPES.has(cur.type)) return false; // one 作战中 never cuts another
+      if (!voiceMayStart(opt, cur, last, now)) return false;
+      this.voiceLast.set(key, now);
       // a line that never loads does not start its type's cooldown
       const unload = () => {
-        if (this.voiceLast.get(type) !== now) return;
-        if (last === undefined) this.voiceLast.delete(type); else this.voiceLast.set(type, last);
+        if (this.voiceLast.get(key) !== now) return;
+        if (last === undefined) this.voiceLast.delete(key); else this.voiceLast.set(key, last);
       };
       this.voiceLog.push({ role, charId, type });
       if (this.voiceLog.length > 200) this.voiceLog.shift();
       const token = ++this.voiceToken;
-      this.voiceWant = { token, priority: opt.priority };
+      this.voiceWant = { token, priority: opt.priority, type };
       const loaded = () => { if (this.voiceWant?.token === token) this.voiceWant = null; };
       this._buffer(url).then((buf) => {
         loaded();
         if (!buf || !this.ctx) { unload(); return; }
         if (token !== this.voiceToken) return;
-        this._startVoice(buf, opt.priority, rules.crossfade);
+        this._startVoice(buf, opt.priority, rules.crossfade, type);
       }, () => { loaded(); unload(); });
       return true;
     } catch { return false; }
   }
 
   /** Start a decoded line, cross-fading out the one playing. */
-  _startVoice(buf, priority, crossfade) {
+  _startVoice(buf, priority, crossfade, type = null) {
     const fade = this.voiceNow ? crossfade : 0;
     this.stopVoice(fade);
     try {
@@ -732,7 +747,7 @@ export class AudioManager {
         gain.gain.linearRampToValueAtTime(1, t + fade);
       }
       src.connect(gain); gain.connect(this.voiceGain);
-      const cur = { src, gain, priority };
+      const cur = { src, gain, priority, type };
       const end = () => {
         if (this.voiceNow !== cur) return;
         this.voiceNow = null;
@@ -764,8 +779,12 @@ export class AudioManager {
    * A battle of the own field starts: its squad leader (gameLogic voiceLeader) says 行动开始 at its first enemy
    * (handleBattleEvents → _encounter); 作战中 waits for it (at most HOLD_SKILLS_MS).
    * @param {string|null} leader
+   * @param {string|null} [key] the battle (phase + round): the same key again — the battle screen re-mounted during the
+   *   battle — changes nothing, so a battle never gets a second 行动开始
    */
-  battleStart(leader) {
+  battleStart(leader, key = null) {
+    if (key != null && key === this.battleKey) return;
+    this.battleKey = key;
     const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
     this._cancelEncounter();
     this.squadLeader = typeof leader === 'string' ? leader : null;
@@ -789,6 +808,11 @@ export class AudioManager {
     if (wait > 0) this.encounterTimer = setTimeout(say, wait); else say();
   }
 
+  /** Between battles (a non-combat phase): the next battleStart arms a new battle whatever its key. */
+  battleOver() {
+    this.battleKey = null;
+  }
+
   /** Drop the battle's 行动开始 that is not said yet. */
   _cancelEncounter() {
     this.encounter = null;
@@ -802,6 +826,7 @@ export class AudioManager {
    */
   matchEnd(r) {
     this._cancelEncounter();
+    this.battleKey = null;
     this.holdSkillsUntil = 0;
     const leader = this.squadLeader;
     this.squadLeader = null; // once per match: a re-shown result screen says nothing

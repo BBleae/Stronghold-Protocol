@@ -108,18 +108,20 @@ game plays a line — and downloads them from the ArknightsAssets2 `voice` branc
 
 | Role | Line (placeType) | Played by the client (`public/js/audio.js`) — voice type |
 |---|---|---|
-| `select` | 选中干员1 / 2 (`BATTLE_SELECT`) | tapping an own operator in battle — `FOCUS_CHAR` |
+| `select` | 选中干员1 / 2 (`BATTLE_SELECT`) | tapping an own operator during a battle phase (not in 结算) — `FOCUS_CHAR` |
 | `deploy` | 部署1 / 2 (`BATTLE_PLACE`) | an operator successfully deployed from the bench in prep, once its direction is confirmed (buying or dragging one says nothing) — `PLACE_CHAR` |
 | `combat` | 作战中1–4 (`BATTLE_SKILL_1..4`) | an own operator's skill starts, after the battle's 行动开始 — `SKILL_PASSIVE_IMP` (SP cost ≥ 10) / `SKILL_PASSIVE_NOR` |
-| `start` | 行动开始 (`BATTLE_FACE_ENEMY`) | every battle: the squad leader, when its first enemy appears — `ENCOUNTER_ENEMY` |
-| `win3` / `win` / `fail` | 3星结束行动 / 非3星结束行动 / 行动失败 (`THREE_STAR` / `TWO_STAR` / `LOSE`) | once per match, on the result screen: the squad leader — won without LP lost / won / lost |
+| `start` | 行动开始 (`BATTLE_FACE_ENEMY`) | once per battle: the squad leader, when its first enemy appears — `ENCOUNTER_ENEMY` |
+| `win3` / `win` / `fail` | 3星结束行动 / 非3星结束行动 / 行动失败 (`THREE_STAR` / `TWO_STAR` / `LOSE`) | once per match, on the result screen once `m.result` has arrived: the squad leader — won without LP lost / won / lost |
 
 - **When a line may play** follows the official battle voice rules, `audio_data.json` `battleVoice` (copied to
   `data/assets.json` `audio.voiceRules`; `BATTLE_VOICE` in `audio.js` when absent): each voice type has a priority, a
   cooldown and `overlapIfSamePriority`. One line plays at a time; a line of a higher priority cuts in (0.1 s
-  cross-fade), one of the same priority only when its type overlaps, a lower one is dropped. So 作战中 plays at most
-  once per 10 s per type and never over another skill line of its priority, and a tap (`FOCUS_CHAR`, priority 10)
-  never cuts a skill line.
+  cross-fade), one of the same priority only when its type overlaps, a lower one is dropped. A tap (`FOCUS_CHAR`,
+  priority 10) never cuts a skill line.
+- **作战中 stays occasional, with clear gaps** (the official per-type rule alone gave back-to-back lines: an important
+  line cut a normal one, and each type had its own 10 s): the two passive types share **one** 10 s cooldown (start to
+  start) and one 作战中 never cuts another — about 2–4 per battle, never two in a row.
 
   | Voice type | Priority | Same priority replaces | Cooldown |
   |---|---|---|---|
@@ -136,8 +138,10 @@ game plays a line — and downloads them from the ArknightsAssets2 `voice` branc
   nothing; a successful deployment says 部署; every battle opens with the leader's 行动开始; 作战中 now and then, with
   clear gaps; the end line only once, when the match is settled.
 - Every skill of this mode is cast automatically (技能策略), so 作战中 uses the passive types, important or normal by
-  the equipped skill's SP cost. Operators may cast from 3 s into a battle, the moment 行动开始 is due: no 作战中 is
-  said before the battle's 行动开始 (at most 15 s), so the two never collide.
+  the equipped skill's SP cost. Skills are cast from the first second of a battle; no 作战中 is said before the
+  battle's 行动开始 (held at most 15 s), and 行动开始 (priority 90) is never cut by one.
+- All voice timing is real time (battles run at 2x, so 10 s is 20 s of battle time). A battle screen that re-mounts
+  mid-battle (reconnect) does not say 行动开始 again; no line starts while the page is hidden.
 - Only own operators speak: a teammate's operator on a shared field (最终攻势) or a watched one (前往查看) says nothing
   on this client.
 - The squad leader (队长) of a normal stage has no slot in this mode: it is the rarest operator on the board (then 精锐,
