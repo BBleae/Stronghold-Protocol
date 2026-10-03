@@ -7,6 +7,10 @@
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": false,
   "preview_urls": false,
+  "vars": {
+    "AUTH_ORIGIN": "https://stronghold.lunar.ag",
+    "GITHUB_CLIENT_ID": "Ov23liVRPUgvbQPtKkoo"
+  },
   // Allow Workers Builds previews; no preview-specific room bindings are configured.
   "previews": {},
   // Custom domains and routes are managed in the Cloudflare dashboard.

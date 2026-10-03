@@ -409,6 +409,57 @@ describe('operator voice', () => {
     } finally { restore(); }
   });
 
+  test('pending encounter cannot speak after battle end, a new battle, or match end', async (t) => {
+    const { a, restore } = await voiceRig();
+    try {
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      const spoken = [];
+      a.voice = (leader, role) => { spoken.push([leader, role]); return true; };
+      for (const finish of [() => a.battleEnd(), () => a.battleStart(OP), () => a.matchEnd({ victory: true })]) {
+        a.battleStart(LEADER);
+        a._encounter();
+        finish();
+        t.mock.timers.tick(4000);
+        assert.equal(spoken.filter(([, role]) => role === 'start').length, 0);
+      }
+    } finally { t.mock.timers.reset(); restore(); }
+  });
+
+  test('failed voice loads do not consume cooldown; successful playback does', async () => {
+    const { a, restore } = await voiceRig();
+    try {
+      a._buffer = async () => null;
+      assert.equal(a.voice(OP, 'combat', 'SKILL_PASSIVE_NOR'), true);
+      await Promise.resolve();
+      assert.equal(a.voiceLast.has('SKILL_PASSIVE_NOR'), false);
+      a._buffer = async () => { throw new Error('decode failed'); };
+      assert.equal(a.voice(OP, 'combat', 'SKILL_PASSIVE_NOR'), true);
+      await Promise.resolve();
+      assert.equal(a.voiceLast.has('SKILL_PASSIVE_NOR'), false);
+      a._buffer = async () => ({ duration: 0 });
+      assert.equal(a.voice(OP, 'combat', 'SKILL_PASSIVE_NOR'), true);
+      await Promise.resolve();
+      assert.equal(a.voiceLast.has('SKILL_PASSIVE_NOR'), true);
+      a.stopVoice();
+      assert.equal(a.voice(OP, 'combat', 'SKILL_PASSIVE_NOR'), false);
+    } finally { restore(); }
+  });
+
+  test('match result voice is requested once and resets for the next match', async () => {
+    const { a, restore } = await voiceRig();
+    try {
+      let calls = 0;
+      a.voice = () => { calls++; return true; };
+      a.battleStart(LEADER);
+      a.matchEnd({ victory: true });
+      a.matchEnd({ victory: true });
+      assert.equal(calls, 1);
+      a.battleStart(OP);
+      a.matchEnd({ victory: false });
+      assert.equal(calls, 2);
+    } finally { restore(); }
+  });
+
   test('language: off is silent; a language the site lacks falls back to the one it has', async () => {
     const { a, urls, settle, restore } = await voiceRig({ audio: { voice: { jp: vm.audio.voice.jp } } });
     try {
