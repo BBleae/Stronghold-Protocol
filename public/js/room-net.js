@@ -246,6 +246,19 @@ export class RoomNet extends Net {
     if(route.join)return this.joinApproved(route);
     await this._openRoute(route,null);
   }
+  async spectate(code) {
+    if(this._switching)throw new NetError('RATE');
+    if(this.room)throw new NetError('BAD_MSG','请先离开当前房间');
+    if(!CODE.test(code))throw new NetError('ROOM_NOT_FOUND');
+    this._switching=true;
+    try {
+      await this._openRoute({code},null);
+      await super.request('room.spectate');
+    } catch(error) {
+      this.close();this.route=null;this._routeToken=null;this._manualClose=false;this._setStatus('online');
+      throw error;
+    } finally {this._switching=false;}
+  }
   async joinApproved(route) {
     await this._openRoute(route,null);
     await super.request('room.join',{code:route.code});

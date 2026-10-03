@@ -1,17 +1,19 @@
 # Cloudflare 部署
 
+当前账号使用 **Workers Paid** 套餐；构建按最新 Worker 未压缩包体 64 MiB、100,000 个静态文件限额检查，无需设置套餐环境变量。
+
 当前唯一公开入口：[stronghold.lunar.ag](https://stronghold.lunar.ag)。`workers.dev` 和版本预览入口均关闭；目前未启用密码或 Cloudflare Access。
 
 适用场景：4–20 位朋友，分为多个最多 4 人的游戏房间。静态页面、游戏代码和素材由 **Workers Static Assets** 分发；每个房间使用独立的 **SQLite Durable Object + WebSocket**，复用原有房间、经济、回合和战斗协议。玩家浏览器计算正常战斗，AI / 掉线玩家由服务端处理。
 
 ## 为什么这样分配
 
-- 当前素材约 313 MiB，拆分为约 5,500 个小文件。Static Assets 的限制按文件大小 / 数量计算，当前文件均小于 25 MiB、总数低于免费计划 20,000 个文件限制。素材不计入 Worker JS 包体，也不经过房间对象。
+- 当前素材约 313 MiB，拆分为约 5,500 个小文件。Static Assets 的限制按文件大小 / 数量计算，当前文件均小于 25 MiB、总数低于Paid 套餐 100,000 个文件限制。素材不计入 Worker JS 包体，也不经过房间对象。
 - 当前版本不需要 R2。后续若需要公开下载数百 MiB 的完整 ZIP，或资源频繁更新且需要独立生命周期，可把完整包或素材迁往 R2 并配置自定义域名 / 缓存。完整 ZIP 不能作为单文件放进 Static Assets；下文的整包下载通过分块存储并由 Worker 拼接提供。
 - 一个房间一个 DO 保证房间事件顺序，避免多个 Worker 实例各自保有不同状态，也无需 WebRTC 的 NAT 穿透、信令与 TURN。等待房间使用 WebSocket Hibernation，活跃对局的定时器会保持实例运行。
 - 亚太 `locationHint` 是尽力提示，不能保证落在指定地区。大陆用户的实际连通性和延迟取决于网络线路，资源本地导入只能减少素材下载等待；请朋友实测自定义域名的可达性。
 
-参考：[Static Assets 限额](https://developers.cloudflare.com/workers/static-assets/platform/limits/)、[DO WebSocket](https://developers.cloudflare.com/durable-objects/best-practices/websockets/)、[DO 定价](https://developers.cloudflare.com/durable-objects/platform/pricing/)。静态资源和房间计算是不同的计费项，不承诺多人长时间游戏一定完全免费。本项目不会自动升级收费计划。
+参考：[Static Assets 限额](https://developers.cloudflare.com/workers/static-assets/platform/limits/)、[DO WebSocket](https://developers.cloudflare.com/durable-objects/best-practices/websockets/)、[DO 定价](https://developers.cloudflare.com/durable-objects/platform/pricing/)。静态资源和房间计算是不同的计费项；当前按已有 Workers Paid 套餐部署。
 
 ## 构建和部署
 
@@ -86,3 +88,9 @@ node --test test/worker-browser.e2e.test.js
 `npm run build:worker` 会检查 `data/assets.json` 引用的素材，缺失时自动运行 `tools/fetch-assets.mjs` 下载。下载失败或资源目录为空时构建失败。`SP_SKIP_ASSETS=1` 可跳过自动下载，但不会跳过空素材检查。干员战斗语音包含中文和日文，可在游戏设置中选择；旧素材目录运行 `npm run assets` 补齐。
 
 资源管理窗口下载完成后，可点击「导出 ZIP（发给朋友）」。Chrome / Edge 支持直接保存到磁盘；其他浏览器在内存中生成 ZIP 后下载。接收方在相同版本站点导入即可。导出前会核对缓存文件及 SHA-256，缺失或损坏时需先重新下载。
+
+## 公开对局观战
+
+公开同盟房开局后，登录玩家可在主界面在线大厅点击「进入观战」，无需房主审批，也不占玩家席位。观战界面可选择玩家阵地，所有玩家和观战者都实时看到在线观战人数；退出或断线会更新人数。私密房、独立模拟和未开局房间不开放此入口。对局结束后观战者返回大厅。
+
+观战身份与原有玩家、战斗结果和历史记录分离，旧版本对局继续使用保留的恢复引擎。部署仍会触发平台 WebSocket 自动重连；已验证玩家和观战者在服务重启后恢复。已有页面需重新载入才能显示新增的观战人数界面。

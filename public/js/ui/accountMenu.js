@@ -71,6 +71,7 @@ export function PublicRooms() {
     return()=>{dead=true;clearInterval(id);};
   },[application?.id,application?.status]);
   const apply=async code=>{setBusy(true);try{await net.request('room.join',{code});}finally{setBusy(false);}};
+  const spectate=async code=>{setBusy(true);try{await net.spectate(code);}finally{setBusy(false);}};
   return html`<${Panel} class="public-rooms">
     <div class="account-row"><div><${MicroLabel} tone="mint">ACTIVE ALLIANCES<//><h2>在线大厅</h2></div>
       <${Button} variant="ghost" size="sm" icon="refresh" onClick=${()=>{setCursor('');rooms.refresh();}}>刷新<//></div>
@@ -80,10 +81,10 @@ export function PublicRooms() {
       ${application.status==='pending'?html`<${Button} size="sm" variant="ghost" onClick=${()=>run(async()=>{await accountRequest('/api/rooms/'+application.code+'/applications',{action:'cancel',id:application.id});net.application=null;setApplication(null);})}>取消申请<//>`:null}</div>`:null}
     <div class="public-rooms__list">
       ${rooms.data?.items?.length?rooms.data.items.map(room=>html`<div class="account-row public-room" key=${room.roomId}>
-        <div><b>${room.hostName}</b><div class="t-lo"><span class="num">${room.roomId}</span> · ${room.connectedHumans} 人在线 · ${room.occupied}/${room.capacity}</div></div>
+        <div><b>${room.hostName}</b><div class="t-lo"><span class="num">${room.roomId}</span> · ${room.connectedHumans} 人在线 · ${room.occupied}/${room.capacity}${room.inMatch?` · ${room.spectatorCount || 0} 人观战`:''}</div></div>
         <${DifficultyTag} difficulty=${room.difficulty} />
-        <${Button} size="sm" variant="secondary" disabled=${busy || !!application && ['pending','connecting'].includes(application.status) || !account.user || room.inMatch || room.occupied>=room.capacity}
-          onClick=${()=>run(()=>apply(room.roomId))}>${room.inMatch?'进行中':room.occupied>=room.capacity?'已满员':'申请加入'}<//>
+        <${Button} size="sm" variant="secondary" disabled=${busy || !!application && ['pending','connecting'].includes(application.status) || !account.user || !room.inMatch && room.occupied>=room.capacity}
+          onClick=${()=>run(()=>room.inMatch?spectate(room.roomId):apply(room.roomId))}>${room.inMatch?'进入观战':room.occupied>=room.capacity?'已满员':'申请加入'}<//>
       </div>`):html`<p class="t-lo">${rooms.data?'当前没有有真人在线的公开大厅':'正在查找在线大厅…'}</p>`}
     </div>
     <div class="account-row">

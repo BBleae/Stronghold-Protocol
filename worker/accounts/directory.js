@@ -60,7 +60,7 @@ export class SiteDirectory extends DurableObject {
   revokeAllSessions() {this.sql.exec('DELETE FROM auth_records');}
   publishRoom(room) {
     if(!/^[A-Z]{4}$/.test(room.roomId) || !Number.isSafeInteger(room.expiresAt)) throw new AccountError('INVALID_ROOM');
-    const visible=!!room.public && room.connectedHumans>0;
+    const visible=!!room.public && (room.connectedHumans>0 || !!room.inMatch);
     this.sql.exec('INSERT INTO rooms VALUES (?,?,?,?,?) ON CONFLICT(room_id) DO UPDATE SET value=excluded.value,visible=excluded.visible,updated_at=excluded.updated_at,expires_at=excluded.expires_at WHERE excluded.updated_at>=rooms.updated_at',
       room.roomId,JSON.stringify(room),visible?1:0,room.updatedAt,room.expiresAt);
     this.sql.exec('DELETE FROM rooms WHERE expires_at<?',Date.now()-600000);

@@ -171,7 +171,7 @@ function onRoomState(msg) {
   roomStateAt = Date.now();
   const myId = store.get().me.playerId;
   const seats = Array.isArray(room.seats) ? room.seats : [];
-  if (myId != null && seats.length && !seats.some((s) => s && s.playerId === myId)) {
+  if (!room.spectating && myId != null && seats.length && !seats.some((s) => s && s.playerId === myId)) {
     // We are no longer seated (kicked / left elsewhere).
     if (store.get().room) toast('你已不在该同盟中', 'warn');
     store.set({ room: null, match: emptyMatch() });

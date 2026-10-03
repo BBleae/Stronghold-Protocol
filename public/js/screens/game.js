@@ -74,7 +74,7 @@ import { EmoteWheel } from '../ui/emotes.js';
 import { EffectsList } from '../ui/effectsList.js';
 import { CombatHud } from '../ui/combatHud.js';
 import { SettingsModal } from '../ui/settings.js';
-import { ExitModal, AwayOverlay, awayStore } from '../ui/matchChrome.js';
+import { ExitModal, AwayOverlay, awayStore, quitMatch } from '../ui/matchChrome.js';
 import { openGuide } from '../ui/guide.js';
 import { actions } from '../ui/gameActions.js';
 import { FacingWheel, holdPiece, setPieceDir, syncPieceDirs, showRange, useTileScreen } from '../ui/facingWheel.js';
@@ -113,6 +113,7 @@ const STATE_EV = new Set(['spawn', 'die', 'deploy', 'status', 'skill']);
 
 /** Router for the in-match screens. */
 export function GameScreen() {
+  const room = useStore((s) => s.room);
   const pub = useStore((s) => s.match.public);
   const hasResult = useStore((s) => !!s.match.result);
   const ended = useStore((s) => !!s.room && !s.room.inMatch && !!s.match.public);
@@ -127,11 +128,13 @@ export function GameScreen() {
   }
   const mode = phaseMode(pub.phase);
   let body;
-  if (hasResult || mode === 'result') body = html`<${ResultScreen} />`;
+  if (room?.spectating) body = html`<${MatchScreen} />`;
+  else if (hasResult || mode === 'result') body = html`<${ResultScreen} />`;
   else if (mode === 'briefing') body = html`<${BriefingScreen} />`;
   else if (mode === 'draft') body = html`<${BandDraftScreen} />`;
   else body = html`<${MatchScreen} />`;
   return html`${body}
+    ${room?.mode==='coop' ? html`<div class="spectator-presence" role="status" aria-live="polite"><span>${room.spectating?'正在观战 · ':''}${room.spectatorCount || 0} 人观战</span>${room.spectating?html`<${Button} size="sm" variant="ghost" onClick=${quitMatch}>退出观战<//>`:null}</div>`:null}
     ${(away || autoplay) && !hasResult && mode !== 'result' && !ended ? html`<${AwayOverlay} />` : null}
     ${ended && !hasResult && mode !== 'result' ? html`<${MatchEnded} />` : null}`;
 }
@@ -177,6 +180,7 @@ function MatchScreen() {
   const conn = useStore((s) => s.connection, shallowEqual);
   const emotes = useStore((s) => s.emotes);
   const roomSolo = useStore((s) => s.room?.mode === 'solo');
+  const spectator = useStore((s) => !!s.room?.spectating);
   const gd = useGameData();
 
   const hostRef = useRef(null);
@@ -218,7 +222,7 @@ function MatchScreen() {
   const solo = roomSolo || String(pub?.modeId || '').includes('single');
   const players = sortedPlayers(pub);
   const meP = players.find((p) => p.playerId === myId) || null;
-  const alive = priv ? priv.alive !== false : meP?.alive !== false;
+  const alive = !spectator && (priv ? priv.alive !== false : meP?.alive !== false);
   const home = homeFieldId(pub, myId);
   const watchingOther = !!watching && watching !== home && watching !== ownFieldId(myId);
   const editable = phase === PHASE.PREP && !!priv && alive && !priv.ready && !watchingOther;
@@ -329,7 +333,7 @@ function MatchScreen() {
   // prep rendering (own board) vs battle rendering (m.field). The field object present when prep starts is stale
   // (last round's battle): combat only enters an m.field pushed after that (a new object), and every new m.field
   // push (watch switch, reconnect) re-enters the battle view.
-  const showPrep = (mode === 'prep' || mode === 'boot') && !watchingOther;
+  const showPrep = !spectator && (mode === 'prep' || mode === 'boot') && !watchingOther;
 
   // own board (prep, or a battle field the player fights on) → the stage with the player's overrides; a teammate's
   // board → the plain stage (their overrides are not known here)
@@ -531,7 +535,7 @@ function MatchScreen() {
     else if (phase === PHASE.FINAL_ASSAULT) audio.sfx(solo ? 'bossRoundSingle' : 'bossRoundTeam');
     else if (phase === PHASE.HIDDEN_CORE) audio.sfx('bossRoundSecret');
     else if (phase === PHASE.SP_DRAFT) audio.sfx('draft');
-    setWatching(null); // the server resets every watcher to its own field on phase changes
+    if(!spectator)setWatching(null); // the server resets every watcher to its own field on phase changes
     setWatchWho(null);
     // the pen is a 休整期 view: leaving prep returns the camera (the next setCam would, too)
     if (phase !== PHASE.PREP && penRef.current.on) togglePenRef.current(false);
@@ -546,6 +550,7 @@ function MatchScreen() {
   // a reload / reconnect while watching a teammate's battle after the own one (client-side combat): the server resends
   // the watched field, the fresh screen adopts it as watched once per battle — the observing pill, 返回战场 and the own
   // row work again, and the bond strip's "👁 name" matches the HUD (battle/observe.js resumedWatch)
+  useEffect(()=>{if(spectator && field?.fieldId)setWatching(field.fieldId);},[spectator,field?.fieldId,phaseKey]);
   const seenBattleRef = useRef(null);
   useEffect(() => {
     const r = resumedWatch(battleState, { pub, myId, alive, watching, seen: seenBattleRef.current });
@@ -1178,13 +1183,13 @@ function MatchScreen() {
 
       <${TeamPanel} pub=${pub} myId=${myId} watching=${watchingNow} bubbles=${bubbles} onWatch=${watchPlayer} cap=${gd.config?.lpCapPerRound ?? 10} uniteLocal=${uniteLocal}
         self=${Number.isFinite(priv?.lp) ? { lp: priv.lp, pending: liveLpNow.pending, unite: liveLpNow.unite, left: liveLpNow.left } : null}
-        observe=${cc ? { canObserve: (p) => observeTarget(p, pub, myId, { observing: watchingOther, ownDone: localDone }), observing: watchingOther, onBack: backHome } : null} />
+        observe=${cc && !spectator ? { canObserve: (p) => observeTarget(p, pub, myId, { observing: watchingOther, ownDone: localDone }), observing: watchingOther, onBack: backHome } : null} />
 
       <div class="gm__effects"><${EffectsList} effects=${priv?.effects} /></div>
 
       ${watchingOther && !combat ? html`<div class="gm__watching" role="status">
         <${GIcon} name="eye" /><span>正在查看 <b>${watchedName}</b> 的阵地（只读）</span>
-        <${Button} size="sm" variant="primary" icon="back" onClick=${() => watchPlayer({ playerId: myId })}>返回自己<//>
+        ${!spectator?html`<${Button} size="sm" variant="primary" icon="back" onClick=${() => watchPlayer({ playerId: myId })}>返回自己<//>`:null}
       </div>` : null}
 
       ${showShop ? html`<${ShopBar} priv=${priv} editable=${editable} collapsed=${collapsed} onCollapse=${setCollapsed}
@@ -1200,15 +1205,15 @@ function MatchScreen() {
         onMinimize=${(m) => { setRewardMin(m); if (!m) setCollapsed(false); }} />` : null}
 
       ${combat || mode === 'settle' ? html`<${CombatHud} pub=${pub} myId=${myId} watching=${watchingNow} hud=${hud} myDone=${!!myDone && alive}
-        spectating=${!alive} onWatch=${watchField}
+        spectating=${!alive && !spectator} onWatch=${watchField}
         client=${cc ? { progress, observing: observingName ? { name: observingName } : null, onBack: alive ? backHome : null, layers, layer, onLayer: setLayer } : null} />` : null}
 
-      ${showDeadPill(alive, phase) ? html`<div class="gm__dead" role="status"><${Icon} name="close" />你已被淘汰 · 可继续观战队友</div>` : null}
+      ${!spectator && showDeadPill(alive, phase) ? html`<div class="gm__dead" role="status"><${Icon} name="close" />你已被淘汰 · 可继续观战队友</div>` : null}
 
       <${Ticker} />
 
       <div class="gm__corner">
-        <${EmoteWheel} open=${emoteOpen} onToggle=${setEmoteOpen} onSend=${(id) => actions.emote(id)} disabled=${conn.status !== 'online'} />
+        <${EmoteWheel} open=${emoteOpen} onToggle=${setEmoteOpen} onSend=${(id) => actions.emote(id)} disabled=${spectator || conn.status !== 'online'} />
         <button type="button" class="gm__gear" aria-label="设置" title="设置" onClick=${() => setSettingsOpen(true)}><${GIcon} name="gear" /></button>
         <button type="button" class="gm__gear gm__guide" aria-label="玩法说明" title="玩法说明" onClick=${() => openGuide(0)}><${Icon} name="book" /></button>
         <${FullscreenButton} class="gm__gear gm__fs" />
@@ -1231,7 +1236,7 @@ function MatchScreen() {
         onRetreat=${retreatSel} onSell=${sellSel} onDestroy=${sellSel} />` : null}
     </div>
 
-    ${sp ? html`<${ChoiceOverlay} pub=${pub} sp=${sp} myId=${myId} solo=${solo} busyIdx=${spBusy} total=${total}
+    ${sp && !spectator ? html`<${ChoiceOverlay} pub=${pub} sp=${sp} myId=${myId} solo=${solo} busyIdx=${spBusy} total=${total}
       onPick=${async (i) => { setSpBusy(i); await actions.choice(i); setSpBusy(null); }} />` : null}
 
     ${banner ? html`<${PhaseBanner} key=${banner.key} mode="overlay" title=${banner.title} sub=${banner.sub} micro=${banner.micro}
@@ -1246,7 +1251,7 @@ function MatchScreen() {
       onConfirm=${(uid) => closeReplace(uid)} onCancel=${() => closeReplace(null)} />` : null}
 
     <${SettingsModal} open=${settingsOpen} onClose=${() => setSettingsOpen(false)} />
-    <${ExitModal} open=${exitOpen} onClose=${() => setExitOpen(false)} solo=${solo} />
+    <${ExitModal} open=${exitOpen} onClose=${() => setExitOpen(false)} solo=${solo} spectator=${spectator} />
   </div>`;
 }
 

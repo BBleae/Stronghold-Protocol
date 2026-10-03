@@ -90,7 +90,7 @@ export async function copyRuntimeAssets({ root = ROOT, out = path.join(root, 'di
     }
   }
   await check(out);
-  if (count > 20000) throw new Error(`Static asset count ${count} exceeds the free plan limit`);
+  if (count > 100000) throw new Error(`Static asset count ${count} exceeds the Workers Paid limit`);
   return { out, count };
 }
 
@@ -140,12 +140,13 @@ export async function buildWorker({ root = ROOT } = {}) {
     if((await fs.stat(path.join(target,'engine.js'))).size>25*1024*1024)throw new Error('Retained replay engine exceeds static asset limit: '+version.id);
     assets.count++;
   }
-  if(assets.count + pack.parts.length + 1>20000)throw new Error('Retained engines exceed static asset count limit');
+  if(assets.count + pack.parts.length + 1>100000)throw new Error('Retained engines exceed static asset count limit');
   await bundleWorker({ root, buildTag, rulesVersion:versions.current, versionModules:versions.entries });
-  const compressed=gzipSync(await fs.readFile(path.join(root,'dist/worker/index.mjs'))).length;
-  const limit=process.env.SP_WORKER_PAID_PLAN==='1'?10:3;
-  if(compressed>limit*1024*1024)throw new Error(`Worker gzip ${(compressed/1024/1024).toFixed(2)} MiB exceeds configured ${limit} MiB plan limit. Preserve published engines; plan a version-storage migration before deploying.`);
-  console.log(`Worker gzip ${(compressed/1024/1024).toFixed(2)} MiB; ${versions.entries.length} retained rules version(s)`);
+  const bundleBytes=await fs.readFile(path.join(root,'dist/worker/index.mjs'));
+  const compressed=gzipSync(bundleBytes).length;
+  // Cloudflare's September 2026 limit is 64 MiB uncompressed; gzip is informational.
+  if(bundleBytes.length>64*1024*1024)throw new Error('Worker exceeds the 64 MiB uncompressed limit. Preserve published engines; plan a version-storage migration before deploying.');
+  console.log(`Worker ${(bundleBytes.length/1024/1024).toFixed(2)} MiB uncompressed / gzip ${(compressed/1024/1024).toFixed(2)} MiB; ${versions.entries.length} retained rules version(s)`);
   console.log(`Workers build: ${assets.count} static files; resource version ${manifest.version}, ${(manifest.totalBytes / 1024 / 1024).toFixed(1)} MiB`);
   console.log(`Workers build: commit ${buildTag}; resource ZIP ${pack.size} bytes in ${pack.parts.length} parts`);
   return { assets, manifest, pack };

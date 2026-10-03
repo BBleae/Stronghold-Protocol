@@ -316,7 +316,7 @@ export function TopBar({ pub, priv, conn, hud, total, drawer, onExit, onDrawer, 
   const pending = !boss && Number.isFinite(lp) && live && live.pending > 0 ? Math.min(lp, live.pending) : 0;
   const hidden = phase === PHASE.HIDDEN_CORE || (Number.isFinite(pub?.lastRound) && pub.round > pub.lastRound);
   const roundText = hidden ? '??' : pub?.round > 0 ? String(pub.round) : '--';
-  const showReady = phase === PHASE.PREP && priv?.alive !== false;
+  const showReady = phase === PHASE.PREP && !!priv && priv.alive !== false;
   // boss rounds: the overtime warning follows the clock (4 Hz while live; frozen while paused)
   const otLive = boss && Number(pub?.overtimeAt) > 0;
   useTicker(otLive && frozenAt == null ? 250 : 0);

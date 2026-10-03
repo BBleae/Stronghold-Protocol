@@ -29,4 +29,6 @@ test('identities and revocations persist; OAuth is atomically consumed once', {t
   assert.deepEqual((await call('listRooms',{})).items.map(r=>r.roomId),['ABCD']);
   await call('publishRoom',{roomId:'ABCD',generation:'g1',public:false,connectedHumans:1,occupied:1,capacity:4,inMatch:false,updatedAt:now+1,expiresAt:now+60000});
   assert.equal((await call('listRooms',{})).items.length,0);
+  await call('publishRoom',{roomId:'EFGH',generation:'g2',public:true,connectedHumans:0,occupied:2,capacity:4,inMatch:true,updatedAt:now+2,expiresAt:now+60000});
+  assert.deepEqual((await call('listRooms',{})).items.map(r=>r.roomId),['EFGH'],'active public matches remain watchable while players reconnect');
 });

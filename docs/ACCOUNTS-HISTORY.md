@@ -61,7 +61,7 @@
 
 当前恢复通过重执行完整的有序输入与计时日志来重建技能闭包及共享对象，详细归属见 [持久状态说明](persistence-fields.md)。这是完整事件恢复，尚未实现固定成本的模拟状态快照。日志上限为 200,000 条；恢复耗时随对局长度/服务端战斗量增长。测试的完整合作局包含 28,829 条事件；本机简化首领血量的完整普通难度/隐秘核心恢复约 1.7 秒，该数字不是 Cloudflare CPU/内存保证。长局与大量掉线托管应在生产配额下压测，不能承诺无限长度或免费运行。
 
-构建检查单文件 25 MiB、20,000 个静态文件，以及 Worker gzip 默认 3 MiB 限额。仅已使用付费计划时可设置 `SP_WORKER_PAID_PLAN=1`，将本地构建检查改为 10 MiB；这不会升级套餐。保留版本会增大包体，接近限额时必须设计独立版本服务/存储迁移，不能删除仍被历史或活跃局引用的引擎来绕过检查。参考 [Workers 限额](https://developers.cloudflare.com/workers/platform/limits/) 和 [DO 限额](https://developers.cloudflare.com/durable-objects/platform/limits/)。
+构建检查单文件 25 MiB、Workers Paid 套餐的 100,000 个静态文件，以及 Worker 未压缩包体 64 MiB 限额（Cloudflare 2026-09-04 更新后 gzip 大小仅作参考）。构建默认使用付费套餐限制，无需额外环境变量。保留版本会增大包体，接近限额时必须设计独立版本服务/存储迁移，不能删除仍被历史或活跃局引用的引擎来绕过检查。参考 [Workers 限额](https://developers.cloudflare.com/workers/platform/limits/) 和 [DO 限额](https://developers.cloudflare.com/durable-objects/platform/limits/)。
 
 活跃房间每 100ms 推进并持久化，不进入休眠；服务端回放保留 5fps 的关键帧/增量序列，归档 outbox 在压缩前仍需序列化整局数据。编码结果落盘后才发布，并移除 outbox 中的原始回放副本。浏览器下载所有回放块后播放，解压总量上限 128 MiB；个人统计扫描该账号全部历史，会话命令去重最多 50,000 条。当前面向少量朋友的房间，尚未完成大规模容量验收；这些成本不会因使用 DO 自动消失。
 

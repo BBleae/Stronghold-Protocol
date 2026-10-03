@@ -292,7 +292,7 @@ export class RoomDurableObject {
       if(room) {
         const listing={roomId:rt.code,generation:rt.generation,public:rt.publicRoom && room.mode==='coop',
           connectedHumans:room.activeHumans().filter(s=>s.connected).length,occupied:room.seats.filter(Boolean).length,
-          capacity:4,inMatch:!!room.match,hostName:room.seatOf(room.hostId)?.name || '博士',difficulty:room.difficulty};
+          capacity:4,inMatch:!!room.match,spectatorCount:rt.spectators.count,hostName:room.seatOf(room.hostId)?.name || '博士',difficulty:room.difficulty};
         const fingerprint=JSON.stringify(listing);
         if(fingerprint!==this.lastListing || now-(this.lastPublished || 0)>=20000) {
           this.lastListing=fingerprint;this.lastPublished=now;
@@ -340,7 +340,7 @@ export class RoomDurableObject {
       if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') return error(426, 'BAD_MSG');
       if (!rt.canConnect() || url.searchParams.get('room') !== rt.code) return error(404, 'ROOM_NOT_FOUND');
       const ip = request.headers.get('X-Room-IP') || '0.0.0.0';
-      if (rt.admission(ip)) return error(429, 'RATE', 'connection limit');
+      if (rt.admission(ip,request.headers.get('X-Account-ID'))) return error(429, 'RATE', 'connection limit');
       const pair = new WebSocketPair();
       const [client, server] = Object.values(pair);
       this.ctx.acceptWebSocket(server);

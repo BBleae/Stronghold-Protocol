@@ -56,7 +56,7 @@ export async function quitMatch() {
  * Exit confirmation modal.
  * @param {{ open: boolean, onClose: Function, solo: boolean, onAway?: Function }} props
  */
-export function ExitModal({ open, onClose, solo, onAway }) {
+export function ExitModal({ open, onClose, solo, onAway, spectator = false }) {
   const [busy, setBusy] = useState(null);
   const quit = async () => {
     setBusy('quit');
@@ -71,13 +71,13 @@ export function ExitModal({ open, onClose, solo, onAway }) {
     onClose();
     if (ok) { awayStore.set({ away: true }); onAway?.(); }
   };
-  return html`<${Modal} open=${open} onClose=${onClose} tone="red" title="离开模拟" micro="LEAVE SIMULATION" width="6.8rem"
+  return html`<${Modal} open=${open} onClose=${onClose} tone="red" title=${spectator?'退出观战':'离开模拟'} micro="LEAVE SIMULATION" width="6.8rem"
     actions=${html`
       <${Button} variant="secondary" onClick=${onClose}>取消<//>
-      ${!solo ? html`<${Button} variant="ice" icon="robot" loading=${busy === 'away'} onClick=${away}>暂离（AI 托管）<//>` : null}
-      <${Button} variant="danger" icon="exit" loading=${busy === 'quit'} onClick=${quit}>放弃模拟<//>`}>
+      ${!solo && !spectator ? html`<${Button} variant="ice" icon="robot" loading=${busy === 'away'} onClick=${away}>暂离（AI 托管）<//>` : null}
+      <${Button} variant="danger" icon="exit" loading=${busy === 'quit'} onClick=${quit}>${spectator?'退出观战':'放弃模拟'}<//>`}>
     <div class="exitm">
-      ${solo
+      ${spectator ? html`<p>退出观战后返回大厅，不影响正在进行的对局。</p>` : solo
         ? html`<p>${EXIT_TEXT.soloRest}</p><p class="t-lo">${EXIT_TEXT.soloQuit}</p>`
         : html`<p><b class="t-ice">暂离</b>：由 AI 托管你的席位（自动部署、准备与选择），随时可以返回。</p>
                <p><b class="t-red">放弃模拟</b>：离开后无法返回本局，你的干员将回到共享卡池。</p>`}
