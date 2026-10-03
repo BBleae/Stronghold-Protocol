@@ -560,6 +560,11 @@ export class UnitView {
    * An attack by this unit is `lead` game seconds ahead in the snapshot buffer: start the Spine attack wind-up now
    * so the strike frame lines up with the attack. True once started (then stop calling for that attack).
    */
+  /** The unit's next attack in the battle look-ahead (game s; Infinity: none) and the look-ahead's reach (app.js). */
+  setUpcoming(lead, horizon) {
+    if (this.actor) this.actor.setUpcoming(lead, horizon);
+  }
+
   windUp(lead, target = null) {
     if (!this.alive || !this.actor || !this.spineReady) return false;
     const ok = this.actor.windUp(this.atkInterval, lead, targetBelow(this, target));
@@ -699,7 +704,9 @@ export class UnitView {
       else if (this.flags & UF.FROZEN) tint = 0x9fd4ff;
       else if (this.flags & UF.COLD) tint = 0xcfe6ff;
       if (flashK > 0) tint = mixTint(tint, 0xff8a80, flashK * 0.8);
-      let animDt = dt * (this.ctx.animRate?.() || 1);
+      const rate = this.ctx.animRate?.() || 1;
+      this.actor.setRate(rate);
+      let animDt = dt * rate;
       if (this._offDt > 0) { animDt += Math.min(0.5, this._offDt); this._offDt = 0; }
       let interval = this.ctx.impostorInterval ? this.ctx.impostorInterval() : 0;
       if (this.lodIdle) interval = Math.max(interval, 3);
@@ -713,8 +720,10 @@ export class UnitView {
         this.actor.setClipping(clip);
         if (clip && this.ctx.impostors) interval = Math.max(1, interval);
       }
-      // never slower than ~20 skeleton updates a second (render/app.js maxAnimInterval)
+      // never slower than ~20 skeleton updates a second (render/app.js maxAnimInterval), and every frame while a blend
+      // runs (a clip changed within ~0.3 s real): a blend sampled every few frames is a jump
       if (interval > 1 && !this.lodIdle && this.ctx.maxAnimInterval) interval = Math.min(interval, this.ctx.maxAnimInterval());
+      if (interval > 1 && !this.lodIdle && this.actor.clock - this.actor.changedAt < 0.3 * rate) interval = 1;
       if (interval > 0 && this.ctx.renderer) {
         this._updateImpostor(sc, flip, tint, animDt, interval);
       } else {

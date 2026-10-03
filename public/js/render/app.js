@@ -15,13 +15,16 @@
 //   view.enterBattle(fieldMeta)                 m.field { fieldId, kind, rect, stageId, units: [UnitInfo] }
 //   view.pushSnapshot(snap); view.pushEvents(ev | { ev, gt })  b.snap / b.ev wire frames as received (game time in
 //                                               `gt`; a numeric `t` is accepted for raw Battle snapshots / recordings)
-//                                               — 100 ms interpolation buffer; b.snap `down` keeps knocked-out
+//                                               — drawn RENDER_DELAY (0.5 s) behind them, a look-ahead for attack
+//                                               swings (render/spine.js); emits 'battleEvents' as they are drawn
+//                                               (the sound follows); b.snap `down` keeps knocked-out
 //                                               operators on the field under a redeploy ring and `elem` draws the
 //                                               element gauges (user playtest #4 items 8 / 9, render/units.js); a
 //                                               'die' with reason FORCED_EXIT (an operator entering 联防 knocked out,
 //                                               user playtest #5 item 2) goes straight to the held pose, no burst
 //   view.setLocalFeed({ on, speed })            frames come from the local sim every frame (client-side combat):
-//                                               ~2-frame buffer at the battle's game speed
+//                                               the same RENDER_DELAY, at the battle's game speed
+//   view.renderLag()                            real seconds the battle is drawn behind its frames (the HUD follows)
 //   view.highlightTiles(tiles, style)           [[r,c]] | [{row,col}]; style 'legal'|'illegal'|'range'|'rangeStand'|
 //                                               'hover'|'target'|{color,fill,line,group}; highlightTiles(null) clears all
 //   view.on(name, fn) → unsubscribe ; view.off(name, fn)
@@ -111,6 +114,11 @@ const PIECE_DIRS = new Set(['UP', 'RIGHT', 'DOWN', 'LEFT']);
 /** Stored facing of a prep piece (m.private board pieces carry `dir`; bench pieces have none ⇒ undefined). */
 const pieceDirOf = (piece) => (typeof piece?.dir === 'string' && PIECE_DIRS.has(piece.dir.toUpperCase()) ? piece.dir.toUpperCase() : undefined);
 const CAMERA_MS = 750;
+/**
+ * Real seconds the battle is drawn behind the simulation (render/interp.js delay): at the 2× battle speed a look-ahead
+ * of 1 game s, enough for the whole wind-up of 99% of the attack clips and for Texas' Attack_Start + strike (0.97 s).
+ */
+export const RENDER_DELAY = 0.5;
 /** Camera pan to / from the enemy preview pen (configBlackBoard move_time 0.25). */
 export const PEN_CAMERA_MS = 250;
 /** Recovery of a lost 3D board context: delays of the rebuild attempts (ms) and how soon a new loss counts as failure. */
@@ -441,7 +449,11 @@ export async function createFieldView(host, options = {}) {
   // dead units for DIE_ANIM_TIME), which must not bring the view back; a spawn / deploy / live sample clears it
   const gone = new Set();
   const woundUp = new WeakSet(); // atk event tuples whose attack wind-up already started
-  const interp = new SnapshotBuffer({ delay: 0.1, rate: 2 });
+  // The battle is drawn RENDER_DELAY real seconds behind the simulation (local or networked): the look-ahead lets every
+  // operator play its attack as the original does — the whole wind-up (begin clip + the strike frame: up to ~1 game s,
+  // 2× speed) before the hit the sim already resolved — and start a swing only when an attack is really coming (user
+  // report: swings cut in mid-clip, swings at nothing). Sound (battleEvents) and the HUD follow the same clock.
+  const interp = new SnapshotBuffer({ delay: RENDER_DELAY, rate: 2 });
   const sample = new Map();
   const meleePending = new Map(); // target id → { src, t }
   const consumedIds = new Set();  // battle ids used up by their own effect (fx `consumed`): no death particles
@@ -1342,25 +1354,39 @@ export async function createFieldView(host, options = {}) {
 
   // attack wind-ups: an 'atk' still queued in the buffer starts its Spine clip early enough for the strike frame to
   // land when the event is rendered (the look-ahead is the interpolation delay, ~0.2 game s)
+  // Every unit also learns how far ahead its next attack is (Infinity: none in the look-ahead) and how far the look-ahead
+  // reaches: an attack loop ends when no attack follows (render/spine.js).
   function windUpAttacks(renderT) {
     upcomingT = renderT;
+    nextAtk.clear();
     interp.forEachUpcoming(renderT, renderT + 1.5, onUpcoming);
+    const horizon = Number.isFinite(interp.newestT) ? Math.max(0, interp.newestT - renderT) : 0;
+    for (const [id, v] of views) if (v.setUpcoming) v.setUpcoming(nextAtk.get(id) ?? Infinity, horizon);
   }
   let upcomingT = 0;
+  const nextAtk = new Map(); // unit id → game s to its next queued attack
   function onUpcoming(e, t) {
-    if (e[0] !== 'atk' || woundUp.has(e) || CHAIN_KINDS.has(e[3])) return;
+    if (e[0] !== 'atk' || CHAIN_KINDS.has(e[3])) return;
+    if (!nextAtk.has(e[1])) nextAtk.set(e[1], t - upcomingT);
+    if (woundUp.has(e)) return;
     const v = views.get(e[1]);
     if (!v || !v.windUp) return;
     if (v.windUp(t - upcomingT, views.get(e[2]) || null)) woundUp.add(e);
   }
 
-  const EVS = [];
+  const EVS = [], EVT = [], HEARD = [];
   function processEvents(renderT) {
-    EVS.length = 0;
-    interp.takeEvents(renderT, EVS, renderT - 1.5);
+    EVS.length = 0; EVT.length = 0;
+    interp.takeEvents(renderT, EVS, renderT - 1.5, EVT);
     for (const e of EVS) {
       try { handleEvent(e, renderT); } catch (err) { if (!handleEvent.warned) { handleEvent.warned = true; console.warn('[render] event failed', e, err); } }
     }
+    // the events as they are shown, for the sound (screens/game.js → audio): stale ones (a field entered mid-battle
+    // replays its state events) are silent, spawns always pass (the unit map)
+    if (!EVS.length || !listeners.get('battleEvents')?.size) return;
+    HEARD.length = 0;
+    for (let i = 0; i < EVS.length; i++) if (EVS[i][0] === 'spawn' || EVT[i] >= renderT - 0.6) HEARD.push(EVS[i]);
+    if (HEARD.length) emit('battleEvents', HEARD.slice());
   }
 
   function handleEvent(e, now) {
@@ -1682,14 +1708,18 @@ export async function createFieldView(host, options = {}) {
     pushSnapshot,
     pushEvents,
     /**
+     * Real seconds the battle is drawn behind the frames it receives (the HUD and sound follow it).
+     */
+    renderLag() { return interp.delay; },
+    /**
      * Client-side combat glue (DESIGN §14): battle frames come from the local simulation (public/js/battle/runner.js)
-     * every animation frame instead of the network, so the render clock trails them by ~2 frames (not the 100 ms
-     * jitter buffer) and runs at the battle's game speed. `{ on: false }` restores the network settings.
+     * every animation frame instead of the network; the render clock trails them by RENDER_DELAY like a networked feed
+     * (the attack look-ahead) and runs at the battle's game speed. `{ on: false }` restores the network settings.
      */
     setLocalFeed(o) {
       const on = !!(o && o.on);
       const speed = Number(o && o.speed) > 0 ? Number(o.speed) : 2;
-      interp.delay = on ? 0.034 : 0.1;
+      interp.delay = RENDER_DELAY;
       interp.defaultRate = on ? Math.min(20, speed) : 2;
       interp.maxRate = on ? Math.max(8, speed * 1.5) : 8;
       return true;

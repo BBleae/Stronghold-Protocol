@@ -4,7 +4,8 @@
 // real time (DESIGN §4), so the game clock advances `rate` ≈ 2 game-s per real second. The buffer:
 //   * keeps ~2 s of snapshots (each indexed id → tuple once, at push time),
 //   * estimates `rate` from arrival times (sliding window, clamped, default 2),
-//   * runs a render clock `renderT` that trails the newest snapshot by `delay` real seconds (default 100 ms),
+//   * runs a render clock `renderT` that trails the newest snapshot by `delay` real seconds (default 100 ms; the
+//     field view uses render/app.js RENDER_DELAY, 0.5 s: a look-ahead for attack swings),
 //     advancing at `rate` and gently steered back when network jitter pushes it off target (hard snap when it
 //     is more than `snapAfter` real seconds off),
 //   * extrapolation guard: renderT never runs more than `maxExtrapolate` real seconds past the newest snapshot;
@@ -308,9 +309,10 @@ export class SnapshotBuffer {
 
   /**
    * Remove and return (in order) the queued events due at `time` (default renderT). When `dropCosmeticBefore`
-   * is a number, cosmetic events stamped earlier than it are discarded instead of returned.
+   * is a number, cosmetic events stamped earlier than it are discarded instead of returned. `stamps` (an array) receives
+   * each returned event's game time.
    */
-  takeEvents(time = this.renderT, out = [], dropCosmeticBefore = null) {
+  takeEvents(time = this.renderT, out = [], dropCosmeticBefore = null, stamps = null) {
     if (!this.events.length || !Number.isFinite(time)) return out;
     let n = 0;
     while (n < this.events.length && this.events[n].t <= time) n++;
@@ -320,6 +322,7 @@ export class SnapshotBuffer {
       const e = list[i];
       if (typeof dropCosmeticBefore === 'number' && e.t < dropCosmeticBefore && isCosmeticEvent(e.ev)) continue;
       out.push(e.ev);
+      if (stamps) stamps.push(e.t);
     }
     const rest = list.length - n;
     list.copyWithin(0, n);

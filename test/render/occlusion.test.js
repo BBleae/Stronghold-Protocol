@@ -9,7 +9,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseStage, buildTileQuads, splitQuadGroups, sortQuadOrder, rowDepthKey, boxDepthKey, ROW_KEY } from '../../public/js/render/tiles.js';
 import { unitDepthKey, groundZ, placeOnGround } from '../../public/js/render/units.js';
-import { windUpPlan, attackTimeScale } from '../../public/js/render/spine.js';
+import { windUpPlan, attackTimeScale, ATTACK_STRETCH } from '../../public/js/render/spine.js';
 import { presetCamera } from '../../public/js/render/projection.js';
 import { SnapshotBuffer } from '../../public/js/render/interp.js';
 
@@ -115,31 +115,35 @@ describe('standing on raised tiles', () => {
   });
 });
 
-describe('attack wind-up (as the original: natural speed, never slowed or fast-forwarded)', () => {
+describe('attack wind-up (as the original: the whole swing, never fast-forwarded)', () => {
   test('the strike frame lands exactly on the event whenever the wind-up can start from the clip start', () => {
     for (const loop of [0.6, 1, 1.7]) for (const hit of [0.1, 0.35, 0.5]) for (const iv of [0.4, 1, 2.5]) {
       for (const lead of [0.01, 0.05, 0.1, 0.2, 0.4]) {
         const h = hit * loop;
-        const { ts, start } = windUpPlan(loop, h, iv, lead);
+        const { ts, start, early } = windUpPlan(loop, h, iv, lead);
         assert.ok(Number.isFinite(ts) && Number.isFinite(start));
-        assert.ok(ts >= 1 && ts <= 4, `ts ${ts}`);
+        assert.ok(ts >= ATTACK_STRETCH && ts <= 4, `ts ${ts}`);
         assert.ok(start >= 0 && start <= h + 1e-12, `start ${start}`);
-        if (lead * ts <= h) assert.ok(near(start + lead * ts, h, 1e-9), `strike at event: ${start}+${lead}*${ts} vs ${h}`);
+        assert.equal(early, lead * ts > h + 1e-6);
+        if (!early) assert.ok(near(start + lead * ts, h, 1e-9), `strike at event: ${start}+${lead}*${ts} vs ${h}`);
       }
     }
   });
 
-  test('a one-shot clip plays at its natural speed when the interval is longer, sped up only when shorter', () => {
-    assert.equal(attackTimeScale(1, 1.2), 1, '星熊: Attack 1 s, 1.2 s between attacks → natural speed, then idle');
+  test('a one-shot clip: natural speed, sped up when the interval is shorter, stretched at most 1/ATTACK_STRETCH', () => {
+    assert.ok(near(attackTimeScale(1, 1.05), 1 / 1.05), 'Texas-like: fills the interval');
+    assert.equal(attackTimeScale(1, 3), ATTACK_STRETCH, 'a long interval: stretched no further, then idle');
     assert.ok(near(attackTimeScale(1, 0.5), 2));
     assert.equal(attackTimeScale(1, 0.1), 4, 'capped');
     assert.ok(near(attackTimeScale(1, 2, true), 0.5), 'a looping clip runs one cycle per attack');
   });
 
-  test('a comfortable lead plays the whole wind-up', () => {
+  test('a lead as long as the wind-up plays all of it; a begin clip adds to the wind-up', () => {
     const p = windUpPlan(1, 0.4, 1, 0.4);
-    assert.equal(p.start, 0);
-    assert.ok(near(p.ts, 1));
+    assert.equal(p.start, 0); assert.equal(p.early, false);
+    assert.equal(windUpPlan(1, 0.4, 1, 0.5).early, true, 'too early: wait');
+    const t = windUpPlan(1, 0.467, 1.05, 0.967 * 1.05, true, 0.5); // Texas: Attack_Start 0.5 s + strike 0.467 s
+    assert.ok(t.start < 1e-9 && !t.early, 'begin + loop to the strike from the first frame');
   });
 
   test('a short lead skips the start of the wind-up instead of fast-forwarding it', () => {

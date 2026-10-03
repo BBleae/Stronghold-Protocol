@@ -33,11 +33,11 @@ function spineData(entry) {
   return { animations: anims, skins: [], findAnimation: (n) => anims.find((a) => a.name === n) || null };
 }
 
-let SpineActor, prevPixi;
+let SpineActor, ATTACK_STRETCH, prevPixi;
 before(async () => {
   prevPixi = globalThis.PIXI;
   globalThis.PIXI = { spine: { Spine: class { constructor(d) { this.spineData = d; this.state = new State(d); this.stateData = {}; this.skeleton = { slots: [] }; } update(dt) { this.state.update(dt); } destroy() {} } } };
-  ({ SpineActor } = await import('../../public/js/render/spine.js'));
+  ({ SpineActor, ATTACK_STRETCH } = await import('../../public/js/render/spine.js'));
 });
 after(() => { globalThis.PIXI = prevPixi; });
 
@@ -52,46 +52,85 @@ function run(a, sec, onFrame) {
   return seen;
 }
 
-describe('attacks', () => {
-  test('星熊: Attack at its natural speed, idle until the next swing, every strike on its attack, no jumps', () => {
-    const a = actor();
-    const iv = 1.2; // her base attack interval (game s)
-    a.windUp(iv, 0.2);
-    assert.equal(clip(a), 'Attack');
-    assert.equal(a.spine.state.tracks[0].timeScale, 1, 'not slowed to fit the interval');
-    assert.ok(Math.abs(tt(a) - (0.333 - 0.2)) < 1e-6, 'started so the strike lands on the attack');
-    run(a, 0.2);
-    let strikes = 0;
-    for (let k = 0; k < 6; k++) {
-      // the attack event: the strike frame is showing (no re-phase needed)
-      assert.equal(clip(a), 'Attack', `swing ${k}`);
-      assert.ok(Math.abs(tt(a) - 0.333) < FRAME + 1e-6, `strike frame on attack ${k}: ${tt(a)}`);
-      const before = tt(a);
-      a.attack(iv);
-      assert.equal(tt(a), before, 'the attack never moves the clip');
-      strikes++;
-      const seen = run(a, iv);
-      assert.deepEqual(seen.filter((n, i) => i === 0 || n !== seen[i - 1]), ['Attack', 'Idle', 'Attack'], 'swing, idle, next swing');
+const TEXAS = assets.chars.char_102_texas.spine.front;
+const LOOKAHEAD = 1.0; // game s (render/app.js RENDER_DELAY 0.5 real s × 2)
+
+/**
+ * Drive an actor the way render/app.js does: attacks at `times` (game s) are known LOOKAHEAD ahead — windUp each frame
+ * until it starts the swing, setUpcoming with the next one, attack() when it is due. Records every clip start
+ * { t, name, at: track time, ts } and, at each attack, the clip and its track time.
+ */
+function drive(a, times, { iv, until, down = () => false } = {}) {
+  const starts = [], strikes = [];
+  const st = a.spine.state, set = st.setAnimation.bind(st);
+  st.setAnimation = (tr, name, loop) => { const e = set(tr, name, loop); starts.push({ t: clockT, name, e }); return e; };
+  let clockT = 0, k = 0;
+  const wound = new Set();
+  for (; clockT < until - 1e-9; clockT += FRAME) {
+    while (k < times.length && times[k] <= clockT + 1e-9) {
+      strikes.push({ t: times[k], clip: clip(a), at: tt(a) });
+      a.attack(iv, down(k));
+      k++;
     }
-    assert.equal(strikes, 6);
+    for (let j = k; j < times.length && times[j] - clockT <= LOOKAHEAD; j++) {
+      if (!wound.has(j) && a.windUp(iv, times[j] - clockT, down(j))) wound.add(j);
+    }
+    a.setUpcoming(k < times.length && times[k] - clockT <= LOOKAHEAD ? times[k] - clockT : Infinity, LOOKAHEAD);
+    for (const x of starts) if (x.at == null) x.at = x.e.trackTime; // where the clip was started (set after setAnimation)
+    a.update(FRAME);
+  }
+  for (const x of starts) delete x.e;
+  return { starts, strikes };
+}
+
+describe('attacks', () => {
+  test('星熊: every swing from its first frame, the strike on its attack, idle between, none after the last', () => {
+    const a = actor();
+    const iv = 1.2, times = [1, 2.2, 3.4, 4.6, 5.8];
+    const swings = [];
+    const st = a.spine.state, set = st.setAnimation.bind(st);
+    st.setAnimation = (tr, name, loop) => { const e = set(tr, name, loop); if (name === 'Attack') swings.push(e); return e; };
+    const { strikes } = drive(a, times, { iv, until: 9 });
+    assert.equal(swings.length, times.length, 'one swing per attack, no swing at nothing');
+    for (const e of swings) assert.ok(Math.abs(e.timeScale - 1 / 1.2) < 1e-9, 'fills the interval (stretched ≤ 1.25)');
+    for (const s of strikes) {
+      assert.equal(s.clip, 'Attack');
+      assert.ok(Math.abs(s.at - 0.333) < FRAME + 1e-6, `strike frame on the attack: ${s.at}`);
+    }
+    assert.equal(clip(a), 'Idle', 'idle after the last swing');
   });
 
-  test('fast attacks speed the clip up just enough; slow ones never slow it down', () => {
+  test('德克萨斯: Attack_Start once, the loop once per attack, then Attack_End from its first frame — no slide', () => {
+    const a = actor(TEXAS);
+    const iv = 1.05, times = [2, 3.05, 4.1, 5.15];
+    const { starts, strikes } = drive(a, times, { iv, until: 9 });
+    const names = starts.map((x) => x.name);
+    assert.deepEqual(names.filter((n) => n.startsWith('Attack')), ['Attack_Start', 'Attack_End'], `engage and leave once: ${names}`);
+    const start = starts.find((x) => x.name === 'Attack_Start');
+    assert.ok(start.at < FRAME, `Attack_Start from its first frame (the look-ahead covers start + strike): ${start.at}`);
+    for (const s of strikes) {
+      assert.equal(s.clip, 'Attack_Loop');
+      assert.ok(Math.abs(s.at % 1 - 0.467) < 2 * FRAME, `strike frame on the attack: ${s.at}`);
+    }
+    const end = starts.find((x) => x.name === 'Attack_End');
+    // started inside update(), then advanced by that frame: within one frame of its first
+    assert.ok(end.at <= FRAME + 1e-6, `Attack_End from its first frame (the loop's last): ${end.at}`);
+    assert.ok(end.t > times.at(-1) && end.t < times.at(-1) + iv, `ends within the cycle after the last attack: ${end.t}`);
+    assert.equal(clip(a), 'Idle');
+  });
+
+  test('a late attack (no look-ahead) shows its strike frame at once; fast attacks speed the clip up', () => {
     const a = actor();
     a.attack(0.5);
+    assert.equal(clip(a), 'Attack');
+    assert.ok(Math.abs(tt(a) - 0.333) < 1e-9);
     assert.ok(Math.abs(a.spine.state.tracks[0].timeScale - 2) < 1e-9);
-    const b = actor();
-    b.attack(3);
-    assert.equal(b.spine.state.tracks[0].timeScale, 1);
   });
 
   test('a target below takes Attack_Down', () => {
     const a = actor();
     a.attack(1.2, true);
     assert.equal(clip(a), 'Attack_Down');
-    a.attack(1.2, false);
-    run(a, 1.2);
-    assert.equal(a.down, false);
   });
 });
 
@@ -109,7 +148,7 @@ describe('skills', () => {
     // an attack during the skill: 星熊 strikes with Skill_Begin (it has the strike frame; Skill has none), then holds Skill
     a.attack(1.2);
     assert.equal(clip(a), 'Skill_Begin');
-    assert.equal(a.spine.state.tracks[0].timeScale, 1, 'not stretched');
+    assert.equal(a.spine.state.tracks[0].timeScale, ATTACK_STRETCH, 'stretched no more than the original allows');
     const after2 = run(a, 1.2);
     assert.ok(after2.includes('Skill'), `stance between strikes: ${after2}`);
     a.attack(1.2, true);
@@ -137,6 +176,29 @@ describe('skills', () => {
     assert.equal(clip(a), 'Skill_Begin');
     const seen = run(a, 1.3);
     assert.deepEqual(seen, ['Skill_Begin', 'Skill_End', 'Idle']);
+  });
+
+  test('德克萨斯: a skill clip without a strike frame is held, not replayed at every attack', () => {
+    const a = actor(TEXAS);
+    a.setSkill(true);
+    run(a, 0.3);
+    assert.equal(clip(a), 'Skill');
+    const e = a.spine.state.tracks[0];
+    a.attack(1.05);
+    run(a, 0.1);
+    assert.equal(a.spine.state.tracks[0], e, 'the same Skill entry runs on');
+  });
+
+  test('a looping base clip already playing is not restarted (Idle@x → Idle@0 was a pop)', () => {
+    const entry = { anims: { idle: 'Idle', attack: { begin: null, loop: 'Attack', end: null }, skill: { begin: null, loop: 'Skill_2', end: null } },
+      animations: { Idle: 2, Attack: 1, Skill_2: 1.5 }, hits: { Attack: [0.4], Skill_2: [0.6] } };
+    const a = actor(entry);
+    run(a, 0.5);
+    const e = a.spine.state.tracks[0];
+    a.setSkill(true);
+    run(a, 1);
+    a.setSkill(false);
+    assert.equal(a.spine.state.tracks[0], e, 'Idle keeps running');
   });
 
   test('an instant skill without a begin clip plays its skill clip once', () => {

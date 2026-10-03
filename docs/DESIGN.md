@@ -459,7 +459,7 @@ view.setPrep(privateState, { editable })     // render hand/temp/board pieces as
                                              //   a merge's new elite on the board plays fx.promote instead of fx.deploy (render/promote.js, §20.11),
                                              //   also after a battle (a merge between two preps: the last prep state is kept, §20.14)
 view.enterBattle(fieldMeta)                  // switch to battle rendering for m.field
-view.pushSnapshot(snap) ; view.pushEvents(ev)   // interpolated rendering (100 ms buffer)
+view.pushSnapshot(snap) ; view.pushEvents(ev)   // interpolated rendering, drawn 0.5 s behind (RENDER_DELAY: attack look-ahead; sound + HUD follow)
 view.highlightTiles(tiles, style)            // legal/illegal placement, range preview
 view.on('pieceDragStart'|'pieceDrop'|'pieceDragEnd'|'pieceClick'|'pieceHover'|'tileHover', fn)
    // pieceDrop: { uid, target: {area:'board',row,col}|{area:'hand',idx}|{area:'outside', clientX, clientY} }

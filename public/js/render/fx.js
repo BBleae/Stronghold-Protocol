@@ -270,6 +270,28 @@ export function tilesAround(x, y, r, tiles) {
  * fire wall: perpendicular to his facing, sim/content/kits/tier6.js). Clipped to the field `rect` (inclusive
  * { r0, r1, c0, c1 }); without one ±4 tiles.
  */
+/**
+ * Sim fx that last as long as their caster's skill (user report: 余's S3 fire wall vanished after 2 s of a 41 s skill;
+ * the other skill-long fields alike): emitted once at the skill's start by the caster (`id`), held until that skill ends
+ * ('skill' off), the caster dies or the battle view clears. `look`: 'wall' — a burning line across the field 0.5 tile
+ * in front of the caster (the official 灶里乾坤 wall on the tile edge, perpendicular to its direction); 'field' — a
+ * ground field of radius `r` (or the event's r) centred on the caster. The one-shot cast look still plays first.
+ */
+export const SUSTAINED = Object.freeze({
+  firewall: { look: 'wall' },
+  tide: { look: 'field', r: 2.2 },
+  healField: { look: 'field', r: 1.6 },
+  coldWind: { look: 'field', r: 2.5 },
+  snow: { look: 'field', r: 2.2 },
+});
+
+/** The line of a sustained wall: `axis` 'col' → x = const, 'row' → y = const, 0.5 tile towards `dir` from (x, y). */
+export function wallLine(x, y, axis, dir) {
+  const D = { UP: [0, 1], RIGHT: [1, 0], DOWN: [0, -1], LEFT: [-1, 0] }[String(dir || '').toUpperCase()] || [0, 0];
+  const R = Math.round(Number(y)), C = Math.round(Number(x));
+  return axis === 'row' ? { axis: 'row', at: R + 0.5 * D[1], fixed: R } : { axis: 'col', at: C + 0.5 * D[0], fixed: C };
+}
+
 export function wallTiles(x, y, axis, rect) {
   const R = Math.round(Number(y)), C = Math.round(Number(x));
   if (!Number.isFinite(R) || !Number.isFinite(C)) return [];
@@ -332,6 +354,10 @@ export class FxSystem {
     this.tileGfx = new P.Graphics();
     this.tileGfx.blendMode = P.BLEND_MODES.ADD;
     ctx.layers.groundFx.addChild(this.tileGfx);
+    this.sustains = new Map();  // `${kind}:${casterId}` → a skill-long effect (SUSTAINED)
+    this.sustainGfx = new P.Graphics();
+    this.sustainGfx.blendMode = P.BLEND_MODES.ADD;
+    ctx.layers.groundFx.addChild(this.sustainGfx);
     this.tintSprite = new P.Sprite(P.Texture.WHITE);
     this.tintSprite.alpha = 0;
     this.tintSprite.blendMode = P.BLEND_MODES.ADD;
@@ -1496,7 +1522,7 @@ export class FxSystem {
    */
   skill(view, on) {
     if (!view) return;
-    if (!on) { this._aura(view, false); return; }
+    if (!on) { this._aura(view, false); this._endSustains(view.id); return; }
     const z = (view.z || 0) + (view.hover || 0);
     const g = this._proj(view.x, view.y, z, this._g);
     const gx = g.x, gy = g.y, s = g.s;
@@ -1606,6 +1632,7 @@ export class FxSystem {
 
   death(view) {
     if (!view) return;
+    this._endSustains(view.id);
     const p = this._chest(view);
     const s = p.s;
     const col = view.isEnemy ? 0xff7a52 : 0xbfeee2;
@@ -1681,6 +1708,7 @@ export class FxSystem {
     const col = spec.c;
     const r = clamp(num(ex.r ?? ex.radius, spec.r ?? 1), 0.3, 30);
     const ts = this.ctx.timeScale ? Math.max(0.25, this.ctx.timeScale()) : 2;
+    if (SUSTAINED[kind]) this._sustain(kind, SUSTAINED[kind], col, Number(x), Number(y), ex);
     const dur = num(ex.dur ?? ex.duration, spec.dur ?? 0) / ts;
     const cam = this.ctx.cam();
     const chest = (v, out = this._p) => (v ? this._chest(v, out) : cam.project(at.x, at.y, at.z + 0.5, out));
@@ -2000,6 +2028,122 @@ export class FxSystem {
   }
 
   /** Persistent ground area: soft disc + pulsing edge ring for `dur` real seconds (telegraphs pulse faster). */
+  // ---- skill-long effects (SUSTAINED) ----------------------------------------------------------------------------
+
+  _sustain(kind, sus, tint, x, y, ex) {
+    const v = this._viewOf(ex.id);
+    if (!v || v.destroyed || v.alive === false) return false;
+    // only while its caster's skill runs (a talent's periodic snow stays the one-shot look)
+    if (!(v.statuses?.has?.('skill') || v.actor?.skillOn)) return false;
+    if (sus.look === 'field' && Number.isFinite(x) && Number.isFinite(y) && Math.hypot(v.x - x, v.y - y) > 0.75) return false;
+    const key = `${kind}:${ex.id}`;
+    let S = this.sustains.get(key);
+    if (!S) {
+      S = { key, kind, look: sus.look, src: ex.id, view: v, t: 0, a: 0, end: false, tint, emit: 0, pulse: 0 };
+      if (sus.look === 'field') {
+        const P = this.P;
+        S.disc = new P.Sprite(this.tex.soft); S.disc.anchor.set(0.5); S.disc.blendMode = P.BLEND_MODES.ADD; S.disc.tint = tint;
+        S.edge = new P.Sprite(this.tex.ring); S.edge.anchor.set(0.5); S.edge.blendMode = P.BLEND_MODES.ADD; S.edge.tint = tint;
+      }
+      this.sustains.set(key, S);
+    }
+    S.end = false; S.view = v;
+    if (sus.look === 'wall') {
+      const rect = this.ctx.fieldRect ? this.ctx.fieldRect() : null;
+      const axis = ex.axis === 'row' ? 'row' : 'col';
+      S.line = wallLine(Number.isFinite(x) ? x : v.x, Number.isFinite(y) ? y : v.y, axis, ex.dir || v.dir || v.info?.dir);
+      const ok = rect && [rect.r0, rect.r1, rect.c0, rect.c1].every(Number.isFinite);
+      const f = S.line.fixed;
+      S.span = axis === 'col' ? (ok ? [rect.r0, rect.r1] : [f - 4, f + 4]) : (ok ? [rect.c0, rect.c1] : [f - 4, f + 4]);
+    } else S.r = clamp(num(ex.r ?? ex.radius, sus.r), 0.5, 8);
+    return true;
+  }
+
+  /** The skill of `id` ended (or it died): its skill-long effects fade out. */
+  _endSustains(id) {
+    for (const S of this.sustains.values()) if (S.src === id) S.end = true;
+  }
+
+  _freeSustain(S) { S.disc?.destroy(); S.edge?.destroy(); }
+
+  _updateSustains(dt) {
+    const g = this.sustainGfx;
+    g.clear();
+    if (!this.sustains.size) return;
+    const cam = this.ctx.cam();
+    const p = this._p, q = this._q;
+    for (const [key, S] of this.sustains) {
+      S.t += dt;
+      const v = S.view;
+      const ending = S.end || !v || v.destroyed || v.alive === false || S.t > 120;
+      S.a = ending ? S.a - dt / 0.4 : Math.min(1, S.a + dt / 0.35);
+      if (S.a <= 0 && ending) { this._freeSustain(S); this.sustains.delete(key); continue; }
+      if (S.look === 'wall') this._drawWall(S, g, cam, dt, ending);
+      else this._drawField(S, cam, p, q, dt, ending);
+    }
+  }
+
+  /** A burning line across the field: an orange band with a hot core, flickering per tile, with rising flames. */
+  _drawWall(S, g, cam, dt, ending) {
+    const L = S.line, [a, b] = S.span, p = this._p;
+    const quad = (u0, u1, w0, w1, z) => {
+      // u: along the line (tile index), w: across it (world offset from the line)
+      const pts = [];
+      for (const [u, w] of [[u0, w0], [u1, w0], [u1, w1], [u0, w1]]) {
+        if (L.axis === 'col') cam.project(L.at + w, u, z, p); else cam.project(u, L.at + w, z, p);
+        pts.push(p.x, p.y);
+      }
+      return pts;
+    };
+    for (let u = a; u <= b; u++) {
+      const r = L.axis === 'col' ? u : L.fixed, c = L.axis === 'col' ? L.fixed : u;
+      const z = (this.ctx.heightAt ? this.ctx.heightAt(r, c) : 0) + 0.02;
+      const fl = 0.78 + 0.22 * Math.sin(S.t * 9 + u * 1.7) * Math.sin(S.t * 5.3 + u * 0.9);
+      g.beginFill(0xff5a1a, 0.24 * S.a * fl); g.drawPolygon(quad(u - 0.5, u + 0.5, -0.26, 0.26, z)); g.endFill();
+      g.beginFill(0xffc04a, 0.32 * S.a * fl); g.drawPolygon(quad(u - 0.5, u + 0.5, -0.09, 0.09, z)); g.endFill();
+    }
+    if (ending) return;
+    // rising flames along the line
+    S.emit += dt * (this.rich ? 26 : 9) * (b - a + 1) / 9;
+    while (S.emit >= 1) {
+      S.emit -= 1;
+      const u = a - 0.45 + Math.random() * (b - a + 0.9), w = (Math.random() - 0.5) * 0.36;
+      const r = Math.round(L.axis === 'col' ? u : L.fixed), c = Math.round(L.axis === 'col' ? L.fixed : u);
+      const z = (this.ctx.heightAt ? this.ctx.heightAt(r, c) : 0) + 0.05;
+      if (L.axis === 'col') cam.project(L.at + w, u, z, p); else cam.project(u, L.at + w, z, p);
+      const s = p.s, hot = Math.random() < 0.35;
+      this.particle(hot ? 'spark' : 'glow', p.x, p.y, {
+        tint: hot ? 0xffd27a : 0xff7a2a, vx: (Math.random() - 0.5) * s * 0.12, vy: -s * (0.7 + Math.random() * 0.6), drag: 0.6,
+        life: 0.45 + Math.random() * 0.4, s0: (s / 128) * (hot ? 0.35 : 0.55), s1: (s / 128) * 0.12, a0: 0.85, a1: 0, fadeIn: 0.08,
+      });
+    }
+  }
+
+  /** A ground field around its caster (soft disc + edge), pulsing, with a few motes of its kind. */
+  _drawField(S, cam, p, q, dt, ending) {
+    const v = S.view;
+    const x = v ? v.x : 0, y = v ? v.y : 0, z = ((v && v.z) || 0) + 0.02;
+    this._onGround(S.disc, y, z); this._onGround(S.edge, y, z);
+    cam.project(x, y, z, p);
+    cam.project(x, y + S.r, z, q);
+    const rx = p.s * S.r, ry = Math.max(1, p.y - q.y);
+    const pulse = 0.85 + 0.15 * Math.sin(S.t * 2.4);
+    S.disc.position.set(p.x, p.y); S.disc.scale.set((rx * 2) / 128, (ry * 2) / 128); S.disc.alpha = 0.2 * S.a * pulse;
+    S.edge.position.set(p.x, p.y); S.edge.scale.set((rx * 2.08) / 128, (ry * 2.08) / 128); S.edge.alpha = 0.55 * S.a * pulse;
+    if (ending || !v) return;
+    S.pulse -= dt;
+    if (S.kind === 'tide' && S.pulse <= 0) { S.pulse = 1.4; this.ring(x, y, z, S.r * 0.25, S.r, S.tint, 0.9); return; }
+    S.emit += dt * (this.rich ? 6 : 2);
+    while (S.emit >= 1) {
+      S.emit -= 1;
+      const ang = Math.random() * Math.PI * 2, d = Math.sqrt(Math.random()) * S.r * 0.9;
+      const w = this._proj(x + Math.cos(ang) * d, y + Math.sin(ang) * d, z + (S.kind === 'healField' ? 0.1 : 0.9), q);
+      const s = w.s;
+      if (S.kind === 'healField') this.particle('plus', w.x, w.y, { tint: S.tint, vy: -s * 0.6, life: 0.9, s0: (s / 64) * 0.22, s1: (s / 64) * 0.12, a0: 0.8, a1: 0, fadeIn: 0.15 });
+      else this.particle('dot', w.x, w.y, { tint: 0xffffff, vx: (Math.random() - 0.5) * s * 0.15, vy: s * 0.45, life: 1.2, s0: (s / 32) * 0.14, s1: (s / 32) * 0.08, a0: 0.85, a1: 0, fadeIn: 0.2 });
+    }
+  }
+
   zone(x, y, z, r, tint, dur, tex = 'soft', warn = false) {
     const P = this.P;
     const disc = new P.Sprite(this.tex[tex === 'ring' ? 'soft' : tex] || this.tex.soft);
@@ -2169,6 +2313,9 @@ export class FxSystem {
     this.labels.length = 0;
     this.tileFlashes.length = 0;
     this.tileGfx.clear();
+    for (const S of this.sustains.values()) this._freeSustain(S);
+    this.sustains.clear();
+    this.sustainGfx.clear();
     this.tintT = 0; this.tintSprite.alpha = 0;
   }
 
@@ -2184,6 +2331,7 @@ export class FxSystem {
     this._updateAuras(dt);
     this._updatePops(dt);
     this._updateZones(dt);
+    this._updateSustains(dt);
     this._updateLabels(dt);
     this._updateTileFlashes(dt);
     if (this.tintT > 0) {
