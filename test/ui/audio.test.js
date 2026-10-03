@@ -378,6 +378,40 @@ describe('operator voice', () => {
     } finally { restore(); }
   });
 
+  test('a match that ends before its 行动开始 is due says no 行动开始; the end line plays once', async () => {
+    const { a, settle, advance, restore } = await voiceRig();
+    try {
+      a.battleStart(LEADER);
+      advance(1000);
+      a.handleBattleEvents([['spawn', { id: 7, side: 'enemy', kind: 'enemy', spine: 'enemy_x' }]]);
+      a.matchEnd({ victory: false });
+      a.matchEnd({ victory: false });
+      await settle(2100);
+      assert.deepEqual(a.voiceLog.map((l) => l.role), ['fail'], 'no late 行动开始, one end line');
+      // the next battle cancels the previous one's pending 行动开始 as well
+      a.battleStart(LEADER);
+      a.handleBattleEvents([['spawn', { id: 8, side: 'enemy', kind: 'enemy', spine: 'enemy_x' }]]);
+      a.battleStart(null);
+      await settle(3100);
+      assert.deepEqual(a.voiceLog.map((l) => l.role), ['fail']);
+    } finally { restore(); }
+  });
+
+  test('a line that fails to load does not start its type\'s cooldown', async () => {
+    const { a, settle, restore } = await voiceRig();
+    const ok = globalThis.fetch;
+    try {
+      a.setFieldUnits([{ id: 1, side: 'ally', kind: 'chess', spine: OP, defId: 'c' }]);
+      globalThis.fetch = async () => ({ ok: false, status: 404 });
+      a.handleBattleEvents([['skill', 1, true]]);
+      await settle();
+      assert.equal(a.voiceLast.size, 0);
+      globalThis.fetch = ok;
+      a.handleBattleEvents([['skill', 1, true]]);
+      assert.ok(a.voiceWant, 'the next 作战中 is not held by a cooldown');
+    } finally { restore(); }
+  });
+
   test('a battle without an enemy releases 作战中 after 15 s; nobody on the board ⇒ no 行动开始 and no wait', async () => {
     const { a, settle, advance, restore } = await voiceRig();
     try {
