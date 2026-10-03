@@ -389,7 +389,8 @@ function MatchScreen() {
     const members = Array.isArray(pf?.players) ? pf.players : Array.isArray(field.players) ? field.players : [];
     const sides = field.sides && typeof field.sides === 'object' ? field.sides : null;
     const side = sides && sides[myId] ? sides[myId] : members.length > 1 && members.indexOf(myId) === 1 ? 'R' : 'L';
-    // local simulation (client-side combat) feeds a frame per animation frame: no network jitter buffer
+    // local simulation (client-side combat) feeds a frame per animation frame; the field is drawn render/app.js
+    // RENDER_DELAY behind it like a network feed (the attack animations' look-ahead), at the battle speed
     view.raw?.setLocalFeed?.({ on: !!field.local, speed: field.speed });
     setLayer('ALL');
     // a lone player's boss field (solo modes, the odd player of a co-op Final Assault: the `_s` templates route every

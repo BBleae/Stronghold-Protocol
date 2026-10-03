@@ -258,6 +258,26 @@ describe('links, channels and virtual units', () => {
     assert.equal(fx.sustains.size, 0);
   });
 
+  test('boss 盲信之誓: the from/to line is drawn and held while its ticks come; gone when they stop', () => {
+    const boss = op(20, 2, 12, { isEnemy: true }), spring = op(21, 6, 12, { isEnemy: true });
+    const fx = makeFx([boss, spring]);
+    for (let k = 0; k < 6; k++) { fx.simFx('link', 2, 12, { x: 2, y: 12, from: 20, to: 21, kind: 'faithLink', dur: 1 }); run(fx, 0.5); }
+    const S = fx.sustains.get('link:20:21');
+    assert.ok(S && S.a === 1 && S.pairs.length === 1, 'held across the 1 game s ticks (review of the upstream PR: it was not drawn at all)');
+    run(fx, 1.2);
+    assert.equal(fx.sustains.size, 0, 'no more ticks: gone');
+  });
+
+  test('死亡之眼 interrupted (deathEyeEnd): the channelled beam ends at once', () => {
+    const eye = op(20, 2, 12, { isEnemy: true }), t = op(5, 5, 10);
+    const fx = makeFx([eye, t]);
+    fx.simFx('beam', 2, 12, { x: 2, y: 12, from: 20, to: 5, kind: 'deathEye', dur: 8 });
+    run(fx, 1);
+    fx.simFx('beam', 2, 12, { x: 2, y: 12, from: 20, to: 5, kind: 'deathEyeEnd' });
+    run(fx, 0.6);
+    assert.equal(fx.sustains.size, 0);
+  });
+
   test('荒芜拉普兰德 S3: three drones fly between their samples — no summon pillar per sample', () => {
     const w = op(30, 3, 10), e = op(40, 9, 10, { isEnemy: true });
     const fx = makeFx([w, e]);
@@ -349,6 +369,17 @@ describe('enemy auras, winds, timing and shapes', () => {
     run(fx, 3.5);
     assert.equal(fx.sustains.get('tornado:90')?.a, 1);
     run(fx, 1);
+    assert.equal(fx.sustains.size, 0);
+  });
+
+  test('the wind stops with its caster (歌蕾蒂娅 dies mid-tornado)', () => {
+    const g = op(90, 4, 10);
+    const fx = makeFx([g]);
+    fx.simFx('tornado', 8, 10, { x: 8, y: 10, id: 90, r: 1.5, duration: 20 });
+    run(fx, 1);
+    g.alive = false;
+    fx.death(g);
+    run(fx, 0.6);
     assert.equal(fx.sustains.size, 0);
   });
 

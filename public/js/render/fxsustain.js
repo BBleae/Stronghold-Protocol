@@ -302,6 +302,7 @@ export class Sustains {
    * Held while the caster's skill runs (a talent pair: while both live); otherwise drawn as short beams.
    */
   _link(ex, tint) {
+    if (ex.from != null && ex.to != null && !Array.isArray(ex.ids)) { this._timedLink(ex, tint); return; }
     const ids = Array.isArray(ex.ids) ? ex.ids.filter((i) => i != null).slice(0, 12) : null;
     let pairs = [], src = ex.id, until = 'skill';
     if (ids && ex.chain) for (let i = 1; i < ids.length; i++) pairs.push([ids[i - 1], ids[i]]);
@@ -320,10 +321,30 @@ export class Sustains {
     for (const [a, b] of pairs) { const va = this._view(a), vb = this._view(b); if (va && vb) this.fx._beam(va, vb, tint, 0.3, 0.6); }
   }
 
-  /** A channelled beam (`dur` > 0: 死亡之眼, 自然涌动): from `from` to `to` for `dur`, following both. */
+  /**
+   * A link between two units sent as `from` / `to` (boss 盲信之誓 'faithLink': one event per interval with `dur` = the
+   * interval): a line held for `dur` and refreshed by the next event (plus a little grace between the two); without a
+   * `dur`, a short beam.
+   */
+  _timedLink(ex, tint) {
+    const a = this._view(ex.from), b = this._view(ex.to);
+    if (!live(a) || !live(b) || a === b) return;
+    const dur = num(ex.dur ?? ex.duration, 0);
+    if (!(dur > 0)) { this.fx._beam(a, b, tint, 0.45, 0.3); return; }
+    const key = `link:${ex.from}:${ex.to}`, hold = dur / this._ts() + 0.2;
+    const S = this.map.get(key);
+    if (S && !S.end) { S.max = S.t + hold; return; }
+    this._add({ key, kind: 'link', look: 'link', until: 'time', src: ex.from, anchor: ex.from, view: a, tint, max: hold, pairs: [[ex.from, ex.to]] });
+  }
+
+  /**
+   * A channelled beam (`dur` > 0: 死亡之眼, 自然涌动): from `from` to `to` for `dur`, following both. The same pair
+   * without a `dur` (死亡之眼's 'deathEyeEnd' when the channel is interrupted) ends it.
+   */
   _beam(ex, tint) {
     const dur = num(ex.dur ?? ex.duration, 0);
-    if (!(dur > 0) || ex.from == null || ex.to == null) return false;
+    if (ex.from == null || ex.to == null) return false;
+    if (!(dur > 0)) { const S = this.map.get(`beam:${ex.from}:${ex.to}`); if (S) S.end = true; return false; }
     const a = this._view(ex.from), b = this._view(ex.to);
     if (!live(a) || !live(b)) return false;
     this._add({ key: `beam:${ex.from}:${ex.to}`, kind: 'beam', look: 'beam', until: 'time', src: ex.from, anchor: ex.from, view: a, tint, max: dur / this._ts(), pairs: [[ex.from, ex.to]], seed: Math.random() * 100 });
@@ -422,7 +443,9 @@ export class Sustains {
   _vortex(kind, x, y, ex, tint) {
     const dur = num(ex.duration ?? ex.dur, 0);
     if (!(dur > 0) || !Number.isFinite(x) || !Number.isFinite(y)) return;
-    const S = this._add({ key: `${kind}:${ex.id ?? `${x},${y}`}`, kind, look: 'vortex', until: 'time', src: null, anchor: null, view: null, tint, max: dur / this._ts(),
+    // anchored on its caster (`id`): the wind stops with a caster that dies or leaves, as in the sim
+    const v = ex.id != null ? this._view(ex.id) : null;
+    const S = this._add({ key: `${kind}:${ex.id ?? `${x},${y}`}`, kind, look: 'vortex', until: 'time', src: ex.id ?? null, anchor: ex.id ?? null, view: v, tint, max: dur / this._ts(),
       x, y, z: this.fx._groundZ(x, y), r: clamp(num(ex.r ?? ex.radius, 1.5), 0.5, 4) });
     S.root = new this.fx.P.Container();
     S.dec = this._sprite('ring', tint, S.root);
