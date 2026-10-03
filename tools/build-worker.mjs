@@ -213,9 +213,20 @@ export async function bundleWorker({ root = ROOT, outfile = path.join(root, 'dis
     external: ['node:*', 'cloudflare:*'], minify: true, keepNames: true, metafile: true,
     define: { __SP_BUILD__: JSON.stringify(buildTag), __SP_RULES_VERSION__: JSON.stringify(rulesVersion) },
     plugins: [{ name: 'worker-data-loaders', setup(builder) {
+      // Keep immutable recovery bundles, but initialize only the version a room restores.
+      // Eagerly initializing every historical engine exceeds the Worker startup CPU budget.
+      builder.onLoad({filter:/\.mjs$/},async args=>{
+        if(!versionModules.some(v=>path.resolve(v.file || path.join(root,'.replay-engines',v.id,'recovery.mjs'))===args.path))return;
+        const source=await fs.readFile(args.path,'utf8');
+        const exports=source.match(/export\{([^}]+)\};\s*$/);
+        if(!exports)throw new Error('Unsupported retained recovery exports: '+args.path);
+        const pairs=exports[1].split(',').map(s=>{const m=s.trim().match(/^(\w+) as (\w+)$/);if(!m)throw new Error('Unsupported recovery export');return `${m[2]}:${m[1]}`;});
+        const body=source.slice(0,exports.index)+`return {${pairs.join(',')}};`;
+        return {loader:'js',contents:`let cached,pending;export async function prepare(){return cached || (pending ||= (async()=>{${body}})().then(value=>cached=value));}export function restore(...args){if(!cached)throw new Error('Recovery engine not prepared');return cached.restore(...args);}`};
+      });
       if(versionModules.length) builder.onLoad({filter:/[\\/]worker[\\/]match-versions\.js$/},()=>({loader:'js',contents:
-        versionModules.map((v,i)=>`import {restore as r${i}} from ${JSON.stringify(v.file || path.join(root,'.replay-engines',v.id,'recovery.mjs'))};`).join('\n')+
-        `\nexport const retainedMatchVersions={${versionModules.map((v,i)=>`${JSON.stringify(v.id)}:r${i}`).join(',')}};`}));
+        versionModules.map((v,i)=>`import {restore as r${i},prepare as p${i}} from ${JSON.stringify(v.file || path.join(root,'.replay-engines',v.id,'recovery.mjs'))};`).join('\n')+
+        `\nexport const retainedMatchVersions={${versionModules.map((v,i)=>`${JSON.stringify(v.id)}:r${i}`).join(',')}};const preparers={${versionModules.map((v,i)=>`${JSON.stringify(v.id)}:p${i}`).join(',')}};export async function prepareMatchVersion(id){await preparers[id]?.();}`}));
       builder.onResolve({ filter: /(?:data-node|nodeData)\.js$/ }, args => {
         const replacement = replacements.get(path.resolve(args.resolveDir, args.path));
         return replacement ? { path: replacement } : undefined;

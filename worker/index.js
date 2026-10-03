@@ -3,6 +3,7 @@ import { APP_VERSION } from '../shared/constants.js';
 import { CODE_ALPHABET } from '../server/lobby.js';
 import { normalizeIp, limitKeyOf, TokenBucket } from '../server/net.js';
 import { RoomRuntime, validCode } from './room-runtime.js';
+import { prepareMatchVersion } from './match-versions.js';
 import { PACK_PATH, servePack } from './pack.js';
 import { handleAuth, authenticate, accountOf, directoryOf } from './accounts/auth.js';
 import { handleAccountRoutes } from './accounts/routes.js';
@@ -175,6 +176,7 @@ export class RoomDurableObject {
         this.persistedLogId=c.eventLogId;this.persistedEventCount=c.events.length;
       }
       this.parts = meta?.parts || 0;
+      await prepareMatchVersion(snapshot?.matchCheckpoint?.rulesVersion);
       this.runtime = new RoomRuntime({ snapshot, accounts: !!env.ACCOUNTS, onChange: () => this.queuePersist() });
       for (const ws of ctx.getWebSockets()) {
         // Closing sockets may still be enumerated; never rebind one over its replacement.

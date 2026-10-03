@@ -31,11 +31,13 @@ test('a new release retains executable old recovery and isolated old replay data
     seats:[{seat:0,playerId:'a',name:'Alice',isBot:false,connected:true}],send(){},broadcast(){},onEnd(){}};
   const match=oldEngine.create(deps);match.start();const checkpoint=exportMatch(match);assert.equal(checkpoint.rulesVersion,old);
   const entry=path.join(dir,'fixture.js');
-  await fs.writeFile(entry,`export {retainedMatchVersions} from ${JSON.stringify(path.join(ROOT,'worker/match-versions.js'))}; export {restoreMatch} from ${JSON.stringify(path.join(ROOT,'server/match/checkpoint.js'))};`);
+  await fs.writeFile(entry,`export {retainedMatchVersions,prepareMatchVersion} from ${JSON.stringify(path.join(ROOT,'worker/match-versions.js'))}; export {restoreMatch} from ${JSON.stringify(path.join(ROOT,'server/match/checkpoint.js'))};`);
   const newer=path.join(dir,'new.mjs');
   await bundleWorker({entry:path.relative(ROOT,entry),outfile:newer,rulesVersion:current,versionModules:[{id:old,file}]});
   const release=await import(pathToFileURL(newer));
   assert.throws(()=>release.restoreMatch(checkpoint,deps),/CHECKPOINT_VERSION/);
+  assert.throws(()=>release.retainedMatchVersions[old](checkpoint,deps),/not prepared/);
+  await release.prepareMatchVersion(old);
   const recovered=release.retainedMatchVersions[old](checkpoint,{...deps,data:{config:{},chess:{}}});
   assert.deepEqual(recovered.publicView(),match.publicView(),'old recovery ignores changed current data');
   const replayFile=path.join(dir,'replay.mjs');await bundleWorker({entry:'worker/replay-engine.js',outfile:replayFile,rulesVersion:old});
