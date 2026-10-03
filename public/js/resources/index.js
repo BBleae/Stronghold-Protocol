@@ -1,6 +1,10 @@
 import { validateManifest } from './common.js';
 import { ResourceStore } from './store.js';
 import { exportResourceZip, importResourceZip } from './zip.js';
+import { render } from '../../vendor/preact.module.js';
+import { html } from '../ui/components.js';
+import { toast } from '../ui/toasts.js';
+import { ResourceDialog, ResourceLauncher } from './view.js';
 
 const MODE_KEY = 'stronghold-resource-mode';
 let contextPromise, openDialog;
@@ -64,59 +68,33 @@ function showManager(context, firstTime = false) {
     const boot = document.getElementById('boot');
     const bootDisplay = boot?.style.display;
     if (boot) boot.style.display = 'none';
-    const dialog = document.createElement('dialog');
-    dialog.className = 'resource-dialog';
-    dialog.setAttribute('aria-labelledby', 'resource-heading');
-    // Omit accept: iOS file providers can label ZIPs with an unexpected type.
-    // zip.js and the trusted manifest validate the selected file's actual contents.
-    dialog.innerHTML = `<div class="resource-card">
-      <p class="resource-kicker">STRONGHOLD PROTOCOL / RESOURCE MANAGER</p>
-      <h2 id="resource-heading"></h2>
-      <p class="resource-intro"></p>
-      <div class="resource-stat" aria-live="polite">正在检查本地资源…</div>
-      <progress class="resource-progress" max="1" value="0" aria-label="资源安装进度"></progress>
-      <p class="resource-message" role="status"></p>
-      <div class="resource-actions">
-        <button type="button" class="resource-primary" data-action="download">在线下载 / 继续下载</button>
-        <button type="button" data-action="import">导入本地 ZIP</button>
-        <button type="button" data-action="export" disabled>导出 ZIP（发给朋友）</button>
-        <button type="button" data-action="cancel" hidden>暂停</button>
-        <button type="button" data-action="clear">清理本地资源</button>
-      </div>
-      <input type="file" hidden aria-label="选择本地资源 ZIP" />
-      <p class="resource-note">ZIP 只在本机读取，不会上传。仅导入与本站清单匹配的资源，其余文件直接跳过，不解压、不校验。资源全部保存后可以导出 ZIP 发给朋友，对方在这里导入即可。浏览器可能自动清理缓存，之后可重新补齐。</p>
-      <button type="button" class="resource-continue" data-action="continue"></button>
-    </div>`;
-    document.body.append(dialog);
-    const $ = selector => dialog.querySelector(selector);
-    $('#resource-heading').textContent = firstTime ? '准备游戏资源' : '资源管理';
-    $('.resource-intro').textContent = `完整资源约 ${mib(context.manifest.totalBytes)}。提前保存可减少对局中的等待；在线模式支持按文件继续下载。`;
-    const buttons = [...dialog.querySelectorAll('.resource-actions button')];
-    const message = $('.resource-message');
-    message.textContent = context.startupError ?? '';
-    const continueButton = $('[data-action="continue"]');
-    continueButton.textContent = firstTime ? '暂时跳过，按需加载' : '返回游戏';
-    let controller, operation, completed = false, closing = false;
-    function progress(status) {
-      completed = status.complete;
-      $('.resource-stat').textContent = `${status.count} / ${status.total} 个文件 · ${mib(status.bytes)} / ${mib(status.totalBytes)}`;
-      $('.resource-progress').value = status.totalBytes ? status.bytes / status.totalBytes : 1;
-      continueButton.textContent = completed ? '资源已就绪，进入游戏' : firstTime ? '暂时跳过，按需加载' : '返回游戏';
-      if (!operation) $('[data-action="export"]').disabled = !completed || !context.store;
+    const host = document.createElement('div');
+    host.className = 'resource-manager-dialog-host';
+    document.body.append(host);
+    const background = ['app', 'resource-manager-host'].map(id => document.getElementById(id)).filter(Boolean)
+      .map(element => ({ element, inert: element.inert }));
+    for (const { element } of background) element.inert = true;
+    let controller, operation, closing = false, closed = false;
+    const state = { status: null, busy: true, phase: 'checking', message: context.startupError ?? '', error: !!context.startupError };
+    function update(patch) {
+      Object.assign(state, patch);
+      if (closed) return;
+      render(html`<${ResourceDialog} state=${state} firstTime=${firstTime} available=${!!context.store}
+        totalBytes=${context.manifest.totalBytes} onClose=${close}
+        onDownload=${() => run(options => context.store.download(options), 'download')}
+        onImport=${file => run(options => importResourceZip(file, context.store, options), 'import')}
+        onExport=${exportZip} onClear=${() => run(async () => { await context.store.clear(); return context.store.status(); }, 'clear')}
+        onCancel=${() => { controller?.abort(); update({ message: '正在暂停…' }); }} />`, host);
     }
-    function busy(value) {
-      for (const button of buttons) button.disabled = value || !context.store || (button.dataset.action === 'export' && !completed);
-      $('[data-action="cancel"]').hidden = !value;
-      $('[data-action="cancel"]').disabled = false;
-    }
+    function progress(status) { update({ status }); }
     async function refresh() {
       if (context.store) progress(await context.store.status());
-      else { $('.resource-stat').textContent = '按需加载可用'; message.textContent = context.unavailable; busy(false); }
+      else update({ message: context.unavailable });
     }
-    async function run(action, doneText) {
-      if (operation || !context.store) return;
+    async function run(action, phase, doneText) {
+      if (operation || closing || !context.store) return;
       controller = new AbortController();
-      busy(true); message.textContent = '正在准备，请稍候…';
+      update({ busy: true, phase, message: '正在准备，请稍候…', error: false });
       operation = (async () => {
         try {
           await workerReady();
@@ -124,11 +102,17 @@ function showManager(context, firstTime = false) {
           const status = await action({ signal: controller.signal, onProgress: progress });
           preference('install');
           if (status) progress(status);
-          message.textContent = doneText ?? (status?.complete ? '全部资源已保存，可进入游戏。' : '操作已完成。');
-        } catch (error) { message.textContent = readableError(error); }
-        finally {
-          await refresh().catch(error => { message.textContent = readableError(error); });
-          busy(false); operation = undefined;
+          const message = doneText ?? (status?.complete ? '全部资源已保存，可进入游戏。' : '操作已完成。');
+          update({ message });
+          if (!closing) toast(message, 'success');
+        } catch (error) {
+          const message = readableError(error);
+          update({ message, error: error?.name !== 'AbortError' });
+          if (!closing) toast(message, error?.name === 'AbortError' ? 'info' : 'error');
+        } finally {
+          await refresh().catch(error => { update({ message: readableError(error), error: true }); });
+          operation = undefined;
+          update({ busy: false });
         }
       })();
       await operation;
@@ -138,18 +122,17 @@ function showManager(context, firstTime = false) {
       closing = true;
       controller?.abort();
       if (operation) await operation;
-      preference(completed ? 'install' : 'ondemand');
-      dialog.close(); dialog.remove();
+      preference(state.status?.complete ? 'install' : 'ondemand');
+      closed = true;
+      render(null, host); host.remove();
+      for (const { element, inert } of background) element.inert = inert;
       window.__spResourcesPreparing = preparingBefore;
       if (boot) boot.style.display = bootDisplay;
-      lastFocus?.focus();
+      if (lastFocus?.isConnected) lastFocus.focus();
       openDialog = undefined; resolve();
     }
-    $('[data-action="download"]').onclick = () => run(options => context.store.download(options));
-    $('[data-action="import"]').onclick = () => $('input').click();
-    // the save dialog streams the ZIP to disk (Chrome / Edge); elsewhere it is built in memory and downloaded
-    $('[data-action="export"]').onclick = async () => {
-      if (operation || !completed) return;
+    async function exportZip() {
+      if (operation || !state.status?.complete) return;
       const name = `stronghold-resources-${context.manifest.version.slice(0, 12)}.zip`;
       let writable = null;
       if (typeof window.showSaveFilePicker === 'function') {
@@ -158,24 +141,16 @@ function showManager(context, firstTime = false) {
           writable = await handle.createWritable();
         } catch (error) { if (error?.name === 'AbortError') return; }
       }
+      // The picker can resolve after the match starts and closes the manager.
+      if (closing) { await writable?.abort(); return; }
       await run(async options => {
         const blob = await exportResourceZip(context.store, { ...options, writable });
         if (!writable) saveBlob(blob, name);
         return context.store.status();
-      }, `已导出 ${name}（${mib(context.manifest.totalBytes)}），发给朋友后在这里「导入本地 ZIP」即可。`);
-    };
-    $('input').onchange = () => {
-      const file = $('input').files[0];
-      if (file) void run(options => importResourceZip(file, context.store, options));
-      $('input').value = '';
-    };
-    $('[data-action="clear"]').onclick = () => run(async () => { await context.store.clear(); return context.store.status(); });
-    $('[data-action="cancel"]').onclick = () => { controller?.abort(); message.textContent = '正在暂停…'; };
-    continueButton.onclick = close;
-    dialog.addEventListener('cancel', event => { event.preventDefault(); void close(); });
-    dialog.showModal();
-    busy(true);
-    refresh().catch(error => { message.textContent = readableError(error); }).finally(() => busy(false));
+      }, 'export', `已导出 ${name}（${mib(context.manifest.totalBytes)}），发给朋友后在这里「导入本地 ZIP」即可。`);
+    }
+    update({});
+    refresh().catch(error => { update({ message: readableError(error), error: true }); }).finally(() => update({ busy: false }));
   });
   return openDialog;
 }
@@ -204,14 +179,13 @@ export async function prepareResources() {
   await showManager(context, true);
 }
 
-/** Safe to call after boot; adds a permanent, small resource-manager entry. */
+/** Safe to call after boot; the shared launcher follows the app's route. */
 export async function installResourceManager() {
   const context = await getContext();
-  if (!context || document.getElementById('resource-manager-open')) return;
+  if (!context || document.getElementById('resource-manager-host')) return;
   loadStyle();
-  const button = document.createElement('button');
-  button.id = 'resource-manager-open'; button.type = 'button'; button.textContent = '资源管理';
-  button.title = '下载、导入或清理本地游戏资源';
-  button.onclick = () => { void showManager(context); };
-  document.body.append(button);
+  const host = document.createElement('div');
+  host.id = 'resource-manager-host';
+  document.body.append(host);
+  render(html`<${ResourceLauncher} onOpen=${() => { void showManager(context); }} />`, host);
 }
