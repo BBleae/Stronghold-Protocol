@@ -4,11 +4,16 @@
 // real time (DESIGN §4), so the game clock advances `rate` ≈ 2 game-s per real second. The buffer:
 //   * keeps ~2 s of snapshots (each indexed id → tuple once, at push time),
 //   * estimates `rate` from arrival times (sliding window, clamped, default 2),
-//   * runs a render clock `renderT` that trails the newest snapshot by `delay` real seconds (default 100 ms),
-//     advancing at `rate` and gently steered back when network jitter pushes it off target (hard snap when it
-//     is more than `snapAfter` real seconds off),
-//   * extrapolation guard: renderT never runs more than `maxExtrapolate` real seconds past the newest snapshot;
-//     positions are extrapolated along the last velocity for at most that long, then freeze,
+//   * runs a render clock `renderT` that trails the newest snapshot by `delay` real seconds (default 100 ms; the
+//     field view uses render/app.js RENDER_DELAY, 0.5 s: a look-ahead for attack swings),
+//     advancing at `rate` and gently steered toward its target (hard snap when it is more than `snapAfter` real
+//     seconds off). The target is where the stream is by now — the newest snapshot plus the time since it arrived —
+//     `delay` behind, never past the newest: when snapshots stop (the battle ended, a replay paused, a long network
+//     gap) the buffered ones play out at normal speed up to the newest and hold there (with the old fixed target the
+//     clock stalled short of it and the last events — the final kill — never played),
+//   * extrapolation guard: renderT never runs more than `maxExtrapolate` real seconds past the newest snapshot
+//     (and not at all once the stream has stopped for `delay`); positions are extrapolated along the last velocity
+//     for at most that long, then freeze,
 //   * sample(): per unit, lerps x/y/hp/sp between the two snapshots bracketing renderT; flags/anim come from
 //     the older one. A unit missing from the newer snapshot (died/left mid-buffer) holds its last position
 //     until renderT reaches the newer snapshot; a unit that only exists in the newer one (spawned mid-buffer)
@@ -206,14 +211,18 @@ export class SnapshotBuffer {
     if (!this.snaps.length) { this.lastNow = now; return NaN; }
     const dt = Number.isFinite(this.lastNow) ? clamp(now - this.lastNow, 0, 1) : 0;
     this.lastNow = now;
-    const newest = this.newestT;
-    const target = newest - this.delay * this.rate;
+    const last = this.snaps[this.snaps.length - 1];
+    const newest = last.t;
+    // the stream's position by now, `delay` behind, never past the newest (see header)
+    const since = Number.isFinite(last.at) ? clamp(now - last.at, 0, 60) : 0;
+    const stalled = since >= this.delay;
+    const target = stalled ? newest : newest - (this.delay - since) * this.rate;
     if (!Number.isFinite(this.renderT)) this.renderT = target;
     this.renderT += dt * this.rate;
     const err = target - this.renderT;
     if (Math.abs(err) > this.snapAfter * this.rate) this.renderT = target;
     else this.renderT += err * Math.min(1, dt * 3);
-    const cap = newest + this.maxExtrapolate * this.rate;
+    const cap = stalled ? newest : newest + this.maxExtrapolate * this.rate;
     if (this.renderT > cap) this.renderT = cap;
     if (this.renderT < this.snaps[0].t) this.renderT = this.snaps[0].t;
     return this.renderT;
@@ -308,9 +317,10 @@ export class SnapshotBuffer {
 
   /**
    * Remove and return (in order) the queued events due at `time` (default renderT). When `dropCosmeticBefore`
-   * is a number, cosmetic events stamped earlier than it are discarded instead of returned.
+   * is a number, cosmetic events stamped earlier than it are discarded instead of returned. `stamps` (an array) receives
+   * each returned event's game time.
    */
-  takeEvents(time = this.renderT, out = [], dropCosmeticBefore = null) {
+  takeEvents(time = this.renderT, out = [], dropCosmeticBefore = null, stamps = null) {
     if (!this.events.length || !Number.isFinite(time)) return out;
     let n = 0;
     while (n < this.events.length && this.events[n].t <= time) n++;
@@ -320,6 +330,7 @@ export class SnapshotBuffer {
       const e = list[i];
       if (typeof dropCosmeticBefore === 'number' && e.t < dropCosmeticBefore && isCosmeticEvent(e.ev)) continue;
       out.push(e.ev);
+      if (stamps) stamps.push(e.t);
     }
     const rest = list.length - n;
     list.copyWithin(0, n);

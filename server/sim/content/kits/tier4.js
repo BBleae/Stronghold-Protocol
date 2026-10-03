@@ -31,6 +31,7 @@ import { absoluteRangeKeys, canTargetEnemy, sortEnemyTargets } from '../../targe
 import { normalizeChess } from '../../simdata.js';
 import { aggregateMods } from '../../buffs.js';
 import { CAT_SHIELD_KEY } from '../tokens.js';
+import { keyTiles, gridTiles } from '../fxtiles.js';
 
 const TICK_EPS = 0.01;     // minimal status duration (s)
 const AURA = 0.2;          // aura refresh period (s)
@@ -319,7 +320,7 @@ const kits = {
           kind: 'duration',
           onStart({ battle, unit, skill }) {
             unit.mem.timeLock = { acc: 0, locked: new Set() };
-            battle.fx('zone', { x: unit.x, y: unit.y, id: unit.id, duration: skill.duration });
+            battle.fx('zone', { x: unit.x, y: unit.y, id: unit.id, duration: skill.duration, tiles: keyTiles(unit.rangeKeys) });
           },
           onTick({ battle, unit, skill, dt }) {
             const L = unit.mem.timeLock;
@@ -499,7 +500,7 @@ const kits = {
             for (const { e } of hits.slice(0, Math.max(1, Math.floor(num(bb.max_target, 4))))) {
               battle.dealDamage(unit, e, { amount, type: 'phys', isSkill: true, tags: ['skill', 'sentryRecall'] });
             }
-            battle.fx('beam', { x: ax, y: ay, tx: bx, ty: by, id: unit.id });
+            battle.fx('sentryRecall', { x: ax, y: ay, tx: bx, ty: by, id: unit.id });
           },
         }),
       }),
@@ -1067,7 +1068,7 @@ const kits = {
             battle.applyStatus(e, 'cold', { duration: num(bb.cold, 2.5), source: unit });
             if (charged && e.alive) battle.applyStatus(e, 'cold', { duration: num(bb.cold, 2.5), source: unit });
           }
-          battle.fx('frostNova', { x: unit.x, y: unit.y, id: unit.id, charged });
+          battle.fx('frostNova', { x: unit.x, y: unit.y, id: unit.id, charged, tiles: keyTiles(unit.rangeKeys) });
         },
       },
       talents: [
@@ -1113,7 +1114,7 @@ const kits = {
             // 同名效果取最高: one RES cut per enemy (the strongest), never one per 莱恩哈特
             if (e.alive && mr) battle.applyStrongest(e, 'lionhd:res', { duration: num(bb.duration, 6), value: mr, mods: resCut, source: unit });
           }
-          battle.fx('explosion', { x: unit.x, y: unit.y, id: unit.id });
+          battle.fx('explosion', { x: unit.x, y: unit.y, id: unit.id, tiles: keyTiles(unit.rangeKeys) });
         },
       },
       talents: [{ install(battle, unit) { // 破片杀伤: ATK +4 % per enemy in range (≤ 5)
@@ -1187,7 +1188,7 @@ const kits = {
         // 同名效果取最高: one RES cut per enemy (the strongest), never one per 缄默德克萨斯
         if (e.alive && mr) battle.applyStrongest(e, 'texas2:resDown', { duration: num(bb.debuff_duration, 8), value: mr, mods: resCut, source: unit });
       }
-      battle.fx('swordStorm', { x: unit.x, y: unit.y, id: unit.id });
+      battle.fx('swordStorm', { x: unit.x, y: unit.y, id: unit.id, tiles: gridTiles(unit, g) });
     };
     const castS3 = (battle, unit) => {
       if (!unit.alive || !unit.deployed) return;
@@ -1196,7 +1197,7 @@ const kits = {
         for (let i = 0; i < 2 && e.alive; i++) battle.dealDamage(unit, e, { amount: unit.s.atk * num(bb['appear.atk_scale'], 1.15), type: 'arts', isSkill: true, tags: ['skill', 'burst'] });
         if (e.alive) battle.applyStatus(e, 'stun', { duration: num(bb['appear.stun'], 1.5), source: unit });
       }
-      battle.fx('swordStorm', { x: unit.x, y: unit.y, id: unit.id });
+      battle.fx('swordStorm', { x: unit.x, y: unit.y, id: unit.id, tiles: gridTiles(unit, g) });
       unit.mem.rainUntil = battle.time + dur;
       unit.mem.rainTimer?.cancel();
       unit.mem.rainTimer = battle.every(Math.max(0.1, num(bb['texas2_s_3[sword].interval'], 1)), (b, sched) => {
@@ -1340,7 +1341,7 @@ const kits = {
             battle.removeBuff(unit, 'mudrok:dormant');
             for (const e of targetsInGrid(battle, unit, g)) if (!e.isFlying && e.alive) battle.applyStatus(e, 'stun', { duration: num(bb.stun, 3), source: unit });
             battle.addBuff(unit, { key: 'mudrok:awake', mods: { atkPct: num(bb.atk), defPct: num(bb.def), batPct: batFlat(def, bb.base_attack_time) } });
-            battle.fx('rockfall', { x: unit.x, y: unit.y, id: unit.id });
+            battle.fx('rockfall', { x: unit.x, y: unit.y, id: unit.id, tiles: gridTiles(unit, g) });
           },
           onEnd({ battle, unit }) {
             unit.mem.mudS3 = null;
@@ -1360,7 +1361,7 @@ const kits = {
         },
         onStart({ battle, unit }) {
           battle.heal(unit, unit, unit.s.maxHp * num(bb.hp_ratio, 0.04), { self: true });
-          battle.fx('rockslide', { x: unit.x, y: unit.y, id: unit.id });
+          battle.fx('rockslide', { x: unit.x, y: unit.y, id: unit.id, tiles: gridTiles(unit, g) });
         },
       },
       talents: [
@@ -1439,7 +1440,7 @@ const kits = {
               if (a.kind === 'device' || !battle.allySelectable(a, unit)) continue;
               battle.addBuff(a, { key: 'flamtl:redPine', duration: num(bb['flamtl_s_2.duration'], 10), mods: { dodgePhys: num(bb['flamtl_s_2.prob'], 0.4) }, visible: true, source: unit });
             }
-            battle.fx('aoe', { x: unit.x, y: unit.y, id: unit.id });
+            battle.fx('aoe', { x: unit.x, y: unit.y, id: unit.id, tiles: gridTiles(unit, area) });
           },
         }),
       }),
@@ -1520,9 +1521,10 @@ const kits = {
     const taunt = num(t1.taunt_level, -1);
     const setAllied = (battle, unit, keys) => {
       const sig = keys ? keys.join(',') : '';
-      if (sig === (unit.mem.alliedSig ?? '')) return;
+      if (sig === (unit.mem.alliedSig ?? '')) return false;
       unit.mem.alliedSig = sig;
       battle.setExtraRange(unit, keys);
+      return true;
     };
     return {
       skills: alt(def, {
@@ -1532,10 +1534,11 @@ const kits = {
           mods: { aspd: num(bb.attack_speed), taunt },
           onStart({ battle, unit }) { battle.fx('link', { x: unit.x, y: unit.y, id: unit.id }); },
           onTick({ battle, unit }) {
-            const keys = [];
-            for (const e of battle.enemies) if (e.alive && !e.hidden && e.blockedBy && e.blockedBy.side === 'ally' && e.blockedBy.alive) keys.push(tileKey(e));
+            const keys = [], by = new Set();
+            for (const e of battle.enemies) if (e.alive && !e.hidden && e.blockedBy && e.blockedBy.side === 'ally' && e.blockedBy.alive) { keys.push(tileKey(e)); if (e.blockedBy !== unit) by.add(e.blockedBy.id); }
             keys.sort((a, b) => a - b);
-            setAllied(battle, unit, keys.length ? keys : null);
+            // (client: the 同盟支援 link from her to every ally whose blocked enemies she can now reach)
+            if (setAllied(battle, unit, keys.length ? keys : null)) battle.fx('link', { x: unit.x, y: unit.y, id: unit.id, ids: [...by].sort((a, b) => a - b) });
           },
           onEnd({ battle, unit }) { setAllied(battle, unit, null); },
         }),
@@ -1896,6 +1899,8 @@ const kits = {
       talents: [
         { install(battle, unit) { // 过往尘埃: 3 motes; touching an operator ⇒ her trait heal ×1.5 on it for 6 s; mote back after 6 s
           unit.mem.motes = new Array(baseCnt).fill(-Infinity);
+          // (client: her motes orbit her while she is deployed; S2 'reweave' n raises the count for the skill)
+          if (baseCnt > 0) battle.on('deploy', (c) => { if (c.unit === unit) battle.fx('motes', { x: unit.x, y: unit.y, id: unit.id, n: unit.mem.motes.length, r: num(t0.range_radius, 1.15) }); }, { owner: unit });
           unit.mem.noInspire = true; // trait: 自身不受鼓舞影响 (another bard's 鼓舞 skips her)
           const cooldown = () => (S1 && skillActive(unit) ? num(bb.talent_cool_down, 3) : num(t0.cooldown, 6)); // S1: 重生速度加快
           const takeMote = () => {
@@ -1916,7 +1921,7 @@ const kits = {
                 hitAt.set(e.id, battle.time + MOTE_GAP);
                 battle.dealDamage(unit, e, { amount: unit.s.atk * num(bb.atk_scale, 2.2), type: 'true', isSkill: true, tags: ['skill', 'mote'] });
                 if (e.alive) battle.applyStatus(e, 'bind', { duration: num(bb.unmoveable_duration, 3), source: unit });
-                battle.fx('mote', { x: e.x, y: e.y, id: e.id });
+                battle.fx('mote', { x: e.x, y: e.y, id: e.id, src: unit.id, cd: cooldown() });
               }
               return;
             }
@@ -1925,7 +1930,7 @@ const kits = {
               if (a === unit || a.kind !== 'op' || a.findBuff(`cetsyr:mote:${unit.id}`)) continue;
               if (!keep && !takeMote()) break;
               battle.addBuff(a, { key: `cetsyr:mote:${unit.id}`, duration: num(t0.talent_duration, 6), visible: true, source: unit });
-              battle.fx('mote', { x: a.x, y: a.y, id: a.id });
+              battle.fx('mote', { x: a.x, y: a.y, id: a.id, src: unit.id, cd: keep ? 0 : cooldown() });
             }
           });
           battle.on('heal', (c) => {

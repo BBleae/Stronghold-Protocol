@@ -13,7 +13,7 @@ import {
   boardTargets, dropIntent, normalizeDraft, normalizeSp, groupEnemies, factionTypes, snapHud, bossFrac, attackInterval, fmtNum,
   rangeGridBox, shortcutFor, sanitizeSettings, DEFAULT_SETTINGS, normalizeResult, cycleField, fieldLabel, homeFieldId,
   activeBubbles, sortedPlayers, tileKey, prepCapsuleLabel, prepCamera, dropFailureReason,
-  pieceCharId, boardOperators, voiceLeader,
+  pieceCharId, boardOperators, voiceLeader, createHudDelay,
 } from '../../public/js/ui/gameLogic.js';
 import { pairPlayers } from '../../server/match/finalAssault.js';
 import { PHASE, GEO } from '../../shared/constants.js';
@@ -541,4 +541,68 @@ describe('operator voice', () => {
     assert.equal(voiceLeader(priv([chess(1, 'a'), chess(2, 'a_b')]), getChess), 'char_a');
   });
 
+});
+
+describe('createHudDelay: HUD numbers follow the drawn battle (render 0.5 s behind its frames)', () => {
+  // fake clock + timers: what game.js does with performance.now / setTimeout
+  const harness = (field = () => 'n:P1') => {
+    let t = 0, seq = 0;
+    const timers = new Map();
+    const shown = [];
+    const d = createHudDelay({
+      onHud: (h) => shown.push([t, h]), field, now: () => t,
+      setTimer: (fn, ms) => { const id = ++seq; timers.set(id, { fn, at: t + ms }); return id; },
+      clearTimer: (id) => { timers.delete(id); },
+    });
+    const advance = (ms) => {
+      const end = t + ms;
+      for (;;) {
+        let next = null;
+        for (const [id, x] of timers) if (x.at <= end && (!next || x.at < next[1].at)) next = [id, x];
+        if (!next) break;
+        timers.delete(next[0]);
+        t = next[1].at;
+        next[1].fn();
+      }
+      t = end;
+    };
+    return { d, timers, shown, advance };
+  };
+
+  test('a whole battle of 20 Hz frames keeps one timer; each frame is shown 0.5 s after it arrived', () => {
+    const { d, timers, shown, advance } = harness();
+    let most = 0;
+    for (let i = 0; i < 1200; i++) {   // 60 s of frames
+      d.push('n:P1', { killed: i }, 500);
+      most = Math.max(most, timers.size);
+      advance(50);
+    }
+    assert.equal(most, 1, 'never more than one pending timer (it used to arm one more per frame)');
+    assert.ok(shown.length >= 1150);
+    for (const [at, h] of shown.slice(0, 50)) assert.ok(at >= h.killed * 50 + 500 && at < h.killed * 50 + 550, `frame ${h.killed} shown at ${at}`);
+    advance(600);
+    assert.equal(shown.at(-1)[1].killed, 1199);
+    assert.equal(timers.size, 0, 'idle once drained');
+  });
+
+  test('a watch switch drops the previous field\'s queued numbers', () => {
+    let cur = 'n:P1';
+    const { d, shown, advance } = harness(() => cur);
+    for (let i = 0; i < 10; i++) { d.push('n:P1', { field: 'P1', i }, 500); advance(50); }
+    cur = 'n:P2';
+    d.push('n:P2', { field: 'P2', i: 0 }, 500);
+    advance(1000);
+    assert.ok(shown.every(([at, h]) => h.field === 'P2' || at < 500 + 50 * 10), 'nothing of P1 after the switch');
+    assert.equal(shown.at(-1)[1].field, 'P2');
+  });
+
+  test('dispose clears the timer and the queue', () => {
+    const { d, timers, shown, advance } = harness();
+    d.push('n:P1', { killed: 1 }, 500);
+    d.dispose();
+    advance(1000);
+    assert.equal(timers.size, 0);
+    assert.equal(shown.length, 0);
+    assert.equal(d.size, 0);
+  });
 });

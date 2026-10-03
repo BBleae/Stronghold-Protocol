@@ -64,7 +64,7 @@ describe('Spine actor + audio use the equipped skill', () => {
     const a = await actorFor(0);
     assert.equal(a.roles.skill.loop, 'Skill_1');
     a.setSkill(true);
-    assert.equal(a._attackClip().loop, 'Skill_1', 'attacks during the skill use the S1 clip');
+    assert.equal(a._attackSet().clip, 'Skill_1', 'attacks during the skill use the S1 clip');
     assert.notEqual(a.current, 'Skill_3_Begin', 'no S3 transformation');
     const d = await actorFor(undefined);
     d.setSkill(true);

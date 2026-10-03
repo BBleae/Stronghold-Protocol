@@ -85,7 +85,7 @@ import { pauseAvailable, isPaused, frozenNow } from '../ui/matchStatus.js';
 import { pieceTile } from '../render/drag.js';
 import {
   phaseMode, phaseBanner, isCombatPhase, showDeadPill, isBossPhase, placementContext, canPlace, boardTargets, dropIntent,
-  snapHud, activeBubbles, shortcutFor, shortcutBlocked, closesOnFieldPress, phaseTotalSeconds, homeFieldId, ownFieldId, normalizeSp, sortedPlayers,
+  snapHud, createHudDelay, activeBubbles, shortcutFor, shortcutBlocked, closesOnFieldPress, phaseTotalSeconds, homeFieldId, ownFieldId, normalizeSp, sortedPlayers,
   countdownState, shopBlockReason, stageOverrides, effectiveStage, watchTarget, dropFailureReason,
   previewEnemyKey, prepCamera, deployFieldOf, panelSide, panelSlots, bondPopupPlace, chessLoadout, unitLoadout, mergeTarget,
   pieceCharId, voiceLeader,
@@ -389,7 +389,8 @@ function MatchScreen() {
     const members = Array.isArray(pf?.players) ? pf.players : Array.isArray(field.players) ? field.players : [];
     const sides = field.sides && typeof field.sides === 'object' ? field.sides : null;
     const side = sides && sides[myId] ? sides[myId] : members.length > 1 && members.indexOf(myId) === 1 ? 'R' : 'L';
-    // local simulation (client-side combat) feeds a frame per animation frame: no network jitter buffer
+    // local simulation (client-side combat) feeds a frame per animation frame; the field is drawn render/app.js
+    // RENDER_DELAY behind it like a network feed (the attack animations' look-ahead), at the battle speed
     view.raw?.setLocalFeed?.({ on: !!field.local, speed: field.speed });
     setLayer('ALL');
     // a lone player's boss field (solo modes, the odd player of a co-op Final Assault: the `_s` templates route every
@@ -423,6 +424,19 @@ function MatchScreen() {
     let last = 0;
     let pending = null;
     const flush = () => { pending = null; last = performance.now(); setHud(hudRef.current); };
+    // the render engine draws the battle render/app.js RENDER_DELAY behind the frames: the HUD and the battle sound follow
+    // the drawn battle (its 'battleEvents'); the DOM fallback draws frames as they come
+    const engine = view?.kind === 'engine';
+    const lagMs = () => (engine ? (Number(view.raw?.renderLag?.()) || 0) * 1000 : 0);
+    const hudDelay = createHudDelay({
+      field: () => lastFieldRef.current,
+      onHud: (h) => {
+        hudRef.current = h;
+        const dt = performance.now() - last;
+        if (dt >= HUD_HZ_MS) flush();
+        else if (!pending) pending = setTimeout(flush, HUD_HZ_MS - dt);
+      },
+    });
     const onFieldMeta = (msg) => {
       if (msg && typeof msg.fieldId === 'string') { evBufRef.current.set(msg.fieldId, []); snapBufRef.current.delete(msg.fieldId); }
     };
@@ -439,10 +453,7 @@ function MatchScreen() {
         for (const t of snap.units) if (Array.isArray(t)) mp.set(t[0], t);
         snapUnitsRef.current = mp;
       }
-      hudRef.current = snapHud(snap);
-      const dt = performance.now() - last;
-      if (dt >= HUD_HZ_MS) flush();
-      else if (!pending) pending = setTimeout(flush, HUD_HZ_MS - dt);
+      hudDelay.push(cur, snapHud(snap), lagMs());
     };
     const onEv = (msg) => {
       const cur = lastFieldRef.current;
@@ -458,11 +469,12 @@ function MatchScreen() {
         return;
       }
       view?.pushEvents(msg);
-      audio.handleBattleEvents(msg.ev);
+      if (!engine) audio.handleBattleEvents(msg.ev);
     };
     const offs = [net.on('m.field', onFieldMeta), net.on('b.snap', onSnap), net.on('b.ev', onEv)];
     if (battleRunner) offs.push(battleRunner.on('field', onFieldMeta), battleRunner.on('snap', onSnap), battleRunner.on('ev', onEv));
-    return () => { for (const off of offs) { try { off(); } catch { /* ignore */ } } clearTimeout(pending); };
+    if (engine) offs.push(view.on('battleEvents', (evs) => audio.handleBattleEvents(evs)));
+    return () => { for (const off of offs) { try { off(); } catch { /* ignore */ } } clearTimeout(pending); hudDelay.dispose(); };
   }, [view]);
 
   // the prep board moves while prep is shown (a boss round's prep begins, or a teammate left and the pairs changed):

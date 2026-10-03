@@ -67,6 +67,32 @@ describe('SnapshotBuffer', () => {
     assert.ok(lag > 0.05 && lag < 0.25, `steady lag ${lag} (renderT ${b.renderT} newest ${b.newestT})`);
   });
 
+  test('the stream stops (battle over, replay paused): the buffered frames play out at normal speed to the newest', () => {
+    // review of the upstream PR: with the target fixed at newest − delay × rate the clock settled ~rate/6 short of the
+    // newest snapshot when snapshots stopped, so the final kill's atk / dmg / die never played (nor their sounds)
+    const b = new SnapshotBuffer({ delay: 0.5, rate: 2 });
+    let real = 0, t = 0;
+    for (let i = 0; i < 120; i++) {   // 6 s real at 20 Hz, 2 game s per real s
+      t = i * 0.1; real = i * 0.05;
+      b.pushEvents([['dmg', 1, 5, 'phys']], real, t);
+      b.push(snap(t, [U(1, t, 10)]), real);
+      for (let f = 1; f <= 3; f++) b.update(real + f * 0.0166);
+    }
+    const lag = b.newestT - b.renderT;
+    assert.ok(lag > 0.85 && lag < 1.05, `steady: ~delay × rate behind (${lag})`);
+    b.pushEvents([['die', 9, 'kill']], real, t);   // the final kill, on the last frame
+    const t0 = b.renderT;
+    let r = real + 0.05;
+    for (let k = 0; k < 15; k++, r += 1 / 60) b.update(r);   // 0.25 s real after the last frame
+    assert.ok(near(b.renderT - t0, 0.5, 0.12), `plays on at normal speed (${b.renderT - t0} game s in 0.25 s)`);
+    for (let k = 0; k < 60; k++, r += 1 / 60) b.update(r);
+    assert.equal(b.renderT, b.newestT, 'reaches the newest snapshot and holds it');
+    const due = b.takeEvents(b.renderT);
+    assert.ok(due.some((e) => e[0] === 'die'), 'the last events are delivered');
+    for (let k = 0; k < 120; k++, r += 1 / 60) b.update(r);
+    assert.equal(b.renderT, b.newestT, 'no extrapolation once the stream has stopped');
+  });
+
   test('lerps positions / hp between bracketing snapshots; flags & anim from the older one', () => {
     const b = new SnapshotBuffer();
     b.push(snap(1.0, [U(1, 0, 10, 100, 1, 0)]), 0);

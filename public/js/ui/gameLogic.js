@@ -1168,6 +1168,35 @@ export function factionTypes(factions) {
 // ---- snapshots / battle HUD ---------------------------------------------------------------------------------
 
 /**
+ * The HUD numbers of the battle frames, shown when the render engine draws those frames (render/app.js renderLag(): the
+ * field is drawn 0.5 s behind them). `push(field, hud, lagMs)` queues a frame's numbers; `onHud(hud)` gets the latest
+ * due one of the field on screen (`field()`) — numbers of another field (a watch switch) are dropped. At most one timer
+ * runs (each push used to arm another one: the timers multiplied for the whole battle).
+ */
+export function createHudDelay({ onHud, field = () => null, now = () => performance.now(), setTimer = setTimeout, clearTimer = clearTimeout, cap = 400 }) {
+  const q = [];
+  let timer = null;
+  const drain = () => {
+    clearTimer(timer);
+    timer = null;
+    const t = now(), cur = field();
+    let h = null;
+    while (q.length && q[0].at <= t) { const e = q.shift(); if (e.f === cur) h = e.h; }
+    if (h) onHud(h);
+    if (q.length) timer = setTimer(drain, Math.max(0, q[0].at - t));
+  };
+  return {
+    push(f, h, lagMs = 0) {
+      q.push({ at: now() + Math.max(0, Number(lagMs) || 0), f, h });
+      if (q.length > cap) q.shift();
+      drain();
+    },
+    get size() { return q.length; },
+    dispose() { clearTimer(timer); timer = null; q.length = 0; },
+  };
+}
+
+/**
  * HUD numbers from a b.snap: { killed, total, dp, boss } (boss: { hp, max } when present).
  * @param {any} snap
  */

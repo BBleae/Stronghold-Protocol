@@ -1187,7 +1187,7 @@ function kitInvisShield(ab, e) {
   const r = (e.def.raw && e.def.raw.stats && e.def.raw.stats.rawRangeRadius) || 2;
   return [...kitDeathSpawn()(ab), skill(s, (b, e2) => {
     const dur = s.bb.duration ?? T(ab, 'InvisibleShield.duration') ?? 0;
-    b.fx('telegraph', { x: e2.x, y: e2.y, r, kind: 'invisShield', id: e2.id });
+    b.fx('telegraph', { x: e2.x, y: e2.y, r, kind: 'invisShield', id: e2.id, duration: dur });
     for (const o of b.enemiesInRadius(e2.x, e2.y, r)) if (o !== e2 && dur > 0) b.addBuff(o, { key: 'ab:veiled', duration: dur, flags: { stealth: true }, visible: true });
   })];
 }
@@ -1426,7 +1426,7 @@ function kitRegen(ab) {
     hits, delay, stealthy: false, key: 'ab:regen',
     onHusk(b, e) {
       // 被击倒后…使周围一定距离内其他敌人获得可以抵挡物理及法术伤害的护盾
-      b.fx('telegraph', { x: e.x, y: e.y, r: ACPUPP_AURA_RADIUS, kind: 'regenShield', id: e.id });
+      b.fx('telegraph', { x: e.x, y: e.y, r: ACPUPP_AURA_RADIUS, kind: 'regenShield', id: e.id, duration: delay });
       for (const o of b.enemiesInRadius(e.x, e.y, ACPUPP_AURA_RADIUS)) if (o !== e && block > 0) { const oab = abOf(b, o); oab.hitShield = Math.max(oab.hitShield, block); }
     },
   })];
