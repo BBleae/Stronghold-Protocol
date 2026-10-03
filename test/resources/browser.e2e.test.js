@@ -62,6 +62,21 @@ test('browser installs only matching files from a local ZIP without upload, serv
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   const base = `http://127.0.0.1:${server.address().port}`;
+  async function assertDownloadComplete() {
+    await page.waitForSelector('[data-action="export"]:not(:disabled)');
+    assert.equal(await page.$eval('[data-action="download"]', node => node.disabled), true,
+      'complete resources cannot be downloaded again');
+    assert.equal(await page.$eval('[data-action="download"]', node => node.textContent.trim()), '资源已全部保存');
+    // Even a stale/enabled control must not start another operation.
+    const stayedIdle = await page.$eval('[data-action="download"]', async node => {
+      node.disabled = false;
+      node.click();
+      node.disabled = true;
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      return !document.querySelector('[data-action="cancel"]');
+    });
+    assert.equal(stayedIdle, true, 'completed download handler stays idle');
+  }
   await page.goto(base);
   await page.waitForSelector('.resource-dialog[role="dialog"]');
   assert.equal(await page.$eval('#boot', node => getComputedStyle(node).display), 'none');
@@ -70,6 +85,7 @@ test('browser installs only matching files from a local ZIP without upload, serv
   await page.waitForSelector('[data-action="import"]:not(:disabled)');
   await (await page.$('input[type=file]')).uploadFile(pack.path);
   await page.waitForFunction(() => document.querySelector('.resource-message')?.textContent.includes('全部资源已保存'));
+  await assertDownloadComplete();
   assert.deepEqual(hits.filter(hit => hit.path.startsWith('/assets/') || hit.method !== 'GET'), []);
   await page.click('[data-action="continue"]');
   await page.waitForFunction(() => window.gameReady);
@@ -99,8 +115,11 @@ test('browser installs only matching files from a local ZIP without upload, serv
   assert.deepEqual(cached, { status: 206, contentType: 'audio/mpeg', body: 'cde' });
   await page.click('#resource-manager-open');
   await page.waitForSelector('[data-action="clear"]:not(:disabled)');
+  await assertDownloadComplete();
   await page.click('[data-action="clear"]');
   await page.waitForFunction(() => document.querySelector('.resource-stat')?.textContent.startsWith('0 / 2'));
+  await page.waitForSelector('[data-action="download"]:not(:disabled)');
+  assert.equal(await page.$eval('[data-action="download"]', node => node.textContent.trim()), '在线下载 / 继续下载');
   offlineAssets = false; corrupt = true;
   await page.waitForSelector('[data-action="download"]:not(:disabled)');
   await page.click('[data-action="download"]');
@@ -112,6 +131,7 @@ test('browser installs only matching files from a local ZIP without upload, serv
   await page.waitForFunction(() => document.querySelector('.resource-message')?.textContent.includes('全部资源已保存'));
   assert.equal(hits.filter(hit => hit.path === '/assets/a.mp3').length, 1);
   assert.equal(hits.filter(hit => hit.path === '/assets/b.png').length, 2);
+  await assertDownloadComplete();
   await page.click('[data-action="continue"]');
   await page.reload();
   await page.waitForFunction(() => window.gameReady);

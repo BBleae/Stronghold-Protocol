@@ -95,6 +95,7 @@ function showManager(context, firstTime = false) {
     }
     async function run(action, phase, doneText) {
       if (operation || closing || !context.store) return;
+      if (phase === 'download' && state.status?.complete) return;
       controller = new AbortController();
       update({ busy: true, phase, message: '正在准备，请稍候…', error: false });
       operation = (async () => {

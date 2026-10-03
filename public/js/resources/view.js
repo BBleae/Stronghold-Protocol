@@ -42,8 +42,8 @@ export function ResourceDialog({ state, firstTime, available, totalBytes, onClos
       <//>
       <p class=${`resource-message ${error ? 't-gold' : 't-lo'}`} role="status">${message}</p>
       <div class="resource-actions">
-        <${Button} variant="primary" data-action="download" disabled=${disabled} loading=${busy && phase === 'download'}
-          onClick=${onDownload}>在线下载 / 继续下载<//>
+        <${Button} variant="primary" data-action="download" disabled=${disabled || complete} loading=${busy && phase === 'download'}
+          onClick=${onDownload}>${complete ? '资源已全部保存' : '在线下载 / 继续下载'}<//>
         <${Button} data-action="import" disabled=${disabled} onClick=${() => input.current?.click()}>导入本地 ZIP<//>
         <${Button} data-action="export" disabled=${disabled || !complete} onClick=${onExport}>导出 ZIP（发给朋友）<//>
         <${Button} variant="ghost" data-action="clear" disabled=${disabled} onClick=${onClear}>清理本地资源<//>
