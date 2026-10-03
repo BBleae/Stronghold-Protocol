@@ -4,12 +4,15 @@ const MAX_READ_BYTES = 16 * 1024 * 1024;
 
 /** zip.js owns ZIP parsing and decompression. Only manifest entries are extracted and validated.
  * BlobReader seeks by range; bounded writes hold at most one trusted manifest file.
+ * Unrelated entries are skipped without path or content validation. Matching names with another
+ * size or hash are skipped and counted; malformed matching entries still fail validation.
  */
 export async function importResourceZip(blob, store, { signal, onProgress = () => {}, zipjs } = {}) {
   checkAbort(signal);
   zipjs ??= await import('/vendor/zip.module.js');
   const expected = new Map(store.manifest.files.map(file => [decodeURIComponent(file.url.slice(1)), file]));
   const seen = new Set();
+  let imported = 0, skipped = 0;
   const status = await store.status();
   const source = new zipjs.BlobReader(blob);
   const readRange = source.readUint8Array.bind(source);
@@ -27,12 +30,15 @@ export async function importResourceZip(blob, store, { signal, onProgress = () =
     for await (const entry of reader.getEntriesGenerator()) {
       checkAbort(signal);
       const trusted = expected.get(entry.filename);
-      if (!trusted || entry.directory) continue;
+      if (entry.directory) continue;
+      if (!trusted) { skipped++; continue; }
       const url = trusted.url;
       if (seen.has(url)) throw new Error(`Duplicate ZIP resource path: ${entry.filename}`);
       seen.add(url);
       if (entry.symlink || entry.encrypted) throw new Error('Unsupported ZIP resource entry');
-      if (entry.uncompressedSize !== trusted.size || !Number.isSafeInteger(entry.compressedSize) || entry.compressedSize < 0 || entry.compressedSize > trusted.size * 1.1 + 65536) throw new Error(`ZIP resource size / 大小不符: ${entry.filename}`);
+      if (entry.uncompressedSize !== trusted.size) { skipped++; continue; }
+      if (!Number.isSafeInteger(entry.compressedSize) || entry.compressedSize < 0 || entry.compressedSize > trusted.size * 1.1 + 65536) throw new Error(`ZIP resource size / 大小不符: ${entry.filename}`);
+
       const data = new Uint8Array(trusted.size);
       let size = 0;
       await entry.getData(new WritableStream({
@@ -43,13 +49,16 @@ export async function importResourceZip(blob, store, { signal, onProgress = () =
         },
       }), { signal, strictness: 'strict', checkCrc32: true, checkOverlappingEntry: true });
       if (size !== data.length) throw new Error(`ZIP resource size / 大小不符: ${entry.filename}`);
+      try { await verifyBytes(trusted, data); } catch { skipped++; continue; } // same size, other content
       await store.put(trusted, data, { signal });
+      imported++;
       if (!status.present.has(url)) { status.present.add(url); status.count++; status.bytes += size; }
       onProgress({ ...status, complete: status.count === status.total, phase: 'import', file: url });
     }
-    if (!seen.size) throw new Error('No matching ZIP resources / ZIP 中没有与本站清单匹配的资源');
+    if (!imported) throw new Error('No matching ZIP resources / ZIP 中没有与本站清单匹配的资源（资源包版本不同）');
+
     status.complete = status.count === status.total;
-    return status;
+    return { ...status, imported, skipped };
   } catch (error) {
     if (error.name === 'AbortError' || error.name === 'QuotaExceededError') throw error;
     throw new Error(`ZIP resource import: ${error.message}${error.reason ? ` (${error.reason})` : ''}`, { cause: error });

@@ -249,14 +249,6 @@ function MatchScreen() {
     uniteLeft: leaker ? uniteRemaining(localLeft, meP?.uniteLeft) : null,
   });
   lpBaseRef.current = liveLpNow.base;
-  // the own battle's end line (js/audio.js battleEnd): any LP lost ⇒ 非3星结束行动, LP 0 ⇒ 行动失败
-  // (the pending loss of a running battle, or a settled one since it started — a boss round settles before its end)
-  const bv = audio.battleVoice;
-  if (bv.pending) {
-    const lpNow = Number.isFinite(liveLpNow.shown) ? liveLpNow.shown : priv?.lp;
-    if (liveLpNow.pending > 0 || (Number.isFinite(lpNow) && Number.isFinite(bv.lp0) && lpNow < bv.lp0)) bv.lost = true;
-    if (Number.isFinite(lpNow) && lpNow <= 0) bv.dead = true;
-  }
 
   // latest values for event handlers bound once
   const live = useRef({});
@@ -523,10 +515,11 @@ function MatchScreen() {
     if (prev === phase) return;
     const b = phaseBanner(phase, pub);
     if (b) setBanner({ ...b, key: phaseKey });
-    // operator voice of a normal stage: the own battle starts — the squad leader's 行动开始; the battle phases are over
-    // without the own battle's end having been seen (a boss round, a server-side battle) — its end line now
-    if ((phase === PHASE.COMBAT || phase === PHASE.FINAL_ASSAULT || phase === PHASE.HIDDEN_CORE) && alive) audio.battleStart(voiceLeader(live.current.priv, getChess), { lp: live.current.priv?.lp });
-    else if (isCombatPhase(prev) && !isCombatPhase(phase)) audio.battleEnd();
+    // operator voice (as in the official mode): every battle, its squad leader says 行动开始 at the first enemy
+    // (js/audio.js battleStart); the end line is said once, on the result screen
+    if ((phase === PHASE.COMBAT || phase === PHASE.FINAL_ASSAULT || phase === PHASE.HIDDEN_CORE) && alive) {
+      audio.battleStart(voiceLeader(live.current.priv, getChess));
+    }
     if (phase === PHASE.ROUND_START) audio.sfx('roundStart');
     else if (phase === PHASE.PREP) audio.sfx('rest', { volume: 0.7 });
     else if (phase === PHASE.COMBAT) audio.sfx('battleStart');
@@ -730,9 +723,6 @@ function MatchScreen() {
         const entry = L.placeCtx?.pieces.get(e?.uid);
         if (!entry || !L.editable) return;
         audio.sfx('pick', { volume: 0.6 });
-        // 选中干员: picking up an operator (one that was already selected by a tap has just said it)
-        const ch = pieceCharId(entry.piece, getChess);
-        if (ch && L.sel?.uid !== entry.piece.uid) audio.voice(ch, 'select');
         setSel(null);
         // a new placement: a piece's detail card (right-click / long-press) would sit beside the wheel showing another unit
         setDetail((d) => (d?.kind === 'piece' ? null : d));
@@ -787,8 +777,9 @@ function MatchScreen() {
         const penKey = previewEnemyKey(e);
         if (penKey) { setDetail({ kind: 'enemy', id: penKey }); return; }
         if (e.unitId != null || e.unit) {
-          // 选中干员: tapping a deployed operator in battle
-          if (!e.detail && e.button !== 2 && e.unit && e.unit.side !== 'enemy' && unitSoundClass(e.unit) === 'char') audio.voice(e.unit.spine || e.unit.defId, 'select');
+          // 选中干员 (FOCUS_CHAR): tapping an own deployed operator in battle (not a teammate's)
+          const own = e.unit && e.unit.side !== 'enemy' && unitSoundClass(e.unit) === 'char' && (e.unit.ownerId == null || e.unit.ownerId === live.current.myId);
+          if (!e.detail && e.button !== 2 && own) audio.voice(e.unit.spine || e.unit.defId, 'select');
           setDetail({ kind: 'unit', unit: e.unit || null, unitId: e.unitId, uid: e.uid });
           return;
         }
@@ -801,7 +792,6 @@ function MatchScreen() {
         const wasSel = pressSel.current === e.uid;
         pressSel.current = null;
         setSel(wasSel ? null : { uid: e.uid });
-        if (!wasSel) { const ch = pieceCharId(L.placeCtx?.pieces.get(e.uid)?.piece, getChess); if (ch) audio.voice(ch, 'select'); }
         if (wasSel) setDetail((d) => (d?.kind === 'piece' && d.uid === e.uid ? null : d));
       }),
     ];
@@ -901,7 +891,8 @@ function MatchScreen() {
       releaseHold(f.uid);
       return;
     }
-    // 部署: an operator placed from the hand / temporary area (moving one already on the board says nothing)
+    // 部署 (PLACE_CHAR): an operator successfully deployed from the bench / temporary area — as in the official mode;
+    // buying or dragging one says nothing, and moving one already on the board neither
     if (f.from !== 'board') { const ch = pieceCharId(f.piece, getChess); if (ch) audio.voice(ch, 'deploy'); }
     // accepted: the piece stays on the tile until m.private shows it there (or a short grace passes)
     setTimeout(() => { if (heldRef.current.has(f.uid)) releaseHold(f.uid); }, 1500);
@@ -1064,8 +1055,6 @@ function MatchScreen() {
   // (client-side combat: only in 各自行动 — 联防 observers just watch the 联防 field, research 09 §3.1)
   const myDone = combat && (cc ? phase === PHASE.COMBAT && (meP?.status === 'done' || localDone) : meP?.status === 'done');
   live.current.localDone = localDone;
-  // the own battle just ended: the squad leader's 3星结束行动 / 非3星结束行动 / 行动失败
-  useEffect(() => { if (myDone) audio.battleEnd(); }, [myDone]);
   // the solo pause button: only while the own battle still runs (the server refuses it afterwards)
   const canPause = pauseAvailable(pub, { solo, alive, done: meP?.status === 'done' || localDone });
   live.current.canPause = canPause;

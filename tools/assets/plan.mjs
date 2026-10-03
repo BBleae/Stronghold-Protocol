@@ -202,8 +202,9 @@ export function collectEnemyIds({ assets07, enemies05, maps05, ops03 }) {
  * @param {string[]} [p.extraEnemyIds] more enemy ids that can spawn (e.g. keys of data/enemies.json)
  * @param {string[]} [p.extraTokenIds] more token ids (e.g. token_* keys of data/tokens.json)
  * @param {Record<string,string>} [p.extraHandbook] enemyId → handbook/model id (e.g. from data/bosses.json)
- * @param {{ index: ReturnType<import('./voice.mjs').indexCharWords>, langs: string[] }|null} [p.voice] operator voice
- *   lines to plan (voice.mjs), per client language; null/empty ⇒ no voice
+ * @param {{ index: ReturnType<import('./voice.mjs').indexCharWords>, langs: string[], rules?: any }|null} [p.voice] operator
+ *   voice lines to plan (voice.mjs), per client language, and the official battle voice rules (audio_data.json
+ *   battleVoice → manifest audio.voiceRules); null/empty ⇒ no voice
  * @returns {{ template: any, models: Map<string, any>, notes: string[] }}
  */
 export function buildPlan({ assets07, ops03, enemies05, maps05, audio, modelsData, extraEnemyIds = [], extraTokenIds = [], extraHandbook = {}, voice = null }) {
@@ -479,6 +480,9 @@ export function buildPlan({ assets07, ops03, enemies05, maps05, audio, modelsDat
     chars, enemies, tokens, bonds, items, bands, skills, skillsById, ui, prof,
     audio: { bgm, bossBgm: Object.fromEntries(Object.entries(bossBgm).sort(([a], [b]) => a.localeCompare(b, 'en', { numeric: true }))), sfx: { ui: sfxUi, battle: sfxBattle, units: unitsSfx } },
   };
-  if (Object.keys(voiceByLang).length) template.audio.voice = voiceByLang;
+  if (Object.keys(voiceByLang).length) {
+    template.audio.voice = voiceByLang;
+    if (voice.rules && Array.isArray(voice.rules.voiceTypeOptions)) template.audio.voiceRules = structuredClone(voice.rules);
+  }
   return { template, models, notes };
 }

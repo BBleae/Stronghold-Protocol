@@ -7,13 +7,15 @@
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": false,
   "preview_urls": false,
+  // Allow Workers Builds previews; no preview-specific room bindings are configured.
+  "previews": {},
   // Custom domains and routes are managed in the Cloudflare dashboard.
   // Omit route/routes so deployments preserve those bindings.
   "build": { "command": "npm run build:worker" },
   "assets": {
     "directory": "./dist/client",
     "binding": "ASSETS",
-    "run_worker_first": ["/api/*", "/ws", "/healthz"],
+    "run_worker_first": ["/api/*", "/ws", "/healthz", "/stronghold-resources.zip"],
     "not_found_handling": "none"
   },
   "durable_objects": {
