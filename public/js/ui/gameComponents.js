@@ -4,6 +4,7 @@
 import { useState, useMemo } from '../../vendor/hooks.module.js';
 import { html, Icon, TierChip, Tooltip } from './components.js';
 import { data, useData, localAsset } from '../data.js';
+import { useStore } from '../store.js';
 import { parseRichText, rtClassName } from './richText.js';
 import {
   uiUrl, chessAvatarUrl, chessPortraitUrl, itemIconUrl, tokenAvatarUrl, enemyIconUrl, bondIconUrl, bandIconUrl,
@@ -241,7 +242,12 @@ export function RichTip({ text, children, placement = 'top' }) {
  * @param {{ player: any, size?: 'sm'|'md', self?: boolean, class?: string }} props
  */
 export function PlayerAvatar({ player, size = 'md', self = false, class: cls }) {
-  const src = player?.bandId ? bandIconUrl(data.get('assets'), player.bandId) : null;
+  const seatAvatar = useStore(s => s.room?.seats?.find(p => p?.playerId === player?.playerId)?.avatarUrl);
+  const botName = player?.isBot ? (player.name || '').replace(/^AI[·・\s]*/, '') : null;
+  const botCharacter = botName && Object.values(data.get('chess') || {}).find(c => !c.isGolden && c.name === botName);
+  const botBand = botName && Object.values(data.get('bands') || {}).find(b => b.name === botName);
+  const src = (player?.isBot ? chessAvatarUrl(data.get('assets'), botCharacter) || bandIconUrl(data.get('assets'), botBand?.bandId) : seatAvatar || player?.avatarUrl)
+    || (player?.bandId ? bandIconUrl(data.get('assets'), player.bandId) : null);
   const glyph = [...(player?.name || '').trim()][0] || '?';
   const dead = player?.alive === false || player?.status === 'dead';
   const left = player?.status === 'left';

@@ -241,3 +241,38 @@ test('solo prep and 机变 are untimed', () => {
   assert.equal(h.m.phase, PHASE.PREP);
   h.m.dispose();
 });
+
+test('offline humans do not block ready teammates; reconnect cancels queued early start', () => {
+  for (const disconnectLast of [false,true]) {
+    const h=makeMatch({mode:'coop',humans:2,seed:10,fake:true}).start();h.toPrep(1);
+    const m=h.m, b=h.ps('p_1');give(m,b,chessOfTier(1).find(x=>m.pool.has(x)),'temp');
+    if(!disconnectLast)m.onDisconnect('p_1');
+    m.handle('p_0',{t:'g.ready',ready:true});
+    if(disconnectLast)m.onDisconnect('p_1');
+    h.sched.advance(1);assert.notEqual(m.phase,PHASE.PREP);assert.ok(b.tempEmpty);m.dispose();
+  }
+  const h=makeMatch({mode:'coop',humans:2,seed:10,fake:true}).start();h.toPrep(1);
+  h.m.onDisconnect('p_1');h.m.handle('p_0',{t:'g.ready',ready:true});h.m.onReconnect('p_1');
+  h.sched.advance(1);assert.equal(h.m.phase,PHASE.PREP);h.m.dispose();
+});
+
+test('all humans disconnected do not trigger early prep completion',()=>{
+  const h=makeMatch({mode:'coop',humans:2,seed:10,fake:true}).start();h.toPrep(1);
+  h.m.onDisconnect('p_0');h.m.onDisconnect('p_1');h.sched.advance(1);
+  assert.equal(h.m.phase,PHASE.PREP);h.m.dispose();
+});
+
+test('a ready human reconnecting while teammates remain offline resumes early prep completion',()=>{
+  const h=makeMatch({mode:'coop',humans:2,seed:10,fake:true}).start();h.toPrep(1);
+  h.m.handle('p_0',{t:'g.ready',ready:true});
+  h.m.onDisconnect('p_0');h.m.onDisconnect('p_1');h.sched.advance(1);
+  assert.equal(h.m.phase,PHASE.PREP);
+  h.m.onReconnect('p_0');h.sched.advance(1);
+  assert.notEqual(h.m.phase,PHASE.PREP);h.m.dispose();
+});
+
+test('offline autoplay can still complete prep once everyone is ready',()=>{
+  const h=makeMatch({mode:'solo',seed:10,fake:true}).start();h.toPrep(1);
+  h.m.onDisconnect('p_0');h.m.handle('p_0',{t:'g.ready',ready:true});
+  h.sched.advance(1);assert.notEqual(h.m.phase,PHASE.PREP);h.m.dispose();
+});

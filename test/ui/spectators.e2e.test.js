@@ -73,6 +73,8 @@ test('public spectator UI: live board, presence, read-only controls and restart 
   assert.equal(await viewer.evaluate(()=>__SP__.store.get().room.seats.filter(Boolean).length),1);
   await call(host,'g.infoReady');
   await host.waitForFunction(()=>__SP__.store.get().match.public?.phase==='BAND_DRAFT');
+  await host.waitForFunction(()=>document.querySelector('.pavatar__img img')?.src.includes('avatars.githubusercontent.com') && document.querySelector('.pavatar__img img').naturalWidth>0);
+  await host.screenshot({path:path.join(out,'draft-avatars.png')});
   await call(host,'g.band',{bandId:'band_sarkazb'});
   await viewer.waitForFunction(()=>__SP__.store.get().match.public?.phase==='PREP',{timeout:30000});
   await viewer.waitForFunction(()=>!!__SP__.store.get().match.field?.fieldId);
