@@ -106,6 +106,7 @@ import { rotateOffset } from '../../dir.js';
 import { bodyDist, bodyInKeys, bodyInRadius, bodyKeys } from '../../body.js';
 import { hasHp } from '../../damage.js';
 import { summonToken, TOKEN_IDS } from '../tokens.js';
+import { keyTiles, gridTiles } from '../fxtiles.js';
 
 // ------------------------------------------------------------------------------------------------------------------
 // helpers
@@ -684,6 +685,18 @@ function sbell2(bb, chess, def) {
           if (e.alive && !e.hidden && !e.isFlying && bodyInKeys(e, snow)) battle.dealDamage(unit, e, { amount: unit.s.atk * S2.dot, type: 'arts', isSkill: true, tags: ['skill', 'snow'] });
         }
       }, { owner: unit });
+      // the snow on the field for the client ('snowTiles': every snowy tile [r, c, layers], sent when it changes —
+      // laid, cleared by an enemy leaving, frozen into ice, wiped on redeploy)
+      let snowSig = '';
+      battle.on('tick', () => {
+        if (!snow.size && !snowSig) return;
+        const list = [...snow].sort((a, b) => a[0] - b[0]);
+        let sig = '';
+        for (const [k, L] of list) sig += `${k}:${L},`;
+        if (sig === snowSig) return;
+        snowSig = sig;
+        battle.fx('snowTiles', { x: unit.x, y: unit.y, id: unit.id, tiles: list.map(([k, L]) => [(k / COLS) | 0, k % COLS, L]) });
+      }, { owner: unit });
     } },
     { install(battle, unit) { // 圣山的祝福
       const cold = num(t1.cold), selfFreeze = num(t1.freeze), eFreeze = num(t1.c2e_freeze), hr = num(t1.hp_ratio, 1);
@@ -740,7 +753,8 @@ function sbell2(bb, chess, def) {
           if (!battle.grid.inRect(r, c)) break;
           if (addSnow(battle, unit, r * COLS + c)) laid++;
         }
-        battle.fx('frostNova', { x: unit.x, y: unit.y, id: unit.id, tiles: laid });
+        // (the nova over her range; the snow it laid shows through 'snowTiles')
+        battle.fx('frostNova', { x: unit.x, y: unit.y, id: unit.id, n: laid, tiles: keyTiles(unit.rangeKeys) });
       },
     },
     // S2 霜涛覆岭 (toggle, 持续时间无限): group attacks at attack@atk_scale_s2 × ATK + the S2 snow rules (addSnow / talent)
@@ -1082,10 +1096,12 @@ function pasngr(bb, chess, def) {
     const count = Math.max(1, Math.floor(num(bb['chain.max_target'], ch.count || 4)));
     const slug = num(tb['skill@sluggish'], num(bb.sluggish, ch.sluggish ?? 0));
     const hit = new Set();
-    let prev = first;
+    let prev = first, from = unit.id;
     for (let i = 0; i < count && prev; i++) {
       hit.add(prev.id);
-      battle.fx('lightning', { x: prev.x, y: prev.y, id: prev.id, src: unit.id });
+      // (`from`: the bolt jumps from the previous victim — the first one from her)
+      battle.fx('lightning', { x: prev.x, y: prev.y, id: prev.id, src: unit.id, from });
+      from = prev.id;
       battle.dealDamage(unit, prev, { amount: unit.s.atk * scale * Math.pow(1 - num(ch.falloff, 0.15), i), type: 'arts', isSkill: true, isAttack: true, tags: ['skill', 'storm'] });
       if (slug > 0 && prev.alive) battle.applyStatus(prev, 'sluggish', { duration: slug, source: unit });
       let best = null, bd = Infinity;
@@ -1297,7 +1313,7 @@ function siege2(bb, chess, def) {
           for (const e of battle.unitsInGrid(unit, skillGridOf(def) || N4, { side: 'enemy' })) {
             if (!e.isFlying && e.alive) battle.dealDamage(unit, e, { amount: unit.s.atk * num(bb.atk_scale), type: 'true', isSkill: true, tags: ['skill'] });
           }
-          battle.fx('aoe', { x: unit.x, y: unit.y, id: unit.id });
+          battle.fx('aoe', { x: unit.x, y: unit.y, id: unit.id, tiles: gridTiles(unit, skillGridOf(def) || N4) });
         },
       },
     },
@@ -2289,7 +2305,7 @@ function lumen(bb, chess, def) {
         if (!target) return;
         const sc = bv(bb, 'heal_scale'), life = bv(bb, 'projectile_life_time', 4), iv = Math.max(0.2, bv(bb, 'interval', 1));
         if (!(sc > 0) || !(life > 0)) return;
-        battle.fx('healField', { x: target.x, y: target.y, id: unit.id });
+        battle.fx('healField', { x: target.x, y: target.y, id: unit.id, r: 1.5, duration: life });
         for (const a of battle.alliesInRadius(target.x, target.y, 1.5, target.ownerId)) {
           if (a.kind === 'device' || a.s.flags.noHeal || a.profile?.noHeal) continue; // a heal: never on 禁疗 / 孤立
           battle.addBuff(a, {
@@ -2413,7 +2429,7 @@ function qiubai(bb, chess, def) {
           battle.after(dur, () => {
             if (!unit.alive || unit.deploySeq !== seq) return;
             const x = target.x, y = target.y; // (a fallen target keeps its last position)
-            battle.fx('aoe', { x, y, id: unit.id });
+            battle.fx('aoe', { x, y, id: unit.id, r: 1.2 });
             for (const e of battle.enemiesInRadius(x, y, 1.2, true)) { // splash around the target: 中点判定
               if (e.alive && !e.s.flags.untargetable) battle.dealDamage(unit, e, { amount: unit.s.atk * num(bb.aoe_scale, 1), type: 'arts', isSkill: true, isSplash: e !== target, tags: ['skill'] });
             }
@@ -2530,7 +2546,7 @@ function halo2(bb, chess, def) {
             .sort((a, b) => bodyDist(a, target.x, target.y) - bodyDist(b, target.x, target.y) || a.spawnSeq - b.spawnSeq)
             .slice(0, k);
           for (const e of near) {
-            battle.fx('link', { x: e.x, y: e.y, id: unit.id, ids: [target.id, e.id] });
+            battle.fx('link', { x: e.x, y: e.y, id: unit.id, ids: [target.id, e.id], chain: true });
             pullToward(battle, { x: target.x, y: target.y }, e, num(bb.force), 0.3);
             if (e.alive) battle.dealDamage(unit, e, { amount: unit.s.atk * num(bb.atk_scale_link, num(bb.atk_scale, 1)), type: 'arts', isSkill: true, tags: ['skill', 'link'] });
           }
@@ -2569,7 +2585,7 @@ function halo2(bb, chess, def) {
           ctx.targets = keep.slice(0, n);
           const fresh = ctx.targets.some((e) => !(unit.mem.haloLocks || []).includes(e));
           unit.mem.haloLocks = ctx.targets.slice();
-          if (fresh && ctx.targets.length > 1) battle.fx('link', { x: ctx.targets[0].x, y: ctx.targets[0].y, id: unit.id, ids: ctx.targets.map((e) => e.id) });
+          if (fresh && ctx.targets.length > 1) battle.fx('link', { x: ctx.targets[0].x, y: ctx.targets[0].y, id: unit.id, ids: ctx.targets.map((e) => e.id), chain: true });
         }, { owner: unit });
         battle.on('hit', (ctx) => {
           const locks = unit.mem.haloLocks;
@@ -2833,7 +2849,7 @@ function whitw2(bb, chess, def) {
         const n = 1 + Math.floor(num(bb['attack@cnt'])) + ((unit.mem.wolfStage || 0) >= 3 ? 1 : 0);
         unit.mem.drones = Array.from({ length: n }, () => ({ x: unit.x, y: unit.y, t: null, locked: null }));
         unit.mem.droneAcc = 0;
-        battle.fx('drones', { x: unit.x, y: unit.y, id: unit.id, n });
+        battle.fx('drones', { x: unit.x, y: unit.y, id: unit.id, n, v: speed });
       },
       onTick({ battle, unit, dt }) {
         const D = unit.mem.drones;
@@ -2869,7 +2885,8 @@ function whitw2(bb, chess, def) {
         if (unit.mem.droneAcc + 1e-9 >= 1) {
           unit.mem.droneAcc -= 1;
           for (const e of near) if (e.alive) battle.dealDamage(unit, e, { amount: unit.s.atk * dmgScale, type: 'arts', isSkill: true, tags: ['skill', 'drone'] });
-          for (const d of D) battle.fx('drone', { x: d.x, y: d.y, id: unit.id });
+          // (client: drone `i` eases to (x, y) and keeps chasing its target `to` at `v` tiles/s until the next sample)
+          D.forEach((d, i) => battle.fx('drone', { x: d.x, y: d.y, id: unit.id, i, to: d.t ? d.t.id : null, v: speed }));
         }
       },
       onEnd({ unit }) { unit.mem.drones = null; },

@@ -35,6 +35,9 @@
 
 import { fxAtlas } from './textures.js';
 import { DMG_STYLE, dmgStyleKey, HIT_TINT, PROJ, COLORS } from './style.js';
+import { Sustains } from './fxsustain.js';
+
+export { SUSTAINED, ENEMY_AURAS, wallLine } from './fxsustain.js';
 
 /**
  * The sim's projectile speeds (server/sim/constants.js PROJECTILE_SPEEDS — pure data, served read-only at
@@ -164,7 +167,8 @@ export const FX_KINDS = Object.freeze({
   airstrike: { a: 'blast', c: 0xff8a3d, r: 1.5, heavy: true }, splash: { a: 'blast', c: 0xffc27a },
   scorchBurst: { a: 'blast', c: 0xff6a2a }, champagneBomb: { a: 'blast', c: 0xffd27a }, shockBlast: { a: 'blast', c: 0x9fd4ff, smoke: 0x1c2630 },
   frostNova: { a: 'blast', c: 0x9fe6ff, smoke: 0x1c2630 }, sunBurst: { a: 'blast', c: 0xffe28a }, meltdown: { a: 'blast', c: 0xff5a2a, r: 1.5, heavy: true },
-  iceSpike: { a: 'blast', c: 0xbfeeff, smoke: 0x1c2630 }, rockfall: { a: 'blast', c: 0xc8a878, smoke: 0x4a3f33 }, rockslide: { a: 'blast', c: 0xc8a878, smoke: 0x4a3f33 },
+  // `lead`: with a `dur` the blast lands that long after the event (boss 崩坍: a warning first, then the rocks)
+  iceSpike: { a: 'blast', c: 0xbfeeff, smoke: 0x1c2630 }, rockfall: { a: 'blast', c: 0xc8a878, smoke: 0x4a3f33, lead: true }, rockslide: { a: 'blast', c: 0xc8a878, smoke: 0x4a3f33 },
   finale: { a: 'blast', c: 0xffd45a, r: 1.5 }, swordStorm: { a: 'blast', c: 0xdfe8ff }, swordRain: { a: 'blast', c: 0xdfe8ff }, liberate: { a: 'blast', c: 0xffffff },
   knockout: { a: 'crit', c: 0xffc27a }, quadShot: { a: 'volley', c: 0xfff2d0 }, featherArrow: { a: 'counter', c: 0xfff2d0 },
   burst: { a: 'element', c: 0xd0a0ff },
@@ -186,6 +190,10 @@ export const FX_KINDS = Object.freeze({
   disappear: { a: 'vanish', c: 0xb36bff }, stealth: { a: 'vanish', c: 0x8fa0b0 }, camouflage: { a: 'vanish', c: 0x8fb08f }, phase: { a: 'vanish', c: 0xb36bff },
   substitute: { a: 'vanish', c: 0xd8b0ff }, swap: { a: 'blink', c: 0xd8b0ff }, blink: { a: 'blink', c: 0xb36bff }, teleport: { a: 'blink', c: 0xb36bff },
   ulpiaReturn: { a: 'blink', c: 0x9ff0dc }, manifoldSplit: { a: 'blink', c: 0xd8b0ff },
+  // boss 刺胄之弹 launched towards (tx, ty) (the shell itself is an enemy unit); 伊内丝's 影哨 flying back to her
+  helmShell: { a: 'move', c: 0xc8b890 }, sentryRecall: { a: 'move', c: 0x8f7bff },
+  // state samples drawn only by their lasting record (render/fxsustain.js): 魔王's orbiting motes, 圣聆初雪's snow
+  motes: { a: 'none', c: 0xfff0a8 }, snowTiles: { a: 'none', c: 0xe8f6ff },
   // displacement
   pull: { a: 'move', c: 0x9fd4ff }, push: { a: 'move', c: 0xffd9a0 }, displace: { a: 'move', c: 0xd0c0a0 }, lure: { a: 'move', c: 0xffb3ec },
   charge: { a: 'move', c: 0xff9c33 }, dash: { a: 'move', c: 0xffd9a0 }, slippery: { a: 'move', c: 0x9fe6ff },
@@ -216,7 +224,9 @@ export const FX_KINDS = Object.freeze({
   // no effect [ASSUMED], so nothing is drawn (`a: 'none'`)
   hitCap: { a: 'none', c: 0xffffff },
   // beams
-  beam: { a: 'beam', c: 0xff7a5a }, link: { a: 'beam', c: 0x9ff0dc }, lightning: { a: 'bolt', c: 0xc9a2ff }, tentacle: { a: 'beam', c: 0x5fe0ff },
+  beam: { a: 'beam', c: 0xff7a5a }, link: { a: 'beam', c: 0x9ff0dc }, lightning: { a: 'bolt', c: 0xc9a2ff },
+  // 断裂生殖 tentacle: a stun area of radius `r` for `dur` (bosses.js)
+  tentacle: { a: 'zone', c: 0x5fe0ff },
   sandChains: { a: 'beam', c: 0xd8c8a0 }, sandChainsCharged: { a: 'beam', c: 0xffd45a },
   strike: { a: 'strike', c: 0xffe6a8 }, volley: { a: 'volley', c: 0xfff2d0 }, column: { a: 'pillar', c: 0x9ff0dc }, obelisk: { a: 'pillar', c: 0xc9a2ff },
   duskDragon: { a: 'blast', c: 0x9dff6a, r: 1.5 }, shadowWeave: { a: 'vanish', c: 0x8f7bff }, reweave: { a: 'summon', c: 0x8f7bff },
@@ -254,13 +264,16 @@ export function fxSpec(kind, extra = {}) {
   return spec;
 }
 
-/** Tiles covered by a blast / telegraph: `tiles` = [[r,c]…] or 'box' (Chebyshev ⌊r⌋ around the centre) or 'disc'. */
+/**
+ * Tiles covered by a blast / telegraph: `tiles` = [[r,c]…] or 'box' (Chebyshev ⌊r⌋ around the centre) or 'plus' (the
+ * centre row and column, ⌊r⌋ each way: 十字, enemies.js XI_CROSS_REACH) or 'disc'.
+ */
 export function tilesAround(x, y, r, tiles) {
   if (Array.isArray(tiles)) return tiles.filter((t) => Array.isArray(t) && Number.isInteger(t[0]) && Number.isInteger(t[1])).slice(0, 80);
   const cr = Math.round(y), cc = Math.round(x), R = Math.max(0, Math.min(6, Math.floor(r)));
   const out = [];
   for (let dr = -R; dr <= R; dr++) for (let dc = -R; dc <= R; dc++) {
-    if (tiles === 'box' || dr * dr + dc * dc <= r * r + 0.25) out.push([cr + dr, cc + dc]);
+    if (tiles === 'plus' ? dr === 0 || dc === 0 : tiles === 'box' || dr * dr + dc * dc <= r * r + 0.25) out.push([cr + dr, cc + dc]);
   }
   return out;
 }
@@ -270,28 +283,6 @@ export function tilesAround(x, y, r, tiles) {
  * fire wall: perpendicular to his facing, sim/content/kits/tier6.js). Clipped to the field `rect` (inclusive
  * { r0, r1, c0, c1 }); without one ±4 tiles.
  */
-/**
- * Sim fx that last as long as their caster's skill (user report: 余's S3 fire wall vanished after 2 s of a 41 s skill;
- * the other skill-long fields alike): emitted once at the skill's start by the caster (`id`), held until that skill ends
- * ('skill' off), the caster dies or the battle view clears. `look`: 'wall' — a burning line across the field 0.5 tile
- * in front of the caster (the official 灶里乾坤 wall on the tile edge, perpendicular to its direction); 'field' — a
- * ground field of radius `r` (or the event's r) centred on the caster. The one-shot cast look still plays first.
- */
-export const SUSTAINED = Object.freeze({
-  firewall: { look: 'wall' },
-  tide: { look: 'field', r: 2.2 },
-  healField: { look: 'field', r: 1.6 },
-  coldWind: { look: 'field', r: 2.5 },
-  snow: { look: 'field', r: 2.2 },
-});
-
-/** The line of a sustained wall: `axis` 'col' → x = const, 'row' → y = const, 0.5 tile towards `dir` from (x, y). */
-export function wallLine(x, y, axis, dir) {
-  const D = { UP: [0, 1], RIGHT: [1, 0], DOWN: [0, -1], LEFT: [-1, 0] }[String(dir || '').toUpperCase()] || [0, 0];
-  const R = Math.round(Number(y)), C = Math.round(Number(x));
-  return axis === 'row' ? { axis: 'row', at: R + 0.5 * D[1], fixed: R } : { axis: 'col', at: C + 0.5 * D[0], fixed: C };
-}
-
 export function wallTiles(x, y, axis, rect) {
   const R = Math.round(Number(y)), C = Math.round(Number(x));
   if (!Number.isFinite(R) || !Number.isFinite(C)) return [];
@@ -354,10 +345,9 @@ export class FxSystem {
     this.tileGfx = new P.Graphics();
     this.tileGfx.blendMode = P.BLEND_MODES.ADD;
     ctx.layers.groundFx.addChild(this.tileGfx);
-    this.sustains = new Map();  // `${kind}:${casterId}` → a skill-long effect (SUSTAINED)
-    this.sustainGfx = new P.Graphics();
-    this.sustainGfx.blendMode = P.BLEND_MODES.ADD;
-    ctx.layers.groundFx.addChild(this.sustainGfx);
+    this.timers = [];         // delayed one-shots { t (real s), fn } (a 'lead' blast landing after its warning)
+    this.sus = new Sustains(this);   // lasting sim fx (render/fxsustain.js)
+    this.sustains = this.sus.map;    // key → record (tests, counts)
     this.tintSprite = new P.Sprite(P.Texture.WHITE);
     this.tintSprite.alpha = 0;
     this.tintSprite.blendMode = P.BLEND_MODES.ADD;
@@ -1522,7 +1512,8 @@ export class FxSystem {
    */
   skill(view, on) {
     if (!view) return;
-    if (!on) { this._aura(view, false); this._endSustains(view.id); return; }
+    this.sus.skill(view, on);
+    if (!on) { this._aura(view, false); return; }
     const z = (view.z || 0) + (view.hover || 0);
     const g = this._proj(view.x, view.y, z, this._g);
     const gx = g.x, gy = g.y, s = g.s;
@@ -1632,7 +1623,7 @@ export class FxSystem {
 
   death(view) {
     if (!view) return;
-    this._endSustains(view.id);
+    this.sus.died(view.id);
     const p = this._chest(view);
     const s = p.s;
     const col = view.isEnemy ? 0xff7a52 : 0xbfeee2;
@@ -1698,6 +1689,8 @@ export class FxSystem {
   simFx(kind, x, y, extra) {
     const ex = extra && typeof extra === 'object' ? extra : {};
     const spec = fxSpec(kind, ex);
+    // a lasting effect (render/fxsustain.js) is registered / refreshed / ended; a pure state sample draws nothing more
+    if (this.sus && this.sus.fromFx(kind, Number(x), Number(y), ex, spec.c)) return;
     if (spec.a === 'none') return; // an event the screen does not show (hitCap)
     const at = spec.pt ? this._point(Number(x), Number(y)) : this._where(Number(x), Number(y), ex);
     if (!Number.isFinite(at.x) || !Number.isFinite(at.y)) return;
@@ -1708,7 +1701,6 @@ export class FxSystem {
     const col = spec.c;
     const r = clamp(num(ex.r ?? ex.radius, spec.r ?? 1), 0.3, 30);
     const ts = this.ctx.timeScale ? Math.max(0.25, this.ctx.timeScale()) : 2;
-    if (SUSTAINED[kind]) this._sustain(kind, SUSTAINED[kind], col, Number(x), Number(y), ex);
     const dur = num(ex.dur ?? ex.duration, spec.dur ?? 0) / ts;
     const cam = this.ctx.cam();
     const chest = (v, out = this._p) => (v ? this._chest(v, out) : cam.project(at.x, at.y, at.z + 0.5, out));
@@ -1718,7 +1710,21 @@ export class FxSystem {
       case 'blast': {
         if (r >= 12) { this.flashScreen(col, 0.5); break; }
         if (kind === 'bombard') { this._touchLocks(ex.id ?? ex.src ?? null); this._landed(ex.id ?? ex.src ?? null, at.x, at.y, r); }
-        this.explosion(at.x, at.y, at.z, r, col, { smoke: spec.smoke, heavy: !!spec.heavy, tiles: ex.tiles ? tilesAround(at.x, at.y, r, ex.tiles) : null });
+        // the area a skill covers (its range / grid, sim content/fxtiles.js): those tiles flash, a small burst at the
+        // caster and a flare on each tile — not one big disc of the default radius
+        const area = Array.isArray(ex.tiles) && ex.r == null && ex.radius == null ? tilesAround(at.x, at.y, r, ex.tiles) : null;
+        const o = { smoke: spec.smoke, heavy: !!spec.heavy, tiles: area || (ex.tiles ? tilesAround(at.x, at.y, r, ex.tiles) : null) };
+        const go = () => {
+          const v = at.v && !at.v.destroyed ? at.v : null;
+          this.explosion(v ? v.x : at.x, v ? v.y : at.y, at.z, area ? Math.min(r, 0.8) : r, col, o);
+          if (area) this._tileFlares(area, col);
+        };
+        if (spec.lead && dur > 0) {
+          // boss 崩坍: the rocks land `dur` after the event — a warning ring until then (the hit lands with them)
+          this.zone(at.x, at.y, at.z, Math.max(0.6, r), col, dur, 'ring', true);
+          this.timers.push({ t: dur, fn: go });
+          if (this.timers.length > 64) this.timers.shift();
+        } else go();
         break;
       }
       case 'shell': {
@@ -1728,7 +1734,12 @@ export class FxSystem {
         this.mortar(this._viewOf(ex.id ?? ex.src), at.x, at.y, r, flight);
         break;
       }
-      case 'zone': this.zone(at.x, at.y, at.z, r, col, Math.max(0.6, dur || 1.5), spec.tex); break;
+      case 'zone': {
+        // an area given by its tiles (莫斯提马 S2: her range) lights those tiles for the whole time
+        if (Array.isArray(ex.tiles)) this.tileFlash(tilesAround(at.x, at.y, r, ex.tiles), col, Math.max(0.6, dur || 1.5), false, true);
+        else this.zone(at.x, at.y, at.z, r, col, Math.max(0.6, dur || 1.5), spec.tex);
+        break;
+      }
       case 'wall': {
         // a line of burning tiles through the anchor tile along `axis` ('col' | 'row', from the sim event)
         const rect = this.ctx.fieldRect ? this.ctx.fieldRect() : null;
@@ -1743,8 +1754,27 @@ export class FxSystem {
         else this.zone(at.x, at.y, at.z, r, col, d, 'ring', true);
         break;
       }
-      case 'chill': this.flashScreen(col, 0.35, 0.8); this.snowfall(col); break;
-      case 'heal': this.heal(at.v || { x: at.x, y: at.y, z: at.z }, 0); break;
+      case 'chill': {
+        // 灵知 S3 (an operator, `id`): the cold is her range, held by her field (fxsustain) — no whole-screen tint; the
+        // Kjerag device gust (no `id`) chills every enemy on the field: screen tint + snow
+        if (ex.id != null && at.v) { this.ring(at.x, at.y, at.z, 0.2, 2.4, col, 0.7, 'shock'); this.burst(p.x, p.y, s, 10, col, { speed: 2, tex: 'dot', life: 0.6 }); break; }
+        this.flashScreen(col, 0.35, 0.8); this.snowfall(col);
+        break;
+      }
+      case 'heal': {
+        this.heal(at.v || { x: at.x, y: at.y, z: at.z }, 0);
+        if (kind !== 'hpShare') break;
+        // 归溟幽灵鲨 S1: HP swapped with ally `to` (both flash, a line between them); 魔王 S3: HP shared by `ids`
+        const a = at.v || this._viewOf(ex.id);
+        const others = ex.to != null ? [ex.to] : Array.isArray(ex.ids) ? ex.ids.slice(0, 10) : [];
+        for (const id of others) {
+          const b = this._viewOf(id);
+          if (!a || !b || a === b) continue;
+          this._beam(a, b, col, 0.45, 0.25);
+          if (ex.to != null) this.heal(b, 0);
+        }
+        break;
+      }
       case 'healAoe': {
         this.ring(at.x, at.y, at.z, 0.2, r, col, 0.6);
         const n = this.quality === 'low' ? 4 : 9;
@@ -1829,6 +1859,12 @@ export class FxSystem {
         const v = at.v;
         const hz = v ? (v.z || 0) + (v.hover || 0) + (v._headTiles || 1.2) + 0.25 : at.z + 1.4;
         const q = cam.project(at.x, at.y, hz, this._q);
+        if (kind === 'anchor') {
+          // 乌尔比安: the anchor thrown from (fromX, fromY) lands at (x, y) and hits a ring of radius r
+          const fx0 = num(ex.fromX, NaN), fy0 = num(ex.fromY, NaN);
+          if (Number.isFinite(fx0) && Number.isFinite(fy0)) this.streak(fx0, fy0, at.x, at.y, at.z + 0.5, col, 0.35);
+          if (ex.r != null) { this.ring(at.x, at.y, at.z, 0.2, r, col, 0.55, 'shock'); this.ring(at.x, at.y, at.z, r * 0.9, r, col, 0.7); }
+        }
         if (spec.a === 'mark') {
           this.particle('glow', q.x, q.y, { tint: col, life: 0.6, s0: q.s / 128 * 0.5, s1: q.s / 128 * 0.7, a0: 0.8, a1: 0 });
           this.numberAt(q.x, q.y, '!', col, 0.8);
@@ -1910,7 +1946,21 @@ export class FxSystem {
         this._flame(ex.id ?? ex.src ?? null, ex.target ?? ex.to ?? null, fx0, fy0, r, col, Math.max(0.2, dur || 0.5));
         break;
       }
-      case 'strike': case 'pillar': this.strike(at.x, at.y, at.z, col, spec.a === 'pillar'); break;
+      case 'strike': case 'pillar': {
+        // boss 冰凌: its attack hits the whole column `c` — every tile of it flashes, the light falls along it
+        const c = num(ex.c, NaN);
+        if (kind === 'column' && Number.isFinite(c)) {
+          const rect = this.ctx.fieldRect ? this.ctx.fieldRect() : null;
+          const r0 = rect && Number.isFinite(rect.r0) ? rect.r0 : Math.round(at.y) - 4, r1 = rect && Number.isFinite(rect.r1) ? rect.r1 : Math.round(at.y) + 4;
+          const col0 = [];
+          for (let rr = r0; rr <= r1; rr++) col0.push([rr, c]);
+          this.tileFlash(col0, col, 0.5);
+          for (let rr = r0; rr <= r1; rr += 2) this.strike(c, rr, this._groundZ(c, rr), col, false);
+          break;
+        }
+        this.strike(at.x, at.y, at.z, col, spec.a === 'pillar');
+        break;
+      }
       case 'volley': {
         const list = Array.isArray(ex.targets) ? ex.targets.slice(0, 12) : [];
         const src = this._viewOf(ex.src ?? ex.id);
@@ -2028,122 +2078,6 @@ export class FxSystem {
   }
 
   /** Persistent ground area: soft disc + pulsing edge ring for `dur` real seconds (telegraphs pulse faster). */
-  // ---- skill-long effects (SUSTAINED) ----------------------------------------------------------------------------
-
-  _sustain(kind, sus, tint, x, y, ex) {
-    const v = this._viewOf(ex.id);
-    if (!v || v.destroyed || v.alive === false) return false;
-    // only while its caster's skill runs (a talent's periodic snow stays the one-shot look)
-    if (!(v.statuses?.has?.('skill') || v.actor?.skillOn)) return false;
-    if (sus.look === 'field' && Number.isFinite(x) && Number.isFinite(y) && Math.hypot(v.x - x, v.y - y) > 0.75) return false;
-    const key = `${kind}:${ex.id}`;
-    let S = this.sustains.get(key);
-    if (!S) {
-      S = { key, kind, look: sus.look, src: ex.id, view: v, t: 0, a: 0, end: false, tint, emit: 0, pulse: 0 };
-      if (sus.look === 'field') {
-        const P = this.P;
-        S.disc = new P.Sprite(this.tex.soft); S.disc.anchor.set(0.5); S.disc.blendMode = P.BLEND_MODES.ADD; S.disc.tint = tint;
-        S.edge = new P.Sprite(this.tex.ring); S.edge.anchor.set(0.5); S.edge.blendMode = P.BLEND_MODES.ADD; S.edge.tint = tint;
-      }
-      this.sustains.set(key, S);
-    }
-    S.end = false; S.view = v;
-    if (sus.look === 'wall') {
-      const rect = this.ctx.fieldRect ? this.ctx.fieldRect() : null;
-      const axis = ex.axis === 'row' ? 'row' : 'col';
-      S.line = wallLine(Number.isFinite(x) ? x : v.x, Number.isFinite(y) ? y : v.y, axis, ex.dir || v.dir || v.info?.dir);
-      const ok = rect && [rect.r0, rect.r1, rect.c0, rect.c1].every(Number.isFinite);
-      const f = S.line.fixed;
-      S.span = axis === 'col' ? (ok ? [rect.r0, rect.r1] : [f - 4, f + 4]) : (ok ? [rect.c0, rect.c1] : [f - 4, f + 4]);
-    } else S.r = clamp(num(ex.r ?? ex.radius, sus.r), 0.5, 8);
-    return true;
-  }
-
-  /** The skill of `id` ended (or it died): its skill-long effects fade out. */
-  _endSustains(id) {
-    for (const S of this.sustains.values()) if (S.src === id) S.end = true;
-  }
-
-  _freeSustain(S) { S.disc?.destroy(); S.edge?.destroy(); }
-
-  _updateSustains(dt) {
-    const g = this.sustainGfx;
-    g.clear();
-    if (!this.sustains.size) return;
-    const cam = this.ctx.cam();
-    const p = this._p, q = this._q;
-    for (const [key, S] of this.sustains) {
-      S.t += dt;
-      const v = S.view;
-      const ending = S.end || !v || v.destroyed || v.alive === false || S.t > 120;
-      S.a = ending ? S.a - dt / 0.4 : Math.min(1, S.a + dt / 0.35);
-      if (S.a <= 0 && ending) { this._freeSustain(S); this.sustains.delete(key); continue; }
-      if (S.look === 'wall') this._drawWall(S, g, cam, dt, ending);
-      else this._drawField(S, cam, p, q, dt, ending);
-    }
-  }
-
-  /** A burning line across the field: an orange band with a hot core, flickering per tile, with rising flames. */
-  _drawWall(S, g, cam, dt, ending) {
-    const L = S.line, [a, b] = S.span, p = this._p;
-    const quad = (u0, u1, w0, w1, z) => {
-      // u: along the line (tile index), w: across it (world offset from the line)
-      const pts = [];
-      for (const [u, w] of [[u0, w0], [u1, w0], [u1, w1], [u0, w1]]) {
-        if (L.axis === 'col') cam.project(L.at + w, u, z, p); else cam.project(u, L.at + w, z, p);
-        pts.push(p.x, p.y);
-      }
-      return pts;
-    };
-    for (let u = a; u <= b; u++) {
-      const r = L.axis === 'col' ? u : L.fixed, c = L.axis === 'col' ? L.fixed : u;
-      const z = (this.ctx.heightAt ? this.ctx.heightAt(r, c) : 0) + 0.02;
-      const fl = 0.78 + 0.22 * Math.sin(S.t * 9 + u * 1.7) * Math.sin(S.t * 5.3 + u * 0.9);
-      g.beginFill(0xff5a1a, 0.24 * S.a * fl); g.drawPolygon(quad(u - 0.5, u + 0.5, -0.26, 0.26, z)); g.endFill();
-      g.beginFill(0xffc04a, 0.32 * S.a * fl); g.drawPolygon(quad(u - 0.5, u + 0.5, -0.09, 0.09, z)); g.endFill();
-    }
-    if (ending) return;
-    // rising flames along the line
-    S.emit += dt * (this.rich ? 26 : 9) * (b - a + 1) / 9;
-    while (S.emit >= 1) {
-      S.emit -= 1;
-      const u = a - 0.45 + Math.random() * (b - a + 0.9), w = (Math.random() - 0.5) * 0.36;
-      const r = Math.round(L.axis === 'col' ? u : L.fixed), c = Math.round(L.axis === 'col' ? L.fixed : u);
-      const z = (this.ctx.heightAt ? this.ctx.heightAt(r, c) : 0) + 0.05;
-      if (L.axis === 'col') cam.project(L.at + w, u, z, p); else cam.project(u, L.at + w, z, p);
-      const s = p.s, hot = Math.random() < 0.35;
-      this.particle(hot ? 'spark' : 'glow', p.x, p.y, {
-        tint: hot ? 0xffd27a : 0xff7a2a, vx: (Math.random() - 0.5) * s * 0.12, vy: -s * (0.7 + Math.random() * 0.6), drag: 0.6,
-        life: 0.45 + Math.random() * 0.4, s0: (s / 128) * (hot ? 0.35 : 0.55), s1: (s / 128) * 0.12, a0: 0.85, a1: 0, fadeIn: 0.08,
-      });
-    }
-  }
-
-  /** A ground field around its caster (soft disc + edge), pulsing, with a few motes of its kind. */
-  _drawField(S, cam, p, q, dt, ending) {
-    const v = S.view;
-    const x = v ? v.x : 0, y = v ? v.y : 0, z = ((v && v.z) || 0) + 0.02;
-    this._onGround(S.disc, y, z); this._onGround(S.edge, y, z);
-    cam.project(x, y, z, p);
-    cam.project(x, y + S.r, z, q);
-    const rx = p.s * S.r, ry = Math.max(1, p.y - q.y);
-    const pulse = 0.85 + 0.15 * Math.sin(S.t * 2.4);
-    S.disc.position.set(p.x, p.y); S.disc.scale.set((rx * 2) / 128, (ry * 2) / 128); S.disc.alpha = 0.2 * S.a * pulse;
-    S.edge.position.set(p.x, p.y); S.edge.scale.set((rx * 2.08) / 128, (ry * 2.08) / 128); S.edge.alpha = 0.55 * S.a * pulse;
-    if (ending || !v) return;
-    S.pulse -= dt;
-    if (S.kind === 'tide' && S.pulse <= 0) { S.pulse = 1.4; this.ring(x, y, z, S.r * 0.25, S.r, S.tint, 0.9); return; }
-    S.emit += dt * (this.rich ? 6 : 2);
-    while (S.emit >= 1) {
-      S.emit -= 1;
-      const ang = Math.random() * Math.PI * 2, d = Math.sqrt(Math.random()) * S.r * 0.9;
-      const w = this._proj(x + Math.cos(ang) * d, y + Math.sin(ang) * d, z + (S.kind === 'healField' ? 0.1 : 0.9), q);
-      const s = w.s;
-      if (S.kind === 'healField') this.particle('plus', w.x, w.y, { tint: S.tint, vy: -s * 0.6, life: 0.9, s0: (s / 64) * 0.22, s1: (s / 64) * 0.12, a0: 0.8, a1: 0, fadeIn: 0.15 });
-      else this.particle('dot', w.x, w.y, { tint: 0xffffff, vx: (Math.random() - 0.5) * s * 0.15, vy: s * 0.45, life: 1.2, s0: (s / 32) * 0.14, s1: (s / 32) * 0.08, a0: 0.85, a1: 0, fadeIn: 0.2 });
-    }
-  }
-
   zone(x, y, z, r, tint, dur, tex = 'soft', warn = false) {
     const P = this.P;
     const disc = new P.Sprite(this.tex[tex === 'ring' ? 'soft' : tex] || this.tex.soft);
@@ -2179,11 +2113,26 @@ export class FxSystem {
     this.zones.length = w;
   }
 
-  /** Flash a set of tiles ([[r,c]]) on the ground (telegraphed boxes, blast tiles). */
-  tileFlash(tiles, tint, dur, warn = false) {
+  /**
+   * Flash a set of tiles ([[r,c]]) on the ground (telegraphed boxes, blast tiles); `hold`: lit evenly for the whole
+   * `dur` (an area that lasts) instead of fading from the start.
+   */
+  tileFlash(tiles, tint, dur, warn = false, hold = false) {
     if (!Array.isArray(tiles) || !tiles.length) return;
-    this.tileFlashes.push({ tiles: tiles.slice(0, 60), tint, dur: Math.max(0.2, dur), t: 0, warn });
-    if (this.tileFlashes.length > 12) this.tileFlashes.shift();
+    this.tileFlashes.push({ tiles: tiles.slice(0, 60), tint, dur: Math.max(0.2, dur), t: 0, warn, hold });
+    if (this.tileFlashes.length > 16) this.tileFlashes.splice(Math.max(0, this.tileFlashes.findIndex((f) => !f.hold)), 1);
+  }
+
+  /** A short flare on each tile of an area (≤ 24, fewer at 'low'). */
+  _tileFlares(tiles, tint) {
+    const cam = this.ctx.cam();
+    const n = Math.min(tiles.length, this.quality === 'low' ? 8 : 24);
+    const step = tiles.length / n;
+    for (let i = 0; i < n; i++) {
+      const [r, c] = tiles[Math.floor(i * step)];
+      const g = cam.project(c, r, this._groundZ(c, r) + 0.25, this._g);
+      this.particle('flare', g.x, g.y, { tint, life: 0.32 + Math.random() * 0.12, s0: (g.s / 128) * 0.55, s1: (g.s / 128) * 0.2, a0: 0.9, a1: 0, rot: Math.random() * 3, fadeIn: Math.random() * 0.08 });
+    }
   }
 
   _updateTileFlashes(dt) {
@@ -2197,7 +2146,9 @@ export class FxSystem {
       f.t += dt;
       if (f.t >= f.dur) continue;
       const k = f.t / f.dur;
-      const a = (f.warn ? 0.35 + 0.35 * Math.abs(Math.sin(f.t * 7)) : 0.55 * (1 - k)) * (k > 0.85 ? (1 - k) / 0.15 : 1);
+      const a = f.hold
+        ? (0.3 + 0.06 * Math.sin(f.t * 3)) * Math.min(1, f.t / 0.25, (f.dur - f.t) / 0.3)
+        : (f.warn ? 0.35 + 0.35 * Math.abs(Math.sin(f.t * 7)) : 0.55 * (1 - k)) * (k > 0.85 ? (1 - k) / 0.15 : 1);
       for (const [r, c] of f.tiles) {
         const z = (this.ctx.heightAt ? this.ctx.heightAt(r, c) : 0) + 0.015;
         const pts = [];
@@ -2313,9 +2264,8 @@ export class FxSystem {
     this.labels.length = 0;
     this.tileFlashes.length = 0;
     this.tileGfx.clear();
-    for (const S of this.sustains.values()) this._freeSustain(S);
-    this.sustains.clear();
-    this.sustainGfx.clear();
+    this.sus.clear();
+    this.timers.length = 0;
     this.tintT = 0; this.tintSprite.alpha = 0;
   }
 
@@ -2331,7 +2281,8 @@ export class FxSystem {
     this._updateAuras(dt);
     this._updatePops(dt);
     this._updateZones(dt);
-    this._updateSustains(dt);
+    this.sus.update(dt);
+    if (this.timers.length) this._updateTimers(dt);
     this._updateLabels(dt);
     this._updateTileFlashes(dt);
     if (this.tintT > 0) {
@@ -2346,10 +2297,26 @@ export class FxSystem {
       this.vignette.width = size.width; this.vignette.height = size.height;
       this.vignette.alpha = Math.sin((this.vigT / 0.9) * Math.PI) * 0.55;
     } else if (this.vignette.alpha) this.vignette.alpha = 0;
+    // the events of the next frame make a new batch (Sustains: statuses / skills that came with an fx)
+    this.sus.endBatch();
   }
 
+  _updateTimers(dt) {
+    let w = 0;
+    const due = [];
+    for (const T of this.timers) {
+      T.t -= dt;
+      if (T.t <= 0) due.push(T); else this.timers[w++] = T;
+    }
+    this.timers.length = w;
+    for (const T of due) T.fn();
+  }
+
+  /** ['status', id, key, on] (render/app.js): lasting effects bound to a status end with it. */
+  status(view, key, on) { this.sus.status(view, key, !!on); }
+
   get counts() {
-    return { particles: this.parts.length, projectiles: this.projs.length, numbers: this.nums.length, rings: this.rings.length, auras: this.auras.size, locks: this.locks.length, flames: this.flames.length, promotions: this.promotions || 0 };
+    return { particles: this.parts.length, projectiles: this.projs.length, numbers: this.nums.length, rings: this.rings.length, auras: this.auras.size, locks: this.locks.length, flames: this.flames.length, sustains: this.sus.size, promotions: this.promotions || 0 };
   }
 
   destroy() {
@@ -2364,6 +2331,7 @@ export class FxSystem {
     this.beams.destroy();
     this.vignette.destroy();
     this.tileGfx.destroy();
+    this.sus.destroy();
     this.tintSprite.destroy();
     for (const list of this._numPools.values()) for (const t of list) t.text.destroy();
     this._numPools.clear();
