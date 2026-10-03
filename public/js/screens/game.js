@@ -519,10 +519,11 @@ function MatchScreen() {
     const b = phaseBanner(phase, pub);
     if (b) setBanner({ ...b, key: phaseKey });
     // operator voice (as in the official mode): every battle, its squad leader says 行动开始 at the first enemy
-    // (js/audio.js battleStart); the end line is said once, on the result screen
+    // (js/audio.js battleStart; keyed by phase + round, so a re-mount mid-battle does not say it again); the end line
+    // is said once, on the result screen
     if ((phase === PHASE.COMBAT || phase === PHASE.FINAL_ASSAULT || phase === PHASE.HIDDEN_CORE) && alive) {
-      audio.battleStart(voiceLeader(live.current.priv, getChess));
-    }
+      audio.battleStart(voiceLeader(live.current.priv, getChess), phaseKey);
+    } else if (!isCombatPhase(phase)) audio.battleOver();
     if (phase === PHASE.ROUND_START) audio.sfx('roundStart');
     else if (phase === PHASE.PREP) audio.sfx('rest', { volume: 0.7 });
     else if (phase === PHASE.COMBAT) audio.sfx('battleStart');
@@ -780,9 +781,9 @@ function MatchScreen() {
         const penKey = previewEnemyKey(e);
         if (penKey) { setDetail({ kind: 'enemy', id: penKey }); return; }
         if (e.unitId != null || e.unit) {
-          // 选中干员 (FOCUS_CHAR): tapping an own deployed operator in battle (not a teammate's)
+          // 选中干员 (FOCUS_CHAR): tapping an own deployed operator during a battle (not a teammate's, not in 结算)
           const own = e.unit && e.unit.side !== 'enemy' && unitSoundClass(e.unit) === 'char' && (e.unit.ownerId == null || e.unit.ownerId === live.current.myId);
-          if (!e.detail && e.button !== 2 && own) audio.voice(e.unit.spine || e.unit.defId, 'select');
+          if (!e.detail && e.button !== 2 && own && isCombatPhase(live.current.pub?.phase)) audio.voice(e.unit.spine || e.unit.defId, 'select');
           setDetail({ kind: 'unit', unit: e.unit || null, unitId: e.unitId, uid: e.uid });
           return;
         }
