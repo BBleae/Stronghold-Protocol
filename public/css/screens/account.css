@@ -1,0 +1,19 @@
+/* Page layout only. All visual primitives retain their existing component styles. */
+.account-actions { display:flex; gap:.12rem; justify-content:flex-end; flex-wrap:wrap; padding:.12rem .6rem; }
+.account-row { display:flex; gap:.16rem; align-items:center; flex-wrap:wrap; padding:.12rem 0; }
+.account-row > :first-child { flex:1; min-width:0; overflow-wrap:anywhere; }
+.account-row h2 { margin:0; }
+.public-rooms { margin-bottom:.24rem; }
+.public-rooms__list { max-height:3rem; overflow-y:auto; }
+.public-room + .public-room { border-top:1px solid var(--line); }
+.room-applications { margin:.12rem .6rem; max-height:2rem; overflow-y:auto; }
+.account-body { width:100%; max-width:19.2rem; margin:0 auto; padding:.36rem .6rem; }
+.account-filters { display:flex; gap:.12rem; flex-wrap:wrap; margin-bottom:.24rem; }
+.account-stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(2.4rem,1fr)); gap:.24rem; }
+.history-list { display:flex; flex-direction:column; gap:.2rem; }
+.history-players { display:grid; grid-template-columns:repeat(auto-fit,minmax(3.2rem,1fr)); gap:.2rem; }
+.replay-field { position:relative; flex:1; min-height:3rem; }
+.replay-toolbar { display:flex; gap:.16rem; padding:.16rem .6rem; align-items:center; flex-wrap:wrap; }
+.replay-screen .account-body { display:flex; flex-direction:column; flex:1; min-height:0; }
+.replay-screen .replay-toolbar:first-child { max-height:1.2rem; overflow:auto; flex-shrink:0; }
+.replay-screen .replay-toolbar:last-child { flex-shrink:0; }

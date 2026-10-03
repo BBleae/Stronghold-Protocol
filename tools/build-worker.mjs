@@ -4,6 +4,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
+import { gzipSync } from 'node:zlib';
 import { vendor } from './vendor.mjs';
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -114,18 +115,33 @@ export async function buildWorker({ root = ROOT } = {}) {
     const run = spawnSync(process.execPath, [path.join(root, 'tools/fetch-assets.mjs')], { cwd: root, stdio: 'inherit' });
     if (run.status !== 0) throw new Error('tools/fetch-assets.mjs failed: the game assets could not be downloaded — retry the deploy');
   }
+  const { buildReplayVersions } = await import('./build-replay.mjs');
+  const versions = await buildReplayVersions({root,bundle:bundleWorker});
   const { buildResourceManifest } = await import('./resource-pack.mjs');
   const manifest = await buildResourceManifest({ root });
   if (!manifest.files.some((file) => file.url.startsWith('/assets/'))) {
     throw new Error('No game assets under public/assets: run `npm run assets` before deploying (SP_SKIP_ASSETS=1 skips the download, not this check)');
   }
   const assets = await copyRuntimeAssets({ root });
-  await bundleWorker({ root });
+  for(const version of versions.entries) {
+    const target=path.join(assets.out,'replay-engines',version.id);
+    await fs.mkdir(target,{recursive:true});
+    await fs.copyFile(path.join(root,'.replay-engines',version.id,'engine.js'),path.join(target,'engine.js'));
+    if((await fs.stat(path.join(target,'engine.js'))).size>25*1024*1024)throw new Error('Retained replay engine exceeds static asset limit: '+version.id);
+    assets.count++;
+  }
+  if(assets.count>20000)throw new Error('Retained engines exceed static asset count limit');
+  await bundleWorker({ root, rulesVersion:versions.current, versionModules:versions.entries });
+  const compressed=gzipSync(await fs.readFile(path.join(root,'dist/worker/index.mjs'))).length;
+  const limit=process.env.SP_WORKER_PAID_PLAN==='1'?10:3;
+  if(compressed>limit*1024*1024)throw new Error(`Worker gzip ${(compressed/1024/1024).toFixed(2)} MiB exceeds configured ${limit} MiB plan limit. Preserve published engines; plan a version-storage migration before deploying.`);
+  console.log(`Worker gzip ${(compressed/1024/1024).toFixed(2)} MiB; ${versions.entries.length} retained rules version(s)`);
   console.log(`Workers build: ${assets.count} static files; resource version ${manifest.version}, ${(manifest.totalBytes / 1024 / 1024).toFixed(1)} MiB`);
   return { assets, manifest };
 }
 
-export async function bundleWorker({ root = ROOT, outfile = path.join(root, 'dist/worker/index.mjs') } = {}) {
+export async function bundleWorker({ root = ROOT, outfile = path.join(root, 'dist/worker/index.mjs'),
+  entry='worker/entry.js',rulesVersion='development-v1',versionModules=[] } = {}) {
   const replacements = new Map([
     [path.join(root, 'server/data-node.js'), path.join(root, 'worker/data-loader.js')],
     [path.join(root, 'server/sim/nodeData.js'), path.join(root, 'worker/sim-data-loader.js')],
@@ -141,11 +157,15 @@ export async function bundleWorker({ root = ROOT, outfile = path.join(root, 'dis
     [path.join(root, 'server/sim/content/bonds.js'), ['./bonds/core.js', './bonds/addon.js', './support/meta.js']],
   ]);
   const result = await build({
-    entryPoints: [path.join(root, 'worker/index.js')],
+    entryPoints: [path.join(root, entry)],
     outfile,
     bundle: true, format: 'esm', platform: 'neutral', target: 'es2022',
     external: ['node:*', 'cloudflare:*'], minify: true, keepNames: true, metafile: true,
+    define:{__SP_RULES_VERSION__:JSON.stringify(rulesVersion)},
     plugins: [{ name: 'worker-data-loaders', setup(builder) {
+      if(versionModules.length) builder.onLoad({filter:/[\\/]worker[\\/]match-versions\.js$/},()=>({loader:'js',contents:
+        versionModules.map((v,i)=>`import {restore as r${i}} from ${JSON.stringify(v.file || path.join(root,'.replay-engines',v.id,'recovery.mjs'))};`).join('\n')+
+        `\nexport const retainedMatchVersions={${versionModules.map((v,i)=>`${JSON.stringify(v.id)}:r${i}`).join(',')}};`}));
       builder.onResolve({ filter: /(?:data-node|nodeData)\.js$/ }, args => {
         const replacement = replacements.get(path.resolve(args.resolveDir, args.path));
         return replacement ? { path: replacement } : undefined;

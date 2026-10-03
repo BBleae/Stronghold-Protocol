@@ -37,7 +37,7 @@ npm run deploy:worker
 
 若已安装 Bun，也可在完成上述 `npm ci` 后运行 `bun run dev:worker` 和 `bun run deploy:worker`，同样调用项目内 Wrangler；Bun 是可选工具，不是部署前提。
 
-Wrangler 执行构建、上传本地静态文件，并初始化两个 SQLite DO 绑定：`ROOMS`（房间）和 `ADMISSION`（短期 IP 限流）。Cloudflare 插件可用于账号、Worker 配置和部署版本的管理、检查；本地批量文件上传使用 Wrangler。
+Wrangler 执行构建、上传本地静态文件，保留 `ROOMS`（房间）和 `ADMISSION`（短期 IP 限流），并通过追加迁移增加 `SITES`（身份/目录）、`ACCOUNTS`（个人索引）、`MATCH_ARCHIVES`（历史/回放）SQLite DO。GitHub OAuth 配置、迁移、独立备份见 [账号与历史指南](ACCOUNTS-HISTORY.md)。Cloudflare 插件可用于账号、Worker 配置和部署版本的管理、检查；本地批量文件上传使用 Wrangler。
 
 构建只发布 `dist/client/` 以及 `dist/worker/index.mjs`。前端保持 `/data/`、`/shared/`、`/sim/` 的既有路径；Node 文件系统数据读取由构建时 JSON 导入替换。`public/dev/`、ZIP、日志、source map 和服务端私有数据读取模块不会发布。不要手动把整个仓库上传为静态站点。
 
@@ -57,9 +57,9 @@ npm run resources:pack
 
 ## 对局与更新限制
 
-普通断网可使用房间前缀的会话 token 重连，房间代码 / token 不与其他房间共用。等候房间、玩家席位和会话会保存以支持 DO 休眠唤醒；过期房间会让客户端重新建立大厅连接。
+登录后普通断网使用绑定账号的房间 token 重连，换设备可点击「继续对局」接管原席位。等候房间、玩家席位、审批和活动对局日志持久化，支持 DO 休眠/重启后恢复。房间代码 / token 不与其他房间共用。
 
-**进行中的对局仍使用内存状态，不能跨部署、运行时重启或实例故障恢复。** 此时会清除失效会话并提示房间关闭，需重新开局。请在朋友结束游戏后部署更新。长时间对局、AI 计算与 DO 请求 / 存储写入仍受 Cloudflare 配额限制。
+账号模式的进行中对局通过原版本规则及完整有序日志恢复；构建会保留旧规则引擎。首次从匿名版本迁移时仍须先结束旧局，不能为旧内存对局补造历史。恢复成本随对局长度增长，长时间对局、AI 计算、回放体积和 DO 请求 / 存储写入仍受 Cloudflare 配额限制，具体边界见 [持久化与备份说明](ACCOUNTS-HISTORY.md)。PITR 不能代替独立备份。
 
 ## 验证
 

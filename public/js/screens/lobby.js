@@ -14,6 +14,8 @@ import { toast, toastError } from '../ui/toasts.js';
 import { GuideButton } from '../ui/guide.js';
 import { LoadoutButton } from './loadout.js';
 import { net, identity } from '../net.js';
+import { account } from '../account.js';
+import { AccountMenu, PublicRooms } from '../ui/accountMenu.js';
 import { store, useStore, shallowEqual, loadPref, savePref } from '../store.js';
 import { getConfig, getMode, getStage, useData } from '../data.js';
 
@@ -235,6 +237,7 @@ export function LobbyScreen() {
   const pickDifficulty = (d) => { setDifficulty(d); savePref('lobby.difficulty', d); };
 
   const run = async (kind, fn) => {
+    if(account.enabled && !account.user) {toast('请先使用 GitHub 登录','warn');return;}
     if (inFlight.current) return;
     if (!online) { toast('尚未连接到服务器，请稍候', 'warn'); return; }
     inFlight.current = true;
@@ -278,8 +281,10 @@ export function LobbyScreen() {
       </div>
     </header>
 
+    ${account.enabled?html`<${AccountMenu} />`:null}
     <div class="lobby-body screen__scroll">
       <section class="lobby-left">
+        ${account.enabled?html`<${PublicRooms} />`:null}
         <div class="section-label"><span class="section-label__idx num">01</span>模拟方式<${MicroLabel}>MODE<//></div>
         <div class="mode-cards">
           ${MODE_CARDS.map((c) => html`<${ModeCard} key=${c.id} card=${c} selected=${roomMode === c.id} onSelect=${pickMode} />`)}

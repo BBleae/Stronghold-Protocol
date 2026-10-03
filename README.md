@@ -62,7 +62,7 @@ English summary: [below](#english).
 
 ### Cloudflare Workers 部署
 
-本 fork 支持 Workers Static Assets 分发资源、每个房间一个 Durable Object 的 WebSocket 联机，以及浏览器资源包下载 / 本地 ZIP 导入。原来的 Node.js 启动方式继续可用。构建、部署、资源包分发与运行限制见 [Cloudflare 部署指南](docs/CLOUDFLARE.md)。
+本 fork 支持 Workers Static Assets 分发资源、每个房间一个 Durable Object 的 WebSocket 联机，以及浏览器资源包下载 / 本地 ZIP 导入。Cloudflare 模式新增 GitHub 账号、跨设备续局、需审批的在线大厅、历史回放和个人统计，配置与备份见 [账号与历史指南](docs/ACCOUNTS-HISTORY.md)。原来的 Node.js 启动方式继续可用。构建、部署、资源包分发与运行限制见 [Cloudflare 部署指南](docs/CLOUDFLARE.md)。
 
 ### 方式一：整合包（推荐）
 
@@ -127,7 +127,7 @@ npm start          # 启动服务器：http://localhost:3000
 3. 所有人点「准备就绪」后房主开始。
 4. 同一 Wi-Fi / 路由器下的朋友打开启动窗口里列出的地址（形如 `http://192.168.x.x:3000`）即可。打不开时多半是防火墙：Windows 首次启动时在弹窗中允许「专用网络」，或运行 `npm run doctor` 查看具体命令；访客 Wi-Fi 常开启「AP 隔离」，也会导致连不上。
 
-刷新页面或断线后，同盟模拟 10 分钟内、独立模拟 24 小时内重新打开即可回到原座位。服务器把房间和对局都保存在内存里，**重启服务器会结束所有对局**。
+刷新页面或断线后，同盟模拟 10 分钟内、独立模拟 24 小时内重新打开即可回到原座位。Node 本地服务器把房间和对局保存在内存里，**重启 Node 服务器会结束所有对局**；Cloudflare 账号模式使用持久日志恢复，规则版本和容量边界见 [账号与历史指南](docs/ACCOUNTS-HISTORY.md)。
 
 ## 联机方式
 

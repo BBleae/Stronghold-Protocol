@@ -336,7 +336,14 @@ export function createBattleRunner(deps) {
       // 联防: the leakers' enemies still standing (shared/protocol.js b.progress `left`, ≤ 4 players)
       if (p.left) msg.left = Object.fromEntries(Object.entries(p.left).slice(0, 4));
     }
+    if(net.accountMode) {const replay=replayReport(e);if(replay)msg.replay=replay;}
     try { net.send('b.progress', msg); } catch { /* offline */ }
+  }
+
+  function replayReport(e) {
+    if(e.replayInputs.length>128 || e.replayBroken) {e.replayBroken=true;e.replayInputs=[];return null;}
+    const report={segment:e.replaySegment,seq:e.replaySeq++,tick:e.battle.tickCount,inputs:e.replayInputs.splice(0)};
+    e.lastReplay=report;return report;
   }
 
   function finished(e) {
@@ -370,6 +377,7 @@ export function createBattleRunner(deps) {
     if (!net || !e.result || e.delivery === 'pending') return;
     e.delivery = 'pending';
     const msg = { battleId: e.battleId, result: e.result };
+    if(net.accountMode) {const replay=e.finalReplay || (e.finalReplay=replayReport(e));if(replay)msg.replay=replay;}
     const send = (tries) => {
       let req;
       try { req = net.request('b.result', msg, { timeout: 15000 }); } catch (err) { req = Promise.reject(err); }
@@ -532,6 +540,7 @@ export function createBattleRunner(deps) {
       members: (msg.spec.players || []).map((p) => p && p.playerId).filter(Boolean),
       t0: clock() - ((Number(msg.elapsed) || 0) / speed) * 1000, lastProgressAt: -Infinity, done: false, resultSent: false,
       result: null, delivery: null,
+      replaySegment:globalThis.crypto?.randomUUID?.() || String(Date.now()),replaySeq:0,replayInputs:[],
       meter: sim.spec.attachLpMeter(battle),
       // counted leaks so far (normal fields; noteLeaks) and the Battle state they were counted at; 联防 fields: each
       // leaker's enemies still standing (noteUniteLeft)
@@ -540,6 +549,7 @@ export function createBattleRunner(deps) {
       live: null, layerSum: 0,
     };
     if (lastPool && battle.sharedBoss && typeof battle.sharedBoss.sync === 'function') {
+      e.replayInputs.push({tick:0,kind:'pool',hp:lastPool.hp,acked:lastPool.acked?.[e.fieldId] ?? null});
       battle.sharedBoss.sync(lastPool.hp, lastPool.acked ? lastPool.acked[e.fieldId] : undefined);
     }
     // silent catch-up to the field's clock before it is shown (a reconnect / observing a running field)
@@ -569,7 +579,10 @@ export function createBattleRunner(deps) {
     lastPool = msg;
     for (const e of entries.values()) {
       const pool = e.battle.sharedBoss;
-      if (pool && typeof pool.sync === 'function') pool.sync(msg.hp, msg.acked ? msg.acked[e.fieldId] : undefined);
+      if (pool && typeof pool.sync === 'function') {
+        if(!e.battle.finished) e.replayInputs.push({tick:e.battle.tickCount,kind:'pool',hp:msg.hp,acked:msg.acked?.[e.fieldId] ?? null});
+        pool.sync(msg.hp, msg.acked ? msg.acked[e.fieldId] : undefined);
+      }
     }
     emit('pool', msg);
   }
@@ -584,6 +597,7 @@ export function createBattleRunner(deps) {
       return;
     }
     if (!e.battle.finished) {
+      e.replayInputs.push({tick:e.battle.tickCount,kind:'end',reason:msg.reason==='timeout'?'timeout':'forced'});
       try { e.battle.forceEnd(msg.reason === 'timeout' ? 'timeout' : 'forced'); } catch { /* ignore */ }
     }
     if (e === cur) emitFrame(e, false);
