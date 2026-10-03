@@ -5,6 +5,10 @@ import { normalizeIp, limitKeyOf, TokenBucket } from '../server/net.js';
 import { RoomRuntime, validCode } from './room-runtime.js';
 import { handleAuth, authenticate, accountOf, directoryOf } from './accounts/auth.js';
 import { handleAccountRoutes } from './accounts/routes.js';
+import { handleLobbyRoutes, roomApplications } from './rooms/routes.js';
+import { handleHistoryRoutes } from './archive/routes.js';
+import { publishArchive,prepareArchive } from './archive/outbox.js';
+import { handleBackupRoutes } from './storage/backup.js';
 
 const json = (body, status = 200, headers = {}) => Response.json(body, { status,
   headers: { 'Cache-Control': 'no-store', ...headers } });
@@ -22,10 +26,19 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     const path = url.pathname;
+    const backup=await handleBackupRoutes(request,env);if(backup)return backup;
+    if(env.ADMISSION && (path==='/api/auth/github/start' || path==='/api/rooms' && request.method==='GET' || /\/applications$/.test(path))) {
+      const limited=await admit(env,edgeIp(request),path.startsWith('/api/auth/')?'auth':request.method==='GET'?'status':'application');
+      if(limited)return limited;
+    }
     const auth = await handleAuth(request, env);
     if (auth) return auth;
     const accountResponse = await handleAccountRoutes(request, env);
     if (accountResponse) return accountResponse;
+    const lobbyResponse = await handleLobbyRoutes(request, env);
+    if (lobbyResponse) return lobbyResponse;
+    const historyResponse=await handleHistoryRoutes(request,env);
+    if(historyResponse) return historyResponse;
     if (path === '/healthz') return request.method === 'GET'
       ? json({ ok: true, runtime: 'cloudflare', version: APP_VERSION }) : error(405, 'BAD_MSG');
     // Internal endpoints are only invoked on a DO stub; the public entry point never forwards them.
@@ -93,7 +106,7 @@ export class AdmissionDurableObject {
   async fetch(request) {
     return this.ctx.blockConcurrencyWhile(async () => {
       const kind = new URL(request.url).pathname.slice(1);
-      const settings = { reserve: [8 / 60, 8], connect: [40 / 60, 20], status: [120 / 60, 30] }[kind];
+      const settings = { reserve: [8 / 60, 8], connect: [40 / 60, 20], status: [120 / 60, 30],auth:[10/60,5],application:[30/60,10] }[kind];
       if (request.method !== 'POST' || !settings) return error(404, 'BAD_MSG');
       const now = Date.now();
       const stored = await this.ctx.storage.get(kind);
@@ -141,8 +154,15 @@ export class RoomDurableObject {
       let snapshot;
       if (meta?.parts) {
         const keys = Array.from({ length: meta.parts }, (_, i) => `snapshot-${i}`);
-        const chunks = await ctx.storage.get(keys);
-        snapshot = JSON.parse(keys.map((k) => chunks.get(k)).join(''));
+        const parts=[];
+        for(let offset=0;offset<keys.length;offset+=128) {
+          const batch=keys.slice(offset,offset+128),chunks=await ctx.storage.get(batch);
+          for(const key of batch) {
+            if(typeof chunks.get(key)!=='string')throw new Error('INCOMPLETE_ROOM_SNAPSHOT');
+            parts.push(chunks.get(key));
+          }
+        }
+        snapshot = JSON.parse(parts.join(''));
       }
       if(snapshot?.matchCheckpoint?.eventLogId) {
         const c=snapshot.matchCheckpoint;
@@ -158,11 +178,16 @@ export class RoomDurableObject {
         if (snapshot?.running && !snapshot.matchCheckpoint) { try { ws.close(1012, 'active match interrupted by server restart'); } catch {} continue; }
         const attachment = ws.deserializeAttachment();
         if (!attachment) { try { ws.close(1011, 'missing session'); } catch {} continue; }
+        if(env.ACCOUNTS) {
+          const session=attachment.sessionId && await directoryOf(env).getSession(attachment.sessionId);
+          if(!session || session.accountId!==attachment.accountId) {try{ws.close(4003,'login required');}catch{}continue;}
+        }
         const adapter = new SocketAdapter(ws,!!env.ACCOUNTS);
         this.sockets.set(ws, adapter);
         this.runtime.connect(adapter, { ip: attachment.ip, attachment });
       }
       this.refreshAutoResponses();
+      this.runtime.reconcileSockets();
       this.runtime.sweep();
       await this.persist();
     });
@@ -198,6 +223,8 @@ export class RoomDurableObject {
       await this.ctx.storage.deleteAll();
       await this.ctx.storage.deleteAlarm();
       this.parts = 0;
+      this.persistedLogId=null;this.persistedEventCount=0;
+      for(const adapter of this.sockets.values())adapter.flush();
       return;
     }
     // KV values have a size limit. Chunk by UTF-16 characters so even non-ASCII names stay below it.
@@ -217,12 +244,59 @@ export class RoomDurableObject {
     for (let i = 0; i < count; i++) entries[`snapshot-${i}`] = source.slice(i * 16_000, (i + 1) * 16_000);
     await this.ctx.storage.transaction(async (txn) => {
       for(const row of newEvents) this.ctx.storage.sql.exec('INSERT INTO match_events VALUES (?,?,?)',logId,row.seq,row.payload);
-      await txn.put(entries);
-      if (count < this.parts) await txn.delete(Array.from({ length: this.parts - count }, (_, i) => `snapshot-${i + count}`));
+      const items=Object.entries(entries);
+      for(let offset=0;offset<items.length;offset+=128)await txn.put(Object.fromEntries(items.slice(offset,offset+128)));
+      if(count<this.parts) {
+        const oldKeys=Array.from({length:this.parts-count},(_,i)=>`snapshot-${i+count}`);
+        for(let offset=0;offset<oldKeys.length;offset+=128)await txn.delete(oldKeys.slice(offset,offset+128));
+      }
     });
     this.parts = count;
     if(checkpoint) {this.persistedLogId=logId;this.persistedEventCount=checkpoint.eventCount;}
     for(const adapter of this.sockets.values()) adapter.flush();
+    if(this.env.ACCOUNTS && !this.releasingClaims) {
+      const terminal=rt.applications.list().filter(item=>['expired','cancelled','rejected'].includes(item.status) && !item.released);
+      if(terminal.length) {
+        this.releasingClaims=true;
+        this.ctx.waitUntil(Promise.all(terminal.map(async item=>{
+          const account=accountOf(this.env,item.accountId);
+          await account.releaseSeat({claimId:item.id});await account.clearApplication(rt.code,item.id);
+        })).then(()=>this.ctx.blockConcurrencyWhile(async()=>{
+          for(const item of terminal){const current=rt.applications.items.find(x=>x.id===item.id);if(current)current.released=true;}
+          this.releasingClaims=false;await this.persist();
+        })).catch(()=>{this.releasingClaims=false;}));
+      }
+    }
+    if(this.env.MATCH_ARCHIVES && rt.archiveOutbox.length && !this.archiving) {
+      this.archiving=true;
+      const entry=rt.archiveOutbox[0];
+      const publish=async()=>{
+        if(!entry.encodedReplay) {
+          const encoded=await prepareArchive(entry);
+          // Freeze exact compressed bytes durably before the first immutable remote write.
+          await this.ctx.blockConcurrencyWhile(async()=>{entry.encodedReplay=encoded;delete entry.replay;await this.persist();});
+        }
+        await publishArchive(this.env,entry);
+      };
+      this.ctx.waitUntil(publish().then(()=>this.ctx.blockConcurrencyWhile(async()=>{
+        rt.archiveOutbox=rt.archiveOutbox.filter(x=>x.facts.matchId!==entry.facts.matchId);
+        this.archiving=false;await this.persist();
+      })).catch(()=>{this.archiving=false;}));
+    }
+    if(this.env.SITES) {
+      const room=rt.lobby.getRoom(rt.code), now=Date.now();
+      if(room) {
+        const listing={roomId:rt.code,generation:rt.generation,public:rt.publicRoom && room.mode==='coop',
+          connectedHumans:room.activeHumans().filter(s=>s.connected).length,occupied:room.seats.filter(Boolean).length,
+          capacity:4,inMatch:!!room.match,hostName:room.seatOf(room.hostId)?.name || '博士',difficulty:room.difficulty};
+        const fingerprint=JSON.stringify(listing);
+        if(fingerprint!==this.lastListing || now-(this.lastPublished || 0)>=20000) {
+          this.lastListing=fingerprint;this.lastPublished=now;
+          this.ctx.waitUntil(directoryOf(this.env).publishRoom({...listing,updatedAt:now,expiresAt:now+60000})
+            .catch(()=>{this.lastPublished=0;}));
+        }
+      }
+    }
     const at = rt.nextAlarm();
     if (at) await this.ctx.storage.setAlarm(at);
     else await this.ctx.storage.deleteAlarm();
@@ -234,6 +308,9 @@ export class RoomDurableObject {
       const rt = this.runtime;
       this.refreshAutoResponses();
       rt.sweep();
+      if(this.env.ACCOUNTS && ['/_applications','/_visibility'].includes(url.pathname)) {
+        const response=await roomApplications(rt,request,this.env);await this.persist();return response;
+      }
       if (url.pathname === '/_reserve' && request.method === 'POST') {
         const code = url.searchParams.get('room');
         if (!validCode(code)) return error(400, 'BAD_MSG');
@@ -246,7 +323,7 @@ export class RoomDurableObject {
         if (request.headers.get('X-Room-Generation')!==rt.generation || !rt.hasAccount(accountId)) return error(404,'ROOM_NOT_FOUND');
         if (request.method==='POST') {
           const ticket=rt.resumeAccount(accountId); await this.persist();
-          return ticket ? json({code:rt.code,ticket}) : error(404,'ROOM_NOT_FOUND');
+          return ticket ? json({code:rt.code,ticket,join:rt.applications.list(accountId).some(x=>x.status==='approved'),reserved:rt.reservation?.accountId===accountId}) : error(404,'ROOM_NOT_FOUND');
         }
         return json({activeSeat:{roomId:rt.code,roomGeneration:rt.generation},status:rt.status()});
       }

@@ -13,6 +13,8 @@ import { validateC2S } from '../../shared/protocol.js';
 import { validateClientResult, runHeadless } from '../../server/match/fields.js';
 import { PHASE } from '../../shared/constants.js';
 import { DATA, makeMatch } from './harness.js';
+import { appendReplayReport } from '../../server/match/recorder.js';
+import { createReplayRunner } from '../../public/js/battle/replay-runner.js';
 
 const DS = new DataSource(DATA, null);
 
@@ -125,6 +127,21 @@ test('authoritative battle: 2× pacing, ≤ max(8, 4·speed) ticks per frame, b.
   assert.ok(a.ok && b.ok);
   assert.equal(specMod.resultDigest(a.result).hash, specMod.resultDigest(b.result).hash, 'the browser result equals the server simulation');
   r.runner.dispose();
+});
+
+test('account battle recording reproduces the exact terminal battle and tick-indexed forced end',async()=>{
+  const start=realStart(7441),r=rig();r.net.accountMode=true;
+  r.net.emit('b.start',start);await r.settle();r.advance(3500);
+  r.net.emit('b.end',{battleId:start.battleId,reason:'forced'});await r.settle();
+  const field={authority:start.spec.players[0].playerId},live=r.runner._entries.get(start.battleId).battle;
+  for(const msg of r.net.sent.filter(x=>x.replay))assert.equal(appendReplayReport(field,field.authority,msg.replay),true);
+  let replayBattle;
+  const replay=createReplayRunner({engine:{createBattle:spec=>(replayBattle=specMod.createBattleFromSpec(spec,DS))}});
+  replay.select({source:'client',spec:start.spec,...field.replayTrace});replay.play();
+  for(let i=0;i<100 && replay.state().playing;i++)replay.advance(0.5);
+  assert.deepEqual(specMod.compactResult(replayBattle.result()),specMod.compactResult(live.result()));
+  assert.deepEqual(replayBattle.snapshot(),live.snapshot());
+  replay.dispose();r.runner.dispose();
 });
 
 test('fast-forward to `elapsed` before showing; display replicas never report; b.end takeover demotes; hidden tab keeps an authoritative battle going', async () => {

@@ -16,6 +16,8 @@ import { toast, toastError } from '../ui/toasts.js';
 import { GuideButton } from '../ui/guide.js';
 import { LoadoutButton } from './loadout.js';
 import { net } from '../net.js';
+import { account } from '../account.js';
+import { Applications } from '../ui/accountMenu.js';
 import { store, useStore, shallowEqual, emptyMatch } from '../store.js';
 import { difficultyInfo } from './lobby.js';
 
@@ -286,6 +288,7 @@ export function RoomScreen() {
       </aside>`}
     </main>
 
+    ${account.enabled && coop && facts.isHost?html`<${Applications} code=${room.code} />`:null}
     <footer class="room-bar">
       <div class="room-bar__left">
         <span class="room-bar__label">模拟难度<${MicroLabel}>DIFFICULTY<//></span>

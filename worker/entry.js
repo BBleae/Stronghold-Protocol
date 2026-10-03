@@ -2,3 +2,4 @@
 export { default, RoomDurableObject, AdmissionDurableObject } from './index.js';
 export { SiteDirectory } from './accounts/directory.js';
 export { AccountDurableObject } from './accounts/account.js';
+export { MatchArchive } from './archive/archive.js';

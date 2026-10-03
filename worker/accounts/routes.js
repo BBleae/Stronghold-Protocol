@@ -1,4 +1,13 @@
 import { authenticate, accountOf, json, requireOrigin } from './auth.js';
+export async function clearStaleApplication(env,accountId) {
+  const account=accountOf(env,accountId),pending=await account.getApplication();
+  if(!pending)return;
+  const response=await env.ROOMS.get(env.ROOMS.idFromName(pending.roomId)).fetch(new Request('https://room.internal/_applications',{headers:{'X-Account-ID':accountId}}));
+  if(response.status===404){await account.clearApplication(pending.roomId,pending.id);return;}
+  if(!response.ok)throw new Error('APPLICATION_UNAVAILABLE');
+  const body=await response.json();
+  if(!body.items.some(x=>x.id===pending.id && ['pending','approved'].includes(x.status)))await account.clearApplication(pending.roomId,pending.id);
+}
 export async function handleAccountRoutes(request, env) {
   const path = new URL(request.url).pathname;
   if (!['/api/me/active-match','/api/me/resume'].includes(path)) return null;

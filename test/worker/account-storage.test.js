@@ -23,4 +23,10 @@ test('identities and revocations persist; OAuth is atomically consumed once', {t
   await call('revokeSession','b'.repeat(64));
   await h.restart();
   assert.equal(await call('getSession','b'.repeat(64)),null);
+  const now=Date.now();
+  await call('publishRoom',{roomId:'ABCD',generation:'g1',public:true,connectedHumans:1,occupied:1,capacity:4,inMatch:false,hostName:'Alice',difficulty:'FUNNY',updatedAt:now,expiresAt:now+60000});
+  await call('publishRoom',{roomId:'EFGH',generation:'g2',public:true,connectedHumans:0,occupied:2,capacity:4,inMatch:false,updatedAt:now,expiresAt:now+60000});
+  assert.deepEqual((await call('listRooms',{})).items.map(r=>r.roomId),['ABCD']);
+  await call('publishRoom',{roomId:'ABCD',generation:'g1',public:false,connectedHumans:1,occupied:1,capacity:4,inMatch:false,updatedAt:now+1,expiresAt:now+60000});
+  assert.equal((await call('listRooms',{})).items.length,0);
 });

@@ -45,6 +45,9 @@ import { GuideHost } from './ui/guide.js';
 import { installDeviceSupport } from './ui/device.js';
 import { LoadoutHost } from './screens/loadout.js';
 import { installLoadoutSync } from './ui/loadoutSync.js';
+import { account, loadAccount } from './account.js';
+import { HistoryScreen } from './screens/history.js';
+import { ReplayScreen } from './screens/replay.js';
 
 const RESTORE_GRACE_MS = 1500;
 const JOIN_DELAY_MS = 350;
@@ -260,11 +263,12 @@ function ScreenCrashed({ error, reset }) {
 
 function App() {
   const route = useStore(selectRoute);
+  const accountPage = useStore(s => s.ui.accountPage);
   const [error, resetError] = useErrorBoundary((err) => console.error('[ui] screen crashed', err));
-  const Screen = SCREENS[route] || LobbyScreen;
+  const Screen = accountPage === 'replay' ? ReplayScreen : accountPage ? HistoryScreen : SCREENS[route] || LobbyScreen;
   return html`<div class="app-root">
     <div class="app-bg" aria-hidden="true"></div>
-    ${error ? html`<${ScreenCrashed} error=${error} reset=${resetError} />` : html`<${Screen} key=${route} />`}
+    ${error ? html`<${ScreenCrashed} error=${error} reset=${resetError} />` : html`<${Screen} key=${accountPage || route} statistics=${accountPage === 'statistics'} />`}
     <${ConnectionBanner} />
     <${ToastHost} />
     <${UiHosts} />
@@ -308,6 +312,9 @@ async function boot() {
   // touch / hover / fullscreen classes, zoom-gesture blocking, rotation re-layout (ui/device.js, css/devices.css)
   installDeviceSupport();
   if (document.documentElement.dataset.spRuntime === 'cloudflare') {
+    await loadAccount();
+    net.accountMode = account.enabled;
+    if(account.application)net.application={...account.application,code:account.application.roomId,status:'pending'};
     const resources = await import('./resources/index.js');
     await resources.prepareResources();
     resources.installResourceManager();
@@ -318,8 +325,8 @@ async function boot() {
   const identityReady = identity.init();
 
   const pendingJoin = parseRoomParam(location.search);
-  const savedName = sanitizeName(identity.loadName());
-  const entered = identity.wasEntered() && !!savedName;
+  const savedName = sanitizeName(account.user?.name || identity.loadName());
+  const entered = !!account.user || identity.wasEntered() && !!savedName;
   store.set((s) => ({
     me: { ...s.me, name: savedName },
     session: { entered },
@@ -344,6 +351,10 @@ async function boot() {
   await Promise.all([waitForFonts(1200), connectWhenReady]);
   const root = document.getElementById('app');
   render(html`<${App} />`, root);
+  if(new URLSearchParams(location.search).has('authError')) {
+    toast('GitHub 登录未完成，请重试','warn');
+    const url=new URL(location.href);url.searchParams.delete('authError');history.replaceState(null,'',url.pathname+url.search);
+  }
 
   const splash = document.getElementById('boot');
   if (splash) {

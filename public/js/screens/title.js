@@ -14,6 +14,7 @@ import { html, Button, Icon, MicroLabel, TextField, PingPill } from '../ui/compo
 import { GuideButton } from '../ui/guide.js';
 import { toast } from '../ui/toasts.js';
 import { net, identity } from '../net.js';
+import { account } from '../account.js';
 import { store, useStore, shallowEqual } from '../store.js';
 import { data, useData } from '../data.js';
 import { FullscreenButton, detectFeatures } from '../ui/device.js';
@@ -247,12 +248,15 @@ export function TitleScreen() {
       <div class="title-login">
         ${pendingJoin ? html`<div class="title-invite">
           <${Icon} name="key" />
-          <span>收到同盟邀请</span><b class="num">${pendingJoin}</b><span class="t-lo">· 输入代号后将自动加入</span>
+          <span>收到同盟邀请</span><b class="num">${pendingJoin}</b><span class="t-lo">${account.enabled?'· 登录后申请加入':'· 输入代号后将自动加入'}</span>
         </div>` : null}
+        ${account.enabled && !account.user ? html`<${Button} variant="primary" size="xl" block=${true} disabled=${!account.loginReady}
+          onClick=${()=>location.assign('/api/auth/github/start')}>${account.loginReady?'使用 GitHub 登录':'GitHub 登录尚未配置'}<//>
+          <${Button} variant="ghost" size="lg" block=${true} onClick=${()=>store.patch('session',{entered:true})}>浏览在线大厅<//>` : html`
         <${TextField} label="博士代号" micro="CALLSIGN" size="lg" icon="user" value=${name} maxLength=${NAME_MAX_LEN}
           placeholder="输入你的代号（最多 ${NAME_MAX_LEN} 字）" autoFocus=${!touchUi}
           onInput=${setName} onEnter=${start} />
-        <${Button} variant="primary" size="xl" block=${true} iconRight="chevrons" disabled=${!valid} onClick=${start}>开始<//>
+        <${Button} variant="primary" size="xl" block=${true} iconRight="chevrons" disabled=${!valid} onClick=${start}>开始<//>`}
         <div class="title-conn">
           <span class=${`status-dot ${dotClass}`}></span>
           <span>${STATUS_TEXT[conn.status] || conn.status}</span>

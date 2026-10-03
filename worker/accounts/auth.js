@@ -30,7 +30,9 @@ export async function handleAuth(request, env, {now = Date.now, fetch: providerF
       if (request.method !== 'GET') return json({error: 'METHOD'}, 405);
       const session = await authenticate(request, env, {now});
       const user = session ? (env.ACCOUNTS ? await accountOf(env, session.accountId).getProfile() : session.user) : null;
-      return json({user, capabilities: {accounts: configured(env)}, activeSeat: session && env.ACCOUNTS ? await accountOf(env, session.accountId).getActiveSeat() : null});
+      return json({user, capabilities: {accounts: configured(env),accountSystem:!!env.ACCOUNTS},
+        application:session && env.ACCOUNTS ? await accountOf(env,session.accountId).getApplication() : null,
+        activeSeat: session && env.ACCOUNTS ? await accountOf(env, session.accountId).getActiveSeat() : null});
     }
     if (!configured(env)) return json({error: 'AUTH_UNAVAILABLE'}, 503);
     if (url.origin !== env.AUTH_ORIGIN) return json({error: 'INVALID_ORIGIN'}, 400);
@@ -84,6 +86,8 @@ export async function handleAuth(request, env, {now = Date.now, fetch: providerF
     headers.append('Set-Cookie', cookie(OAUTH_COOKIE, '', 0));
     return new Response(null, {status: 303, headers});
   } catch (e) {
+    if(url.pathname==='/api/auth/github/callback' && request.headers.get('Accept')?.includes('text/html'))
+      return new Response(null,{status:303,headers:{Location:'/?authError=1','Cache-Control':'no-store','Set-Cookie':cookie(OAUTH_COOKIE,'',0)}});
     return json({error: e instanceof AccountError ? e.code : 'AUTH_FAILED'}, e instanceof AccountError ? e.status : 502);
   }
 }

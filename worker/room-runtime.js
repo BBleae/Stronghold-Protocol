@@ -5,6 +5,8 @@ import { Lobby, Room, CODE_ALPHABET } from '../server/lobby.js';
 import { Network, Session, SessionRegistry, sendSession, normalizeIp, limitKeyOf } from '../server/net.js';
 import { ERR } from '../shared/constants.js';
 import { RecordedMatch, exportMatch, restoreMatch } from '../server/match/checkpoint.js';
+import { ApplicationQueue } from './rooms/applications.js';
+import { retainedMatchVersions } from './match-versions.js';
 
 export const ROOM_LIMITS = Object.freeze({ sockets: 16, socketsPerIp: 8, sessions: 32, messageBytes: 65_536,
   reservationMs: 120_000, idleSocketMs: 90_000 });
@@ -44,6 +46,7 @@ class AlarmLobby extends Lobby {
     else this.runResync(session);
   }
   onMatchEnd(room, ctx, summary) {
+    this.onArchive?.(room,ctx,summary);
     super.onMatchEnd(room, ctx, summary);
     this.onChange?.();
   }
@@ -66,6 +69,9 @@ export class RoomRuntime {
     this.accounts = accounts;
     this.generation = snapshot?.generation || randomBytes(16).toString('hex');
     this.resumeTickets = new Map(snapshot?.resumeTickets || []);
+    this.applications = new ApplicationQueue({snapshot:snapshot?.applications,now});
+    this.publicRoom = snapshot?.publicRoom ?? false;
+    this.archiveOutbox=structuredClone(snapshot?.archiveOutbox || []);
     this.now = now;
     this.code = snapshot?.code || null;
     this.reservation = snapshot?.reservation || null;
@@ -76,6 +82,21 @@ export class RoomRuntime {
       ...(accounts ? {MatchClass:RecordedMatch} : {}) });
     this.lobby.genCode = () => this.code;
     this.lobby.onChange = onChange;
+    this.lobby.onArchive=(room,ctx,summary)=>{
+      const match=ctx.match;
+      if(!match?.recording || !room.archiveParticipants?.length) return;
+      const matchId=this.generation+':'+room.matchCount, endedAt=this.now();
+      const personal=room.archiveParticipants.map(({accountId,playerId})=>{
+        const result=summary.players?.find(p=>p.playerId===playerId), ps=match.players.get(playerId), departure=match.departures[playerId];
+        return {accountId,playerId,matchId,endedAt,startedAt:match.startedAt,mode:room.mode,difficulty:room.difficulty,
+          status:departure?'left':['error','abandoned'].includes(summary.reason)?'interrupted':'completed',
+          victory:!!summary.victory,hiddenCleared:!!summary.hiddenCleared,round:departure?.round || match.round,
+          stats:departure?.stats || {...ps?.stats,...result?.stats},operators:match.usedOperators[playerId] || [],result};
+      });
+      this.archiveOutbox.push({archiveEncoding:2,facts:{matchId,endedAt,startedAt:match.startedAt,mode:room.mode,difficulty:room.difficulty,
+        participants:personal.map(p=>p.accountId),result:summary},
+        personal,replay:{schemaVersion:1,rulesVersion:match.recording.rulesVersion,battles:match.replayBattles}});
+    };
     const handler = {
       onHello: (s, info) => {
         const meta = this.socketMeta.get(s.ws);
@@ -89,18 +110,53 @@ export class RoomRuntime {
         if (this.interruptedUntil > this.now()) sendSession(s, { t: 'room.closed', reason: 'restart' });
       },
       onMessage: (s, msg) => {
+        if(this.accounts && msg.t==='room.start') {
+          const room=this.lobby.roomOf(s);
+          if(room && !room.match) room.archiveParticipants=room.activeHumans().map(p=>({
+            playerId:p.playerId,accountId:this.registry.byId(p.playerId)?.accountId})).filter(p=>p.accountId);
+        }
+        if(this.accounts && msg.t==='room.join' && !this.lobby.roomOf(s)) {
+          const ticket=this.socketMeta.get(s.ws)?.joinTicket;
+          const entry=this.applications.list(s.accountId).find(x=>x.status==='approved' && x.ticket===ticket);
+          if(!entry) return {error:ERR.NOT_HOST,detail:'approval required'};
+          const result=this.lobby.onMessage(s,msg);
+          if(!result.error) this.applications.consume(s.accountId,ticket);
+          return result;
+        }
+        if(this.accounts && msg.t==='room.addBot') {
+          const room=this.lobby.roomOf(s);
+          if(room && room.seats.filter(x=>!x).length<=this.applications.reservedCount()) return {error:ERR.ROOM_FULL};
+        }
         if (msg.t === 'room.create') {
           if (!s.canCreate || !this.reservation) return { error: ERR.NOT_HOST, detail: 'reservation required' };
           const result = this.lobby.onMessage(s, msg);
-          if (!result.error) this.reservation = null;
+          if (!result.error) {this.reservation = null;this.publicRoom=this.accounts && msg.mode==='coop';}
           return result;
         }
-        return this.lobby.onMessage(s, msg);
+        const result=this.lobby.onMessage(s, msg);
+        if(!result.error && msg.t==='room.start') this.applications.invalidate();
+        return result;
       },
       routeGame: (s, msg) => this.lobby.routeGame(s, msg),
       onDisconnect: (s) => this.lobby.onDisconnect(s),
       onExpire: (s) => this.lobby.onExpire(s),
     };
+    for(const key of ['onMessage','routeGame']) {
+      const original=handler[key];
+      handler[key]=(session,msg)=>{
+        if(!this.accounts || !msg.commandId) return original(session,msg);
+        if(typeof msg.commandId!=='string' || !/^[a-zA-Z0-9:-]{1,80}$/.test(msg.commandId)) return {error:ERR.BAD_MSG};
+        const {rid,commandId,...intent}=msg, fingerprint=JSON.stringify(intent);
+        const records=session.commandResults || (session.commandResults={});
+        if(Object.hasOwn(records,commandId)) {
+          const previous=records[commandId];
+          return previous.fingerprint===fingerprint ? previous.result : {error:ERR.BAD_MSG};
+        }
+        if(Object.keys(records).length>=50000) return {error:ERR.RATE};
+        const result=original(session,msg) || {ok:true};
+        records[commandId]={fingerprint,result};return result;
+      };
+    }
     this.network = new RoomNetwork({ registry: this.registry, handler, now,
       options: { autoTimers: false, trustProxy: false, maxConnections: ROOM_LIMITS.sockets,
         maxConnectionsPerAddr: ROOM_LIMITS.socketsPerIp, maxSessions: ROOM_LIMITS.sessions } });
@@ -133,7 +189,7 @@ export class RoomRuntime {
         const room=this.lobby.getRoom(this.code), checkpoint=snapshot.matchCheckpoint;
         room.matchCount=Math.max(0,room.matchCount-1);
         const Original=this.lobby.MatchClass;
-        this.lobby.MatchClass=class {constructor(options) {return restoreMatch(checkpoint,options);}};
+        this.lobby.MatchClass=class {constructor(options) {return (retainedMatchVersions[checkpoint.rulesVersion] || restoreMatch)(checkpoint,options);}};
         const result=this.lobby.startMatch(room,room.matchKey);
         this.lobby.MatchClass=Original;
         if (result.error || !room.match) throw new Error('MATCH_RESTORE_FAILED');
@@ -144,6 +200,7 @@ export class RoomRuntime {
   reserve(code, accountId = null) {
     this.sweep();
     if (!validCode(code) || !this.isEmpty()) return null;
+    this.generation=randomBytes(16).toString('hex');
     this.code = code;
     const ticket = randomBytes(16).toString('hex');
     this.reservation = { ticket, accountId, expiresAt: this.now() + ROOM_LIMITS.reservationMs };
@@ -151,11 +208,14 @@ export class RoomRuntime {
   }
   hasAccount(accountId) {
     return !!accountId && (this.reservation?.accountId === accountId ||
+      this.applications.list(accountId).some(x=>x.status==='approved') ||
       [...this.registry.all()].some(s => s.accountId === accountId && this.lobby.roomOf(s)));
   }
   resumeAccount(accountId) {
     if (!this.hasAccount(accountId)) return null;
     if (this.reservation?.accountId===accountId) return this.reservation.ticket;
+    const approved=this.applications.list(accountId).find(x=>x.status==='approved');
+    if(approved) return approved.ticket;
     const ticket=randomBytes(16).toString('hex');
     this.resumeTickets.set(ticket,{accountId,expiresAt:this.now()+30000});
     return ticket;
@@ -166,7 +226,7 @@ export class RoomRuntime {
       full: room.mode === 'solo' || room.freeSeat() < 0 } : null;
   }
   isEmpty() {
-    return !this.reservation && !this.lobby.rooms.size && !this.registry.size && !this.network.connectionCount
+    return !this.archiveOutbox.length && !this.reservation && !this.lobby.rooms.size && !this.registry.size && !this.network.connectionCount
       && this.interruptedUntil <= this.now();
   }
   canConnect() { return !!this.code && !this.isEmpty(); }
@@ -185,6 +245,7 @@ export class RoomRuntime {
     }
     this.socketMeta.set(ws, { ip: normalized, key: limitKeyOf(normalized),
       accountId: attachment?.accountId || accountId, takeover,
+      joinTicket:attachment?.joinTicket || ticket,
       sessionId:attachment?.sessionId || sessionId, connectionEpoch:attachment?.connectionEpoch,
       canCreate: !!attachment?.canCreate || !!(ticket && this.reservation && ticket === this.reservation.ticket &&
         (!this.accounts || this.reservation.accountId===accountId)) });
@@ -197,6 +258,9 @@ export class RoomRuntime {
       if (attachment.heavy) Object.assign(conn.heavy, attachment.heavy);
       const session = this.registry.byId(attachment.playerId);
       if (session) {
+        if(this.accounts && (attachment.accountId!==session.accountId || attachment.connectionEpoch!==session.connectionEpoch)) {
+          conn.close(4001,'session replaced');return conn;
+        }
         conn.session = session;
         session.ws = ws;
         session.connected = true;
@@ -229,6 +293,7 @@ export class RoomRuntime {
     this.socketMeta.delete(ws);
   }
   sweep() {
+    this.applications.expire();
     for (const [ticket,value] of this.resumeTickets) if (value.expiresAt<=this.now()) this.resumeTickets.delete(ticket);
     for (const conn of this.network.conns.values()) {
       if (!conn.session && this.now() - conn.openedAt >= this.network.opts.helloTimeoutMs) conn.close(4002, 'hello timeout');
@@ -240,8 +305,21 @@ export class RoomRuntime {
       && ![...this.registry.all()].some((s) => s.canCreate && s.connected)) this.reservation = null;
   }
   pump(now=this.now()) {return this.lobby.getRoom(this.code)?.match?.pump?.(now) || 0;}
+  reconcileSockets() {
+    const match=this.lobby.getRoom(this.code)?.match;if(!match)return;
+    for(const player of match.order) {
+      if(player.isBot || player.left)continue;
+      const connected=!!this.registry.byId(player.playerId)?.connected;
+      if(player.connected && !connected)match.onDisconnect(player.playerId);
+      else if(!player.connected && connected)match.onReconnect(player.playerId);
+    }
+  }
   nextAlarm() {
     const deadlines = [...this.lobby.deadlines.values()];
+    if(this.archiveOutbox.length) deadlines.push(this.now()+30000);
+    if(this.applications.items.some(x=>['expired','cancelled','rejected'].includes(x.status) && !x.released))deadlines.push(this.now()+30000);
+    for(const item of this.applications.list()) if(['approved','pending'].includes(item.status)) deadlines.push(item.expiresAt);
+    if(this.accounts && this.lobby.getRoom(this.code)?.activeHumans().some(s=>s.connected)) deadlines.push(this.now()+20000);
     const match=this.lobby.getRoom(this.code)?.match;
     if (match?.recording) {
       const next=match.sched.nextAt(); if(next!=null) deadlines.push(next);
@@ -257,14 +335,16 @@ export class RoomRuntime {
     const room = this.lobby.getRoom(this.code);
     const base = { version: 1, at: this.now(), code: this.code, reservation: this.reservation,
       generation:this.generation,resumeTickets:[...this.resumeTickets],
+      publicRoom:this.publicRoom,applications:this.applications.snapshot(),
+      archiveOutbox:this.archiveOutbox,
       interruptedUntil: this.interruptedUntil, running: !!room?.match };
     if (base.running && !room.match.recording) return base;
-    if (room?.match?.recording) base.matchCheckpoint=exportMatch(room.match);
+    if (room?.match?.recording) base.matchCheckpoint=exportMatch(room.match,{referenceEvents:true});
     return { ...base, sessions: [...this.registry.all()].map(({ ws, ...s }) => ({ ...s,
       resyncAt: Number.isFinite(s.resyncAt) ? s.resyncAt : null })), deadlines: [...this.lobby.deadlines],
     room: room ? { code: room.code, mode: room.mode, difficulty: room.difficulty, hostId: room.hostId,
       seats: room.seats, matchCount: room.matchCount, lastSummary: room.lastSummary, ownerKey: room.ownerKey,
-      createdAt: room.createdAt, replay: room.replay ? { publicFrame: room.replay.publicFrame,
+      createdAt: room.createdAt, archiveParticipants:room.archiveParticipants, replay: room.replay ? { publicFrame: room.replay.publicFrame,
         frames: [...room.replay.frames], pending: [...room.replay.pending] } : null } : null };
   }
 }
