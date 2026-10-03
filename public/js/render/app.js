@@ -479,6 +479,8 @@ export async function createFieldView(host, options = {}) {
     clipAllowed: () => clipAllowed,
     viewport: () => vp,
     loadLevel: () => loadLevel,
+    // the slowest a Spine model may animate (frames between skeleton updates): never below ~20 updates a second
+    maxAnimInterval: () => Math.max(1, Math.floor(fps / 20)),
     surfaceLayer: (row) => tiles.surfaceLayer(row),
   };
   const tiles = new TileField({ ground: layers.ground, overlay: layers.overlay, props: layers.units, anim: layers.anim });
@@ -1349,7 +1351,7 @@ export async function createFieldView(host, options = {}) {
     if (e[0] !== 'atk' || woundUp.has(e) || CHAIN_KINDS.has(e[3])) return;
     const v = views.get(e[1]);
     if (!v || !v.windUp) return;
-    if (v.windUp(t - upcomingT)) woundUp.add(e);
+    if (v.windUp(t - upcomingT, views.get(e[2]) || null)) woundUp.add(e);
   }
 
   const EVS = [];
@@ -1534,12 +1536,20 @@ export async function createFieldView(host, options = {}) {
   let culledCount = 0;
   // Adaptive load level 0–3: a device that cannot hold the frame rate with the current work switches crowds to
   // impostors earlier and animates small / far units at a lower rate (units.js); it steps back after a calm spell.
+  // "Cannot hold" is measured against the display's own frame period — the shortest frame interval of the last ~2 s
+  // (16.7 ms at 60 Hz; 33 ms where the browser or a power-saving mode caps it at 30 fps) — or a frame's own CPU time:
+  // a capped display is not a struggling device (user report: 30-fps phones ended up at level 3, operators animating
+  // every 2nd–6th frame, i.e. 5–15 times a second).
   let loadLevel = 0, slowFor = 0, fastFor = 0;
+  let periodMs = 1000 / 60, periodMin = Infinity, periodAge = 0;
   function adaptLoad(dtRaw) {
     if (!(dtRaw > 0) || dtRaw > 0.25 || globalThis.document?.hidden) return;
+    periodMin = Math.min(periodMin, dtRaw * 1000);
+    periodAge += dtRaw;
+    if (periodAge >= 2) { periodMs = Math.min(50, Math.max(1000 / 240, periodMin)); periodMin = Infinity; periodAge = 0; }
     const busy = views.size + penViews.size > 8;
-    if (frameMs > 19.5 && busy) { slowFor += dtRaw; fastFor = 0; }
-    else if (frameMs < 17.6) { fastFor += dtRaw; slowFor = 0; }
+    if (busy && (frameMs > periodMs * 1.2 || cpuMs > periodMs * 0.75)) { slowFor += dtRaw; fastFor = 0; }
+    else if (frameMs < periodMs * 1.08 && cpuMs < periodMs * 0.5) { fastFor += dtRaw; slowFor = 0; }
     if (slowFor > 1 && loadLevel < 3) { loadLevel++; slowFor = 0; fastFor = 0; impInterval = pickImpostorInterval(); }
     else if (loadLevel > 0 && (fastFor > 6 * loadLevel || !busy && fastFor > 2)) { loadLevel--; fastFor = 0; impInterval = pickImpostorInterval(); }
   }

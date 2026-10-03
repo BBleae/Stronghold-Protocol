@@ -120,3 +120,25 @@ test('render/app.js hands the sim\'s fx \'phase\' to the view and keeps the mode
   const src = readFileSync(path.join(ROOT, 'public/js/render/app.js'), 'utf8');
   assert.match(src, /e\[1\] === 'phase'[\s\S]{0,300}inf\.form = [\s\S]{0,200}setForm\?\.\(e\[4\]\.kind\)/);
 });
+
+// User report (2026-10-03): models bobbed up and down at targets on other rows — every attack pushed the whole body
+// 0.12 tile towards the target (render/units.js lunge). The original never moves a model off its tile to attack: the
+// swing is in the clip, so only the placeholder diamond (no model) still lunges.
+test('an operator model stays on its tile when it attacks a target on another row (星熊)', async () => {
+  const entry = assets.chars.char_136_hsguma.spine.front;
+  const names = Object.keys(entry.animations || {});
+  const ctx = fakeViewCtx(fake.P, { cam, assets: {
+    picture: () => null, image: async () => null, spineEntry: () => entry,
+    spine: { acquire: async () => ({ animations: names.map((name) => ({ name })) }), release() {} },
+  } });
+  const v = new UnitView(ctx, { id: 3, side: 'ally', kind: 'op', defId: 'chess_char_4_17_a', spine: 'char_136_hsguma', tier: 1, x: 5, y: 10, maxHp: 1000, dir: 'RIGHT' });
+  await tick(); await tick();
+  assert.ok(v.actor && v.spineReady, 'Spine model built');
+  frames(v, 30);
+  const rest = { x: v.root.position.x, y: v.root.position.y };
+  v.onAttack({ x: 5.6, y: 9.2 }, 1);
+  for (let i = 0; i < 12; i++) {
+    v.update(1 / 60, cam(), 1 + i / 60);
+    assert.ok(Math.abs(v.root.position.x - rest.x) < 1e-6 && Math.abs(v.root.position.y - rest.y) < 1e-6, `frame ${i}: no lunge`);
+  }
+});

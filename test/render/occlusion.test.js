@@ -9,7 +9,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseStage, buildTileQuads, splitQuadGroups, sortQuadOrder, rowDepthKey, boxDepthKey, ROW_KEY } from '../../public/js/render/tiles.js';
 import { unitDepthKey, groundZ, placeOnGround } from '../../public/js/render/units.js';
-import { windUpPlan, MAX_WIND_SPEEDUP } from '../../public/js/render/spine.js';
+import { windUpPlan, attackTimeScale } from '../../public/js/render/spine.js';
 import { presetCamera } from '../../public/js/render/projection.js';
 import { SnapshotBuffer } from '../../public/js/render/interp.js';
 
@@ -115,31 +115,37 @@ describe('standing on raised tiles', () => {
   });
 });
 
-describe('attack wind-up', () => {
+describe('attack wind-up (as the original: natural speed, never slowed or fast-forwarded)', () => {
   test('the strike frame lands exactly on the event whenever the wind-up can start from the clip start', () => {
     for (const loop of [0.6, 1, 1.7]) for (const hit of [0.1, 0.35, 0.5]) for (const iv of [0.4, 1, 2.5]) {
       for (const lead of [0.01, 0.05, 0.1, 0.2, 0.4]) {
         const h = hit * loop;
-        const { ts, tsWind, start } = windUpPlan(loop, h, iv, lead);
-        assert.ok(Number.isFinite(ts) && Number.isFinite(tsWind) && Number.isFinite(start));
-        assert.ok(ts >= 0.35 && ts <= 4, `ts ${ts}`);
-        assert.ok(tsWind >= ts - 1e-12 && tsWind <= ts * MAX_WIND_SPEEDUP + 1e-12, `tsWind ${tsWind}`);
+        const { ts, start } = windUpPlan(loop, h, iv, lead);
+        assert.ok(Number.isFinite(ts) && Number.isFinite(start));
+        assert.ok(ts >= 1 && ts <= 4, `ts ${ts}`);
         assert.ok(start >= 0 && start <= h + 1e-12, `start ${start}`);
-        if (lead * ts <= h) assert.ok(near(start + lead * tsWind, h, 1e-9), `strike at event: ${start}+${lead}*${tsWind} vs ${h}`);
+        if (lead * ts <= h) assert.ok(near(start + lead * ts, h, 1e-9), `strike at event: ${start}+${lead}*${ts} vs ${h}`);
       }
     }
   });
 
-  test('a comfortable lead plays the whole wind-up at normal speed', () => {
-    const p = windUpPlan(1, 0.4, 1, 0.4);
-    assert.equal(p.start, 0);
-    assert.ok(near(p.tsWind, 1));
+  test('a one-shot clip plays at its natural speed when the interval is longer, sped up only when shorter', () => {
+    assert.equal(attackTimeScale(1, 1.2), 1, '星熊: Attack 1 s, 1.2 s between attacks → natural speed, then idle');
+    assert.ok(near(attackTimeScale(1, 0.5), 2));
+    assert.equal(attackTimeScale(1, 0.1), 4, 'capped');
+    assert.ok(near(attackTimeScale(1, 2, true), 0.5), 'a looping clip runs one cycle per attack');
   });
 
-  test('a short lead speeds up (capped) and skips only what it must', () => {
+  test('a comfortable lead plays the whole wind-up', () => {
+    const p = windUpPlan(1, 0.4, 1, 0.4);
+    assert.equal(p.start, 0);
+    assert.ok(near(p.ts, 1));
+  });
+
+  test('a short lead skips the start of the wind-up instead of fast-forwarding it', () => {
     const p = windUpPlan(1, 0.4, 1, 0.05);
-    assert.ok(near(p.tsWind, MAX_WIND_SPEEDUP));
-    assert.ok(near(p.start, 0.4 - 0.05 * MAX_WIND_SPEEDUP));
+    assert.ok(near(p.ts, 1));
+    assert.ok(near(p.start, 0.35));
   });
 });
 
