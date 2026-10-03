@@ -22,6 +22,23 @@ export async function authenticate(request, env, {now = Date.now} = {}) {
   const session = await directoryOf(env).getSession(sessionId);
   return session && session.expiresAt > now() ? {...session, sessionId} : null;
 }
+// Accounts created before display names were stored can keep their existing session.
+// Only legacy profiles need this lookup; an upstream outage must not break /api/me.
+async function refreshLegacyProfile(user, env, providerFetch) {
+  if (!user || user.githubLogin || !env.ACCOUNTS || !/^\d{1,20}$/.test(user.githubId)) return user;
+  try {
+    const response = await providerFetch('https://api.github.com/user/' + user.githubId, {headers: {
+      Accept: 'application/vnd.github+json', 'User-Agent': 'Stronghold-Protocol'}, signal: AbortSignal.timeout(5000)});
+    if (!response.ok) return user;
+    const profile = await response.json();
+    if (!Number.isSafeInteger(profile.id) || String(profile.id) !== user.githubId || typeof profile.login !== 'string') return user;
+    const avatarUrl = typeof profile.avatar_url === 'string' && /^https:\/\/avatars\.githubusercontent\.com\//.test(profile.avatar_url) ? profile.avatar_url : null;
+    const updated = await directoryOf(env).resolveGithubUser({id: user.githubId, login: profile.login.slice(0, 80), name: profile.name, avatarUrl});
+    if (updated.accountId !== user.accountId) return user;
+    await accountOf(env, user.accountId).setProfile(updated);
+    return updated;
+  } catch { return user; }
+}
 export async function handleAuth(request, env, {now = Date.now, fetch: providerFetch = globalThis.fetch} = {}) {
   const url = new URL(request.url);
   if (!url.pathname.startsWith('/api/auth/') && url.pathname !== '/api/me') return null;
@@ -29,7 +46,8 @@ export async function handleAuth(request, env, {now = Date.now, fetch: providerF
     if (url.pathname === '/api/me') {
       if (request.method !== 'GET') return json({error: 'METHOD'}, 405);
       const session = await authenticate(request, env, {now});
-      const user = session ? (env.ACCOUNTS ? await accountOf(env, session.accountId).getProfile() : session.user) : null;
+      const storedUser = session ? (env.ACCOUNTS ? await accountOf(env, session.accountId).getProfile() : session.user) : null;
+      const user = await refreshLegacyProfile(storedUser, env, providerFetch);
       return json({user, capabilities: {accounts: configured(env),accountSystem:!!env.ACCOUNTS},
         application:session && env.ACCOUNTS ? await accountOf(env,session.accountId).getApplication() : null,
         activeSeat: session && env.ACCOUNTS ? await accountOf(env, session.accountId).getActiveSeat() : null});

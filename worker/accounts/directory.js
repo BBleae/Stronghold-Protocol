@@ -17,7 +17,7 @@ export class SiteDirectory extends DurableObject {
     const displayName = typeof name === 'string' ? name.trim().slice(0, 80) : '';
     return this.ctx.storage.transactionSync(() => {
       const old = this.sql.exec('SELECT account_id FROM users WHERE github_id=?', id).toArray()[0];
-      const profile = {accountId: old?.account_id || crypto.randomUUID(), githubId: id, name: displayName || login, avatarUrl};
+      const profile = {accountId: old?.account_id || crypto.randomUUID(), githubId: id, githubLogin: login, name: displayName || login, avatarUrl};
       this.sql.exec('INSERT INTO users VALUES (?,?,?) ON CONFLICT(github_id) DO UPDATE SET profile=excluded.profile',
         id, profile.accountId, JSON.stringify(profile));
       return profile;

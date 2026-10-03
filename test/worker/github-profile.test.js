@@ -5,16 +5,33 @@ import { createAccountHarness } from './helpers/account-harness.js';
 const source = `
 export { SiteDirectory as TestObject } from './worker/accounts/directory.js';
 export { AccountDurableObject } from './worker/accounts/account.js';
-import { handleAuth } from './worker/accounts/auth.js';
+import { handleAuth, hash } from './worker/accounts/auth.js';
 export default {async fetch(req,env) {
-  const {path, cookie, profile} = await req.json();
-  return handleAuth(new Request('https://game.example' + path, {
+  const {path, cookie, profile, legacy, providerStatus=200, providerThrows=false} = await req.json();
+  if (legacy) {
+    const site=env.TEST.get(env.TEST.idFromName('directory'));
+    const saved=await site.resolveGithubUser({id:'42',login:'BBleae',avatarUrl:'https://avatars.githubusercontent.com/u/42?v=4'});
+    const {githubLogin,...user}=saved;
+    await site.restoreProfile(user,false);
+    await env.ACCOUNTS.get(env.ACCOUNTS.idFromName(user.accountId)).setProfile(user);
+    const token='a'.repeat(64);
+    await site.saveSession(await hash(token),{accountId:user.accountId,expiresAt:Date.now()+600000});
+    return Response.json({cookie:'__Host-sp_session='+token,user});
+  }
+  const calls=[];
+  const response=await handleAuth(new Request('https://game.example' + path, {
     headers: cookie ? {cookie} : {},
   }), {...env, SITES:env.TEST, AUTH_ORIGIN:'https://game.example',
     GITHUB_CLIENT_ID:'fixture', GITHUB_CLIENT_SECRET:'fixture'}, {
-    fetch:async url => Response.json(String(url).includes('access_token')
-      ? {access_token:'fixture-token'} : profile),
+    fetch:async url => {
+      calls.push(String(url));
+      if(providerThrows)throw new Error('provider unavailable');
+      return Response.json(String(url).includes('access_token')
+        ? {access_token:'fixture-token'} : profile,{status:providerStatus});
+    },
   });
+  response.headers.set('X-Test-Github-Calls',JSON.stringify(calls));
+  return response;
 }};
 `;
 
@@ -57,4 +74,38 @@ test('GitHub profile names and avatars survive login, account storage and subseq
   }
   await login({id:42,login:'BBleae',name:'猫'.repeat(90),avatar_url:avatar});
   assert.equal((await me(cookie)).name,'猫'.repeat(80),'stored names respect the existing profile limit');
+});
+
+test('existing sessions refresh legacy GitHub names once without signing in again', {timeout:60000}, async t => {
+  const h=await createAccountHarness(source,{durableObjects:{ACCOUNTS:{className:'AccountDurableObject',useSQLite:true}}});
+  t.after(()=>h.dispose());
+  const {cookie,user}=await (await h.fetch({legacy:true})).json();
+  const response=await h.fetch({path:'/api/me',cookie,
+    profile:{id:42,login:'BBleae',name:'晴猫',avatar_url:user.avatarUrl}});
+  assert.equal(response.status,200);
+  const refreshed=(await response.json()).user;
+  assert.equal(refreshed.name,'晴猫');
+  assert.equal(refreshed.accountId,user.accountId);
+  assert.equal(refreshed.avatarUrl,user.avatarUrl);
+  assert.deepEqual(JSON.parse(response.headers.get('X-Test-Github-Calls')),['https://api.github.com/user/42']);
+  await h.restart();
+  const cached=await h.fetch({path:'/api/me',cookie,providerThrows:true});
+  assert.deepEqual((await cached.json()).user,refreshed);
+  assert.deepEqual(JSON.parse(cached.headers.get('X-Test-Github-Calls')),[]);
+});
+
+test('legacy profile refresh keeps login usable on GitHub failures and rejects a different identity', {timeout:60000}, async t => {
+  const h=await createAccountHarness(source,{durableObjects:{ACCOUNTS:{className:'AccountDurableObject',useSQLite:true}}});
+  t.after(()=>h.dispose());
+  const {cookie,user}=await (await h.fetch({legacy:true})).json();
+  for(const failure of [{providerStatus:503},{providerThrows:true},{profile:{id:99,login:'someone-else',name:'Wrong account'}}]) {
+    const response=await h.fetch({path:'/api/me',cookie,...failure});
+    assert.equal(response.status,200);
+    assert.deepEqual((await response.json()).user,user);
+  }
+  const emptyName=await h.fetch({path:'/api/me',cookie,profile:{id:42,login:'BBleae',name:null,avatar_url:user.avatarUrl}});
+  assert.equal((await emptyName.json()).user.name,'BBleae');
+  const cached=await h.fetch({path:'/api/me',cookie,providerThrows:true});
+  assert.equal((await cached.json()).user.name,'BBleae');
+  assert.deepEqual(JSON.parse(cached.headers.get('X-Test-Github-Calls')),[],'a valid profile with no Name does not keep fetching');
 });

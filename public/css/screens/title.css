@@ -224,7 +224,11 @@
   background: linear-gradient(90deg, var(--mint-500), transparent 60%);
 }
 .title-login .btn--xl { letter-spacing: .6em; padding-left: calc(.48rem + .3em); }
-.title-login .title-login__github { letter-spacing: normal; padding-inline: .24rem; }
+.title-login .title-login__github, .title-login .title-login__enter { letter-spacing: normal; padding-inline: .24rem; }
+.title-login__account { display: flex; align-items: center; gap: .12rem; }
+.title-login__identity { flex: 1; min-width: 0; }
+.title-login__identity > span { display: block; font-size: .13rem; color: var(--text-lo); }
+.title-login__identity > strong { display: block; font-size: .23rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .title-invite {
   display: flex;
   align-items: center;

@@ -1,7 +1,7 @@
 import { useEffect,useState } from '../../vendor/hooks.module.js';
 import { html,Button,Panel,MicroLabel,DifficultyTag } from './components.js';
-import { account,accountRequest,loadAccount } from '../account.js';
-import { net } from '../net.js';
+import { account,accountRequest } from '../account.js';
+import { net,identity } from '../net.js';
 import { store } from '../store.js';
 import { toast } from './toasts.js';
 
@@ -22,6 +22,17 @@ export function useAccountPoll(path,interval=10000) {
   return {data,error,refresh:()=>setRevision(x=>x+1)};
 }
 const run=fn=>Promise.resolve().then(fn).catch(e=>toast(e.message,'warn'));
+export function LogoutButton() {
+  const [busy,setBusy]=useState(false);
+  const logout=async()=>{
+    setBusy(true);
+    try {
+      await accountRequest('/api/auth/logout',{});
+      net.close();identity.setEntered(false);location.reload();
+    } catch(e) {setBusy(false);toast(e.message,'warn');}
+  };
+  return html`<${Button} variant="ghost" size="sm" loading=${busy} disabled=${busy} onClick=${logout}>退出登录<//>`;
+}
 export function AccountMenu() {
   const [active,setActive]=useState(account.activeSeat),[busy,setBusy]=useState(false);
   useEffect(()=>{if(account.user) accountRequest('/api/me/active-match').then(r=>setActive(r.activeSeat)).catch(()=>{});},[]);
@@ -32,7 +43,7 @@ export function AccountMenu() {
       ${active ? html`<${Button} size="sm" icon="play" loading=${busy} onClick=${()=>run(resume)}>继续对局<//>` : null}
       <${Button} variant="secondary" size="sm" icon="book" onClick=${()=>store.patch('ui',{accountPage:'history'})}>对局记录<//>
       <${Button} variant="secondary" size="sm" icon="signal" onClick=${()=>store.patch('ui',{accountPage:'statistics'})}>个人统计<//>
-      <${Button} variant="ghost" size="sm" onClick=${()=>run(async()=>{await accountRequest('/api/auth/logout',{});net.close();await loadAccount();location.reload();})}>退出登录<//>
+      <${LogoutButton} />
     ` : html`<${Button} size="sm" disabled=${!account.loginReady} onClick=${()=>location.assign('/api/auth/github/start')}>${account.loginReady?'GitHub 登录':'登录尚未配置'}<//>`}
   </div>`;
 }
