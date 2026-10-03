@@ -339,6 +339,7 @@ export class AudioManager {
     this.voiceLast = new Map(); // voice type → when its last line started (cooldowns)
     this.squadLeader = null;  // charId of the latest battle's squad leader (行动开始, the end line)
     this.encounter = null;    // { at } a battle started: 行动开始 is due at its first enemy
+    this.encounterTimer = null; // the pending 行动开始 (cancelled by the next battle and by the match end)
     this.holdSkillsUntil = 0; // no 作战中 before the battle's 行动开始 (performance.now ms; a safety bound)
     this.voiceLog = [];       // the lines started: { role, charId, type } (latest 200; the browser E2E reads it)
     this.buffers = new Map(); // url → Promise<AudioBuffer|null> (insertion order = LRU)
@@ -694,8 +695,14 @@ export class AudioManager {
       const rules = voiceRulesOf(m);
       const opt = rules.types[type] ?? { priority: 0, overlap: true, cooldown: 0 };
       const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
-      if (!voiceMayStart(opt, this.voiceWant ?? this.voiceNow, this.voiceLast.get(type), now)) return false;
+      const last = this.voiceLast.get(type);
+      if (!voiceMayStart(opt, this.voiceWant ?? this.voiceNow, last, now)) return false;
       this.voiceLast.set(type, now);
+      // a line that never loads does not start its type's cooldown
+      const unload = () => {
+        if (this.voiceLast.get(type) !== now) return;
+        if (last === undefined) this.voiceLast.delete(type); else this.voiceLast.set(type, last);
+      };
       this.voiceLog.push({ role, charId, type });
       if (this.voiceLog.length > 200) this.voiceLog.shift();
       const token = ++this.voiceToken;
@@ -703,9 +710,10 @@ export class AudioManager {
       const loaded = () => { if (this.voiceWant?.token === token) this.voiceWant = null; };
       this._buffer(url).then((buf) => {
         loaded();
-        if (!buf || !this.ctx || token !== this.voiceToken) return;
+        if (!buf || !this.ctx) { unload(); return; }
+        if (token !== this.voiceToken) return;
         this._startVoice(buf, opt.priority, rules.crossfade);
-      }, loaded);
+      }, () => { loaded(); unload(); });
       return true;
     } catch { return false; }
   }
@@ -759,6 +767,7 @@ export class AudioManager {
    */
   battleStart(leader) {
     const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    this._cancelEncounter();
     this.squadLeader = typeof leader === 'string' ? leader : null;
     this.encounter = this.squadLeader ? { at: now } : null;
     this.holdSkillsUntil = this.squadLeader ? now + HOLD_SKILLS_MS : 0;
@@ -771,11 +780,20 @@ export class AudioManager {
     this.encounter = null;
     const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
     const wait = Math.max(0, e.at + voiceRulesOf(this.getManifest()).encounterDelay * 1000 - now);
+    const leader = this.squadLeader;
     const say = () => {
+      this.encounterTimer = null;
       this.holdSkillsUntil = 0;
-      if (this.squadLeader) this.voice(this.squadLeader, 'start');
+      if (leader) this.voice(leader, 'start');
     };
-    if (wait > 0) setTimeout(say, wait); else say();
+    if (wait > 0) this.encounterTimer = setTimeout(say, wait); else say();
+  }
+
+  /** Drop the battle's 行动开始 that is not said yet. */
+  _cancelEncounter() {
+    this.encounter = null;
+    if (this.encounterTimer) clearTimeout(this.encounterTimer);
+    this.encounterTimer = null;
   }
 
   /**
@@ -783,9 +801,11 @@ export class AudioManager {
    * @param {{ victory: boolean, lpLost?: number }} r own LP lost over the match (result stats.lpLost)
    */
   matchEnd(r) {
-    this.encounter = null;
+    this._cancelEncounter();
     this.holdSkillsUntil = 0;
-    if (this.squadLeader) this.voice(this.squadLeader, endVoiceRole(r));
+    const leader = this.squadLeader;
+    this.squadLeader = null; // once per match: a re-shown result screen says nothing
+    if (leader) this.voice(leader, endVoiceRole(r));
   }
 
   // ---- battle events ------------------------------------------------------------------------------------------
