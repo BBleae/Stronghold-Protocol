@@ -39,7 +39,7 @@ test('real account-mode Worker resumes the same active match after full process 
       if(input.failRoom)return env.ROOMS.get(env.ROOMS.idFromName(input.failRoom)).fetch(new Request('https://room.internal/__test/fail'));
       if(input.seed){
         const site=env.SITES.get(env.SITES.idFromName('directory'));
-        const user=await site.resolveGithubUser({id:String(actor.charCodeAt(0)),login:'Player '+actor,avatarUrl:null});
+        const user=await site.resolveGithubUser({id:String(actor.charCodeAt(0)),login:'Player '+actor,avatarUrl:'https://avatars.githubusercontent.com/u/'+actor.charCodeAt(0)});
         await env.ACCOUNTS.get(env.ACCOUNTS.idFromName(user.accountId)).setProfile(user);
         await site.saveSession(await hash(actor.repeat(64)),{accountId:user.accountId,expiresAt:Date.now()+600000});
         return Response.json(user);
@@ -69,7 +69,7 @@ test('real account-mode Worker resumes the same active match after full process 
   };
   const first=await connect(route);
   first.ws.send(JSON.stringify({t:'room.create',mode:'solo',difficulty:'FUNNY',rid:1}));
-  await first.wait('room.state');
+  assert.equal((await first.wait('room.state')).seats[0].avatarUrl,'https://avatars.githubusercontent.com/u/97');
   first.ws.send(JSON.stringify({t:'room.start',rid:2}));
   const state=await first.wait('m.public');assert.equal(state.phase,'INFO_CHECK');
   await h.restart();
@@ -77,6 +77,7 @@ test('real account-mode Worker resumes the same active match after full process 
   assert.equal(resume.status,200);
   const next=await connect(await resume.json());
   assert.equal(next.welcome.playerId,first.welcome.playerId);
+  assert.equal((await next.wait('room.state')).seats[0].avatarUrl,'https://avatars.githubusercontent.com/u/97');
   assert.equal((await next.wait('m.public')).phase,'INFO_CHECK');
   next.ws.send(JSON.stringify({t:'g.leave',rid:3,commandId:'leave-1'}));await next.wait('ok',3);
   next.ws.close();
@@ -102,6 +103,9 @@ test('real account-mode Worker resumes the same active match after full process 
   const index=approvals.findIndex(r=>r.status===200),approved=await approvals[index].json(),actor=['b','c'][index];
   const guest=await connect({code:secondRoute.code,ticket:approved.ticket},actor);
   guest.ws.send(JSON.stringify({t:'room.join',code:secondRoute.code,rid:1}));await guest.wait('ok',1);
+  const guestState=await guest.wait('room.state');
+  assert.equal(guestState.seats[0].avatarUrl,'https://avatars.githubusercontent.com/u/97');
+  assert.equal(guestState.seats.find(s=>s?.playerId===guest.welcome.playerId).avatarUrl,'https://avatars.githubusercontent.com/u/'+actor.charCodeAt(0));
   assert.equal((await (await h.fetch({actor,path:'/api/me/active-match'})).json()).activeSeat.roomId,secondRoute.code);
   const cancelJoined=await h.fetch({actor,path:'/api/rooms/'+secondRoute.code+'/applications',method:'POST',body:{action:'cancel',id:approved.id}});
   assert.equal(cancelJoined.status,409);

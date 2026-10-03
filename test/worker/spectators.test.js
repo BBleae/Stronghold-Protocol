@@ -147,3 +147,17 @@ test('a published old-rules battle restores unchanged and accepts new spectators
   assert.equal(viewer.take('b.start').authoritative,false);
   assert.equal(restored.lobby.getRoom('ABCD').match.recording.rulesVersion,version);
 });
+
+test('room avatars come from authenticated profiles and survive reconnect snapshots',t=>{
+  const rt=new RoomRuntime({accounts:true});t.after(()=>rt.lobby.shutdown());
+  const avatarUrl='https://avatars.githubusercontent.com/u/123?v=4';
+  const host=new Socket();rt.connect(host,{accountId:'host',ticket:rt.reserve('ABCD','host'),avatarUrl});
+  send(rt,host,'hello',{name:'Host',avatarUrl:'https://example.com/spoof.png'});
+  send(rt,host,'room.create',{mode:'coop',difficulty:'FUNNY'});
+  assert.equal(host.take('room.state').seats[0].avatarUrl,avatarUrl);
+  const restored=new RoomRuntime({accounts:true,snapshot:rt.snapshot()});t.after(()=>restored.lobby.shutdown());
+  const resumed=connect(restored,'host',undefined,host.take('welcome').token);
+  assert.equal(resumed.take('room.state').seats[0].avatarUrl,avatarUrl);
+  send(restored,resumed,'room.addBot');
+  assert.equal(resumed.take('room.state').seats[1].avatarUrl,null);
+});

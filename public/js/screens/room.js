@@ -17,6 +17,8 @@ import { GuideButton } from '../ui/guide.js';
 import { LoadoutButton } from './loadout.js';
 import { net } from '../net.js';
 import { account } from '../account.js';
+import { data, useData } from '../data.js';
+import { chessAvatarUrl, bandIconUrl } from '../ui/assetUrls.js';
 import { Applications } from '../ui/accountMenu.js';
 import { store, useStore, shallowEqual, emptyMatch } from '../store.js';
 import { difficultyInfo } from './lobby.js';
@@ -101,6 +103,7 @@ export async function copyText(text) {
 }
 
 function SeatCard({ seat, index, room, facts, myId, busy, onAddBot, onRemoveBot }) {
+  useData('chess', 'assets', 'bands');
   const coop = room.mode !== 'solo';
   if (!seat) {
     const canAdd = coop && facts.isHost;
@@ -119,6 +122,9 @@ function SeatCard({ seat, index, room, facts, myId, busy, onAddBot, onRemoveBot 
     </article>`;
   }
   const isMe = seat.playerId === myId;
+  const botCharacter = seat.isBot && Object.values(data.get('chess') || {}).find(c => !c.isGolden && c.name === seat.name.replace(/^AI[·・\s]*/, ''));
+  const botBand = seat.isBot && Object.values(data.get('bands') || {}).find(b => b.name === seat.name.replace(/^AI[·・\s]*/, ''));
+  const avatar = seat.isBot ? chessAvatarUrl(data.get('assets'), botCharacter) || bandIconUrl(data.get('assets'), botBand?.bandId) : seat.avatarUrl || (isMe ? account.user?.avatarUrl : null);
   const isHostSeat = seat.playerId === room.hostId;
   const offline = seat.connected === false && !seat.isBot;
   // The host never needs to toggle ready: starting the match readies them (server rule).
@@ -132,7 +138,7 @@ function SeatCard({ seat, index, room, facts, myId, busy, onAddBot, onRemoveBot 
     </header>
     <div class="seat__art">
       <div class="seat__stripes" aria-hidden="true"></div>
-      <${AvatarFrame} size="xl" name=${seat.name} seat=${index} bot=${seat.isBot} self=${isMe} ready=${state === 'ready'} offline=${offline} />
+      <${AvatarFrame} size="xl" name=${seat.name} src=${avatar} seat=${index} bot=${seat.isBot} self=${isMe} ready=${state === 'ready'} offline=${offline} />
       ${seat.isBot ? html`<span class="seat__bot-label"><${Icon} name="robot" />AI 队友</span>` : null}
     </div>
     <div class="seat__who">

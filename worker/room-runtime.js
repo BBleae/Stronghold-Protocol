@@ -110,6 +110,7 @@ export class RoomRuntime {
         const meta = this.socketMeta.get(s.ws);
         if (this.accounts && meta?.accountId) {
           s.accountId = meta.accountId;
+          if (meta.avatarUrl !== undefined) s.avatarUrl = meta.avatarUrl;
           if (!info.repeat) s.connectionEpoch = (s.connectionEpoch || 0) + 1;
           meta.connectionEpoch = s.connectionEpoch;
         }
@@ -254,7 +255,7 @@ export class RoomRuntime {
     }
     return null;
   }
-  connect(ws, { ip = '0.0.0.0', ticket, attachment, accountId, sessionId, takeover = false } = {}) {
+  connect(ws, { ip = '0.0.0.0', ticket, attachment, accountId, sessionId, avatarUrl, takeover = false } = {}) {
     if (!attachment && this.admission(ip,accountId)) { ws.close(1013, 'connection limit'); return; }
     const normalized = normalizeIp(ip) || '0.0.0.0';
     const resume=this.resumeTickets.get(ticket);
@@ -263,6 +264,7 @@ export class RoomRuntime {
     }
     this.socketMeta.set(ws, { ip: normalized, key: limitKeyOf(normalized),
       accountId: attachment?.accountId || accountId, takeover,
+      avatarUrl: attachment?.avatarUrl ?? avatarUrl,
       joinTicket:attachment?.joinTicket || ticket,
       sessionId:attachment?.sessionId || sessionId, connectionEpoch:attachment?.connectionEpoch,
       canCreate: !!attachment?.canCreate || !!(ticket && this.reservation && ticket === this.reservation.ticket &&

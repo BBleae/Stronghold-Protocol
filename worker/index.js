@@ -341,13 +341,15 @@ export class RoomDurableObject {
       if (!rt.canConnect() || url.searchParams.get('room') !== rt.code) return error(404, 'ROOM_NOT_FOUND');
       const ip = request.headers.get('X-Room-IP') || '0.0.0.0';
       if (rt.admission(ip,request.headers.get('X-Account-ID'))) return error(429, 'RATE', 'connection limit');
+      const profile = this.env.ACCOUNTS && request.headers.get('X-Account-ID')
+        ? await accountOf(this.env,request.headers.get('X-Account-ID')).getProfile() : null;
       const pair = new WebSocketPair();
       const [client, server] = Object.values(pair);
       this.ctx.acceptWebSocket(server);
       const adapter = new SocketAdapter(server,!!this.env.ACCOUNTS);
       this.sockets.set(server, adapter);
       rt.connect(adapter, { ip, ticket: url.searchParams.get('ticket'), accountId: request.headers.get('X-Account-ID'),
-        sessionId:request.headers.get('X-Session-ID') });
+        sessionId:request.headers.get('X-Session-ID'), avatarUrl:profile?.avatarUrl ?? null });
       await this.persist();
       return new Response(null, { status: 101, webSocket: client });
     });

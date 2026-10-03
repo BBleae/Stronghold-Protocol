@@ -8,7 +8,11 @@ export class Spectators {
   sessions(){return [...this.rt.registry.all()].filter(s=>s.spectating && s.connected);}
   get count(){return this.sessions().length;}
   state(session){
-    if(this.room) sendSession(session,{...this.room.toState(),spectatorCount:this.count,...(session.spectating?{spectating:true}:{})});
+    if(this.room) {
+      const state=this.room.toState();
+      state.seats=state.seats.map(seat=>seat?{...seat,avatarUrl:seat.isBot?null:this.rt.registry.byId(seat.playerId)?.avatarUrl ?? null}:null);
+      sendSession(session,{...state,spectatorCount:this.count,...(session.spectating?{spectating:true}:{})});
+    }
   }
   presence(){
     if(!this.room)return;

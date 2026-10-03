@@ -18,7 +18,7 @@ test('public spectator UI: live board, presence, read-only controls and restart 
       if(u.pathname.startsWith('/__test/login/')){
         const actor=u.pathname.split('/').at(-1),token=await hash(crypto.randomUUID());
         const site=env.SITES.get(env.SITES.idFromName('directory'));
-        const user=await site.resolveGithubUser({id:String(actor.charCodeAt(0)),login:actor==='a'?'博士 Alice':'博士 Bob',avatarUrl:null});
+        const user=await site.resolveGithubUser({id:String(actor.charCodeAt(0)),login:actor==='a'?'博士 Alice':'博士 Bob',avatarUrl:'https://avatars.githubusercontent.com/u/123?v=4'});
         await env.ACCOUNTS.get(env.ACCOUNTS.idFromName(user.accountId)).setProfile(user);
         await site.saveSession(await hash(token),{accountId:user.accountId,expiresAt:Date.now()+600000});
         return new Response(null,{status:303,headers:{Location:'/', 'Set-Cookie':'__Host-sp_session='+token+'; Path=/; Secure; HttpOnly; SameSite=Lax'}});
@@ -38,6 +38,9 @@ test('public spectator UI: live board, presence, read-only controls and restart 
   const errors=[],out=path.join(ROOT,'test/e2e/out/spectators');await mkdir(out,{recursive:true});
   const player=async actor=>{
     const ctx=await browser.createBrowserContext(),page=await ctx.newPage();
+    await page.setRequestInterception(true);
+    page.on('request',req=>req.url().startsWith('https://avatars.githubusercontent.com/')
+      ? req.respond({status:200,contentType:'image/svg+xml',body:'<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80"><rect width="80" height="80" fill="teal"/></svg>'}) : req.continue());
     page.on('pageerror',e=>errors.push(e.message));await page.setViewport({width:1920,height:1080});
     await page.evaluateOnNewDocument(()=>{localStorage.setItem('stronghold-resource-mode','ondemand');globalThis.__SP_RENDER__='fallback';});
     await page.goto(base+'__test/login/'+actor,{waitUntil:'domcontentloaded'});
@@ -50,6 +53,14 @@ test('public spectator UI: live board, presence, read-only controls and restart 
   const call=(page,type,fields={})=>page.evaluate(([t,f])=>__SP__.net.request(t,f),[type,fields]);
   const click=async(page,text)=>{await page.waitForFunction(text=>[...document.querySelectorAll('button')].some(b=>b.textContent.trim()===text&&!b.disabled),{},text);await page.evaluate(text=>[...document.querySelectorAll('button')].find(b=>b.textContent.trim()===text).click(),text);};
   await call(host,'room.create',{mode:'coop',difficulty:'FUNNY'});
+  for(let i=0;i<3;i++)await call(host,'room.addBot');
+  await host.waitForFunction(()=>document.querySelectorAll('.seat .avatar__img img').length===4 && [...document.querySelectorAll('.seat .avatar__img img')].every(img=>img.complete&&img.naturalWidth>0));
+  assert.match(await host.$eval('.seat.is-me .avatar__img img',img=>img.src),/avatars.githubusercontent.com/);
+  for(const [name,part] of [['华法琳','char_171_bldsk'],['阿米娅','band_amiya'],['惊蛰','char_306_leizi']]) {
+    assert.ok(await host.evaluate(([name,part])=>[...document.querySelectorAll('.seat')].some(s=>s.textContent.includes(name)&&s.querySelector('img')?.src.includes(part)),[name,part]));
+  }
+  await host.screenshot({path:path.join(out,'room-avatars.png')});
+  for(let seat=1;seat<=3;seat++)await call(host,'room.removeBot',{seat});
   await call(host,'room.start');
   const code=await host.evaluate(()=>__SP__.store.get().room.code);
   const viewer=await player('b');
