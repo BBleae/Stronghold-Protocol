@@ -85,7 +85,7 @@ import { pauseAvailable, isPaused, frozenNow } from '../ui/matchStatus.js';
 import { pieceTile } from '../render/drag.js';
 import {
   phaseMode, phaseBanner, isCombatPhase, showDeadPill, isBossPhase, placementContext, canPlace, boardTargets, dropIntent,
-  snapHud, activeBubbles, shortcutFor, shortcutBlocked, closesOnFieldPress, phaseTotalSeconds, homeFieldId, ownFieldId, normalizeSp, sortedPlayers,
+  snapHud, createHudDelay, activeBubbles, shortcutFor, shortcutBlocked, closesOnFieldPress, phaseTotalSeconds, homeFieldId, ownFieldId, normalizeSp, sortedPlayers,
   countdownState, shopBlockReason, stageOverrides, effectiveStage, watchTarget, dropFailureReason,
   previewEnemyKey, prepCamera, deployFieldOf, panelSide, panelSlots, bondPopupPlace, chessLoadout, unitLoadout, mergeTarget,
   pieceCharId, voiceLeader,
@@ -427,21 +427,15 @@ function MatchScreen() {
     // the drawn battle (its 'battleEvents'); the DOM fallback draws frames as they come
     const engine = view?.kind === 'engine';
     const lagMs = () => (engine ? (Number(view.raw?.renderLag?.()) || 0) * 1000 : 0);
-    const hudQ = [];
-    let hudTimer = null;
-    const drainHud = () => {
-      hudTimer = null;
-      const now = performance.now();
-      let h = null;
-      while (hudQ.length && hudQ[0].at <= now) h = hudQ.shift().h;
-      if (h) {
+    const hudDelay = createHudDelay({
+      field: () => lastFieldRef.current,
+      onHud: (h) => {
         hudRef.current = h;
-        const dt = now - last;
+        const dt = performance.now() - last;
         if (dt >= HUD_HZ_MS) flush();
         else if (!pending) pending = setTimeout(flush, HUD_HZ_MS - dt);
-      }
-      if (hudQ.length && !hudTimer) hudTimer = setTimeout(drainHud, Math.max(0, hudQ[0].at - now));
-    };
+      },
+    });
     const onFieldMeta = (msg) => {
       if (msg && typeof msg.fieldId === 'string') { evBufRef.current.set(msg.fieldId, []); snapBufRef.current.delete(msg.fieldId); }
     };
@@ -458,9 +452,7 @@ function MatchScreen() {
         for (const t of snap.units) if (Array.isArray(t)) mp.set(t[0], t);
         snapUnitsRef.current = mp;
       }
-      hudQ.push({ at: performance.now() + lagMs(), h: snapHud(snap) });
-      if (hudQ.length > 400) hudQ.shift();
-      drainHud();
+      hudDelay.push(cur, snapHud(snap), lagMs());
     };
     const onEv = (msg) => {
       const cur = lastFieldRef.current;
@@ -481,7 +473,7 @@ function MatchScreen() {
     const offs = [net.on('m.field', onFieldMeta), net.on('b.snap', onSnap), net.on('b.ev', onEv)];
     if (battleRunner) offs.push(battleRunner.on('field', onFieldMeta), battleRunner.on('snap', onSnap), battleRunner.on('ev', onEv));
     if (engine) offs.push(view.on('battleEvents', (evs) => audio.handleBattleEvents(evs)));
-    return () => { for (const off of offs) { try { off(); } catch { /* ignore */ } } clearTimeout(pending); clearTimeout(hudTimer); };
+    return () => { for (const off of offs) { try { off(); } catch { /* ignore */ } } clearTimeout(pending); hudDelay.dispose(); };
   }, [view]);
 
   // the prep board moves while prep is shown (a boss round's prep begins, or a teammate left and the pairs changed):
