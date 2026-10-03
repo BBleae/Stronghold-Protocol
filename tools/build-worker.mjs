@@ -141,7 +141,8 @@ export async function buildWorker({ root = ROOT } = {}) {
     assets.count++;
   }
   if(assets.count + pack.parts.length + 1>100000)throw new Error('Retained engines exceed static asset count limit');
-  await bundleWorker({ root, buildTag, rulesVersion:versions.current, versionModules:versions.entries });
+  // Current matches restore through the main engine; do not embed a second copy of it.
+  await bundleWorker({ root, buildTag, rulesVersion:versions.current, versionModules:versions.entries.filter(v=>v.id!==versions.current) });
   const bundleBytes=await fs.readFile(path.join(root,'dist/worker/index.mjs'));
   const compressed=gzipSync(bundleBytes).length;
   // Cloudflare's September 2026 limit is 64 MiB uncompressed; gzip is informational.
@@ -217,7 +218,12 @@ export async function bundleWorker({ root = ROOT, outfile = path.join(root, 'dis
       // Eagerly initializing every historical engine exceeds the Worker startup CPU budget.
       builder.onLoad({filter:/\.mjs$/},async args=>{
         if(!versionModules.some(v=>path.resolve(v.file || path.join(root,'.replay-engines',v.id,'recovery.mjs'))===args.path))return;
-        const source=await fs.readFile(args.path,'utf8');
+        let source=await fs.readFile(args.path,'utf8');
+        // Restoration compares only view/RNG. Avoid cloning the entire event history
+        // in old exportMatch implementations just to discard that clone immediately.
+        const eventDefault=/referenceEvents:([A-Za-z_$][\w$]*)=!1/g;
+        if([...source.matchAll(eventDefault)].length!==1)throw new Error('Unsupported recovery event export: '+args.path);
+        source=source.replace(eventDefault,'referenceEvents:$1=!0');
         const exports=source.match(/export\{([^}]+)\};\s*$/);
         if(!exports)throw new Error('Unsupported retained recovery exports: '+args.path);
         const pairs=exports[1].split(',').map(s=>{const m=s.trim().match(/^(\w+) as (\w+)$/);if(!m)throw new Error('Unsupported recovery export');return `${m[2]}:${m[1]}`;});

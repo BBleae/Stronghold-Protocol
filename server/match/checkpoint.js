@@ -127,7 +127,7 @@ export function restoreMatch(checkpoint,deps) {
   const match=new RecordedMatch({...deps,...checkpoint.options,_startAt:checkpoint.startedAt,_restoring:true});
   try {
     for(const event of checkpoint.events) match._apply(event);
-    const current=exportMatch(match);
+    const current=exportMatch(match,{referenceEvents:true});
     if(JSON.stringify(current.view)!==JSON.stringify(checkpoint.view) || JSON.stringify(current.rng)!==JSON.stringify(checkpoint.rng))
       throw new Error('CHECKPOINT_STATE_DIVERGED');
     match._recordOutput.muted=false;

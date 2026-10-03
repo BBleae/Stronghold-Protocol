@@ -171,8 +171,14 @@ export class RoomDurableObject {
       }
       if(snapshot?.matchCheckpoint?.eventLogId) {
         const c=snapshot.matchCheckpoint;
-        c.events=ctx.storage.sql.exec('SELECT payload FROM match_events WHERE match_id=? ORDER BY seq',c.eventLogId).toArray().map(r=>JSON.parse(r.payload));
-        if(c.events.length!==c.eventCount) throw new Error('INCOMPLETE_MATCH_LOG');
+        const count=ctx.storage.sql.exec('SELECT COUNT(*) AS count FROM match_events WHERE match_id=?',c.eventLogId).one().count;
+        if(count!==c.eventCount) throw new Error('INCOMPLETE_MATCH_LOG');
+        // Retained engines require an Array, but only iterate it during restoration.
+        // Stream rows instead of keeping SQL payloads and parsed events together.
+        c.events=new Array(count);
+        c.events[Symbol.iterator]=function*(){
+          for(const row of ctx.storage.sql.exec('SELECT payload FROM match_events WHERE match_id=? ORDER BY seq',c.eventLogId))yield JSON.parse(row.payload);
+        };
         this.persistedLogId=c.eventLogId;this.persistedEventCount=c.events.length;
       }
       this.parts = meta?.parts || 0;
