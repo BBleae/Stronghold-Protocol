@@ -10,6 +10,8 @@
 
 **Spec:** docs/superpowers/specs/2026-10-03-accounts-history-lobbies-design.md（用户已于 2026-10-03 批准）。
 
+**执行记录（2026-10-03）：** 功能已按任务 1–10 在 `codex/accounts-history` 实现，并追加用户要求的 gzip 与关键帧/增量压缩。下文保留最初实施清单用于追溯；实际文件、验证证据和替代设计见 [交付记录](../reports/2026-10-03-accounts-history-lobbies.md)。其中闭包状态恢复采用完整有序日志重执行，未实施原计划的固定成本模拟状态快照；真实 OAuth 与生产部署仍需环境配置和上线验收。
+
 ## Global Constraints
 
 - 用户明确要求：必须完全符合现有设计风格，不改变原有组件的设计风格。这是验收条件。

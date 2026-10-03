@@ -1,0 +1,19 @@
+{
+  "formatVersion": 1,
+  "entries": [
+    {
+      "id": "ac1136f27535eb49851a",
+      "hashes": {
+        "engine.js": "d9e0f05ddfa07156f45abc00ffe669d90977b2f242f502ec9e42329915a5bdbb",
+        "recovery.mjs": "92389ae361d12cc263329f73bd038bdf9be1ccfd0e5527f2a7eaf66bb9c4a0e7"
+      }
+    },
+    {
+      "id": "ddefee61610dec925328",
+      "hashes": {
+        "engine.js": "76ccf7ad030c525388bd9af607f9038b531e809b90636c7169a1eae7ce67da63",
+        "recovery.mjs": "b273373e2489f3c82fd42ed7aca537dde79c5f3dd5b73a1ac79448ea1d8d45b4"
+      }
+    }
+  ]
+}

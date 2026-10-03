@@ -17,6 +17,8 @@ test('Workers browser boots with the room transport, reports a real battle, leav
     const page = await context.newPage();
     await page.setViewport({ width: 1440, height: 900 });
     page.on('pageerror', error => errors.push(error.message));
+    // Asset-free checkouts can explicitly exercise transport/gameplay with the existing DOM renderer.
+    if(process.env.SP_WORKER_RENDER==='fallback')await page.evaluateOnNewDocument(()=>{globalThis.__SP_RENDER__='fallback';});
     await page.evaluateOnNewDocument(name => {
       localStorage.setItem('sp.name', name);
       sessionStorage.setItem('sp.entered', '1');

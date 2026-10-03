@@ -29,7 +29,7 @@ const STAT_ROWS = [
   ['refreshes', '刷新次数'], ['leaks', '未击倒'], ['lpLost', '损失生命'],
 ];
 
-function PlayerCard({ p, myId, titles, best, solo = false }) {
+export function PlayerCard({ p, myId, titles, best, solo = false }) {
   const gd = useGameData();
   const titleRec = p.title ? titles.find((t) => t.id === p.title.id) || null : null;
   const titleName = p.title?.name || titleRec?.name || null;

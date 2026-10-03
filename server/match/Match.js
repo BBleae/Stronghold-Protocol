@@ -1928,7 +1928,7 @@ export class Match {
   /** A battle built from a spec on the server (headless / takeover / verification); never throws. */
   _specBattle(spec, { sharedBoss = null } = {}) {
     try {
-      return createBattleFromSpec(spec, this.ds, { BattleClass: this.BattleClass, sharedBoss, logger: this.log, recordEvents: false });
+      return createBattleFromSpec(spec, this.ds, { BattleClass: this.BattleClass, sharedBoss, logger: this.log, recordEvents: this.recordServerReplay===true });
     } catch (e) {
       this.reportError(`battle ${spec && spec.fieldId} construct`, e);
       return new DeadBattle({ fieldId: spec && spec.fieldId, kind: spec && spec.kind, players: (spec && spec.players) || [], rect: spec && spec.rect, stageId: spec && spec.stageId }, 'forced');

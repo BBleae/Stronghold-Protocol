@@ -1,6 +1,7 @@
 // Workers transport: one direct WebSocket to the Durable Object for the selected room.
 import { Net, NetError, configureTransport } from './net.js';
 import { validateC2S } from '../../shared/protocol.js';
+import { accountRequest } from './account.js';
 
 const CODE = /^[ABCDEFGHJKLMNPQRSTUVWXYZ]{4}$/;
 export function roomFromToken(token) {
@@ -51,6 +52,7 @@ export class RoomNet extends Net {
   }
 
   connect() {
+    if(this.accountMode && !this.route) {this._manualClose=false;this._setStatus('online');return;}
     if (this.ws && this.ws.readyState <= 1) return;
     if (this._allocation) return;
     this._manualClose = false;
@@ -87,6 +89,8 @@ export class RoomNet extends Net {
   }
 
   _sendRaw(msg) {
+    if(this.accountMode && msg.rid!=null && !['hello','ping'].includes(msg.t) && !msg.commandId)
+      msg.commandId=globalThis.crypto.randomUUID();
     if (msg.t === 'ping' && this.clockSynced && !this.room?.inMatch) {
       this._fixedPingAt = msg.c;
       return super._sendRaw({ t: 'ping', c: 0 });
@@ -169,11 +173,33 @@ export class RoomNet extends Net {
   }
 
   async request(type, fields = {}, opts = {}) {
+    if(this.accountMode && ['room.create','room.join'].includes(type)) {
+      if(this._switching) throw new NetError('RATE');
+      if(this.room) throw new NetError('BAD_MSG','请先离开当前房间');
+      this._switching=true;
+      try {
+        if(type==='room.join') {
+          await accountRequest('/api/me/active-match');
+          const code=String(fields.code).toUpperCase();
+          const item=await accountRequest('/api/rooms/'+code+'/applications',{action:'apply'});
+          this.application={code,...item};this._emit('application',this.application);
+          return {application:this.application};
+        }
+        // Resolve stale references before attempting a fresh seat claim.
+        await accountRequest('/api/me/active-match');
+        const route=await this._reserve();
+        await this._openRoute(route,null);
+        return await super.request(type,fields,opts);
+      } finally {this._switching=false;}
+    }
     if (type !== 'room.create' && type !== 'room.join') {
       const leavesRoom = type === 'room.leave' || type === 'g.leave';
       try {
         const reply = await super.request(type, fields, opts);
-        if (leavesRoom) this.room = null;
+        if (leavesRoom) {
+          this.room = null;
+          if(this.accountMode) {this.close();this.route=null;this._routeToken=null;this._manualClose=false;this._setStatus('online');}
+        }
         return reply;
       } catch (error) {
         if (leavesRoom && error.code === 'NOT_IN_ROOM') this.room = null;
@@ -212,6 +238,18 @@ export class RoomNet extends Net {
       }
       throw error;
     } finally { this._switching = false; }
+  }
+  async resumeActive() {
+    const route=await accountRequest('/api/me/resume',{});
+    if(!route?.code) throw new NetError('ROOM_NOT_FOUND','对局已结束或恢复时间已过');
+    if(route.reserved)throw new NetError('ROOM_NOT_FOUND','房间创建尚未完成，请等待预留过期后重新创建');
+    if(route.join)return this.joinApproved(route);
+    await this._openRoute(route,null);
+  }
+  async joinApproved(route) {
+    await this._openRoute(route,null);
+    await super.request('room.join',{code:route.code});
+    this.application=null;this._emit('application',null);
   }
 }
 

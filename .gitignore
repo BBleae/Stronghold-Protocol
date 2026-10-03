@@ -45,4 +45,5 @@ dist/
 .wrangler/
 .dev.vars
 .dev.vars.*
+.replay-engines/
 public/resource-manifest.json

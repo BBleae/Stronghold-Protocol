@@ -28,23 +28,27 @@ test('browser installs only matching files from a local ZIP without upload, serv
     ...unzipSync(await readFile(pack.path)),
   }));
   const hits = [];
-  let offlineAssets = false, corrupt = false, noManifest = false;
+  let offlineAssets = false, corrupt = false, noManifest = false, holdDownload = false;
   const server = createServer(async (request, response) => {
     const pathname = new URL(request.url, 'http://localhost').pathname;
     hits.push({ path: pathname, method: request.method });
     try {
       if (pathname === '/') {
         response.setHeader('Content-Type', 'text/html');
-        response.end('<!doctype html><html><head></head><body><div id="boot">Loading</div><script type="module">import {prepareResources,installResourceManager} from "/js/resources/index.js"; await prepareResources(); window.gameReady=true;document.querySelector("#boot").remove();await installResourceManager();</script></body></html>');
+        response.end(`<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1" />
+          <link rel="stylesheet" href="/css/theme.css" /><link rel="stylesheet" href="/css/components.css" /><link rel="stylesheet" href="/css/devices.css" />
+          <script type="importmap">{"imports":{"preact":"/vendor/preact.module.js","preact/hooks":"/vendor/hooks.module.js"}}</script>
+          </head><body><div id="boot">Loading</div><script type="module">import {prepareResources,installResourceManager} from "/js/resources/index.js"; await prepareResources(); window.gameReady=true;document.querySelector("#boot").remove();await installResourceManager();</script></body></html>`);
         return;
       }
       if (pathname === '/resource-manifest.json' && noManifest) { response.writeHead(404).end(); return; }
       if (pathname.startsWith('/assets/')) {
         if (offlineAssets) { response.writeHead(503).end(); return; }
+        if (holdDownload && pathname === '/assets/b.png') return; // cancelled by the client on entering a match
         if (corrupt && pathname === '/assets/b.png') { response.end('WRONG'); return; }
       }
       const resource = pathname === '/resource-manifest.json' || pathname.startsWith('/assets/');
-      const path = join(resource ? fixture : root, 'public', pathname);
+      const path = pathname.startsWith('/shared/') ? join(root, pathname) : join(resource ? fixture : root, 'public', pathname);
       response.setHeader('Content-Type', pathname.endsWith('.js') ? 'text/javascript' : pathname.endsWith('.json') ? 'application/json' : pathname.endsWith('.css') ? 'text/css' : 'application/octet-stream');
       response.end(await readFile(path));
     } catch { response.writeHead(404).end(); }
@@ -59,7 +63,7 @@ test('browser installs only matching files from a local ZIP without upload, serv
   page.on('pageerror', error => errors.push(error.message));
   const base = `http://127.0.0.1:${server.address().port}`;
   await page.goto(base);
-  await page.waitForSelector('.resource-dialog[open]');
+  await page.waitForSelector('.resource-dialog[role="dialog"]');
   assert.equal(await page.$eval('#boot', node => getComputedStyle(node).display), 'none');
   assert.equal(await page.evaluate(() => window.__spResourcesPreparing), true);
   assert.equal(await page.evaluate(() => !!window.gameReady), false);
@@ -70,6 +74,23 @@ test('browser installs only matching files from a local ZIP without upload, serv
   await page.click('[data-action="continue"]');
   await page.waitForFunction(() => window.gameReady);
   assert.equal(await page.evaluate(() => !!window.__spResourcesPreparing), false);
+  await page.evaluate(async () => {
+    const { store } = await import('/js/store.js');
+    store.set({ session: { entered: true }, room: { inMatch: true } });
+  });
+  await page.waitForSelector('#resource-manager-open', { hidden: true, timeout: 1500 });
+  for (const phase of ['INFO_CHECK', 'BAND_DRAFT', 'BATTLE_CHECK', 'PREP', 'COMBAT', 'UNITE', 'SETTLE', 'RESULT']) {
+    await page.evaluate(async phase => {
+      const { store } = await import('/js/store.js');
+      store.set({ room: null, match: { public: { phase } } });
+    }, phase);
+    assert.equal(await page.$('#resource-manager-open'), null, `resource entry stays hidden during ${phase}`);
+  }
+  await page.evaluate(async () => {
+    const { store, emptyMatch } = await import('/js/store.js');
+    store.set({ room: { inMatch: false }, match: emptyMatch() });
+  });
+  await page.waitForSelector('#resource-manager-open', { visible: true });
   offlineAssets = true;
   const cached = await page.evaluate(async () => {
     const response = await fetch('/assets/a.mp3', { headers: { Range: 'bytes=2-4' } });
@@ -113,18 +134,62 @@ test('browser installs only matching files from a local ZIP without upload, serv
   });
   assert.deepEqual(exported.sort(), ['assets/a.mp3', 'assets/b.png']);
   await page.click('[data-action="continue"]');
+  for (const viewport of [{ width: 1920, height: 1080 }, { width: 844, height: 390, isMobile: true, hasTouch: true }]) {
+    await page.setViewport(viewport);
+    await page.waitForSelector('#resource-manager-open', { visible: true });
+    await page.click('#resource-manager-open');
+    await page.waitForSelector('[data-action="import"]:not(:disabled)');
+    const layout = await page.$eval('.resource-dialog', dialog => {
+      const box = dialog.getBoundingClientRect();
+      const footer = dialog.querySelector('[data-action="continue"]').getBoundingClientRect();
+      const body = dialog.querySelector('.modal__body');
+      return { fits: box.x >= 0 && box.y >= 0 && box.right <= innerWidth && box.bottom <= innerHeight,
+        noHorizontalScroll: body.scrollWidth <= body.clientWidth,
+        footerVisible: footer.bottom <= innerHeight && footer.top >= 0 };
+    });
+    assert.deepEqual(layout, { fits: true, noHorizontalScroll: true, footerVisible: true }, `manager fits ${viewport.width}×${viewport.height}`);
+    await page.keyboard.press('Escape');
+    await page.waitForSelector('.resource-dialog', { hidden: true });
+    assert.equal(await page.evaluate(() => document.activeElement.id), 'resource-manager-open');
+  }
+  await page.click('#resource-manager-open');
+  await page.waitForSelector('[data-action="clear"]:not(:disabled)');
+  await page.click('[data-action="clear"]');
+  await page.waitForFunction(() => document.querySelector('.resource-stat')?.textContent.startsWith('0 / 2'));
+  holdDownload = true;
+  await page.waitForSelector('[data-action="download"]:not(:disabled)');
+  await page.click('[data-action="download"]');
+  await page.waitForFunction(() => document.querySelector('.resource-stat')?.textContent.startsWith('1 / 2'));
+  await page.evaluate(async () => {
+    const { store } = await import('/js/store.js');
+    store.set({ session: { entered: true }, room: { inMatch: true } });
+  });
+  await page.waitForSelector('.resource-dialog', { hidden: true });
+  await page.waitForSelector('#resource-manager-open', { hidden: true });
+  assert.equal(await page.evaluate(() => !!window.__spResourcesPreparing), false);
+  holdDownload = false;
+  await page.evaluate(async () => {
+    const { store, emptyMatch } = await import('/js/store.js');
+    store.set({ room: null, match: emptyMatch() });
+    await (await import('/js/resources/index.js')).installResourceManager();
+  });
+  await page.waitForSelector('#resource-manager-open', { visible: true });
+  assert.equal((await page.$$('#resource-manager-open')).length, 1);
+  await page.click('#resource-manager-open');
+  await page.waitForFunction(() => document.querySelector('.resource-stat')?.textContent.startsWith('1 / 2'));
+  await page.click('[data-action="continue"]');
   assert.deepEqual(errors, []);
   const skipping = await browser.createBrowserContext();
   const skipped = await skipping.newPage();
   await skipped.goto(base);
-  await skipped.waitForSelector('.resource-dialog[open]');
+  await skipped.waitForSelector('.resource-dialog[role="dialog"]');
   await skipped.click('[data-action="continue"]');
   await skipped.waitForFunction(() => window.gameReady);
   await skipped.reload();
   await skipped.waitForFunction(() => window.gameReady);
   assert.equal(await skipped.$('.resource-dialog'), null);
   await skipped.click('#resource-manager-open');
-  await skipped.waitForSelector('.resource-dialog[open]');
+  await skipped.waitForSelector('.resource-dialog[role="dialog"]');
   await skipped.waitForFunction(() => document.querySelector('.resource-stat')?.textContent.startsWith('0 / 2'));
   assert.equal(await skipped.$eval('[data-action="export"]', node => node.disabled), true, 'nothing to export yet');
   await skipping.close();

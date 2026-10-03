@@ -34,6 +34,7 @@
     "doctor": "node tools/doctor.mjs",
     "launch": "node scripts/launch.mjs",
     "build:worker": "node tools/build-worker.mjs",
+    "archives:backup": "node tools/archive-backup.mjs",
     "dev:worker": "wrangler dev",
     "deploy:worker": "wrangler deploy",
     "resources:manifest": "node tools/resource-pack.mjs --manifest-only",
