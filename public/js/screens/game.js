@@ -506,6 +506,8 @@ function MatchScreen() {
     toast('当前设备无法启用 3D / WebGL 渲染，已切换为简化视图（功能不受影响）', 'info', { ttl: 5000 });
   }, [viewKind]);
 
+  useEffect(() => () => audio.battleEnd(), []);
+
   // phase changes: banners, sounds, resets
   const phaseKey = `${phase}:${pub?.round}`;
   const prevPhase = useRef(null);
@@ -513,6 +515,7 @@ function MatchScreen() {
     const prev = prevPhase.current;
     prevPhase.current = phase;
     if (prev === phase) return;
+    audio.battleEnd();
     const b = phaseBanner(phase, pub);
     if (b) setBanner({ ...b, key: phaseKey });
     // operator voice (as in the official mode): every battle, its squad leader says 行动开始 at the first enemy

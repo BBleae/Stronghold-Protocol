@@ -338,6 +338,9 @@ export class AudioManager {
     this.voiceToken = 0;      // newest requested line (a slower buffer load never plays over a newer line)
     this.voiceLast = new Map(); // voice type → when its last line started (cooldowns)
     this.squadLeader = null;  // charId of the latest battle's squad leader (行动开始, the end line)
+    this.encounterTimer = null;
+    this.battleToken = 0;
+    this.matchEnded = false;
     this.encounter = null;    // { at } a battle started: 行动开始 is due at its first enemy
     this.holdSkillsUntil = 0; // no 作战中 before the battle's 行动开始 (performance.now ms; a safety bound)
     this.voiceLog = [];       // the lines started: { role, charId, type } (latest 200; the browser E2E reads it)
@@ -695,7 +698,6 @@ export class AudioManager {
       const opt = rules.types[type] ?? { priority: 0, overlap: true, cooldown: 0 };
       const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
       if (!voiceMayStart(opt, this.voiceWant ?? this.voiceNow, this.voiceLast.get(type), now)) return false;
-      this.voiceLast.set(type, now);
       this.voiceLog.push({ role, charId, type });
       if (this.voiceLog.length > 200) this.voiceLog.shift();
       const token = ++this.voiceToken;
@@ -704,7 +706,9 @@ export class AudioManager {
       this._buffer(url).then((buf) => {
         loaded();
         if (!buf || !this.ctx || token !== this.voiceToken) return;
-        this._startVoice(buf, opt.priority, rules.crossfade);
+        if (this._startVoice(buf, opt.priority, rules.crossfade)) {
+          this.voiceLast.set(type, typeof performance !== 'undefined' ? performance.now() : Date.now());
+        }
       }, loaded);
       return true;
     } catch { return false; }
@@ -734,7 +738,8 @@ export class AudioManager {
       setTimeout(end, buf.duration * 1000 + 250); // safety if onended never fires
       this.voiceNow = cur;
       src.start();
-    } catch { /* ignore */ }
+      return true;
+    } catch { this.voiceNow = null; return false; }
   }
 
   /** Fade out and stop the voice line that is playing. @param {number} [fade] seconds */
@@ -758,10 +763,23 @@ export class AudioManager {
    * @param {string|null} leader
    */
   battleStart(leader) {
+    this.battleEnd();
+    this.matchEnded = false;
     const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
     this.squadLeader = typeof leader === 'string' ? leader : null;
     this.encounter = this.squadLeader ? { at: now } : null;
     this.holdSkillsUntil = this.squadLeader ? now + HOLD_SKILLS_MS : 0;
+  }
+
+  /** Cancel delayed or loading battle voices when the field ends or its screen unmounts. */
+  battleEnd() {
+    clearTimeout(this.encounterTimer);
+    this.encounterTimer = null;
+    this.battleToken++;
+    this.encounter = null;
+    this.holdSkillsUntil = 0;
+    this.voiceToken++;
+    this.voiceWant = null;
   }
 
   /** The battle's first enemy appeared: the leader's 行动开始, not before minTimeDeltaForEnemyEncounter. */
@@ -771,11 +789,15 @@ export class AudioManager {
     this.encounter = null;
     const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
     const wait = Math.max(0, e.at + voiceRulesOf(this.getManifest()).encounterDelay * 1000 - now);
+    const token = this.battleToken;
+    const leader = this.squadLeader;
     const say = () => {
+      if (token !== this.battleToken) return;
+      this.encounterTimer = null;
       this.holdSkillsUntil = 0;
-      if (this.squadLeader) this.voice(this.squadLeader, 'start');
+      if (leader) this.voice(leader, 'start');
     };
-    if (wait > 0) setTimeout(say, wait); else say();
+    if (wait > 0) this.encounterTimer = setTimeout(say, wait); else say();
   }
 
   /**
@@ -783,9 +805,9 @@ export class AudioManager {
    * @param {{ victory: boolean, lpLost?: number }} r own LP lost over the match (result stats.lpLost)
    */
   matchEnd(r) {
-    this.encounter = null;
-    this.holdSkillsUntil = 0;
-    if (this.squadLeader) this.voice(this.squadLeader, endVoiceRole(r));
+    if (this.matchEnded) return;
+    this.battleEnd();
+    if (this.squadLeader && this.voice(this.squadLeader, endVoiceRole(r))) this.matchEnded = true;
   }
 
   // ---- battle events ------------------------------------------------------------------------------------------
