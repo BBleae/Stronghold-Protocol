@@ -198,11 +198,11 @@ export class RoomRuntime {
       this.reservation = null;
       this.interruptedUntil = now() + ROOM_LIMITS.reservationMs;
     } else if (snapshot) {
+      // The room and its sessions as saved. A session saved while connected waits for its socket (the Durable Object
+      // attaches the sockets that survived hibernation), then reconcileSockets disconnects it if none did.
       // commandResults: a former per-session command store, no longer kept.
       for (const { commandResults, ...data } of snapshot.sessions || []) {
         const s = Object.assign(new Session(data), data, { ws: null, connected: false });
-        // A socket that was open at the last save was lost with the old instance: it closed now.
-        if (s.disconnectedAt == null) s.disconnectedAt = now();
         if (s.resyncAt == null) s.resyncAt = -Infinity;
         this.registry.byPlayerId.set(s.playerId, s);
         this.registry.byTokenMap.set(s.token, s);
@@ -212,11 +212,6 @@ export class RoomRuntime {
         const room = Object.assign(new Room(r.code, r.mode, r.difficulty, r.createdAt), r);
         if (r.replay) room.replay = { ...r.replay, frames: new Map(r.replay.frames), pending: new Set(r.replay.pending) };
         this.lobby.rooms.set(room.code, room);
-        for (const seat of room.activeHumans()) {
-          seat.connected = false;
-          const session = this.registry.byId(seat.playerId);
-          this.lobby.deadlines.set(seat.playerId, (session?.disconnectedAt ?? now()) + this.lobby.opts.lobbyGraceMs);
-        }
       }
       for (const [id, at] of snapshot.deadlines || []) this.lobby.deadlines.set(id, at);
       // A running match (snapshot.matchCheckpoint) is restored separately: restoreMatch / interruptMatch.
@@ -450,13 +445,17 @@ export class RoomRuntime {
     if (!this.lobby.getRoom(this.code)) this.applications.invalidate();
   }
   pump(now=this.now()) {const result=this.lobby.getRoom(this.code)?.match?.pump?.(now) || 0;this.spectators.pump();return result;}
+  /**
+   * After a wake (the room, its surviving sockets and its match are back): a session that was connected at the last
+   * save but whose socket did not survive (a restart closes every socket; hibernation keeps them) disconnects now, the
+   * way a closing socket does (Network.onClose: Lobby.onDisconnect — its seat, the match, a solo run's 24-hour resume
+   * window, the lobby grace; a spectator's count).
+   */
   reconcileSockets() {
-    const match=this.lobby.getRoom(this.code)?.match;if(!match)return;
-    for(const player of match.order) {
-      if(player.isBot || player.left)continue;
-      const connected=!!this.registry.byId(player.playerId)?.connected;
-      if(player.connected && !connected)match.onDisconnect(player.playerId);
-      else if(!player.connected && connected)match.onReconnect(player.playerId);
+    for (const session of this.registry.all()) {
+      if (session.connected || session.disconnectedAt != null) continue;
+      session.disconnectedAt = this.now();
+      this.network.handler.onDisconnect(session);
     }
   }
   nextAlarm() {

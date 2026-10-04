@@ -55,6 +55,66 @@ test('a cold restart reconciles missing sockets and resumes paused solo combat u
   match.dispose();restored.dispose();rt.network.close();recovered.network.close();
 });
 
+// A socket lost with a restart: what the Durable Object does on wake after a deployment, which closes every socket.
+function restart(rt,now){
+  const snapshot=JSON.parse(JSON.stringify(rt.snapshot()));
+  const recovered=new RoomRuntime({snapshot,accounts:true,now});
+  if(snapshot.matchCheckpoint)recovered.restoreMatch(snapshot.matchCheckpoint);
+  recovered.reconcileSockets();
+  return recovered;
+}
+function soloRun(clock){
+  const rt=new RoomRuntime({accounts:true,now:()=>clock.at}),ws=new Socket();
+  rt.connect(ws,{accountId:'alice',ticket:rt.reserve('ABCD','alice')});
+  for(const msg of [{t:'hello',name:'Alice'},{t:'room.create',mode:'solo',difficulty:'FUNNY'},{t:'room.start'}])rt.message(ws,JSON.stringify(msg));
+  return {rt,ws,pid:[...rt.registry.all()][0].playerId,token:ws.frames.find(f=>f.t==='welcome').token};
+}
+
+test('a socket lost with a restart disconnects as a closing one does: a solo run keeps its 24-hour resume window',t=>{
+  const clock={at:1000};
+  const {rt,pid,token}=soloRun(clock);t.after(()=>rt.lobby.shutdown());
+  const recovered=restart(rt,()=>clock.at);t.after(()=>recovered.lobby.shutdown());
+  assert.equal(recovered.lobby.getRoom('ABCD').match.players.get(pid).connected,false);
+  clock.at+=600_001;recovered.sweep();
+  assert.equal(recovered.hasAccount('alice'),true,'not the ordinary ten minutes');
+  assert.equal(recovered.status()?.inMatch,true);
+  const back=new Socket();recovered.connect(back,{accountId:'alice'});
+  recovered.message(back,JSON.stringify({t:'hello',name:'Alice',token}));
+  assert.equal(back.frames.find(f=>f.t==='welcome').playerId,pid);
+  assert.equal(recovered.lobby.getRoom('ABCD').match.players.get(pid).connected,true);
+  back.close();clock.at+=86_400_001;recovered.sweep();
+  assert.equal(recovered.status(),null,'the 24 hours still end');
+});
+
+test('a socket lost with a restart after its solo run ended gets the ordinary resume window',t=>{
+  const clock={at:1000};
+  const {rt,ws}=soloRun(clock);t.after(()=>rt.lobby.shutdown());
+  ws.close();ws.readyState=1;                    // a drop during the run gives the session the solo window...
+  const back=new Socket();rt.connect(back,{accountId:'alice'});
+  rt.message(back,JSON.stringify({t:'hello',name:'Alice',token:ws.frames.find(f=>f.t==='welcome').token}));
+  rt.pump();rt.lobby.getRoom('ABCD').match.finish({victory:false,reason:'defeat'});rt.pump();
+  const recovered=restart(rt,()=>clock.at);t.after(()=>recovered.lobby.shutdown());
+  const session=[...recovered.registry.all()][0];
+  assert.equal(session.resumeWindowMs,null,'...which ends with the run');
+  clock.at+=600_001;recovered.sweep();
+  assert.equal(recovered.registry.size,0);
+  assert.equal(recovered.isEmpty(),true);
+});
+
+test('a lobby seat whose socket was lost with a restart gets the lobby grace from the restart',t=>{
+  const clock={at:1000};
+  const rt=new RoomRuntime({accounts:true,now:()=>clock.at});t.after(()=>rt.lobby.shutdown());
+  const host=new Socket();rt.connect(host,{accountId:'host',ticket:rt.reserve('ABCD','host')});
+  for(const msg of [{t:'hello',name:'Host'},{t:'room.create',mode:'coop',difficulty:'FUNNY'}])rt.message(host,JSON.stringify(msg));
+  clock.at+=30_000;
+  const recovered=restart(rt,()=>clock.at);t.after(()=>recovered.lobby.shutdown());
+  assert.equal(recovered.lobby.getRoom('ABCD').seats[0].connected,false);
+  clock.at+=59_000;recovered.sweep();
+  assert.ok(recovered.lobby.getRoom('ABCD'),'the grace runs from the restart, not from the last save');
+  clock.at+=1_001;recovered.sweep();
+  assert.equal(recovered.lobby.getRoom('ABCD'),null);
+});
+
 test('reusing an empty room code creates a new archive generation',()=>{
   let now=1000;const rt=new RoomRuntime({accounts:true,now:()=>now});rt.reserve('ABCD','alice');
   const first=rt.generation;now+=120001;rt.sweep();assert.equal(rt.isEmpty(),true);
