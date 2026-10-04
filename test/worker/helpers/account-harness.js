@@ -5,7 +5,16 @@ import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 
-export async function createAccountHarness(source, {durableObjects={},bindings={},assets}={}) {
+// `ratelimits`: rate limiting bindings (name -> { namespace_id, simple: { limit, period } }); `productionLimits` are
+// the Worker's own (wrangler.jsonc), for a harness that runs the whole Worker.
+export const productionLimits = Object.freeze({
+  RESERVE_LIMIT: { namespace_id: '1001', simple: { limit: 8, period: 60 } },
+  CONNECT_LIMIT: { namespace_id: '1002', simple: { limit: 40, period: 60 } },
+  STATUS_LIMIT: { namespace_id: '1003', simple: { limit: 120, period: 60 } },
+  AUTH_LIMIT: { namespace_id: '1004', simple: { limit: 10, period: 60 } },
+  APPLICATION_LIMIT: { namespace_id: '1005', simple: { limit: 30, period: 60 } },
+});
+export async function createAccountHarness(source, {durableObjects={},bindings={},assets,ratelimits={}}={}) {
   const dir = await mkdtemp(path.join(tmpdir(), 'sp-accounts-'));
   const root = fileURLToPath(new URL('../../../', import.meta.url));
   let mf;
@@ -15,7 +24,7 @@ export async function createAccountHarness(source, {durableObjects={},bindings={
     const options = convertV4MiniflareOptions({
       workers: [{ name: 'account-tests', script: bundle.outputFiles[0].text, modules: true,
         compatibilityDate: '2026-10-01', compatibilityFlags: ['nodejs_compat'],
-        bindings,...(assets?{assets:{directory:assets,binding:'ASSETS',run_worker_first:true,routerConfig:{has_user_worker:true,invoke_user_worker_ahead_of_assets:true}}}:{}),
+        bindings,ratelimits,...(assets?{assets:{directory:assets,binding:'ASSETS',run_worker_first:true,routerConfig:{has_user_worker:true,invoke_user_worker_ahead_of_assets:true}}}:{}),
         durableObjects: { TEST: { className: 'TestObject', useSQLite: true },...durableObjects } }] });
     options.resourcePersistencePath = path.join(dir, 'storage');
     const start = async () => { mf = new Miniflare(options); await mf.ready; };

@@ -11,10 +11,10 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { bundleWorker } from '../../../tools/build-worker.mjs';
-import { createAccountHarness } from './account-harness.js';
+import { createAccountHarness, productionLimits } from './account-harness.js';
 
 const fixture = (bundle) => `
-import worker, { SiteDirectory, AccountDurableObject, RoomDurableObject as ProductionRoom, AdmissionDurableObject, MatchArchive }
+import worker, { SiteDirectory, AccountDurableObject, RoomDurableObject as ProductionRoom, MatchArchive }
   from ${JSON.stringify(bundle.replaceAll('\\', '/'))};
 import { hash } from './worker/accounts/auth.js';
 
@@ -95,7 +95,7 @@ export class RoomDurableObject extends ProductionRoom {
     }
   }
 }
-export { AccountDurableObject, AdmissionDurableObject, MatchArchive };
+export { AccountDurableObject, MatchArchive };
 
 export default {
   async fetch(request, env) {
@@ -103,9 +103,11 @@ export default {
     const cookie = (actor) => '__Host-sp_session=' + actor.repeat(64);
     if (request.headers.get('Upgrade') === 'websocket') {
       const actor = url.searchParams.get('actor') || 'a';
+      const ip = url.searchParams.get('ip');
       url.searchParams.delete('actor');
-      return worker.fetch(new Request('https://game.example/ws' + url.search, {
-        headers: { Upgrade: 'websocket', Origin: 'https://game.example', cookie: cookie(actor) } }), env);
+      url.searchParams.delete('ip');
+      return worker.fetch(new Request('https://game.example/ws' + url.search, { headers: { Upgrade: 'websocket',
+        Origin: 'https://game.example', cookie: cookie(actor), ...(ip ? { 'CF-Connecting-IP': ip } : {}) } }), env);
     }
     const input = await request.json();
     const actor = input.actor || 'a';
@@ -141,9 +143,9 @@ export async function createWorld(t) {
   const bundle = path.join(dir, 'worker.mjs');
   await bundleWorker({ outfile: bundle });
   const durableObjects = Object.fromEntries([['SITES', 'TestObject'], ['ACCOUNTS', 'AccountDurableObject'],
-    ['ROOMS', 'RoomDurableObject'], ['ADMISSION', 'AdmissionDurableObject'], ['MATCH_ARCHIVES', 'MatchArchive']]
+    ['ROOMS', 'RoomDurableObject'], ['MATCH_ARCHIVES', 'MatchArchive']]
     .map(([binding, className]) => [binding, { className, useSQLite: true }]));
-  const h = await createAccountHarness(fixture(bundle), { durableObjects });
+  const h = await createAccountHarness(fixture(bundle), { durableObjects, ratelimits: productionLimits });
   t.after(() => h.dispose());
 
   const world = {
@@ -166,9 +168,12 @@ export async function createWorld(t) {
     logout: async (actor) => h.fetch({ directory: 'logout', actor }),
     /** The room's Durable Object is evicted; its WebSockets hibernate and stay open. */
     evict: (code) => h.evict('RoomDurableObject', code),
-    /** Upgrade /ws as `actor`: { status, ws, frames, wait(type, predicate?), send(msg), closed } (ws null when refused). */
-    async socket(actor, { code, ticket } = {}) {
-      const query = new URLSearchParams({ room: code, actor, ...(ticket ? { ticket } : {}) });
+    /**
+     * Upgrade /ws as `actor` (from `ip`, as the edge reports it): { status, ws, frames, wait(type, predicate?),
+     * send(msg), closed } (ws null when refused).
+     */
+    async socket(actor, { code, ticket, ip } = {}) {
+      const query = new URLSearchParams({ room: code, actor, ...(ticket ? { ticket } : {}), ...(ip ? { ip } : {}) });
       const response = await h.request('https://test.example/ws?' + query, { headers: { Upgrade: 'websocket' } });
       const result = { status: response.status, ws: response.webSocket, frames: [], closed: null };
       if (!result.ws) return result;
@@ -193,8 +198,8 @@ export async function createWorld(t) {
       return result;
     },
     /** Connect and say hello (with `token` to resume a session); resolves with the socket after its welcome. */
-    async player(actor, { code, ticket, token } = {}) {
-      const socket = await world.socket(actor, { code, ticket });
+    async player(actor, { code, ticket, token, ip } = {}) {
+      const socket = await world.socket(actor, { code, ticket, ip });
       assert.equal(socket.status, 101);
       socket.send({ t: 'hello', name: 'Player ' + actor, ...(token ? { token } : {}) });
       socket.welcome = await socket.wait('welcome');

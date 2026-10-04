@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import worker, { AdmissionDurableObject } from '../../worker/index.js';
+import worker from '../../worker/index.js';
 
 test('private routes never reach a Durable Object and protocol failures have stable HTTP statuses', async () => {
   const env = { ASSETS: { fetch: () => new Response('asset') } };
@@ -14,22 +14,25 @@ test('private routes never reach a Durable Object and protocol failures have sta
   assert.equal(await (await invoke('/')).text(), 'asset');
 });
 
-test('forwarded headers cannot spoof edge identity; reservation limits persist across instance reset', async () => {
-  const values = new Map();
-  const storage = { async get(k) { return values.get(k); }, async put(k, v) { values.set(k, structuredClone(v)); },
-    async setAlarm() {}, async deleteAll() { values.clear(); } };
-  const state = { storage, blockConcurrencyWhile(fn) { return fn(); } };
-  let limiter = new AdmissionDurableObject(state, {});
-  const admission = { idFromName(name) { return name; }, get() { return { fetch(req) { return limiter.fetch(req); } }; } };
-  const names = [];
-  const env = { ADMISSION: { ...admission, idFromName(name) { names.push(name); return name; } },
-    ROOMS: { idFromName(name) { return name; }, get() { return { fetch() { return Response.json({ code: 'ABCD', ticket: 'secret' }, { status: 201 }); } }; } } };
-  const request = (xff) => new Request('https://game.example/api/rooms', { method: 'POST',
-    headers: { 'CF-Connecting-IP': '8.8.8.8', 'X-Forwarded-For': xff, 'X-Real-IP': xff } });
-  for (let n = 0; n < 8; n++) assert.equal((await worker.fetch(request(`9.9.9.${n}`), env)).status, 201);
-  limiter = new AdmissionDurableObject(state, {});
-  assert.equal((await worker.fetch(request('1.1.1.1'), env)).status, 429);
-  assert.equal(new Set(names).size, 1);
+test('request limits count the network the edge reports, never forwarded headers', async () => {
+  const counts = new Map();
+  const env = {
+    RESERVE_LIMIT: { async limit({ key }) {
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+      return { success: counts.get(key) <= 8 };
+    } },
+    ROOMS: { idFromName(name) { return name; }, get() { return { fetch() { return Response.json({ code: 'ABCD', ticket: 'secret' }, { status: 201 }); } }; } },
+  };
+  const request = (ip, forwarded) => new Request('https://game.example/api/rooms', { method: 'POST',
+    headers: { 'CF-Connecting-IP': ip, 'X-Forwarded-For': forwarded, 'X-Real-IP': forwarded } });
+  for (let n = 0; n < 8; n++) assert.equal((await worker.fetch(request('8.8.8.8', `9.9.9.${n}`), env)).status, 201);
+  const refused = await worker.fetch(request('8.8.8.8', '1.1.1.1'), env);
+  assert.equal(refused.status, 429);
+  assert.equal(refused.headers.get('Retry-After'), '10');
+  // An IPv6 subscriber's /64 is one network.
+  await worker.fetch(request('2001:db8:1:2::a', '9.9.9.9'), env);
+  await worker.fetch(request('2001:db8:1:2:ffff::b', '9.9.9.9'), env);
+  assert.deepEqual([...counts], [['net:8.8.8.8', 9], ['net:2001:db8:1:2::/64', 2]]);
 });
 
 test('a request ends with its own status: client errors keep their code, failures are logged with their route', async (t) => {
@@ -43,6 +46,7 @@ test('a request ends with its own status: client errors keep their code, failure
       return { accountId: 'a', expiresAt: Date.now() + 60_000 };
     } }) },
     ACCOUNTS: {},
+    APPLICATION_LIMIT: { limit: async () => ({ success: true }) },
   };
   const call = async (path, init = {}) => {
     const response = await worker.fetch(new Request(`https://game.example${path}`, { ...init,

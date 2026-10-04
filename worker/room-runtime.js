@@ -2,7 +2,7 @@
 import { Buffer } from 'node:buffer';
 import { randomBytes } from 'node:crypto';
 import { Lobby, Room, CODE_ALPHABET } from '../server/lobby.js';
-import { Network, Session, SessionRegistry, encode, sendSession, normalizeIp, limitKeyOf } from '../server/net.js';
+import { Network, Session, SessionRegistry, TokenBucket, encode, sendSession, normalizeIp, limitKeyOf } from '../server/net.js';
 import { ERR, MAX_SEATS } from '../shared/constants.js';
 import { RecordedMatch, exportMatch, restoreMatch } from '../server/match/checkpoint.js';
 import { ApplicationQueue } from './rooms/applications.js';
@@ -12,8 +12,12 @@ import { logWarn, logError, errorFields } from './log.js';
 import { CLOSE } from './close-codes.js';
 
 // loginCheckMs: how often an open socket's login is checked again with the directory (a logout is noticed this late).
+// Strangers (accounts with no place in the room: spectators) get at most spectatorsPerAccount sockets in the room (an
+// account has one session there: the socket watching and its replacement), each with at most observerPerSec messages
+// a second (burst observerBurst) instead of a player's 40.
 export const ROOM_LIMITS = Object.freeze({ sockets: 16, socketsPerIp: 8, sessions: 32, messageBytes: 65_536,
-  reservationMs: 120_000, idleSocketMs: 90_000, loginCheckMs: 60_000 });
+  reservationMs: 120_000, idleSocketMs: 90_000, loginCheckMs: 60_000,
+  spectatorsPerAccount: 2, observerPerSec: 2, observerBurst: 10 });
 export const validCode = (s) => typeof s === 'string' && s.length === 4 && [...s].every((c) => CODE_ALPHABET.includes(c));
 
 class RoomNetwork extends Network {
@@ -340,8 +344,10 @@ export class RoomRuntime {
   canConnect(accountId) {
     if (!this.code || this.isEmpty()) return false;
     if (!this.accounts) return true;
-    return !!this.lobby.getRoom(this.code) || this.reservation?.accountId === accountId
-      || [...this.registry.all()].some((s) => s.accountId === accountId);
+    if (this.hasAccount(accountId) || [...this.registry.all()].some((s) => s.accountId === accountId)) return true;
+    // Anyone else may only watch the room's running public match.
+    const room = this.lobby.getRoom(this.code);
+    return !!room?.match && this.publicRoom && room.mode === 'coop';
   }
   admission(ip, accountId) {
     if (this.network.connectionCount >= ROOM_LIMITS.sockets) return 'full';
@@ -354,6 +360,7 @@ export class RoomRuntime {
       const reserve=MAX_SEATS+1;
       if(observers.length>=ROOM_LIMITS.sockets-reserve)return 'spectators-full';
       if(observers.filter(m=>m.key===key).length>=ROOM_LIMITS.socketsPerIp-reserve)return 'spectators-per-address';
+      if (observers.filter((m) => m.accountId === accountId).length >= ROOM_LIMITS.spectatorsPerAccount) return 'spectators-per-account';
     }
     return null;
   }
@@ -378,6 +385,11 @@ export class RoomRuntime {
     this.network.handleConnection(ws, { socket: { remoteAddress: normalized }, headers: {} });
     ws.on('close', () => this.socketMeta.delete(ws));
     const conn = this.network.conns.get(ws);
+    // A stranger's new socket (it can only spectate) sends little: its message bucket is a spectator's, kept with the
+    // socket's other state across hibernation (attachment.bucket).
+    if (this.accounts && !attachment && !this.hasAccount(accountId)) {
+      conn.bucket = new TokenBucket(ROOM_LIMITS.observerPerSec, ROOM_LIMITS.observerBurst, this.now());
+    }
     if (attachment) {
       for (const key of ['openedAt', 'dropWindowAt', 'drops', 'closing']) if (attachment[key] != null) conn[key] = attachment[key];
       if (attachment.bucket) Object.assign(conn.bucket, attachment.bucket);

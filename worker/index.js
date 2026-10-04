@@ -1,7 +1,7 @@
 import { randomInt } from 'node:crypto';
 import { APP_VERSION } from '../shared/constants.js';
 import { CODE_ALPHABET } from '../server/lobby.js';
-import { normalizeIp, limitKeyOf, TokenBucket } from '../server/net.js';
+import { normalizeIp, limitKeyOf } from '../server/net.js';
 import { RoomRuntime, validCode } from './room-runtime.js';
 import { prepareMatchVersion, retainedMatchVersions } from './match-versions.js';
 import { RULES_VERSION } from '../shared/rules-version.js';
@@ -24,11 +24,16 @@ const error = (status, code, detail) => json({ error: code, ...(detail ? { detai
 const edgeIp = (request) => normalizeIp(request.headers.get('CF-Connecting-IP')) || '0.0.0.0';
 const roomStub = (env, code) => env.ROOMS.get(env.ROOMS.idFromName(code), { locationHint: 'apac' });
 const sameOrigin = (request) => !request.headers.has('Origin') || request.headers.get('Origin') === new URL(request.url).origin;
-async function admit(env, ip, kind) {
-  const stub = env.ADMISSION.get(env.ADMISSION.idFromName(limitKeyOf(ip)), { locationHint: 'apac' });
-  const result = await stub.fetch(new Request(`https://admission.internal/${kind}`, { method: 'POST' }));
-  return result.ok ? null : result;
+
+// Request limits: Cloudflare's rate limiting bindings (wrangler.jsonc "ratelimits": a limit per minute, counted at each
+// Cloudflare location, nothing stored). A request counts against the client's network (its IPv4 address or IPv6 /64,
+// as the edge reports it) and, where there is one, against its account: within(env.CONNECT_LIMIT, network(request)).
+const network = (request) => 'net:' + limitKeyOf(edgeIp(request));
+async function within(limit, key) {
+  const { success } = await limit.limit({ key });
+  return success;
 }
+const tooMany = () => json({ error: 'RATE', detail: 'too many requests' }, 429, { 'Retry-After': '10' });
 
 export default {
   // The one place a request's unexpected error ends: logged with its route, answered with a status (worker/http.js).
@@ -46,9 +51,10 @@ async function route(request, env) {
   const url = new URL(request.url);
   const path = url.pathname;
   const backup=await handleBackupRoutes(request,env);if(backup)return backup;
-  if(env.ADMISSION && (path==='/api/auth/github/start' || path==='/api/rooms' && request.method==='GET' || /\/applications$/.test(path))) {
-    const limited=await admit(env,edgeIp(request),path.startsWith('/api/auth/')?'auth':request.method==='GET'?'status':'application');
-    if(limited)return limited;
+  if (path === '/api/auth/github/start' && !(await within(env.AUTH_LIMIT, network(request)))) return tooMany();
+  if ((path === '/api/rooms' && request.method === 'GET') || /\/applications$/.test(path)) {
+    const limit = request.method === 'GET' ? env.STATUS_LIMIT : env.APPLICATION_LIMIT;
+    if (!(await within(limit, network(request)))) return tooMany();
   }
   const auth = await handleAuth(request, env);
   if (auth) return auth;
@@ -65,6 +71,7 @@ async function route(request, env) {
   if (path === '/api/rooms') {
     if (request.method !== 'POST') return error(405, 'BAD_MSG');
     if (!sameOrigin(request)) return error(403, 'BAD_MSG', 'origin mismatch');
+    if (!(await within(env.RESERVE_LIMIT, network(request)))) return tooMany();
     const session = env.ACCOUNTS ? await authenticate(request, env) : null;
     if (env.ACCOUNTS && !session) return error(401, 'LOGIN_REQUIRED');
     if (session && request.headers.get('Origin') !== url.origin) return error(403, 'BAD_MSG');
@@ -74,8 +81,6 @@ async function route(request, env) {
       if (seat?.reserved) return json({ code: seat.code, ticket: seat.ticket, generation: seat.generation });
       if (seat) return error(409, 'ALREADY_SEATED');
     }
-    const limited = await admit(env, edgeIp(request), 'reserve');
-    if (limited) return limited;
     for (let i = 0; i < 12; i++) {
       const code = Array.from({ length: 4 }, () => CODE_ALPHABET[randomInt(CODE_ALPHABET.length)]).join('');
       const response = await roomStub(env, code).fetch(new Request(`https://room.internal/_reserve?room=${code}`, {
@@ -97,8 +102,7 @@ async function route(request, env) {
     if (request.method !== 'GET') return error(405, 'BAD_MSG');
     const code = statusMatch[1].toUpperCase();
     if (!validCode(code)) return error(404, 'ROOM_NOT_FOUND');
-    const limited = await admit(env, edgeIp(request), 'status');
-    if (limited) return limited;
+    if (!(await within(env.STATUS_LIMIT, network(request)))) return tooMany();
     return roomStub(env, code).fetch(new Request('https://room.internal/_status'));
   }
   if (path === '/ws') {
@@ -109,9 +113,13 @@ async function route(request, env) {
     const code = (url.searchParams.get('room') || '').toUpperCase();
     if (!validCode(code)) return refuseSocket(CLOSE.ROOM_GONE, 'no such room');
     const ip = edgeIp(request);
+    // Connections count against the network before the login is looked up, and against the account after.
+    if (!(await within(env.CONNECT_LIMIT, network(request)))) return refuseSocket(CLOSE.TRY_LATER, 'too many connections');
     const session = env.ACCOUNTS ? await authenticate(request,env) : null;
     if (env.ACCOUNTS && !session) return refuseSocket(CLOSE.LOGIN_INVALID, 'login required');
-    if (await admit(env, ip, 'connect')) return refuseSocket(CLOSE.TRY_LATER, 'too many connections');
+    if (session && !(await within(env.CONNECT_LIMIT, 'account:' + session.accountId))) {
+      return refuseSocket(CLOSE.TRY_LATER, 'too many connections');
+    }
     const dest = new URL('https://room.internal/_ws');
     dest.searchParams.set('room', code);
     const ticket = url.searchParams.get('ticket');
@@ -129,28 +137,6 @@ async function route(request, env) {
   if (path === PACK_PATH) return servePack(request, env);
   if (path.startsWith('/api/')) return error(404, 'ROOM_NOT_FOUND');
   return env.ASSETS ? env.ASSETS.fetch(request) : error(404, 'ROOM_NOT_FOUND');
-}
-
-// One tiny, automatically-expiring limiter per edge-provided IP (/64 for IPv6), shared across rooms.
-export class AdmissionDurableObject {
-  constructor(ctx) { this.ctx = ctx; }
-  async fetch(request) {
-    return this.ctx.blockConcurrencyWhile(async () => {
-      const kind = new URL(request.url).pathname.slice(1);
-      const settings = { reserve: [8 / 60, 8], connect: [40 / 60, 20], status: [120 / 60, 30],auth:[10/60,5],application:[30/60,10] }[kind];
-      if (request.method !== 'POST' || !settings) return error(404, 'BAD_MSG');
-      const now = Date.now();
-      const stored = await this.ctx.storage.get(kind);
-      const bucket = new TokenBucket(...settings, now);
-      if (stored) Object.assign(bucket, stored);
-      const allowed = bucket.take(now);
-      await this.ctx.storage.put(kind, { ...bucket });
-      await this.ctx.storage.setAlarm(now + 120_000);
-      return allowed ? new Response(null, { status: 204 })
-        : json({ error: 'RATE', detail: 'too many requests from your network' }, 429, { 'Retry-After': '8' });
-    });
-  }
-  async alarm() { await this.ctx.storage.deleteAll(); }
 }
 
 // Adapt the Workers WebSocket surface to the existing Network's small EventEmitter-like contract. A buffered socket

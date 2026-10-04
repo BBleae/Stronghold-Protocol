@@ -4,7 +4,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { ROOT, copyRuntimeAssets, bundleWorker } from '../../tools/build-worker.mjs';
-import { createAccountHarness } from '../worker/helpers/account-harness.js';
+import { createAccountHarness, productionLimits } from '../worker/helpers/account-harness.js';
 
 const chrome=process.env.CHROME_PATH || 'C:/Program Files/Google/Chrome/Application/chrome.exe';
 test('account preferences restore in a clean browser, survive offline reload, and isolate account switches', {
@@ -13,8 +13,8 @@ test('account preferences restore in a clean browser, survive offline reload, an
   // Exercise the production client/Worker without adding retained battle-engine versions.
   await copyRuntimeAssets();await bundleWorker();
   const h=await createAccountHarness(`
-    import worker,{RoomDurableObject,SiteDirectory,AccountDurableObject,AdmissionDurableObject,MatchArchive} from './dist/worker/index.mjs';
-    export {SiteDirectory as TestObject,RoomDurableObject,SiteDirectory,AccountDurableObject,AdmissionDurableObject,MatchArchive};
+    import worker,{RoomDurableObject,SiteDirectory,AccountDurableObject,MatchArchive} from './dist/worker/index.mjs';
+    export {SiteDirectory as TestObject,RoomDurableObject,SiteDirectory,AccountDurableObject,MatchArchive};
     import {hash} from './worker/accounts/auth.js';
     export default {async fetch(req,env){const u=new URL(req.url);
       if(u.pathname.startsWith('/__test/login/')){
@@ -32,8 +32,8 @@ test('account preferences restore in a clean browser, survive offline reload, an
       }
       return env.ASSETS.fetch(req);
     }};
-  `,{durableObjects:Object.fromEntries(['SiteDirectory','AccountDurableObject','RoomDurableObject','AdmissionDurableObject','MatchArchive']
-    .map((className,i)=>[['SITES','ACCOUNTS','ROOMS','ADMISSION','MATCH_ARCHIVES'][i],{className,useSQLite:true}])),
+  `,{durableObjects:Object.fromEntries(['SiteDirectory','AccountDurableObject','RoomDurableObject','MatchArchive']
+    .map((className,i)=>[['SITES','ACCOUNTS','ROOMS','MATCH_ARCHIVES'][i],{className,useSQLite:true}])),ratelimits:productionLimits,
     bindings:{AUTH_ORIGIN:'https://game.example',GITHUB_CLIENT_ID:'fixture',GITHUB_CLIENT_SECRET:'fixture'},assets:path.join(ROOT,'dist/client')});
   t.after(()=>h.dispose());
   const browser=await (await import('puppeteer-core')).default.launch({executablePath:chrome,headless:true,args:['--no-sandbox']});

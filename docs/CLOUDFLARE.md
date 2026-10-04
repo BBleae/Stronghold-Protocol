@@ -39,7 +39,7 @@ npm run deploy:worker
 
 若已安装 Bun，也可在完成上述 `npm ci` 后运行 `bun run dev:worker` 和 `bun run deploy:worker`，同样调用项目内 Wrangler；Bun 是可选工具，不是部署前提。
 
-Wrangler 执行构建、上传本地静态文件，保留 `ROOMS`（房间）和 `ADMISSION`（短期 IP 限流），并通过追加迁移增加 `SITES`（身份/目录）、`ACCOUNTS`（个人索引）、`MATCH_ARCHIVES`（历史/回放）SQLite DO。GitHub OAuth 配置、迁移、独立备份见 [账号与历史指南](ACCOUNTS-HISTORY.md)。Cloudflare 插件可用于账号、Worker 配置和部署版本的管理、检查；本地批量文件上传使用 Wrangler。
+Wrangler 执行构建、上传本地静态文件，保留 `ROOMS`（房间），并通过追加迁移增加 `SITES`（身份/目录）、`ACCOUNTS`（个人索引）、`MATCH_ARCHIVES`（历史/回放）SQLite DO。按网络（IPv4 地址 / IPv6 /64）和账号的请求限流使用 Cloudflare 的 rate limiting 绑定（`wrangler.jsonc` 的 `ratelimits`，每分钟计数，不写存储）；原来的 `ADMISSION` 限流 DO 由迁移 `v3-ratelimits` 删除（它只存短期计数）。GitHub OAuth 配置、迁移、独立备份见 [账号与历史指南](ACCOUNTS-HISTORY.md)。Cloudflare 插件可用于账号、Worker 配置和部署版本的管理、检查；本地批量文件上传使用 Wrangler。
 
 构建只发布 `dist/client/` 以及 `dist/worker/index.mjs`。前端保持 `/data/`、`/shared/`、`/sim/` 的既有路径；Node 文件系统数据读取由构建时 JSON 导入替换。`public/dev/`、ZIP、日志、source map 和服务端私有数据读取模块不会发布。不要手动把整个仓库上传为静态站点。
 

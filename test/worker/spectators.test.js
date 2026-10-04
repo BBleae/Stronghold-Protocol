@@ -82,17 +82,21 @@ test('a spectator\'s hello and room.spectate are answered to it alone; count cha
   const viewer=connect(rt,'viewer');send(rt,viewer,'room.spectate');
   clock.tick();
   const states=host.count('room.state'), own=viewer.count('room.state'), pub=viewer.count('m.public');
-  for(let i=0;i<10;i++){send(rt,viewer,'hello',{name:'viewer'});send(rt,viewer,'room.spectate');}
+  // Within the spectator's message limit (2 a second).
+  for(let i=0;i<5;i++){clock.tick(500);send(rt,viewer,'hello',{name:'viewer'});clock.tick(500);send(rt,viewer,'room.spectate');}
   assert.equal(host.count('room.state'),states,'no room-wide state for a repeated hello or room.spectate');
-  assert.equal(viewer.count('room.state'),own+20,'each is answered to the spectator');
+  assert.equal(viewer.count('room.state'),own+10,'each is answered to the spectator');
   assert.equal(viewer.count('m.public'),pub,'without resending the match');
-  // Leaving and watching again changes the count every time: the room hears of it once a second.
-  for(let i=0;i<10;i++){send(rt,viewer,'room.leave');send(rt,viewer,'room.spectate');}
-  assert.equal(host.count('room.state'),states);
-  clock.tick();
+  // Leaving and watching again changes the count every time: the room hears of it at once, then once a second.
+  for(let i=0;i<4;i++){clock.tick(100);send(rt,viewer,'room.leave');clock.tick(100);send(rt,viewer,'room.spectate');}
   assert.equal(host.count('room.state'),states+1);
+  clock.tick();
+  assert.equal(host.count('room.state'),states+2,'8 changes, 2 updates');
   assert.equal(host.take('room.state').spectatorCount,1);
   assert.equal(rt.timerDue(),rt.lobby.getRoom('ABCD').match.sched.nextAt(),'no update is pending');
+  // A burst past the spectator's limit is refused.
+  for(let i=0;i<15;i++)send(rt,viewer,'hello',{name:'viewer'});
+  assert.ok(viewer.frames.slice(-15).some(f=>f.t==='error' && f.code==='RATE'));
 });
 
 test('same-address spectators leave capacity for all player seats and a replacement',t=>{

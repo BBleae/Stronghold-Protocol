@@ -59,3 +59,32 @@ test('a spectator whose match ended is told so before its socket closes with 400
   assert.equal(viewer.frames.at(-1).t, 'room.closed');
   assert.equal(viewer.frames.at(-1).reason, 'ended');
 });
+
+test('strangers may only watch a running public match, with few sockets and few connections', { timeout: 120000 }, async (t) => {
+  const world = await createWorld(t);
+  for (const actor of ['a', 'b', 'c']) await world.seed(actor);
+  const route = (await world.api('a', '/api/rooms', { method: 'POST' })).body;
+  const host = await world.player('a', route);
+  await host.request('room.create', { mode: 'coop', difficulty: 'FUNNY' });
+
+  // A waiting room has nothing for a stranger (joining is an application).
+  assert.deepEqual(await (await world.socket('b', { code: route.code })).waitClosed(), { code: 4004, reason: 'no such room' });
+  assert.equal((await host.request('room.start')).t, 'ok');
+
+  // A running public match may be watched. An account has one session in a room (a second socket that says hello
+  // takes it over), so two sockets per account are enough: the one watching and its replacement.
+  const viewer = await world.player('b', { code: route.code, ip: '10.0.0.1' });
+  assert.equal((await viewer.request('room.spectate')).t, 'ok');
+  const replacement = await world.socket('b', { code: route.code, ip: '10.0.0.2' });
+  assert.equal(replacement.status, 101);
+  const third = await world.socket('b', { code: route.code, ip: '10.0.0.3' });
+  assert.deepEqual(await third.waitClosed(), { code: 1013, reason: 'connection limit (spectators-per-account)' });
+  // Connections count per account, wherever they come from: 40 a minute.
+  let refused = null;
+  for (let i = 0; i < 45 && !refused; i++) {
+    const socket = await world.socket('c', { code: 'WXYZ', ip: `10.1.${i}.1` });
+    const closed = await socket.waitClosed();
+    if (closed.code === 1013) refused = { attempt: i + 1, ...closed };
+  }
+  assert.deepEqual(refused, { attempt: 41, code: 1013, reason: 'too many connections' });
+});

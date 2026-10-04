@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { bundleWorker } from '../../tools/build-worker.mjs';
+import { productionLimits } from './helpers/account-harness.js';
 
 function messages(ws) {
   const frames = [];
@@ -38,7 +39,7 @@ test('real Workers runtime isolates rooms, persists lobby hibernation, starts ma
   await bundleWorker({ outfile });
   const legacyOptions = { workers: [{ name: 'rooms-test', scriptPath: outfile, modules: true, modulesRoot: dir,
     compatibilityDate: '2026-10-01', compatibilityFlags: ['nodejs_compat'],
-    durableObjects: { ROOMS: { className: 'RoomDurableObject', useSQLite: true }, ADMISSION: { className: 'AdmissionDurableObject', useSQLite: true } },
+    durableObjects: { ROOMS: { className: 'RoomDurableObject', useSQLite: true } }, ratelimits: productionLimits,
   }] };
   const mf = new Miniflare(convertV4MiniflareOptions(legacyOptions));
   const sockets = [];

@@ -33,10 +33,9 @@ test('padded commands from a stranger leave the room snapshot as it was', (t) =>
   const { rt } = coopRoom(t);
   const stranger = connect(rt, 'mallory');
   const before = JSON.stringify(rt.snapshot()).length;
-  // A full burst of the socket's rate limit (its hello took one token).
+  // A player's full burst: a stranger's socket has a spectator's message limit (burst 10, its hello took one).
   for (let i = 0; i < 39; i++) send(rt, stranger, 'g.refresh', { pad: 'x'.repeat(60000) });
-  assert.equal(stranger.replies().length, 39);
-  assert.ok(stranger.replies().every((f) => f.t === 'error' && f.code === 'NOT_IN_ROOM'));
+  assert.deepEqual(stranger.replies().map((f) => f.code), [...Array(9).fill('NOT_IN_ROOM'), ...Array(30).fill('RATE')]);
   assert.ok(JSON.stringify(rt.snapshot()).length - before < 200);
 });
 
