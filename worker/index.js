@@ -14,6 +14,7 @@ import { handleHistoryRoutes } from './archive/routes.js';
 import { publishArchive,prepareArchive } from './archive/outbox.js';
 import { handleBackupRoutes } from './storage/backup.js';
 import { errorResponse } from './http.js';
+import { CLOSE, refuseSocket } from './close-codes.js';
 
 // the deployed commit (tools/build-worker.mjs buildId; esbuild defines it, unbundled tests see 'local')
 const BUILD = typeof __SP_BUILD__ === 'string' ? __SP_BUILD__ : 'local';
@@ -103,14 +104,14 @@ async function route(request, env) {
   if (path === '/ws') {
     if (request.method !== 'GET') return error(405, 'BAD_MSG');
     if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') return error(426, 'BAD_MSG', 'WebSocket required');
-    const code = (url.searchParams.get('room') || '').toUpperCase();
-    if (!validCode(code)) return error(400, 'BAD_MSG', 'invalid room code');
     if (!sameOrigin(request)) return error(403, 'BAD_MSG', 'origin mismatch');
+    // The game's own page is refused with a close code it can read (worker/close-codes.js).
+    const code = (url.searchParams.get('room') || '').toUpperCase();
+    if (!validCode(code)) return refuseSocket(CLOSE.ROOM_GONE, 'no such room');
     const ip = edgeIp(request);
     const session = env.ACCOUNTS ? await authenticate(request,env) : null;
-    if (env.ACCOUNTS && !session) return error(401,'LOGIN_REQUIRED');
-    const limited = await admit(env, ip, 'connect');
-    if (limited) return limited;
+    if (env.ACCOUNTS && !session) return refuseSocket(CLOSE.LOGIN_INVALID, 'login required');
+    if (await admit(env, ip, 'connect')) return refuseSocket(CLOSE.TRY_LATER, 'too many connections');
     const dest = new URL('https://room.internal/_ws');
     dest.searchParams.set('room', code);
     const ticket = url.searchParams.get('ticket');
@@ -162,7 +163,7 @@ class SocketAdapter {
     this.closed = true;
     try { this.socket.close(code, reason); } finally { this.emit('close'); }
   }
-  terminate() { this.close(1008, 'connection terminated'); }
+  terminate() { this.close(CLOSE.POLICY, 'connection terminated'); }
 }
 
 // Storage key of the restore-attempt counter (RoomDurableObject.restoreMatch).
@@ -231,7 +232,7 @@ export class RoomDurableObject {
       if (ws.readyState !== 1) continue;
       if (snapshot?.running && !snapshot.matchCheckpoint) { try { ws.close(1012, 'active match interrupted by server restart'); } catch {} continue; }
       const attachment = ws.deserializeAttachment();
-      if (!attachment) { try { ws.close(1011, 'missing session'); } catch {} continue; }
+      if (!attachment) { try { ws.close(CLOSE.LOST, 'missing session'); } catch {} continue; }
       if(this.env.ACCOUNTS) {
         const session=attachment.sessionId && await directoryOf(this.env).getSession(attachment.sessionId);
         if(!session || session.accountId!==attachment.accountId) {try{ws.close(4003,'login required');}catch{}continue;}
@@ -592,9 +593,11 @@ export class RoomDurableObject {
     }
     if (url.pathname !== '/_ws' || request.method !== 'GET') return error(404, 'BAD_MSG');
     if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') return error(426, 'BAD_MSG');
-    if (!rt.canConnect() || url.searchParams.get('room') !== rt.code) return error(404, 'ROOM_NOT_FOUND');
+    const accountId = request.headers.get('X-Account-ID');
+    if (url.searchParams.get('room') !== rt.code || !rt.canConnect(accountId)) return refuseSocket(CLOSE.ROOM_GONE, 'no such room');
     const ip = request.headers.get('X-Room-IP') || '0.0.0.0';
-    if (rt.admission(ip,request.headers.get('X-Account-ID'))) return error(429, 'RATE', 'connection limit');
+    const limit = rt.admission(ip, accountId);
+    if (limit) return refuseSocket(CLOSE.TRY_LATER, `connection limit (${limit})`);
     const profile = this.env.ACCOUNTS && request.headers.get('X-Account-ID')
       ? await accountOf(this.env,request.headers.get('X-Account-ID')).getProfile() : null;
     const pair = new WebSocketPair();

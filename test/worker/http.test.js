@@ -8,7 +8,6 @@ test('private routes never reach a Durable Object and protocol failures have sta
   assert.equal((await invoke('/_reserve', { method: 'POST' })).status, 404);
   assert.equal((await invoke('/api/rooms/ABCD/_reserve', { method: 'POST' })).status, 404);
   assert.equal((await invoke('/ws?room=ABCD')).status, 426);
-  assert.equal((await invoke('/ws?room=IIII', { headers: { Upgrade: 'websocket' } })).status, 400);
   assert.equal((await invoke('/api/rooms', { method: 'DELETE' })).status, 405);
   assert.equal((await invoke('/api/rooms', { method: 'POST', headers: { Origin: 'https://other.example' } })).status, 403);
   assert.equal((await invoke('/healthz')).status, 200);

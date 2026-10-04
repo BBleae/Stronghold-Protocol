@@ -9,6 +9,7 @@ import { ApplicationQueue } from './rooms/applications.js';
 import { retainedMatchVersions } from './match-versions.js';
 import { Spectators } from './rooms/spectators.js';
 import { logWarn, logError, errorFields } from './log.js';
+import { CLOSE } from './close-codes.js';
 
 export const ROOM_LIMITS = Object.freeze({ sockets: 16, socketsPerIp: 8, sessions: 32, messageBytes: 65_536,
   reservationMs: 120_000, idleSocketMs: 90_000 });
@@ -20,7 +21,7 @@ class RoomNetwork extends Network {
     let token = typeof msg.token === 'string' && msg.token.startsWith(prefix) ? msg.token.slice(prefix.length) : undefined;
     if (this.roomRuntime.accounts) {
       const meta = this.roomRuntime.socketMeta.get(conn.ws);
-      if (!meta?.accountId) { conn.close(4003, 'login required'); return; }
+      if (!meta?.accountId) { conn.close(CLOSE.LOGIN_INVALID, 'login required'); return; }
       const previous = [...this.registry.all()].find(s => s.accountId === meta.accountId);
       const presented = token && this.registry.byToken(token);
       if (presented && presented.accountId !== meta.accountId) {
@@ -318,7 +319,16 @@ export class RoomRuntime {
     return !this.archiveOutbox.length && !this.reservation && !this.lobby.rooms.size && !this.registry.size && !this.network.connectionCount
       && this.interruptedUntil <= this.now();
   }
-  canConnect() { return !!this.code && !this.isEmpty(); }
+  /**
+   * Whether a socket of `accountId` has anything to do here: the room, the account's reservation, or a session of the
+   * account (to resume, or to learn why its room closed). Anything else is refused as a room that is gone.
+   */
+  canConnect(accountId) {
+    if (!this.code || this.isEmpty()) return false;
+    if (!this.accounts) return true;
+    return !!this.lobby.getRoom(this.code) || this.reservation?.accountId === accountId
+      || [...this.registry.all()].some((s) => s.accountId === accountId);
+  }
   admission(ip, accountId) {
     if (this.network.connectionCount >= ROOM_LIMITS.sockets) return 'full';
     const key = limitKeyOf(normalizeIp(ip) || '0.0.0.0');
@@ -334,7 +344,7 @@ export class RoomRuntime {
     return null;
   }
   connect(ws, { ip = '0.0.0.0', ticket, attachment, accountId, sessionId, avatarUrl, takeover = false } = {}) {
-    if (!attachment && this.admission(ip,accountId)) { ws.close(1013, 'connection limit'); return; }
+    if (!attachment && this.admission(ip,accountId)) { ws.close(CLOSE.TRY_LATER, 'connection limit'); return; }
     const normalized = normalizeIp(ip) || '0.0.0.0';
     const resume=this.resumeTickets.get(ticket);
     if (resume && resume.accountId===accountId && resume.expiresAt>this.now()) {
@@ -357,7 +367,7 @@ export class RoomRuntime {
       const session = this.registry.byId(attachment.playerId);
       if (session) {
         if(this.accounts && (attachment.accountId!==session.accountId || attachment.connectionEpoch!==session.connectionEpoch)) {
-          conn.close(4001,'session replaced');return conn;
+          conn.close(CLOSE.REPLACED,'session replaced');return conn;
         }
         conn.session = session;
         session.ws = ws;
@@ -382,7 +392,7 @@ export class RoomRuntime {
         this.socketMeta.get(ws)?.connectionEpoch !== conn.session.connectionEpoch)) return;
     const binary = typeof message !== 'string';
     const bytes = binary ? message.byteLength : Buffer.byteLength(message, 'utf8');
-    if (bytes > ROOM_LIMITS.messageBytes) { ws.close(1009, 'message exceeds 64 KiB'); return; }
+    if (bytes > ROOM_LIMITS.messageBytes) { ws.close(CLOSE.TOO_BIG, 'message exceeds 64 KiB'); return; }
     this.network.onFrame(conn, binary ? Buffer.from(message) : message, binary);
   }
   disconnect(ws) {
@@ -394,8 +404,8 @@ export class RoomRuntime {
     this.applications.expire();
     for (const [ticket,value] of this.resumeTickets) if (value.expiresAt<=this.now()) this.resumeTickets.delete(ticket);
     for (const conn of this.network.conns.values()) {
-      if (!conn.session && this.now() - conn.openedAt >= this.network.opts.helloTimeoutMs) conn.close(4002, 'hello timeout');
-      else if (conn.session && this.now() - conn.session.lastSeen >= ROOM_LIMITS.idleSocketMs) conn.close(1001, 'idle connection');
+      if (!conn.session && this.now() - conn.openedAt >= this.network.opts.helloTimeoutMs) conn.close(CLOSE.HELLO_TIMEOUT, 'hello timeout');
+      else if (conn.session && this.now() - conn.session.lastSeen >= ROOM_LIMITS.idleSocketMs) conn.close(CLOSE.IDLE, 'idle connection');
     }
     this.lobby.expireGrace();
     this.network.sweep();
