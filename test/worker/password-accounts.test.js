@@ -3,6 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createWorld } from './helpers/world.js';
+import { oneLimitWindow } from './helpers/account-harness.js';
 import { PBKDF2_ITERATIONS } from '../../worker/accounts/passwords.js';
 
 const ADMIN_TOKEN = 'admin-'.repeat(8);
@@ -104,6 +105,7 @@ test('registration refuses invalid usernames, passwords and nicknames', { timeou
 test('credential attempts are limited per network and per username', { timeout: 120000 }, async (t) => {
   const world = await createWorld(t);
   const a = accounts(world);
+  await oneLimitWindow();
   const ip = freshIp();
   for (let n = 0; n < 3; n++) assert.equal((await a.register('limited' + n, 'long enough', '代号', { ip })).status, 201);
   assert.deepEqual((await a.register('limited9', 'long enough', '代号', { ip })).body, { error: 'RATE_LIMITED' }, 'a 4th registration a minute');
