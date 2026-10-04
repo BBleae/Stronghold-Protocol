@@ -27,7 +27,8 @@ const FIELD_OF = { INVALID_USERNAME: 'username', USERNAME_TAKEN: 'username', INV
 /**
  * A form's values, the mistake shown under each field, and whether it is being sent. `field(name)` gives a TextField
  * its value, input and mistake; `submit(found, send)` sends only when no field has a mistake (found: { name: code or
- * null }). A field's mistake goes when the field is edited, and all of them with `forget()`.
+ * null }). Mistakes stay until the next send (or `forget()`): a hint that went at the first keystroke would move the
+ * fields while the player is still fixing one.
  */
 function useForm(initial) {
   const [values, setValues] = useState(initial);
@@ -36,10 +37,7 @@ function useForm(initial) {
   const field = (name) => ({
     name,
     value: values[name],
-    onInput: (value) => {
-      setValues((current) => ({ ...current, [name]: value }));
-      setMistakes((current) => ({ ...current, [name]: null }));
-    },
+    onInput: (value) => setValues((current) => ({ ...current, [name]: value })),
     invalid: !!mistakes[name],
     hint: mistakes[name] ? html`<span class="t-red" role="alert">${CLIENT_ERR_TEXT[mistakes[name]]}</span>` : null,
   });
@@ -150,10 +148,11 @@ export function PasswordDialog({ onClose }) {
     toast('密码已修改，其他设备上的登录已退出', 'success');
     onClose();
   });
+  // The hidden username (for password managers) comes last: the dialog focuses its first input, 当前密码.
   return html`<${AccountDialog} id="account-password" title="修改密码" form=${form} onSubmit=${save} onClose=${onClose}>
-    <input type="text" name="username" autocomplete="username" value=${account.user.username} hidden />
     <${TextField} label="当前密码" micro="PASSWORD" icon="shield" type="password" autocomplete="current-password" ...${form.field('current')} />
     <${TextField} label="新密码" micro="NEW PASSWORD" icon="shield" type="password" autocomplete="new-password" ...${form.field('password')} />
     <${TextField} label="确认新密码" micro="CONFIRM" icon="shield" type="password" autocomplete="new-password" ...${form.field('confirm')} />
+    <input type="text" name="username" autocomplete="username" value=${account.user.username} hidden />
   <//>`;
 }
