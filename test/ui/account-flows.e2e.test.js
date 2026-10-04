@@ -106,6 +106,20 @@ test('account flows: invite through the GitHub login, invite while logged in, re
   await click(host, '拒绝');
   await other.waitForFunction((code) => document.body.innerText.includes(`${code} · 申请已被拒绝`), { timeout: 15000 }, code);
 
+  // 继续对局 for a seat whose room ended meanwhile (the same account left it on another device): the attempt says so
+  // and the button goes away.
+  const elsewhere = await open();
+  await elsewhere.goto(base + '__test/login/c');
+  await inMenu(elsewhere);
+  await call(elsewhere, 'room.create', { mode: 'solo', difficulty: 'FUNNY' });
+  await other.evaluate(() => document.dispatchEvent(new Event('visibilitychange'))); // the lobby reads the seat again
+  await other.waitForFunction(() => [...document.querySelectorAll('button')].some((b) => b.textContent.trim() === '继续对局'), { timeout: 15000 });
+  await call(elsewhere, 'room.leave');
+  await click(other, '继续对局');
+  await other.waitForFunction(() => document.body.innerText.includes('对局已结束或恢复时间已过'), { timeout: 15000 });
+  await other.waitForFunction(() => ![...document.querySelectorAll('button')].some((b) => b.textContent.trim() === '继续对局'), { timeout: 15000 });
+  assert.equal(await other.evaluate(() => __SP__.net.status), 'menu');
+
   // A reload mid-match resumes the seat (no 继续对局 click).
   await call(friend, 'room.ready', { ready: true });
   await call(host, 'room.start');

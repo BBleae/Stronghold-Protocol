@@ -65,8 +65,8 @@ export function LogoutButton() {
 
 /**
  * The lobby's account actions. 继续对局 shows while the account holds a seat, read again whenever the client is back in
- * the menu; a seat that is still a reservation (a create that failed) creates its room with the lobby's `mode` and
- * `difficulty`.
+ * the menu and after every 继续对局 attempt; a seat that is still a reservation (a create that failed) creates its room
+ * with the lobby's `mode` and `difficulty`.
  */
 export function AccountMenu({ mode, difficulty }) {
   const inMenu = useStore((s) => s.connection.status === 'menu');
@@ -80,6 +80,7 @@ export function AccountMenu({ mode, difficulty }) {
       await net.enter({ kind: 'resume', mode, difficulty });
     } finally {
       setBusy(false);
+      seat.refresh(); // a match that ended meanwhile takes the button away
     }
   };
   const login = () => location.assign(loginUrl(store.get().ui.pendingJoin));
