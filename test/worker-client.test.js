@@ -479,6 +479,33 @@ test('an invalid login stops reconnecting and asks to log in again (close 4003, 
   }
 });
 
+test('an invalid login met from the lobby asks to log in again; a later try works once logged in again', async () => {
+  const h = setup();
+  h.api.reply('POST /api/rooms', [401, { error: 'LOGIN_REQUIRED' }]);
+  await assert.rejects(h.net.request('room.create', { mode: 'coop', difficulty: 'FUNNY' }),
+    { code: 'LOGIN_REQUIRED', message: '登录已失效，请重新登录' });
+  const snap = h.net.snapshot();
+  assert.equal(snap.status, 'closed');
+  assert.deepEqual(snap.lastError, { code: 'LOGIN_REQUIRED', text: '登录已失效，请重新登录' });
+  assert.equal(bannerVisible({ ...snap, everOnline: false }, true, false), true, 'the banner offers 重新登录');
+  await inRoom(h); // logged in again in another tab: the session cookie works again
+  assert.equal(h.net.status, 'online');
+  assert.deepEqual(h.api.unexpected, []);
+});
+
+test('a join application stops being checked when the login became invalid', async () => {
+  const h = setup();
+  h.net.watchApplication({ code: 'ABCD', id: 'app1', status: 'pending' });
+  h.api.reply('GET /api/rooms/ABCD/applications', [401, { error: 'LOGIN_REQUIRED' }]);
+  await h.timers.advance(APPLICATION_POLL_MS);
+  assert.equal(h.net.status, 'closed');
+  assert.equal(h.net.snapshot().lastError.code, 'LOGIN_REQUIRED');
+  assert.equal(h.net.application.error.message, '登录已失效，请重新登录');
+  await h.timers.advance(APPLICATION_POLL_MS * 5);
+  assert.equal(h.api.calls.length, 1, 'no more checks');
+  assert.deepEqual(h.api.unexpected, []);
+});
+
 test('a transient refusal is retried and the seat resumes with its token', async () => {
   const h = setup();
   await inRoom(h);

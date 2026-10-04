@@ -9,8 +9,10 @@
 //             to the menu; enter() rejects with the reason.
 //   room      the socket belongs to a room the player is in; Net's reconnects apply (online, reconnecting …). The room
 //             ends with room.closed (pushed by the server or emitted here) and the client returns to the menu.
-//   lost      the login became invalid while in a room: status 'closed', lastError LOGIN_REQUIRED, no reconnects.
-//             Logging in again reloads the page, and the reload resumes the seat (restore()).
+//   lost      the login is invalid (the room or the account API said so): status 'closed', lastError LOGIN_REQUIRED,
+//             no socket, no reconnects, no application checks. Logging in again reloads the page, and the reload
+//             resumes a seat the login was lost in (restore()). enter() may still try again: another tab may have
+//             logged in since.
 //
 // Intents of enter(): create {mode, difficulty} · join {code} (a join application, HTTP only: see `application`) ·
 // joinApproved {code, ticket} · resume {mode, difficulty} (继续对局, which may take the seat over from another
@@ -72,7 +74,8 @@ export class RoomNet extends Net {
 
   /**
    * Get into a room: the one way out of the menu (intents: see the header). Resolves with the answer to the intent's
-   * request ({ application } for a join application). A failure closes the socket, returns to the menu and rejects.
+   * request ({ application } for a join application). A failure closes the socket, returns to the menu (or to 'lost'
+   * when the login is invalid) and rejects.
    * @param {{ kind: 'create'|'join'|'joinApproved'|'resume'|'spectate', code?: string, ticket?: string,
    *   token?: string, mode?: string, difficulty?: string }} intent
    */
@@ -88,6 +91,7 @@ export class RoomNet extends Net {
       return reply;
     } catch (error) {
       this._toMenu();
+      if (error.code === 'LOGIN_REQUIRED') this._lose(error);
       throw error;
     }
   }
@@ -168,6 +172,7 @@ export class RoomNet extends Net {
       const { items } = await accountRequest(`/api/rooms/${application.code}/applications`, undefined, this.fetch);
       item = items.find((x) => x.id === application.id) ?? { status: 'expired' };
     } catch (error) {
+      if (error.code === 'LOGIN_REQUIRED') this._lose(error);
       if (error.code === 'LOGIN_REQUIRED' || error.code === 'ROOM_NOT_FOUND') {
         item = { status: 'failed', error };
       } else {
@@ -351,7 +356,7 @@ export class RoomNet extends Net {
     }
   }
 
-  // The route cannot go on. Entering fails with the reason (enter() returns to the menu). In a room an invalid login
+  // The route cannot go on. Entering fails with the reason (enter() decides where to go). In a room an invalid login
   // keeps the seat for after a new login ('lost'); anything else ends the room.
   _routeEnded(error) {
     this._dropSocket();
@@ -359,14 +364,22 @@ export class RoomNet extends Net {
     if (this.state === 'entering') {
       this._waiting?.fail(error);
     } else if (error.code === 'LOGIN_REQUIRED') {
-      this._clearTimer('_reconnectTimer', 'clearTimeout');
-      this._manualClose = true;
-      this.lastError = error;
-      this.state = 'lost';
-      this._setStatus('closed');
+      this._lose(error);
     } else {
       this._emit('room.closed', { t: 'room.closed', reason: error.code === 'REPLACED' ? 'replaced' : 'expired' });
     }
+  }
+
+  // The login is invalid: stop talking to the server until the player logs in again. Called with no socket left (the
+  // route ended, or the menu). The room (if any) and this tab's room token stay, so the reload after the new login
+  // resumes the seat.
+  _lose(error) {
+    this._clearTimer('_reconnectTimer', 'clearTimeout');
+    this._clearTimer('_applicationTimer', 'clearTimeout');
+    this._manualClose = true;
+    this.lastError = error;
+    this.state = 'lost';
+    this._setStatus('closed');
   }
 
   // Back to the menu: no socket, no route. Requests still waiting for the room fail with NOT_IN_ROOM.
