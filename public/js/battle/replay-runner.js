@@ -39,7 +39,9 @@ export function createReplayRunner({engine,onFrame=()=>{},onField=()=>{}}) {
       if(dead) return;
       if(value.frameEncoding && value.frameEncoding!=='delta-v1')throw new Error('REPLAY_INCOMPLETE');
       record=value;playing=false;position=0;cursor=0;frameCursor=0;snapshot=null;
-      battle=value.source==='server'?null:engine.createBattle(value.spec);
+      // a recording with frames plays them (battles on a shared boss pool, archives before spec traces); any other
+      // battle re-simulates its spec with the match's own replay engine
+      battle=value.frames?null:engine.createBattle(value.spec);
       onField({...value.meta || battle?.fieldMeta(),fieldId:value.fieldId,kind:value.kind,stageId:value.spec.stageId,rect:value.spec.rect});
       if(battle){apply();emit(battle.snapshot(),battle.drainEvents());}
       else if(value.frames?.length){snapshot=decodeReplayFrame(null,value.frames[0]);emit(snapshot,value.frames[0].events);frameCursor=1;}

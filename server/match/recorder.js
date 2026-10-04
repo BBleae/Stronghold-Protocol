@@ -16,28 +16,48 @@ export function appendReplayReport(field,playerId,report) {
   field.replayTrace=trace;return true;
 }
 
-/** Server takeovers may use crediting/shared pools. Capture their actual view rather than approximating those inputs. */
-export function recordServerBattle(battle,spec,observeFrame=null) {
-  const trace={spec:copy(spec),source:'server',frameEncoding:'delta-v1',frames:[],keyframes:[],unitInfo:[],meta:copy(battle.fieldMeta()),tick:0,complete:false};
-  const encoder=createFrameEncoder(),infos=new Map(),infoVersions=new Map();
-  const remember=info=>{const key=JSON.stringify(info);let index=infoVersions.get(key);
-    if(index===undefined){index=trace.unitInfo.length;trace.unitInfo.push(copy(info));infoVersions.set(key,index);}infos.set(info.id,index);};
-  for(const info of trace.meta.units || [])remember(info);
-  const step=battle.step.bind(battle),force=battle.forceEnd.bind(battle);
-  const pending=[];
-  const capture=()=>{
-    const snapshot=battle.snapshot(),events=[...pending.splice(0),...battle.drainEvents()];
-    observeFrame?.({battleId:spec.battleId,tick:battle.tickCount,snapshot:copy(snapshot),events:copy(events)});
-    for(const event of events)if(event[0]==='spawn')remember(event[1]);
-    const frame=encoder.encode(battle.tickCount,snapshot,events);
-    if(frame.snapshot) {
-      const visible=new Set([...snapshot.units.map(u=>u[0]),...(snapshot.down || []).map(u=>u[0])]);
-      frame.unitInfo=[...visible].map(id=>infos.get(id)).filter(index=>index!==undefined);
-      trace.keyframes.push({tick:battle.tickCount,index:trace.frames.length});
-    }
-    trace.tick=battle.tickCount;trace.frames.push(frame);trace.complete=!!battle.finished;
+/**
+ * A server battle that runs from its spec alone (every normal / 联防 field the server simulates): it is deterministic, so
+ * its replay is the spec — re-simulated by the replay engine of the match's rules version — plus how it ended. The only
+ * input from outside is a forced end (a HeadlessJob hard cap or crash, fields.js), recorded as an 'end' input.
+ */
+export function recordServerSpec(battle, spec) {
+  const trace = { source: 'server', spec: copy(spec), inputs: [], tick: 0, complete: false };
+  const step = battle.step.bind(battle), forceEnd = battle.forceEnd.bind(battle);
+  const sync = () => { trace.tick = battle.tickCount; trace.complete = !!battle.finished; };
+  battle.step = (...args) => { const result = step(...args); sync(); return result; };
+  battle.forceEnd = (...args) => {
+    const result = forceEnd(...args);
+    trace.inputs.push({ tick: battle.tickCount, kind: 'end', reason: args[0] });
+    sync();
+    return result;
   };
-  battle.step=(...args)=>{const result=step(...args);pending.push(...battle.drainEvents());if(battle.tickCount%6===0 || battle.finished)capture();return result;};
-  battle.forceEnd=(...args)=>{const result=force(...args);capture();return result;};
-  capture();return trace;
+  return trace;
+}
+
+/**
+ * A battle on a shared boss pool depends on the other fields while it runs (the pool's hits arrive from them), so its
+ * replay is what it showed: a snapshot and its events every 6 ticks (0.2 s), delta-encoded (shared/replay-frames.js).
+ */
+export function recordServerBattle(battle, spec, observeFrame = null) {
+  const trace = { spec: copy(spec), source: 'server', frameEncoding: 'delta-v1', frames: [], meta: copy(battle.fieldMeta()), tick: 0, complete: false };
+  const encoder = createFrameEncoder();
+  const step = battle.step.bind(battle), forceEnd = battle.forceEnd.bind(battle);
+  const pending = [];
+  const capture = () => {
+    const snapshot = battle.snapshot(), events = [...pending.splice(0), ...battle.drainEvents()];
+    observeFrame?.({ battleId: spec.battleId, tick: battle.tickCount, snapshot: copy(snapshot), events: copy(events) });
+    trace.frames.push(encoder.encode(battle.tickCount, snapshot, events));
+    trace.tick = battle.tickCount;
+    trace.complete = !!battle.finished;
+  };
+  battle.step = (...args) => {
+    const result = step(...args);
+    pending.push(...battle.drainEvents());
+    if (battle.tickCount % 6 === 0 || battle.finished) capture();
+    return result;
+  };
+  battle.forceEnd = (...args) => { const result = forceEnd(...args); capture(); return result; };
+  capture();
+  return trace;
 }

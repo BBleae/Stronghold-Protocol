@@ -43,3 +43,14 @@ test('independent replay applies tick inputs, pauses and disposes without networ
   runner.setSpeed(2);runner.play();runner.advance(0.5);assert.equal(steps,45);
   runner.dispose();runner.advance(1);assert.equal(steps,45);assert.ok(frames>0);
 });
+
+test('a server battle recorded as its spec is re-simulated, with its forced end applied at the recorded tick',()=>{
+  let created=0,ended=null;
+  const battle={tickCount:0,finished:false,step(){this.tickCount++;},snapshot(){return {t:this.tickCount/30,units:[]};},
+    drainEvents(){return [];},fieldMeta(){return {units:[]};},forceEnd(reason){ended=[this.tickCount,reason];this.finished=true;}};
+  const runner=createReplayRunner({engine:{createBattle:()=>{created++;return battle;}}});
+  runner.select({source:'server',kind:'normal',spec:{stageId:'s'},tick:9,inputs:[{tick:9,kind:'end',reason:'timeout'}],complete:true});
+  assert.equal(created,1,'no frames: the engine runs the spec');
+  runner.play();runner.advance(0.5);
+  assert.deepEqual(ended,[9,'timeout']);assert.equal(battle.tickCount,9);
+});

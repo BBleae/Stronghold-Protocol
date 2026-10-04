@@ -4,12 +4,13 @@ import { RecordedMatch, exportMatch, restoreMatch } from '../../server/match/che
 import { DATA } from './harness.js';
 import {decodeReplayFrame} from '../../shared/replay-frames.js';
 import {encodeReplayChunks} from '../../shared/replay-codec.js';
+import { createBattleFromSpec, resultDigest } from '../../server/sim/spec.js';
 const opts = (extra={}) => ({mode:'coop',difficulty:'FUNNY',roomCode:'ABCD',seed:17,matchNo:1,data:DATA,
   seats:[{seat:0,playerId:'p0',name:'Alice',isBot:false,connected:true},
     {seat:1,playerId:'p1',name:'Bob',isBot:false,connected:true}],now:()=>1000,
   send(){return true;},broadcast(){},onEnd(){},botRehearsal:0,...extra});
 
-test('disconnected final and hidden-core fields retain actual server frames', {timeout:120000},async()=>{
+test('server battles replay exactly: shared-pool fields as frames, every other one from its spec', {timeout:120000},async()=>{
   const data=structuredClone(DATA);
   for(const band of Object.values(data.bands || {}))band.totalHp=10000;
   for(const boss of Object.values(data.bosses || {}))for(const key of Object.keys(boss.bloodPoint || {}))boss.bloodPoint[key]=1;
@@ -29,14 +30,27 @@ test('disconnected final and hidden-core fields retain actual server frames', {t
     assert.ok(fields.length>0,`round ${round} must be recorded`);
     for(const b of fields){assert.equal(b.source,'server');assert.equal(b.complete,true);assert.ok(b.frames.length>1);assert.ok(b.result);}
   }
+  // a battle without frames is deterministic from its spec: the replay engine re-simulates it to the same end
+  const specBattles=m.replayBattles.filter(b=>!b.frames);
+  assert.ok(specBattles.length>0,'normal and unite fields run on the server here');
+  for(const b of specBattles){
+    assert.equal(b.source,'server');
+    const battle=createBattleFromSpec(b.spec,m.ds);let cursor=0;
+    const apply=()=>{while(cursor<b.inputs.length && b.inputs[cursor].tick<=battle.tickCount){const x=b.inputs[cursor++];if(x.kind==='end')battle.forceEnd(x.reason);}};
+    while(battle.tickCount<b.tick && !battle.finished){apply();battle.step();}
+    apply();
+    assert.equal(battle.tickCount,b.tick);assert.equal(!!battle.finished,b.complete);
+    assert.equal(resultDigest(battle.result()).hash,resultDigest(b.result).hash,b.battleId+' re-simulates to the live result');
+  }
   let totalFrames=0;
   const uncompressedBattles=m.replayBattles.map(b=>{
+    if(!b.frames)return b;
     let prior=null;const originals=rawFrames.get(b.battleId);assert.equal(b.frames.length,originals.length);
     for(let i=0;i<b.frames.length;i++){
       const f=b.frames[i];prior=decodeReplayFrame(prior,f);
       assert.deepEqual({tick:f.tick,snapshot:prior,events:f.events},originals[i]);totalFrames++;
     }
-    const {frameEncoding,keyframes,unitInfo,...old}=b;return {...old,frames:originals};
+    const {frameEncoding,...old}=b;return {...old,frames:originals};
   });
   const wrap=battles=>JSON.stringify({schemaVersion:1,rulesVersion:m.recording.rulesVersion,battles});
   const raw=wrap(uncompressedBattles),delta=wrap(m.replayBattles);
@@ -44,7 +58,8 @@ test('disconnected final and hidden-core fields retain actual server frames', {t
   const size=x=>Buffer.byteLength(x),stored=x=>x.chunks.reduce((n,c)=>n+c.text.length,0);
   const metrics={battles:m.replayBattles.length,frames:totalFrames,rawBytes:size(raw),gzipBase64Bytes:stored(gzip),deltaBytes:size(delta),deltaGzipBase64Bytes:stored(both)};
   console.log('replay compression full match',JSON.stringify(metrics));
-  assert.ok(metrics.deltaBytes<metrics.rawBytes);assert.ok(metrics.deltaGzipBase64Bytes<metrics.gzipBase64Bytes);
+  // a whole match's replay is small: specs plus the shared-pool fields' frames (it was megabytes of frames per match)
+  assert.ok(metrics.rawBytes<1024*1024,'replay of a full match stays under 1 MB');
   const start=performance.now();const restored=restoreMatch(exportMatch(m),deps);
   console.log('full final/hidden recovery ms',Math.round(performance.now()-start),'events',m.recording.events.length);
   assert.deepEqual(restored.replayBattles,m.replayBattles);m.dispose();restored.dispose();
@@ -104,7 +119,7 @@ test('a recorded full cooperative match reconstructs combat and final result', {
   m.dispose(); restored.dispose();
 });
 
-test('server-taken client battles retain exact replay frames through recovery', {timeout:120000},()=>{
+test('server-taken client battles keep an exact spec replay through recovery', {timeout:120000},()=>{
   let clock=1000;
   const deps=opts({now:()=>clock,clientCombat:true});
   const m=new RecordedMatch(deps);m.start();
@@ -113,7 +128,8 @@ test('server-taken client battles retain exact replay frames through recovery', 
     clock=m.sched.nextAt();assert.notEqual(clock,null);m.pump(clock,10);
   }
   assert.ok(m.replayBattles.length>0);
-  const replay=m.replayBattles[0];assert.equal(replay.source,'server');assert.equal(replay.complete,true);assert.ok(replay.frames.length>1);
+  const replay=m.replayBattles[0];assert.equal(replay.source,'server');assert.equal(replay.complete,true);
+  assert.equal(replay.frames,undefined,'a normal field replays from its spec');assert.ok(replay.tick>0);assert.ok(replay.spec);
   const restored=restoreMatch(exportMatch(m),deps);
   assert.deepEqual(restored.replayBattles,m.replayBattles);
   assert.ok(Object.values(m.usedOperators).some(ids=>ids.length));

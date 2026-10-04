@@ -1,6 +1,6 @@
 import { Match } from './Match.js';
 import { VirtualScheduler } from './scheduler.js';
-import { appendReplayReport,recordServerBattle } from './recorder.js';
+import { appendReplayReport,recordServerBattle,recordServerSpec } from './recorder.js';
 
 import { RULES_VERSION } from '../../shared/rules-version.js';
 export { RULES_VERSION };
@@ -81,9 +81,10 @@ export class RecordedMatch extends Match {
     }
     return field;
   }
-  _specBattle(spec,options) {
+  _specBattle(spec,options={}) {
     const battle=super._specBattle(spec,options);
-    this.serverTraces.set(battle,recordServerBattle(battle,spec,this.observeReplayFrame));
+    // Frames only for a battle on a shared boss pool; any other server battle replays from its spec (recorder.js).
+    this.serverTraces.set(battle,options.sharedBoss ? recordServerBattle(battle,spec,this.observeReplayFrame) : recordServerSpec(battle,spec));
     return battle;
   }
   _fieldDone(field) {
