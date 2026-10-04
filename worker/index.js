@@ -520,7 +520,9 @@ export class RoomDurableObject {
       hostName: room.seatOf(room.hostId)?.name || '博士',
       difficulty: room.difficulty,
     };
-    const fingerprint = JSON.stringify(listing);
+    // Spectators coming and going never write to the directory: their count goes out with the next refresh.
+    const { spectatorCount, ...fields } = listing;
+    const fingerprint = JSON.stringify(fields);
     if (fingerprint === job.fingerprint && now < job.refreshAt) return;
     job.busy = true;
     const published = directoryOf(this.env).publishRoom({ ...listing, updatedAt: now, expiresAt: now + 60_000 });

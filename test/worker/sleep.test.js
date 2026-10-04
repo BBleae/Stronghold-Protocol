@@ -154,3 +154,29 @@ test('a failed listing is logged once and retried after its backoff, even when t
   }
   assert.deepEqual(listed.map((room) => [room.roomId, room.occupied]), [[route.code, 2]]);
 });
+
+test('spectators coming and going write nothing to the lobby directory', { timeout: 120000 }, async (t) => {
+  const world = await createWorld(t);
+  await world.seed('a');
+  await world.seed('b');
+  const route = (await world.api('a', '/api/rooms', { method: 'POST' })).body;
+  const host = await world.player('a', route);
+  await host.request('room.create', { mode: 'coop', difficulty: 'FUNNY' });
+  assert.equal((await host.request('room.start')).t, 'ok');
+  let listed = [];
+  for (let i = 0; i < 50 && !listed.some((room) => room.inMatch); i++) {
+    listed = (await world.api('a', '/api/rooms')).body.items;
+    await sleep(50);
+  }
+  const publishes = await world.publishes();
+
+  // The count reaches the room once a second, and the directory with the listing's next refresh (every 20 s).
+  const viewer = await world.player('b', { code: route.code });
+  for (let i = 0; i < 4; i++) {
+    assert.equal((await viewer.request('room.spectate')).t, 'ok');
+    assert.equal((await viewer.request('room.leave')).t, 'ok');
+  }
+  assert.equal((await viewer.request('room.spectate')).t, 'ok');
+  assert.equal((await host.wait('room.state', (f) => f.spectatorCount === 1)).inMatch, true);
+  assert.equal(await world.publishes(), publishes);
+});
