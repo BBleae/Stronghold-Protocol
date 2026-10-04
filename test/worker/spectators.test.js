@@ -99,6 +99,15 @@ test('a spectator\'s hello and room.spectate are answered to it alone; count cha
   assert.ok(viewer.frames.slice(-15).some(f=>f.t==='error' && f.code==='RATE'));
 });
 
+test('an event views the match once for its spectators, however many watch',t=>{
+  const {rt,host}=setup(t);send(rt,host,'room.start');
+  for(let i=0;i<5;i++)send(rt,connect(rt,'viewer'+i,undefined,undefined,'9.1.1.'+(i+1)),'room.spectate');
+  const match=rt.lobby.getRoom('ABCD').match, publicView=match.publicView.bind(match);
+  let views=0;match.publicView=()=>{views++;return publicView();};
+  rt.spectators.pump();
+  assert.equal(views,1);
+});
+
 test('same-address spectators leave capacity for all player seats and a replacement',t=>{
   const {rt,host}=setup(t);send(rt,host,'room.start');
   for(let i=0;i<3;i++)send(rt,connect(rt,'viewer'+i),'room.spectate');

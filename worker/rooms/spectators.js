@@ -4,6 +4,25 @@ import { CLOSE } from '../close-codes.js';
 // A changed spectator count is broadcast at most this often: joins and leaves in between are coalesced.
 const PRESENCE_MS = 1000;
 
+// What spectators are sent of a match at one moment: its public view (and its key: the view without its clock) and a
+// player's prep field, each computed once however many spectators are sent it.
+class MatchView {
+  constructor(match) {
+    this.match = match;
+    this.pub = match.publicView();
+    this.publicKey = JSON.stringify({ ...this.pub, serverNow: 0 });
+    this.prepFields = new Map();
+  }
+
+  prepField(player) {
+    if (!this.prepFields.has(player.playerId)) {
+      const meta = this.match.prepFieldMeta(player);
+      this.prepFields.set(player.playerId, { meta, key: JSON.stringify(meta) });
+    }
+    return this.prepFields.get(player.playerId);
+  }
+}
+
 // Read-only views live outside Match: retained rule engines and player/checkpoint membership are unchanged. A spectator
 // never becomes a simulation authority.
 //
@@ -14,7 +33,8 @@ const PRESENCE_MS = 1000;
 export class Spectators {
   constructor(runtime) {
     this.rt = runtime;
-    this.views = new Map();
+    // What each spectator (by player id) was last sent: the public view's key, its field's key.
+    this.sent = new Map();
     // A count change waiting for the next presence update; when the last update went out.
     this.countChanged = false;
     this.presenceAt = -Infinity;
@@ -66,7 +86,7 @@ export class Spectators {
     }
     session.spectating = true;
     this.countChanged = true;
-    this.views.delete(session.playerId);
+    this.sent.delete(session.playerId);
     this.state(session);
     this.sync(session, true);
     return { ok: true };
@@ -82,12 +102,12 @@ export class Spectators {
   stop(session) {
     session.spectating = false;
     delete session.watchField;
-    this.views.delete(session.playerId);
+    this.sent.delete(session.playerId);
   }
 
   /** The spectator's socket closed. */
   disconnect(session) {
-    this.views.delete(session.playerId);
+    this.sent.delete(session.playerId);
     this.countChanged = true;
   }
 
@@ -99,7 +119,7 @@ export class Spectators {
     this.state(session);
     if (repeat) return;
     this.countChanged = true;
-    this.views.delete(session.playerId);
+    this.sent.delete(session.playerId);
     this.sync(session, true);
   }
 
@@ -112,7 +132,7 @@ export class Spectators {
       || (!match.fields.length && msg.fieldId.startsWith('n:') && match.players.get(msg.fieldId.slice(2))?.alive);
     if (!valid) return { error: 'BAD_TARGET' };
     session.watchField = msg.fieldId;
-    this.views.delete(session.playerId);
+    this.sent.delete(session.playerId);
     this.sync(session, true);
     return { ok: true };
   }
@@ -141,20 +161,26 @@ export class Spectators {
   }
 
   // Every event: spectators follow the match (or stop watching when it is over), and a changed count goes out once
-  // its presence update is due.
+  // its presence update is due. An event's cost does not grow with the audience: the match is viewed once.
   pump() {
-    if (!this.room?.match || !this.rt.publicRoom) this.end();
-    else for (const session of this.sessions()) this.sync(session);
+    const match = this.room?.match;
+    if (!match || !this.rt.publicRoom) {
+      this.end();
+    } else {
+      const sessions = this.sessions();
+      const view = sessions.length ? new MatchView(match) : null;
+      for (const session of sessions) this.sync(session, false, view);
+    }
     if (this.countChanged && this.rt.now() >= this.presenceAt + PRESENCE_MS) this.broadcastState();
   }
 
-  sync(session, force = false) {
+  /** Send the spectator what changed of the match since it was last sent (everything when `force`). */
+  sync(session, force = false, view = null) {
     const match = this.room?.match;
     if (!match) return;
-    const previous = this.views.get(session.playerId) || {};
-    const pub = match.publicView();
-    const publicKey = JSON.stringify({ ...pub, serverNow: 0 });
-    if (force || previous.publicKey !== publicKey) sendSession(session, pub);
+    view ??= new MatchView(match);
+    const previous = this.sent.get(session.playerId) || {};
+    if (force || previous.publicKey !== view.publicKey) sendSession(session, view.pub);
     const field = match.fields.find((f) => f.fieldId === session.watchField) || match.fields.find((f) => !f.done) || match.fields[0];
     let fieldKey = null;
     if (field?.cc) {
@@ -175,12 +201,12 @@ export class Spectators {
       const target = match.players.get(session.watchField?.slice(2));
       const player = target?.alive ? target : match.order.find((p) => p.alive && !p.left);
       if (player) {
-        const meta = match.prepFieldMeta(player);
+        const { meta, key } = view.prepField(player);
         session.watchField = meta.fieldId;
-        fieldKey = JSON.stringify(meta);
+        fieldKey = key;
         if (force || previous.fieldKey !== fieldKey) sendSession(session, meta);
       }
     }
-    this.views.set(session.playerId, { publicKey, fieldKey });
+    this.sent.set(session.playerId, { publicKey: view.publicKey, fieldKey });
   }
 }

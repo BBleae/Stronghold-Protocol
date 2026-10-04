@@ -124,3 +124,21 @@ test('strangers may only watch a running public match, with few sockets and few 
   }
   assert.deepEqual(refused, { attempt: 41, code: 1013, reason: 'too many connections' });
 });
+
+test('a stranger flooding past its message limit is closed with 1008; a player sending as much is not', { timeout: 120000 }, async (t) => {
+  const world = await createWorld(t);
+  for (const actor of ['a', 'b']) await world.seed(actor);
+  const route = (await world.api('a', '/api/rooms', { method: 'POST' })).body;
+  const host = await world.player('a', route);
+  await host.request('room.create', { mode: 'coop', difficulty: 'FUNNY' });
+  assert.equal((await host.request('room.start')).t, 'ok');
+  const viewer = await world.player('b', { code: route.code });
+  assert.equal((await viewer.request('room.spectate')).t, 'ok');
+
+  // A spectator sends 2 messages a second (burst 10); each frame costs the room an event, a refused one too.
+  for (let i = 0; i < 30; i++) viewer.send({ t: 'ping', c: i + 1 });
+  assert.deepEqual(await viewer.waitClosed(), { code: 1008, reason: 'rate limit' });
+  for (let i = 0; i < 30; i++) host.send({ t: 'ping', c: i + 1 });
+  await host.wait('pong', (f) => f.c === 30);
+  assert.equal(host.closed, null);
+});

@@ -16,7 +16,8 @@ import { CLOSE } from './close-codes.js';
 // loginCheckMs: how often an open socket's login is checked again with the directory (a logout is noticed this late).
 // Strangers (accounts with no place in the room: spectators) get at most spectatorsPerAccount sockets in the room (an
 // account has one session there: the socket watching and its replacement), each with at most observerPerSec messages
-// a second (burst observerBurst) instead of a player's 40.
+// a second (burst observerBurst) instead of a player's 40; a stranger's socket that has more than observerBurst
+// messages refused within a second is closed (1008).
 export const ROOM_LIMITS = Object.freeze({ sockets: 16, socketsPerIp: 8, sessions: 32, messageBytes: 65_536,
   reservationMs: 120_000, idleSocketMs: 90_000, loginCheckMs: 60_000,
   spectatorsPerAccount: 2, observerPerSec: 2, observerBurst: 10 });
@@ -376,8 +377,10 @@ export class RoomRuntime {
     if (resume && resume.accountId===accountId && resume.expiresAt>this.now()) {
       takeover=true; this.resumeTickets.delete(ticket);
     }
+    // A stranger's socket (it can only spectate) is an observer's: it sends little (its bucket below, message()).
+    const observer = attachment ? !!attachment.observer : !this.hasAccount(accountId);
     this.socketMeta.set(ws, { ip: normalized, key: limitKeyOf(normalized),
-      accountId: attachment?.accountId || accountId, takeover,
+      accountId: attachment?.accountId || accountId, takeover, observer,
       avatarUrl: attachment?.avatarUrl ?? avatarUrl,
       joinTicket:attachment?.joinTicket || ticket,
       sessionId:attachment?.sessionId || sessionId, connectionEpoch:attachment?.connectionEpoch,
@@ -389,11 +392,9 @@ export class RoomRuntime {
     this.network.handleConnection(ws, { socket: { remoteAddress: normalized }, headers: {} });
     ws.on('close', () => this.socketMeta.delete(ws));
     const conn = this.network.conns.get(ws);
-    // A stranger's new socket (it can only spectate) sends little: its message bucket is a spectator's, kept with the
-    // socket's other state across hibernation (attachment.bucket).
-    if (!attachment && !this.hasAccount(accountId)) {
-      conn.bucket = new TokenBucket(ROOM_LIMITS.observerPerSec, ROOM_LIMITS.observerBurst, this.now());
-    }
+    // An observer's message bucket is a spectator's, kept with the socket's other state across hibernation
+    // (attachment.bucket).
+    if (observer && !attachment) conn.bucket = new TokenBucket(ROOM_LIMITS.observerPerSec, ROOM_LIMITS.observerBurst, this.now());
     if (attachment) {
       for (const key of ['openedAt', 'dropWindowAt', 'drops', 'closing']) if (attachment[key] != null) conn[key] = attachment[key];
       if (attachment.bucket) Object.assign(conn.bucket, attachment.bucket);
@@ -433,6 +434,8 @@ export class RoomRuntime {
     const bytes = binary ? message.byteLength : Buffer.byteLength(message, 'utf8');
     if (bytes > ROOM_LIMITS.messageBytes) { ws.close(CLOSE.TOO_BIG, 'message exceeds 64 KiB'); return; }
     this.network.onFrame(conn, binary ? Buffer.from(message) : message, binary);
+    // Every frame costs the room an event, a refused one too: an observer flooding past its bucket is closed.
+    if (this.socketMeta.get(ws)?.observer && conn.drops > ROOM_LIMITS.observerBurst) conn.close(CLOSE.POLICY, 'rate limit');
   }
   disconnect(ws) {
     const conn = this.network.conns.get(ws);
