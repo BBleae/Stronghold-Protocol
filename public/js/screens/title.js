@@ -173,7 +173,10 @@ export function TitleScreen() {
   };
 
   const online = conn.status === 'online' || conn.status === 'connected' || conn.status === 'menu';
-  const dotClass = online ? 'is-on' : conn.status === 'reconnecting' || conn.status === 'connecting' || conn.status === 'handshaking' ? 'is-warn' : 'is-bad';
+  // Account mode: a login that became invalid (重新登录 leads here) is no lost connection; the account card is the remedy.
+  const loginLost = conn.status === 'closed' && conn.lastError?.code === 'LOGIN_REQUIRED';
+  const dotClass = online ? 'is-on'
+    : loginLost || conn.status === 'reconnecting' || conn.status === 'connecting' || conn.status === 'handshaking' ? 'is-warn' : 'is-bad';
 
   // touch screens: no autofocus (it would pop the on-screen keyboard over a landscape phone's whole view)
   const touchUi = useMemo(() => detectFeatures().coarse, []);
@@ -233,7 +236,7 @@ export function TitleScreen() {
         <${Button} variant="primary" size="xl" block=${true} iconRight="chevrons" disabled=${!valid} onClick=${start}>开始<//>`}
         <div class="title-conn">
           <span class=${`status-dot ${dotClass}`}></span>
-          <span>${STATUS_TEXT[conn.status] || conn.status}</span>
+          <span>${loginLost ? conn.lastError.text : STATUS_TEXT[conn.status] || conn.status}</span>
           ${conn.status === 'online' ? html`<${PingPill} ms=${conn.ping} />` : null}
           <${GuideButton} class="title-guide" />
           <${FullscreenButton} class="title-fs" />
