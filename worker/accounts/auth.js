@@ -11,6 +11,9 @@ export async function hash(value) {
   return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))), b => b.toString(16).padStart(2, '0')).join('');
 }
 const cookie = (key, value, seconds) => key + '=' + value + '; Path=/; Max-Age=' + seconds + '; Secure; HttpOnly; SameSite=Lax';
+// Where a login may return to: the lobby, or the invite link the player is applying with (/?room=CODE). The path is
+// bound to the OAuth state server-side, so the callback never redirects anywhere a request parameter names.
+const RETURN_PATH = /^\/(\?room=[A-Z]{4})?$/;
 export function requireOrigin(request) {
   if (request.headers.get('Origin') !== new URL(request.url).origin) throw new AccountError('ORIGIN_MISMATCH', 403);
 }
@@ -42,6 +45,7 @@ async function refreshLegacyProfile(user, env, providerFetch) {
 export async function handleAuth(request, env, {now = Date.now, fetch: providerFetch = globalThis.fetch} = {}) {
   const url = new URL(request.url);
   if (!url.pathname.startsWith('/api/auth/') && url.pathname !== '/api/me') return null;
+  let returnTo = '/';
   try {
     if (url.pathname === '/api/me') {
       if (request.method !== 'GET') return json({error: 'METHOD'}, 405);
@@ -65,10 +69,12 @@ export async function handleAuth(request, env, {now = Date.now, fetch: providerF
     if (request.method !== 'GET') return json({error: 'METHOD'}, 405);
     const callback = env.AUTH_ORIGIN + '/api/auth/github/callback';
     if (url.pathname === '/api/auth/github/start') {
+      const returnPath = url.searchParams.get('return') ?? '/';
+      if (!RETURN_PATH.test(returnPath)) throw new AccountError('BAD_RETURN_PATH');
       const state = randomToken(), verifier = randomToken();
       const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier)));
       const challenge = btoa(String.fromCharCode(...digest)).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '');
-      await directory.saveOAuth(await hash(state), {verifier, expiresAt: now() + ACCOUNT_LIMITS.oauthMs});
+      await directory.saveOAuth(await hash(state), {verifier, returnTo: returnPath, expiresAt: now() + ACCOUNT_LIMITS.oauthMs});
       const dest = new URL('https://github.com/login/oauth/authorize');
       dest.search = new URLSearchParams({client_id: env.GITHUB_CLIENT_ID, redirect_uri: callback, state,
         code_challenge: challenge, code_challenge_method: 'S256'}).toString();
@@ -78,6 +84,7 @@ export async function handleAuth(request, env, {now = Date.now, fetch: providerF
     const state = url.searchParams.get('state');
     if (!state || !/^[a-f0-9]{64}$/.test(state) || state !== cookieValue(request, OAUTH_COOKIE)) throw new AccountError('OAUTH_STATE');
     const transaction = await directory.consumeOAuth(await hash(state));
+    returnTo = transaction?.returnTo ?? '/';
     if (!transaction || transaction.expiresAt <= now() || url.searchParams.has('error')) throw new AccountError('OAUTH_EXPIRED_OR_DENIED');
     const code = url.searchParams.get('code');
     if (!code || code.length > 1024) throw new AccountError('OAUTH_CODE');
@@ -99,13 +106,18 @@ export async function handleAuth(request, env, {now = Date.now, fetch: providerF
     if (env.ACCOUNTS) await accountOf(env, user.accountId).setProfile(user);
     const sessionToken = randomToken();
     await directory.saveSession(await hash(sessionToken), {accountId: user.accountId, user, expiresAt: now() + ACCOUNT_LIMITS.sessionMs});
-    const headers = new Headers({Location: '/', 'Cache-Control': 'no-store'});
+    const headers = new Headers({Location: returnTo, 'Cache-Control': 'no-store'});
     headers.append('Set-Cookie', cookie(SESSION_COOKIE, sessionToken, ACCOUNT_LIMITS.sessionMs / 1000));
     headers.append('Set-Cookie', cookie(OAUTH_COOKIE, '', 0));
     return new Response(null, {status: 303, headers});
   } catch (e) {
-    if(url.pathname==='/api/auth/github/callback' && request.headers.get('Accept')?.includes('text/html'))
-      return new Response(null,{status:303,headers:{Location:'/?authError=1','Cache-Control':'no-store','Set-Cookie':cookie(OAUTH_COOKIE,'',0)}});
+    if (url.pathname === '/api/auth/github/callback' && request.headers.get('Accept')?.includes('text/html')) {
+      // Back where the login started (an invite stays), with the notice that it did not complete.
+      const back = new URL(returnTo, url.origin);
+      back.searchParams.set('authError', '1');
+      return new Response(null, {status: 303, headers: {Location: back.pathname + back.search, 'Cache-Control': 'no-store',
+        'Set-Cookie': cookie(OAUTH_COOKIE, '', 0)}});
+    }
     return json({error: e instanceof AccountError ? e.code : 'AUTH_FAILED'}, e instanceof AccountError ? e.status : 502);
   }
 }

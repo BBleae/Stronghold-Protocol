@@ -67,3 +67,29 @@ test('expired, cancelled and failed OAuth do not create accounts or leak upstrea
   assert.equal(response.status, 502); assert.equal(h.sessions.size, 0);
   assert.ok(!(await response.text()).includes('upstream failed'));
 });
+test('a login started from an invite returns to it; no other return path is accepted', async () => {
+  const h = setup();
+  const start = async (query) => {
+    const r = await h.handle('/api/auth/github/start' + query);
+    return {state: new URL(r.headers.get('location')).searchParams.get('state'), cookie: r.headers.get('set-cookie').split(';')[0]};
+  };
+  const invited = await h.finish(await start('?return=' + encodeURIComponent('/?room=ABCD')));
+  assert.equal(invited.status, 303);
+  assert.equal(invited.headers.get('location'), '/?room=ABCD');
+  assert.equal((await h.finish(await start(''))).headers.get('location'), '/');
+  for (const bad of ['https://evil.example/', '//evil.example', '/?room=ABCD&next=//evil.example', '/lobby', '/?room=abcd', '/?room=ABCDE']) {
+    const r = await h.handle('/api/auth/github/start?return=' + encodeURIComponent(bad));
+    assert.equal(r.status, 400, bad);
+    assert.deepEqual(await r.json(), {error: 'BAD_RETURN_PATH'});
+  }
+});
+test('a cancelled login goes back to the invite it started from, with the notice', async () => {
+  const h = setup();
+  const r = await h.handle('/api/auth/github/start?return=' + encodeURIComponent('/?room=ABCD'));
+  const state = new URL(r.headers.get('location')).searchParams.get('state');
+  const back = await h.handle('/api/auth/github/callback?error=access_denied&state=' + state,
+    {headers: {cookie: r.headers.get('set-cookie').split(';')[0], Accept: 'text/html'}});
+  assert.equal(back.status, 303);
+  assert.equal(back.headers.get('location'), '/?room=ABCD&authError=1');
+  assert.equal(h.sessions.size, 0);
+});
