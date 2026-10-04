@@ -300,6 +300,9 @@ export function renderInfo(u) {
     // tap hands them to the detail card (a teammate's unit shows its owner's skill / module)
     skillIndex: Number.isInteger(u.skillIndex) ? u.skillIndex : undefined,
     moduleId: typeof u.moduleId === 'string' ? u.moduleId : undefined,
+    // where a scouted prep piece stands (Match.prepFieldMeta: 'board' | 'hand' | 'temp'): a tap on a bench / temp
+    // operator opens its card without a range (ui/facing.js unitRange)
+    area: typeof u.area === 'string' ? u.area : undefined,
   };
 }
 
