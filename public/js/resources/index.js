@@ -1,4 +1,7 @@
 // Local resource cache: boot integration, the resource manager dialog and its launcher.
+//
+// The site hosts no resource files (art, audio, fonts). A player imports them from a resource ZIP, read on this device
+// only; the service worker answers them from the local cache. Without them the game draws placeholders.
 import { render } from '../../vendor/preact.module.js';
 import { html } from '../ui/components.js';
 import { toast } from '../ui/toasts.js';
@@ -6,26 +9,19 @@ import { ResourceStore } from './store.js';
 import { importResourceZip } from './zip.js';
 import { ResourceDialog, ResourceLauncher } from './view.js';
 
-// The player's choice: 'install' (keep every resource file locally) or 'ondemand'. Unset until the first visit's
-// dialog closes; a returning player's boot never waits for the resource layer.
-const MODE_KEY = 'stronghold-resource-mode';
+// Set (to any value) once the first visit's resource dialog has closed. Earlier releases stored the player's choice
+// ('install' / 'ondemand') under this key: those players have had their first visit.
+const VISITED_KEY = 'stronghold-resource-mode';
 // The Web Lock every cache operation holds, in every page of the site.
 const LOCK_NAME = 'stronghold-resources';
 let storePromise, openDialog;
-
-const mib = n => `${(n / 1048576).toFixed(1)} MiB`;
-
-function preference(value) {
-  if (value) localStorage.setItem(MODE_KEY, value);
-  return localStorage.getItem(MODE_KEY);
-}
 
 /** Cache Storage, service workers and Web Locks need a secure context and site data; some in-app browsers lack them. */
 function supported() {
   const apis = globalThis.isSecureContext && 'serviceWorker' in navigator && 'caches' in globalThis && 'locks' in navigator;
   if (!apis) return false;
   try {
-    localStorage.getItem(MODE_KEY);
+    localStorage.getItem(VISITED_KEY);
     return true;
   } catch {
     return false; // site data blocked: storage access throws
@@ -49,9 +45,9 @@ function loadStore() {
 
 /**
  * Run `operation` holding the resource lock. Cache Storage is shared by every page of the site, so one cache
- * operation (the boot check; the dialog's check, download, import and clear) runs at a time across all of them:
- * interleaved, two pages reconciling at once can each keep the cache the other deletes, and a clear deletes what a
- * download is storing. `onWait` is called when another operation holds the lock; aborting `signal` stops the wait.
+ * operation (the boot check; the dialog's check, import and clear) runs at a time across all of them: interleaved,
+ * two pages reconciling at once can each keep the cache the other deletes, and a clear deletes what an import is
+ * storing. `onWait` is called when another operation holds the lock; aborting `signal` stops the wait.
  */
 async function exclusive(operation, { signal, onWait } = {}) {
   const { held } = await navigator.locks.query();
@@ -60,36 +56,33 @@ async function exclusive(operation, { signal, onWait } = {}) {
 }
 
 function readableError(error) {
-  if (error.name === 'AbortError') return '已暂停。已完成的文件会保留，可继续下载或重新导入。';
-  if (error.name === 'QuotaExceededError') return '浏览器存储空间不足。请释放设备空间后重试，或选择按需加载。';
+  if (error.name === 'AbortError') return '已取消。已导入的文件会保留。';
+  if (error.name === 'QuotaExceededError') return '浏览器存储空间不足，已导入的文件会保留。请释放设备空间后重新导入。';
   const reason = error.name === 'TypeError' ? `网络连接失败（${error.message}）` : error.message;
-  return `未完成：${reason}。已完成的文件会保留，可重试或按需加载。`;
+  return `未完成：${reason}。`;
 }
 
 /**
  * Call before the game boots. A returning player never waits: the local cache is checked in the background while the
- * service worker already answers from it. A first visit shows the resource dialog: download, import or skip.
+ * service worker already answers from it. A first visit shows the resource dialog: import a ZIP or skip.
  */
 export async function prepareResources() {
   if (!supported()) return;
-  if (preference()) {
+  if (localStorage.getItem(VISITED_KEY)) {
     registerWorker().catch(error => console.error('[resources] service worker registration failed', error));
     checkInstallation().catch(error => console.error('[resources] local resource check failed', error));
     return;
   }
   const store = await openStore();
-  if (store) await showManager(store, true);
-  else preference('ondemand'); // reported by openStore(); the launcher can try again later
+  if (!store) return; // reported by openStore(); the next visit asks again
+  await showManager(store, true);
+  localStorage.setItem(VISITED_KEY, 'visited');
 }
 
-/** Drop what a new site version changed; remind a player who installs resources of the files still missing. */
+/** Bring the cache to the live site version: a new version drops the files it changed. */
 async function checkInstallation() {
   const store = await loadStore();
-  const status = await exclusive(() => store.check());
-  if (preference() === 'install' && !status.complete) {
-    const missing = `${status.total - status.count} 个文件（${mib(status.totalBytes - status.bytes)}）`;
-    toast(`本地资源缺少 ${missing}，可在「资源管理」继续下载。`, 'info', { ttl: 8000 });
-  }
+  await exclusive(() => store.check());
 }
 
 /** The launcher of the resource dialog (hidden during matches). */
@@ -113,7 +106,7 @@ async function openStore() {
     return await loadStore();
   } catch (error) {
     console.error('[resources] resource cache unavailable', error);
-    toast(`本地资源缓存不可用：${error.message}。游戏资源将按需加载。`, 'warn', { ttl: 6000 });
+    toast(`本地资源不可用：${error.message}。`, 'warn', { ttl: 6000 });
     return null;
   }
 }
@@ -134,7 +127,7 @@ function showManager(store, firstTime = false) {
       .map(element => ({ element, inert: element.inert }));
     for (const { element } of background) element.inert = true;
 
-    // Aborts the check or operation in progress (暂停, closing the dialog), also while it waits for the lock.
+    // Aborts the check or operation in progress (取消, closing the dialog), also while it waits for the lock.
     let controller = null;
     let operation = null;
     let closing = false;
@@ -145,8 +138,8 @@ function showManager(store, firstTime = false) {
       Object.assign(state, patch);
       if (closed) return;
       render(html`<${ResourceDialog} state=${state} firstTime=${firstTime} totalBytes=${store.manifest.totalBytes}
-        onClose=${close} onDownload=${download} onImport=${importZip} onClear=${clear}
-        onCancel=${() => { controller?.abort(); update({ message: '正在暂停…' }); }} />`, host);
+        onClose=${close} onImport=${importZip} onClear=${clear}
+        onCancel=${() => { controller?.abort(); update({ message: '正在取消…' }); }} />`, host);
     }
 
     /** Run `task` holding the resource lock; the dialog shows when it waits for another operation. */
@@ -188,11 +181,11 @@ function showManager(store, firstTime = false) {
           // Ask the browser not to evict a complete installation under storage pressure.
           if (result?.complete) void navigator.storage.persist();
         } catch (error) {
-          const paused = error.name === 'AbortError';
-          if (!paused) console.error(`[resources] ${phase} failed`, error);
+          const cancelled = error.name === 'AbortError';
+          if (!cancelled) console.error(`[resources] ${phase} failed`, error);
           const message = readableError(error);
-          update({ message, error: !paused });
-          toast(message, paused ? 'info' : 'error');
+          update({ message, error: !cancelled });
+          toast(message, cancelled ? 'info' : 'error');
         }
         update({ busy: false, waiting: false });
         operation = null;
@@ -200,28 +193,15 @@ function showManager(store, firstTime = false) {
       await operation;
     }
 
-    function download() {
-      if (state.status?.complete) return;
-      preference('install');
-      return run('download', signal => store.download({ signal, onProgress: status => update({ status }) }),
-        () => '全部资源已保存，可进入游戏。');
-    }
-
     function importZip(file) {
-      preference('install');
       const action = signal => importResourceZip(file, store, { signal, onProgress: status => update({ status }) });
-      return run('import', action, status => {
-        if (status.complete) return '全部资源已保存，可进入游戏。';
-        const rest = `点「在线下载」补齐剩下的 ${status.total - status.count} 个`;
-        return status.skipped
-          ? `已导入 ${status.imported} 个文件；${status.skipped} 个与本站版本不一致已跳过，${rest}。`
-          : `已导入 ${status.imported} 个文件，${rest}。`;
-      });
+      return run('import', action, ({ complete, imported, skipped, total, count }) => complete ? '全部资源已导入。'
+        : skipped ? `已导入 ${imported} 个文件，${skipped} 个与本站版本不一致已跳过，还缺 ${total - count} 个。`
+        : `已导入 ${imported} 个文件，还缺 ${total - count} 个。`);
     }
 
     function clear() {
-      preference('ondemand');
-      return run('clear', async () => { await store.clear(); }, () => '本地资源已清理。');
+      return run('clear', () => store.clear(), () => '本地资源已清理。');
     }
 
     async function close() {
@@ -229,8 +209,6 @@ function showManager(store, firstTime = false) {
       closing = true;
       controller?.abort();
       await operation;
-      // A first visit that ends without installing plays on demand.
-      if (!preference()) preference(state.status?.complete ? 'install' : 'ondemand');
       closed = true;
       render(null, host);
       host.remove();

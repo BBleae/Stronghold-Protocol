@@ -7,7 +7,7 @@ import { Zip, ZipPassThrough } from 'fflate';
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
-// The Workers Static Assets file limit.
+// The import holds one whole file in memory (public/js/resources/zip.js).
 const MAX_FILE_BYTES = 25 * 1024 * 1024;
 
 /** Content-Type per resource file extension; other files under public/assets and public/fonts are not resources. */
@@ -90,7 +90,7 @@ export async function buildResourceManifest({ root = repository, output = join(r
 /** Stored ZIP entries keep already-compressed assets fast and streamable. ZIP is never a deployment asset. */
 export async function writeResourcePack({ root = repository, manifest, output } = {}) {
   manifest = validateManifest(manifest ?? await buildResourceManifest({ root }));
-  // Same name as tools/build-worker.mjs writePackParts uses, so `npm run resources:pack` makes the ZIP a build reuses.
+  // The name carries the resource version the ZIP was made for.
   const path = resolve(output ?? join(root, '.cache', `stronghold-resources-${manifest.version.slice(0, 12)}.zip`));
   const publicRoot = resolve(root, 'public');
   const withinPublic = relative(publicRoot, path);

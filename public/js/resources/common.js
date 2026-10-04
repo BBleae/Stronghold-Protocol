@@ -37,34 +37,3 @@ export function matchesResource(response, file) {
     && response.headers.get('X-Resource-SHA256') === file.sha256
     && response.headers.get('Content-Length') === String(file.size);
 }
-
-/** Read at most one manifest file, never a whole download/ZIP bundle. */
-export async function readBoundedResponse(response, size, signal) {
-  if (!response.ok || response.status === 206) throw new Error(`HTTP ${response.status}`);
-  if (!response.body) {
-    if (size === 0) return new Uint8Array();
-    throw new Error('响应没有内容');
-  }
-  const reader = response.body.getReader();
-  const result = new Uint8Array(size);
-  let offset = 0;
-  const abort = () => { void reader.cancel().catch(() => {}); };
-  signal?.addEventListener('abort', abort, { once: true });
-  try {
-    while (true) {
-      checkAbort(signal);
-      const { value, done } = await reader.read();
-      checkAbort(signal);
-      if (done) break;
-      if (offset + value.byteLength > size) throw new Error('大小超出清单');
-      result.set(value, offset);
-      offset += value.byteLength;
-    }
-    if (offset !== size) throw new Error('大小不符');
-    return result;
-  } finally {
-    signal?.removeEventListener('abort', abort);
-    await reader.cancel().catch(() => {});
-    reader.releaseLock();
-  }
-}

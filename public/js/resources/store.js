@@ -1,22 +1,18 @@
 // The local resource cache as the page manages it. The service worker (public/resource-sw.js) only reads it.
 //
-// One Cache Storage cache holds every resource file, keyed by URL. An entry belongs to the current site version when
-// its X-Resource-SHA256 and size match the manifest; reconcile() removes the others. A status entry in the same cache
+// The site hosts no resource files: players import them from a resource ZIP (zip.js), checked against the site's
+// manifest. One Cache Storage cache holds them, keyed by URL. An entry belongs to the current site version when its
+// X-Resource-SHA256 and size match the manifest; reconcile() removes the others. A status entry in the same cache
 // records the site version the cache was last reconciled against and how much of it is present, so that a page load
 // of an unchanged site needs no scan of thousands of entries.
 //
 // The cache only ever follows the live site version: reconcile() fetches the manifest before it changes anything, and
-// downloads and imports start with it. Cache Storage is shared by every page of the site; the caller runs one
-// operation at a time across all of them (js/resources/index.js).
-import { mediaUrl } from '../media.js';
-import { CACHE_PREFIX, checkAbort, matchesResource, readBoundedResponse, resourceResponse, verifyBytes } from './common.js';
+// imports start with it. Cache Storage is shared by every page of the site; the caller runs one operation at a time
+// across all of them (js/resources/index.js).
+import { CACHE_PREFIX, checkAbort, matchesResource, resourceResponse, verifyBytes } from './common.js';
 
 const MANIFEST_URL = '/resource-manifest.json';
 const STATUS_KEY = '/resource-cache-status.json';
-// A failing file is tried again after these pauses.
-const RETRY_DELAYS_MS = [1000, 3000];
-// More failed files than this in one pass means the problem is not the files: the pass stops and reports.
-const MAX_FAILED_FILES = 20;
 
 /** The site's current resource manifest (tools/resource-pack.mjs). Revalidated, so an unchanged one costs a 304. */
 async function fetchManifest(fetcher = globalThis.fetch.bind(globalThis), signal) {
@@ -43,33 +39,6 @@ export function addFile(status, file) {
   status.bytes += file.size;
   status.complete = status.count === status.total;
 }
-
-/** Some files could not be downloaded; the others are stored. */
-export class DownloadError extends Error {
-  constructor(failed) {
-    const [{ file, error }] = failed;
-    super(`${failed.length} 个文件下载失败，例如 ${file.url}（${error.message}）`);
-    this.name = 'DownloadError';
-    this.failed = failed;
-  }
-}
-
-function delay(ms, signal) {
-  return new Promise((resolve, reject) => {
-    checkAbort(signal);
-    const abort = () => {
-      clearTimeout(timer);
-      reject(signal.reason ?? new DOMException('Cancelled', 'AbortError'));
-    };
-    const timer = setTimeout(() => {
-      signal?.removeEventListener('abort', abort);
-      resolve();
-    }, ms);
-    signal?.addEventListener('abort', abort, { once: true });
-  });
-}
-
-const stopsDownload = error => error.name === 'AbortError' || error.name === 'QuotaExceededError';
 
 export class ResourceStore {
   constructor(manifest, { caches = globalThis.caches, fetcher = globalThis.fetch.bind(globalThis) } = {}) {
@@ -113,9 +82,8 @@ export class ResourceStore {
    * over the files it lacks and are deleted. So an earlier installation is adopted in place, never copied whole.
    */
   async reconcile(signal) {
-    await this.refreshManifest(signal);
-    const manifest = this.manifest;
-    const files = new Map(manifest.files.map(file => [file.url, file]));
+    this.manifest = await fetchManifest(this.fetcher, signal);
+    const files = new Map(this.manifest.files.map(file => [file.url, file]));
     const names = await this.#cacheNames();
     if (!names.length) names.push(CACHE_PREFIX);
     const existing = await Promise.all(names.map(async name => {
@@ -123,7 +91,7 @@ export class ResourceStore {
       return { name, cache, requests: await cache.keys() };
     }));
     const [home, ...others] = existing.sort((a, b) => b.requests.length - a.requests.length);
-    const status = cacheStatus(manifest, 0, 0, new Set());
+    const status = cacheStatus(this.manifest, 0, 0, new Set());
     // In batches: thousands of entries, each read is a round trip to the storage process.
     for (let i = 0; i < home.requests.length; i += 32) {
       await Promise.all(home.requests.slice(i, i + 32).map(async request => {
@@ -160,70 +128,6 @@ export class ResourceStore {
     await verifyBytes(file, bytes);
     checkAbort(signal);
     await this.cache.put(file.url, resourceResponse(file, bytes));
-  }
-
-  /** Fetch the manifest again; true when the site version changed (the store then follows the new one). */
-  async refreshManifest(signal) {
-    const manifest = await fetchManifest(this.fetcher, signal);
-    if (manifest.version === this.manifest.version) return false;
-    this.manifest = manifest;
-    return true;
-  }
-
-  /**
-   * Download the files the cache lacks, a few at a time. A failing file is tried again after a pause; a file that
-   * keeps failing is reported at the end while the others go on. When the site was redeployed meanwhile, the download
-   * continues with the new manifest. Pausing (`signal`) or a full disk stops everything at once.
-   */
-  async download({ signal, onProgress = () => {}, concurrency = 6, retryDelays = RETRY_DELAYS_MS } = {}) {
-    while (true) {
-      const status = await this.reconcile(signal);
-      onProgress({ ...status });
-      const queue = this.manifest.files.filter(file => !status.present.has(file.url));
-      const failed = [];
-      let stop = null;
-      const worker = async () => {
-        while (queue.length && !stop && failed.length < MAX_FAILED_FILES) {
-          const file = queue.shift();
-          try {
-            await this.#fetchFile(file, signal, retryDelays);
-          } catch (error) {
-            if (stopsDownload(error)) stop ??= error;
-            else failed.push({ file, error });
-            continue;
-          }
-          addFile(status, file);
-          onProgress({ ...status });
-        }
-      };
-      try {
-        await Promise.all(Array.from({ length: concurrency }, worker));
-      } finally {
-        await this.save(status);
-      }
-      checkAbort(signal); // a pause wins over the errors of files that were in flight
-      if (stop) throw stop;
-      // A redeploy during the pass changed what is complete, and explains files that kept failing (changed or
-      // removed): start over with the new manifest.
-      if (await this.refreshManifest(signal)) continue;
-      if (failed.length) throw new DownloadError(failed);
-      return status;
-    }
-  }
-
-  async #fetchFile(file, signal, retryDelays) {
-    for (let attempt = 0; ; attempt++) {
-      try {
-        // Audio through the game's extension-less alias, which download managers leave alone (public/js/media.js).
-        // no-store: the bytes go to the resource cache, not a second time into the HTTP cache.
-        const response = await this.fetcher(mediaUrl(file.url), { signal, cache: 'no-store' });
-        await this.put(file, await readBoundedResponse(response, file.size, signal), { signal });
-        return;
-      } catch (error) {
-        if (attempt === retryDelays.length || stopsDownload(error)) throw error;
-      }
-      await delay(retryDelays[attempt], signal);
-    }
   }
 
   /** Delete every resource cache. */

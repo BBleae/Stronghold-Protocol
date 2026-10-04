@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Zip, ZipPassThrough, zipSync, unzipSync } from 'fflate';
 import { buildResourceManifest, validateManifest, writeResourcePack } from '../../tools/resource-pack.mjs';
-import { DownloadError, ResourceStore } from '../../public/js/resources/store.js';
+import { ResourceStore } from '../../public/js/resources/store.js';
 import { importResourceZip } from '../../public/js/resources/zip.js';
 import { cachedResponse, resourceKeys } from '../../public/js/resources/service.js';
 
@@ -17,7 +17,6 @@ const bytes = s => new TextEncoder().encode(s);
 const entry = (url, text) => ({ url, size: bytes(text).length, sha256: sha(text), type: 'audio/mpeg' });
 const manifest = (files, version = 'a'.repeat(64)) => ({ format: 1, version, files, totalBytes: files.reduce((n, f) => n + f.size, 0) });
 const absolute = request => new URL(typeof request === 'string' ? request : request.url, ORIGIN).href;
-const NO_WAIT = [0, 0];
 
 // Cache Storage is not exposed in Node; keep real Request/Response semantics at this boundary.
 class MemoryCache {
@@ -56,26 +55,26 @@ class MemoryCaches {
   }
 }
 
-/** A site: its current manifest and file bodies; records every request. */
+/** A site: it serves its current manifest and no resource files; records every request. */
 function site(files, version = 'a'.repeat(64)) {
-  const server = { manifest: manifest(files.map(([url, text]) => entry(url, text)), version), bodies: new Map(files), requests: [] };
+  const server = { manifest: manifest(files.map(([url, text]) => entry(url, text)), version), requests: [] };
   server.deploy = (next, nextVersion) => {
     server.manifest = manifest(next.map(([url, text]) => entry(url, text)), nextVersion);
-    server.bodies = new Map(next);
   };
   server.fetcher = async url => {
     server.requests.push(url);
-    if (url === '/resource-manifest.json') return Response.json(server.manifest);
-    // The extension-less audio route (shared/media.js), mp3 only here.
-    const body = server.bodies.get(url.startsWith('/media/') ? `/assets/audio/${url.slice('/media/'.length)}.mp3` : url);
-    return body === undefined ? new Response('missing', { status: 404 }) : new Response(body);
+    return url === '/resource-manifest.json' ? Response.json(server.manifest) : new Response('missing', { status: 404 });
   };
   return server;
 }
 
-/** The store of a site that serves `siteManifest` and no files: for imports and files the test puts in. */
+/** The store of a site that serves `siteManifest`. */
 const storeOf = (siteManifest, caches = new MemoryCaches()) =>
   new ResourceStore(siteManifest, { caches, fetcher: async () => Response.json(siteManifest) });
+
+/** Import a resource ZIP of these [url, text] files, as a player does. */
+const importFiles = (store, files, options = {}) => importResourceZip(
+  new Blob([zipSync(Object.fromEntries(files.map(([url, text]) => [url.slice(1), bytes(text)])))]), store, { zipjs, ...options });
 
 test('the build validates manifests: resource paths only, no traversal, unique URLs, consistent sizes', () => {
   const good = manifest([entry('/assets/audio/a.mp3', 'abc')]);
@@ -105,7 +104,7 @@ test('manifest build is deterministic, excludes programs and unrelated public fi
   assert.equal(first.files[0].type, 'audio/mpeg');
   assert.deepEqual(JSON.parse(await readFile(join(root, 'public/resource-manifest.json'), 'utf8')), first);
   const result = await writeResourcePack({ root, manifest: first });
-  assert.equal(result.path, join(root, '.cache', `stronghold-resources-${first.version.slice(0, 12)}.zip`), 'the name the Workers build reuses');
+  assert.equal(result.path, join(root, '.cache', `stronghold-resources-${first.version.slice(0, 12)}.zip`), 'named by its resource version');
   const packed = unzipSync(await readFile(result.path));
   assert.deepEqual(Object.keys(packed).sort(), ['assets/audio/a.mp3', 'fonts/a.woff2']);
   assert.equal(new TextDecoder().decode(packed['assets/audio/a.mp3']), 'abc');
@@ -117,23 +116,22 @@ test('manifest build is deterministic, excludes programs and unrelated public fi
   assert.notEqual((await buildResourceManifest({ root, output: false })).version, first.version);
 });
 
-test('a new site version re-downloads only the files it changed; one cache, nothing else fetched', async () => {
+test('a new site version drops only the files it changed; one cache; its ZIP completes the installation', async () => {
   const caches = new MemoryCaches();
-  const server = site([['/assets/a.mp3', 'abc'], ['/assets/b.mp3', 'old']]);
-  const installed = await new ResourceStore(server.manifest, { caches, fetcher: server.fetcher }).download({ retryDelays: NO_WAIT });
-  assert.equal(installed.complete, true);
-  server.deploy([['/assets/a.mp3', 'abc'], ['/assets/b.mp3', 'new'], ['/assets/c.mp3', 'add']], 'b'.repeat(64));
-  server.requests.length = 0;
+  const v1 = [['/assets/a.mp3', 'abc'], ['/assets/b.mp3', 'old']];
+  const v2 = [['/assets/a.mp3', 'abc'], ['/assets/b.mp3', 'new'], ['/assets/c.mp3', 'add']];
+  const server = site(v1);
+  assert.equal((await importFiles(await ResourceStore.load({ caches, fetcher: server.fetcher }), v1)).complete, true);
+  server.deploy(v2, 'b'.repeat(64));
   const store = await ResourceStore.load({ caches, fetcher: server.fetcher });
   const before = await store.check();
   assert.deepEqual([before.count, before.total, before.complete], [1, 3, false], 'the changed file no longer counts');
-  const after = await store.download({ retryDelays: NO_WAIT });
-  assert.equal(after.complete, true);
-  assert.deepEqual(server.requests.filter(url => url.startsWith('/assets/')), ['/assets/b.mp3', '/assets/c.mp3']);
   assert.deepEqual(await caches.keys(), ['stronghold-resources']);
   const { '/resource-cache-status.json': status, ...files } = await caches.contents('stronghold-resources');
-  assert.deepEqual(files, { '/assets/a.mp3': 'abc', '/assets/b.mp3': 'new', '/assets/c.mp3': 'add' });
-  assert.deepEqual(JSON.parse(status), { version: 'b'.repeat(64), count: 3, bytes: 9 });
+  assert.deepEqual(files, { '/assets/a.mp3': 'abc' }, 'the worker no longer answers the changed file');
+  assert.deepEqual(JSON.parse(status), { version: 'b'.repeat(64), count: 1, bytes: 3 });
+  assert.equal((await importFiles(store, v2)).complete, true);
+  assert.deepEqual(server.requests.filter(url => url !== '/resource-manifest.json'), [], 'only the manifest comes from the site');
 });
 
 /** Store an entry the way the version-keyed caches of earlier releases did (Accept-Ranges included). */
@@ -141,7 +139,7 @@ const legacyPut = async (caches, name, url, text) => (await caches.open(name)).p
   'Content-Type': 'audio/mpeg', 'Content-Length': String(bytes(text).length), 'Accept-Ranges': 'bytes', 'X-Resource-SHA256': sha(text) } }));
 const copies = caches => caches.log.filter(op => op.startsWith('put '));
 
-test('the version-keyed caches of earlier releases are adopted in place, merged and deleted, without downloads', async () => {
+test('the version-keyed caches of earlier releases are adopted in place, merged and deleted', async () => {
   const caches = new MemoryCaches();
   const old = `stronghold-resources-v1-${'c'.repeat(64)}`;
   await legacyPut(caches, old, '/assets/a.mp3', 'abc');
@@ -150,7 +148,8 @@ test('the version-keyed caches of earlier releases are adopted in place, merged 
   await legacyPut(caches, `stronghold-resources-v1-${'d'.repeat(64)}`, '/assets/b.mp3', 'new');
   await legacyPut(caches, `stronghold-resources-v1-${'d'.repeat(64)}`, '/assets/c.mp3', 'add');
   await caches.open('application-unrelated');
-  const server = site([['/assets/a.mp3', 'abc'], ['/assets/b.mp3', 'new'], ['/assets/c.mp3', 'add']], 'e'.repeat(64));
+  const live = [['/assets/a.mp3', 'abc'], ['/assets/b.mp3', 'new'], ['/assets/c.mp3', 'add']];
+  const server = site(live, 'e'.repeat(64));
   const store = await ResourceStore.load({ caches, fetcher: server.fetcher });
   caches.log.length = 0;
   const status = await store.check();
@@ -159,10 +158,9 @@ test('the version-keyed caches of earlier releases are adopted in place, merged 
   const { '/resource-cache-status.json': _, ...files } = await caches.contents(old);
   assert.deepEqual(files, { '/assets/a.mp3': 'abc', '/assets/b.mp3': 'new', '/assets/c.mp3': 'add' });
   assert.deepEqual(copies(caches), ['put /assets/b.mp3', 'put /assets/c.mp3', 'put /resource-cache-status.json'], 'only what it lacked');
-  assert.deepEqual(server.requests.filter(url => url !== '/resource-manifest.json'), [], 'nothing is downloaded again');
   // New files go to the adopted cache too.
-  server.deploy([['/assets/a.mp3', 'abc'], ['/assets/b.mp3', 'new'], ['/assets/c.mp3', 'add'], ['/assets/d.mp3', 'more']], 'f'.repeat(64));
-  await store.download({ retryDelays: NO_WAIT });
+  server.deploy([...live, ['/assets/d.mp3', 'more']], 'f'.repeat(64));
+  assert.equal((await importFiles(store, [['/assets/d.mp3', 'more']])).complete, true);
   assert.deepEqual(await caches.keys(), [old, 'application-unrelated']);
 });
 
@@ -185,116 +183,30 @@ test('checking an unchanged installation reads one status entry instead of scann
   const caches = new MemoryCaches();
   const files = Array.from({ length: 50 }, (_, i) => [`/assets/f${i}.mp3`, `body ${i}`]);
   const server = site(files);
-  await new ResourceStore(server.manifest, { caches, fetcher: server.fetcher }).download({ retryDelays: NO_WAIT });
+  await importFiles(await ResourceStore.load({ caches, fetcher: server.fetcher }), files);
   caches.log.length = 0;
   const status = await (await ResourceStore.load({ caches, fetcher: server.fetcher })).check();
   assert.deepEqual([status.count, status.complete], [50, true]);
   assert.deepEqual(caches.log, ['match']);
 });
 
-test('a download retries a failing file and reports the files that keep failing while the others complete', async () => {
-  const caches = new MemoryCaches();
-  const server = site([['/assets/a.mp3', 'abc'], ['/assets/b.mp3', 'def'], ['/assets/c.mp3', 'ghi'], ['/assets/d.mp3', 'jkl']]);
-  const attempts = [];
-  let busy = 2;
-  const fetcher = async url => {
-    attempts.push(url);
-    if (url === '/assets/b.mp3' && busy-- > 0) return new Response('busy', { status: 503 });
-    if (url === '/assets/c.mp3') throw new TypeError('Failed to fetch');
-    return server.fetcher(url);
-  };
-  const store = new ResourceStore(server.manifest, { caches, fetcher });
-  const error = await store.download({ concurrency: 1, retryDelays: NO_WAIT }).catch(e => e);
-  assert.ok(error instanceof DownloadError, error.stack);
-  assert.match(error.message, /1 个文件下载失败.*\/assets\/c\.mp3.*Failed to fetch/);
-  assert.deepEqual(error.failed.map(f => f.file.url), ['/assets/c.mp3']);
-  assert.deepEqual(attempts.filter(url => url.startsWith('/assets/')), [
-    '/assets/a.mp3', '/assets/b.mp3', '/assets/b.mp3', '/assets/b.mp3', '/assets/c.mp3', '/assets/c.mp3', '/assets/c.mp3', '/assets/d.mp3',
-  ], 'three attempts per file; d after c failed');
-  const status = await store.check();
-  assert.deepEqual([status.count, status.total], [3, 4]);
-});
-
-test('a download stops after 20 files kept failing, reports them and keeps the files it stored', async () => {
-  const caches = new MemoryCaches();
-  const missing = Array.from({ length: 25 }, (_, i) => [`/assets/gone${i}.mp3`, `gone ${i}`]);
-  const server = site([['/assets/a.mp3', 'abc'], ['/assets/b.mp3', 'def'], ...missing]);
-  for (const [url] of missing) server.bodies.delete(url); // listed, but every request answers 404
-  const store = new ResourceStore(server.manifest, { caches, fetcher: server.fetcher });
-  const error = await store.download({ concurrency: 1, retryDelays: NO_WAIT }).catch(e => e);
-  assert.ok(error instanceof DownloadError, error.stack);
-  assert.match(error.message, /^20 个文件下载失败，例如 \/assets\/gone0\.mp3（HTTP 404）/);
-  assert.deepEqual(error.failed.map(f => f.file.url), missing.slice(0, 20).map(([url]) => url));
-  const tried = new Set(server.requests.filter(url => url.startsWith('/assets/gone')));
-  assert.equal(tried.size, 20, 'the pass stopped: the other 5 files were not requested');
-  assert.equal((await store.check()).count, 2);
-});
-
-test('downloads fetch audio through the extension-less /media/ alias and store it under its file URL', async () => {
-  const caches = new MemoryCaches();
-  const server = site([['/assets/audio/bgm/act1.mp3', 'bgm'], ['/assets/voice/cn/a.mp3', 'voice'], ['/assets/b.png', 'image']]);
-  await new ResourceStore(server.manifest, { caches, fetcher: server.fetcher }).download({ retryDelays: NO_WAIT });
-  assert.deepEqual(server.requests.filter(url => url !== '/resource-manifest.json').sort(),
-    ['/assets/b.png', '/assets/voice/cn/a.mp3', '/media/bgm/act1'], 'the URLs public/js/media.js gives the game');
-  const { '/resource-cache-status.json': _, ...files } = await caches.contents('stronghold-resources');
-  assert.deepEqual(files, { '/assets/audio/bgm/act1.mp3': 'bgm', '/assets/voice/cn/a.mp3': 'voice', '/assets/b.png': 'image' });
-});
-
-test('corrupt or oversized downloads never enter the cache; a later download completes the rest', async () => {
-  const caches = new MemoryCaches();
-  const server = site([['/assets/a.mp3', 'abc'], ['/assets/b.mp3', 'new']]);
-  let corrupt = true;
-  const fetcher = async url => url === '/assets/b.mp3' && corrupt ? new Response('bad') : server.fetcher(url);
-  const store = new ResourceStore(server.manifest, { caches, fetcher });
-  await assert.rejects(store.download({ retryDelays: NO_WAIT }), /校验失败/);
-  assert.equal((await store.check()).count, 1);
-  corrupt = false;
-  assert.equal((await store.download({ retryDelays: NO_WAIT })).complete, true);
-  await assert.rejects(store.put(server.manifest.files[0], bytes('toolong')), /大小/);
-});
-
-test('a site redeployed during a download: the download continues with the new manifest', async () => {
-  const caches = new MemoryCaches();
-  const server = site([['/assets/a.mp3', 'abc'], ['/assets/b.mp3', 'old'], ['/assets/c.mp3', 'ghi']]);
-  const fetcher = async url => {
-    // The deploy lands right after the first file: b changed, c was removed, d is new.
-    if (url === '/assets/b.mp3' && server.manifest.version === 'a'.repeat(64)) {
-      server.deploy([['/assets/a.mp3', 'abc'], ['/assets/b.mp3', 'new'], ['/assets/d.mp3', 'add']], 'b'.repeat(64));
-    }
-    return server.fetcher(url);
-  };
-  const store = await ResourceStore.load({ caches, fetcher });
-  const status = await store.download({ concurrency: 1, retryDelays: NO_WAIT });
-  assert.deepEqual([status.version, status.complete], ['b'.repeat(64), true]);
-  const { '/resource-cache-status.json': _, ...files } = await caches.contents('stronghold-resources');
-  assert.deepEqual(files, { '/assets/a.mp3': 'abc', '/assets/b.mp3': 'new', '/assets/d.mp3': 'add' });
-});
-
-test('a redeploy during a download that changed only files already stored: the download ends on the new version', async () => {
-  const caches = new MemoryCaches();
-  const server = site([['/assets/a.mp3', 'abc'], ['/assets/b.mp3', 'def']]);
-  const fetcher = async url => {
-    // The deploy lands while b downloads and changes a, which is stored already; nothing fails.
-    if (url === '/assets/b.mp3' && server.manifest.version === 'a'.repeat(64)) {
-      server.deploy([['/assets/a.mp3', 'new'], ['/assets/b.mp3', 'def']], 'b'.repeat(64));
-    }
-    return server.fetcher(url);
-  };
-  const store = await ResourceStore.load({ caches, fetcher });
-  const status = await store.download({ concurrency: 1, retryDelays: NO_WAIT });
-  assert.deepEqual([status.version, status.complete], ['b'.repeat(64), true]);
-  const { '/resource-cache-status.json': saved, ...files } = await caches.contents('stronghold-resources');
-  assert.deepEqual(files, { '/assets/a.mp3': 'new', '/assets/b.mp3': 'def' });
-  assert.equal(JSON.parse(saved).version, 'b'.repeat(64));
+test('only files that match the manifest enter the cache', async () => {
+  const a = entry('/assets/a.mp3', 'abc');
+  const store = storeOf(manifest([a]));
+  await store.reconcile();
+  await assert.rejects(store.put(a, bytes('abd')), /校验失败/);
+  await assert.rejects(store.put(a, bytes('toolong')), /大小/);
+  assert.equal((await store.reconcile()).count, 0);
 });
 
 test('a page loaded before a deploy brings the cache to the live version, never back to its own', async () => {
   const caches = new MemoryCaches();
   const server = site([['/assets/a.mp3', 'abc'], ['/assets/b.mp3', 'old']]);
   const stale = await ResourceStore.load({ caches, fetcher: server.fetcher });
-  server.deploy([['/assets/a.mp3', 'abc'], ['/assets/b.mp3', 'new']], 'b'.repeat(64));
+  const v2 = [['/assets/a.mp3', 'abc'], ['/assets/b.mp3', 'new']];
+  server.deploy(v2, 'b'.repeat(64));
   // A page of the new version installs it; then the old page checks.
-  await (await ResourceStore.load({ caches, fetcher: server.fetcher })).download({ retryDelays: NO_WAIT });
+  await importFiles(await ResourceStore.load({ caches, fetcher: server.fetcher }), v2);
   const status = await stale.check();
   assert.deepEqual([status.version, status.complete], ['b'.repeat(64), true]);
   const { '/resource-cache-status.json': _, ...files } = await caches.contents('stronghold-resources');
@@ -302,35 +214,36 @@ test('a page loaded before a deploy brings the cache to the live version, never 
 
   // A ZIP of the live site imported into the old page imports whole, for the live version.
   server.deploy([['/assets/a.mp3', 'abc'], ['/assets/b.mp3', 'newer']], 'c'.repeat(64));
-  const pack = zipSync({ 'assets/a.mp3': bytes('abc'), 'assets/b.mp3': bytes('newer') });
-  const imported = await importResourceZip(new Blob([pack]), stale, { zipjs });
+  const imported = await importFiles(stale, [['/assets/a.mp3', 'abc'], ['/assets/b.mp3', 'newer']]);
   assert.deepEqual([imported.version, imported.complete, imported.imported, imported.skipped], ['c'.repeat(64), true, 2, 0]);
 });
 
-test('pausing keeps the finished files; a full disk stops at once; clearing leaves unrelated caches alone', async () => {
+test('a cancelled import keeps the files it stored; a full disk stops it at once; clearing leaves unrelated caches alone', async () => {
+  const files = [['/assets/a.mp3', 'abc'], ['/assets/b.mp3', 'def']];
+  const siteManifest = manifest(files.map(([url, text]) => entry(url, text)));
   const caches = new MemoryCaches();
-  const server = site([['/assets/a.mp3', 'abc'], ['/assets/b.mp3', 'def']]);
+  const store = storeOf(siteManifest, caches);
   const ctrl = new AbortController();
-  const store = new ResourceStore(server.manifest, { caches, fetcher: server.fetcher });
-  await assert.rejects(store.download({ signal: ctrl.signal, concurrency: 1, onProgress: p => { if (p.count === 1) ctrl.abort(); } }), { name: 'AbortError' });
+  const onProgress = status => { if (status.count === 1) ctrl.abort(); };
+  await assert.rejects(importFiles(store, files, { signal: ctrl.signal, onProgress }), { name: 'AbortError' });
   assert.equal((await store.check()).count, 1);
 
   // A disk without room for resource files.
+  const attempts = [];
   class FullCaches extends MemoryCaches {
     async open(name) {
       const cache = await super.open(name);
       const put = cache.put.bind(cache);
       cache.put = async (key, response) => {
-        if (absolute(key).includes('/assets/')) throw new DOMException('full', 'QuotaExceededError');
-        return put(key, response);
+        if (!absolute(key).includes('/assets/')) return put(key, response);
+        attempts.push(new URL(absolute(key)).pathname);
+        throw new DOMException('full', 'QuotaExceededError');
       };
       return cache;
     }
   }
-  const full = new ResourceStore(server.manifest, { caches: new FullCaches(), fetcher: server.fetcher });
-  server.requests.length = 0;
-  await assert.rejects(full.download({ concurrency: 1 }), { name: 'QuotaExceededError' });
-  assert.deepEqual(server.requests, ['/resource-manifest.json', '/assets/a.mp3'], 'no retry, no next file');
+  await assert.rejects(importFiles(storeOf(siteManifest, new FullCaches()), files), { name: 'QuotaExceededError' });
+  assert.deepEqual(attempts, ['/assets/a.mp3'], 'no next file');
 
   await caches.open('application-unrelated');
   await store.clear();
@@ -338,13 +251,14 @@ test('pausing keeps the finished files; a full disk stops at once; clearing leav
   assert.equal((await store.check()).count, 0);
 });
 
-test('a cache deleted during a download takes its status entry along: the next check reports what is stored', async () => {
+test('a cache deleted during an import takes its status entry along: the next check reports what is stored', async () => {
   const caches = new MemoryCaches();
-  const server = site([['/assets/a.mp3', 'abc'], ['/assets/b.mp3', 'def'], ['/assets/c.mp3', 'ghi']]);
-  const store = new ResourceStore(server.manifest, { caches, fetcher: server.fetcher });
+  const files = [['/assets/a.mp3', 'abc'], ['/assets/b.mp3', 'def'], ['/assets/c.mp3', 'ghi']];
+  const server = site(files);
+  const store = await ResourceStore.load({ caches, fetcher: server.fetcher });
   // The player clears the site's data after the first file.
   const onProgress = status => { if (status.count === 1) void caches.delete('stronghold-resources'); };
-  await store.download({ concurrency: 1, retryDelays: NO_WAIT, onProgress });
+  await importFiles(store, files, { onProgress });
   assert.deepEqual(await caches.keys(), [], 'nothing re-created under the name');
   const next = await ResourceStore.load({ caches, fetcher: server.fetcher });
   assert.equal((await next.check()).count, 0);
@@ -494,7 +408,7 @@ test('the service worker maps same-origin GETs of resource files, and /media/ au
   assert.equal(await media('/media/bgm/none'), undefined);
 });
 
-test('the service worker answers cached files without any manifest, and everything else from the network', async t => {
+test('the service worker answers cached files without any manifest; files the cache lacks are a 404, without the network', async t => {
   const caches = new MemoryCaches();
   const a = entry('/assets/a.mp3', 'abc');
   const store = storeOf(manifest([a]), caches);
@@ -511,11 +425,14 @@ test('the service worker answers cached files without any manifest, and everythi
   const request = async path => {
     let answer = null;
     listeners.fetch({ request: new Request(ORIGIN + path), respondWith: promise => { answer = promise; } });
-    return answer && (await answer).text();
+    if (!answer) return null;
+    const response = await answer;
+    return [response.status, await response.text()];
   };
-  assert.equal(await request('/assets/a.mp3'), 'abc');
-  assert.equal(await request('/assets/other.png'), 'network');
-  assert.equal(await request('/media/bgm/other'), 'network');
+  assert.deepEqual(await request('/assets/a.mp3'), [200, 'abc']);
+  for (const path of ['/assets/other.png', '/fonts/f.woff2', '/media/bgm/other']) {
+    assert.deepEqual(await request(path), [404, ''], path);
+  }
   assert.equal(await request('/js/main.js'), null, 'not answered by the worker');
-  assert.deepEqual(network, ['/assets/other.png', '/media/bgm/other'], 'only the uncached files, no manifest request');
+  assert.deepEqual(network, [], 'no network request, no manifest');
 });
