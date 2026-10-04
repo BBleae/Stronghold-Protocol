@@ -8,6 +8,12 @@ class Socket extends EventEmitter {
   close(){this.readyState=3;this.emit('close');}
   terminate(){this.close();}
 }
+// What the Durable Object does on wake: the room from its snapshot, then its running match.
+function restore(snapshot,now){
+  const rt=new RoomRuntime({snapshot,accounts:true,now});
+  rt.restoreMatch(snapshot.matchCheckpoint);
+  return rt;
+}
 test('account room snapshot restores an active match and accepts the original seat again', () => {
   const rt=new RoomRuntime({accounts:true,now:()=>1000});
   const ws=new Socket();rt.connect(ws,{accountId:'alice',ticket:rt.reserve('ABCD','alice')});
@@ -17,7 +23,7 @@ test('account room snapshot restores an active match and accepts the original se
   send(rt,ws,'room.start');
   const before=rt.lobby.getRoom('ABCD').match.publicView();
   const snapshot=JSON.parse(JSON.stringify(rt.snapshot()));
-  const recovered=new RoomRuntime({snapshot,accounts:true,now:()=>1000});
+  const recovered=restore(snapshot,()=>1000);
   assert.ok(recovered.lobby.getRoom('ABCD')?.match,'active match must not be discarded');
   assert.deepEqual(recovered.lobby.getRoom('ABCD').match.publicView(),before);
   const next=new Socket();recovered.connect(next,{accountId:'alice',takeover:true});
@@ -42,7 +48,7 @@ test('a cold restart reconciles missing sockets and resumes paused solo combat u
   match.handle(pid,{t:'g.ready',ready:true});
   for(let i=0;i<100 && match.phase!=='COMBAT';i++)match.pump(match.sched.nextAt(),1);
   assert.equal(match.phase,'COMBAT');match.handle(pid,{t:'g.pause',on:true});assert.equal(match.paused,true);
-  const recovered=new RoomRuntime({snapshot:JSON.parse(JSON.stringify(rt.snapshot())),accounts:true,now:()=>2000});
+  const recovered=restore(JSON.parse(JSON.stringify(rt.snapshot())),()=>2000);
   recovered.reconcileSockets();const restored=recovered.lobby.getRoom('ABCD').match;
   assert.equal(restored.players.get(pid).connected,false);assert.equal(restored.paused,false);
   assert.ok(restored.fields.every(f=>f.mode==='server'));

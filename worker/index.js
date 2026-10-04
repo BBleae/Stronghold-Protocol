@@ -3,7 +3,9 @@ import { APP_VERSION } from '../shared/constants.js';
 import { CODE_ALPHABET } from '../server/lobby.js';
 import { normalizeIp, limitKeyOf, TokenBucket } from '../server/net.js';
 import { RoomRuntime, validCode } from './room-runtime.js';
-import { prepareMatchVersion } from './match-versions.js';
+import { prepareMatchVersion, retainedMatchVersions } from './match-versions.js';
+import { RULES_VERSION } from '../shared/rules-version.js';
+import { logInfo, logError, errorFields } from './log.js';
 import { PACK_PATH, servePack } from './pack.js';
 import { handleAuth, authenticate, accountOf, directoryOf } from './accounts/auth.js';
 import { handleAccountRoutes } from './accounts/routes.js';
@@ -147,63 +149,124 @@ class SocketAdapter {
   terminate() { this.close(1008, 'connection terminated'); }
 }
 
+// Storage key of the restore-attempt counter (RoomDurableObject.restoreMatch).
+const RESTORE_ATTEMPTS = 'restore-attempts';
+
+/** A rules version this bundle can restore: its own or a retained one. */
+const knownRulesVersion = (id) => id === RULES_VERSION || Object.hasOwn(retainedMatchVersions, id);
+
 export class RoomDurableObject {
   constructor(ctx, env) {
     this.ctx = ctx;
     this.env = env;
     this.sockets = new Map();
     this.activeTimer = null;
+    // What storage holds of the restore-attempt counter (see restoreMatch).
+    this.storedAttempts = 0;
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('{"t":"ping","c":0}', '{"t":"pong","c":0}'));
-    this.ready = ctx.blockConcurrencyWhile(async () => {
-      const meta = await ctx.storage.get('snapshot-meta');
-      let snapshot;
-      if (meta?.parts) {
-        const keys = Array.from({ length: meta.parts }, (_, i) => `snapshot-${i}`);
-        const parts=[];
-        for(let offset=0;offset<keys.length;offset+=128) {
-          const batch=keys.slice(offset,offset+128),chunks=await ctx.storage.get(batch);
-          for(const key of batch) {
-            if(typeof chunks.get(key)!=='string')throw new Error('INCOMPLETE_ROOM_SNAPSHOT');
-            parts.push(chunks.get(key));
-          }
-        }
-        snapshot = JSON.parse(parts.join(''));
-      }
-      if(snapshot?.matchCheckpoint?.eventLogId) {
-        const c=snapshot.matchCheckpoint;
-        const count=ctx.storage.sql.exec('SELECT COUNT(*) AS count FROM match_events WHERE match_id=?',c.eventLogId).one().count;
-        if(count!==c.eventCount) throw new Error('INCOMPLETE_MATCH_LOG');
-        // Retained engines require an Array, but only iterate it during restoration.
-        // Stream rows instead of keeping SQL payloads and parsed events together.
-        c.events=new Array(count);
-        c.events[Symbol.iterator]=function*(){
-          for(const row of ctx.storage.sql.exec('SELECT payload FROM match_events WHERE match_id=? ORDER BY seq',c.eventLogId))yield JSON.parse(row.payload);
-        };
-        this.persistedLogId=c.eventLogId;this.persistedEventCount=c.events.length;
-      }
-      this.parts = meta?.parts || 0;
-      await prepareMatchVersion(snapshot?.matchCheckpoint?.rulesVersion);
-      this.runtime = new RoomRuntime({ snapshot, accounts: !!env.ACCOUNTS, onChange: () => this.queuePersist() });
-      for (const ws of ctx.getWebSockets()) {
-        // Closing sockets may still be enumerated; never rebind one over its replacement.
-        if (ws.readyState !== 1) continue;
-        if (snapshot?.running && !snapshot.matchCheckpoint) { try { ws.close(1012, 'active match interrupted by server restart'); } catch {} continue; }
-        const attachment = ws.deserializeAttachment();
-        if (!attachment) { try { ws.close(1011, 'missing session'); } catch {} continue; }
-        if(env.ACCOUNTS) {
-          const session=attachment.sessionId && await directoryOf(env).getSession(attachment.sessionId);
-          if(!session || session.accountId!==attachment.accountId) {try{ws.close(4003,'login required');}catch{}continue;}
-        }
-        const adapter = new SocketAdapter(ws,!!env.ACCOUNTS);
-        this.sockets.set(ws, adapter);
-        this.runtime.connect(adapter, { ip: attachment.ip, attachment });
-      }
-      this.refreshAutoResponses();
-      this.runtime.reconcileSockets();
-      this.runtime.sweep();
-      await this.persist();
-    });
+    this.ready = ctx.blockConcurrencyWhile(() => this.load());
   }
+
+  // Wake: the persisted room, the sockets that survived hibernation, then its running match.
+  async load() {
+    this.loading = true;
+    const snapshot = await this.readSnapshot();
+    this.runtime = new RoomRuntime({ snapshot, accounts: !!this.env.ACCOUNTS, onChange: () => this.queuePersist() });
+    for (const ws of this.ctx.getWebSockets()) {
+      // Closing sockets may still be enumerated; never rebind one over its replacement.
+      if (ws.readyState !== 1) continue;
+      if (snapshot?.running && !snapshot.matchCheckpoint) { try { ws.close(1012, 'active match interrupted by server restart'); } catch {} continue; }
+      const attachment = ws.deserializeAttachment();
+      if (!attachment) { try { ws.close(1011, 'missing session'); } catch {} continue; }
+      if(this.env.ACCOUNTS) {
+        const session=attachment.sessionId && await directoryOf(this.env).getSession(attachment.sessionId);
+        if(!session || session.accountId!==attachment.accountId) {try{ws.close(4003,'login required');}catch{}continue;}
+      }
+      const adapter = new SocketAdapter(ws,!!this.env.ACCOUNTS);
+      this.sockets.set(ws, adapter);
+      this.runtime.connect(adapter, { ip: attachment.ip, attachment });
+    }
+    const checkpoint = snapshot?.matchCheckpoint;
+    if (checkpoint) {
+      this.persistedLogId = checkpoint.eventLogId;
+      this.persistedEventCount = checkpoint.eventCount;
+      await this.restoreMatch(checkpoint);
+    }
+    this.refreshAutoResponses();
+    this.runtime.reconcileSockets();
+    this.runtime.sweep();
+    await this.persist();
+    this.loading = false;
+  }
+
+  async readSnapshot() {
+    const meta = await this.ctx.storage.get('snapshot-meta');
+    this.parts = meta?.parts || 0;
+    if (!meta?.parts) return undefined;
+    const keys = Array.from({ length: meta.parts }, (_, i) => `snapshot-${i}`);
+    const parts = [];
+    for (let offset = 0; offset < keys.length; offset += 128) {
+      const batch = keys.slice(offset, offset + 128);
+      const chunks = await this.ctx.storage.get(batch);
+      for (const key of batch) {
+        if (typeof chunks.get(key) !== 'string') throw new Error('INCOMPLETE_ROOM_SNAPSHOT');
+        parts.push(chunks.get(key));
+      }
+    }
+    return JSON.parse(parts.join(''));
+  }
+
+  // A match that cannot be restored ends as interrupted; it never bricks the room or keeps its players seated.
+  // A restore that never finishes (CPU or memory limit, the 30 s blockConcurrencyWhile timeout) resets the object
+  // without reaching any catch, so each attempt is counted durably before the replay starts, and a second attempt
+  // ends the match instead of replaying it again. The counter is cleared once the restored room has served an
+  // event after this one (persist), not by the restore itself.
+  async restoreMatch(checkpoint) {
+    const attempts = ((await this.ctx.storage.get(RESTORE_ATTEMPTS)) ?? 0) + 1;
+    this.storedAttempts = attempts - 1;
+    const context = { room: this.runtime.code, rulesVersion: checkpoint.rulesVersion, events: checkpoint.eventCount, attempts };
+    // An unknown rules version means a deployment older than the match (a Cloudflare rollback).
+    if (!knownRulesVersion(checkpoint.rulesVersion)) {
+      this.interruptMatch(checkpoint, 'rollback', context, new Error('CHECKPOINT_VERSION'));
+      return;
+    }
+    if (attempts > 1) {
+      this.interruptMatch(checkpoint, 'restart', context, new Error('RESTORE_UNFINISHED'));
+      return;
+    }
+    await this.ctx.storage.put(RESTORE_ATTEMPTS, attempts);
+    await this.ctx.storage.sync();
+    this.storedAttempts = attempts;
+    try {
+      await prepareMatchVersion(checkpoint.rulesVersion);
+      this.runtime.restoreMatch({ ...checkpoint, events: this.matchLog(checkpoint) });
+    } catch (error) {
+      this.interruptMatch(checkpoint, 'restart', context, error);
+      return;
+    }
+    logInfo('match_restored', context);
+  }
+
+  interruptMatch(checkpoint, reason, context, error) {
+    logError('match_restore_failed', { ...context, reason, error: errorFields(error) });
+    this.runtime.interruptMatch(checkpoint, reason);
+  }
+
+  // The match's event log as the Array the engines expect. Rows are read and parsed only while the engine iterates
+  // them, so the stored payloads and the parsed events are never in memory together.
+  matchLog(checkpoint) {
+    const sql = this.ctx.storage.sql;
+    const { count } = sql.exec('SELECT COUNT(*) AS count FROM match_events WHERE match_id=?', checkpoint.eventLogId).one();
+    if (count !== checkpoint.eventCount) throw new Error('INCOMPLETE_MATCH_LOG');
+    const events = new Array(count);
+    events[Symbol.iterator] = function* () {
+      for (const row of sql.exec('SELECT payload FROM match_events WHERE match_id=? ORDER BY seq', checkpoint.eventLogId)) {
+        yield JSON.parse(row.payload);
+      }
+    };
+    return events;
+  }
+
   refreshAutoResponses() {
     for (const [ws, adapter] of this.sockets) {
       const at = this.ctx.getWebSocketAutoResponseTimestamp(ws)?.getTime();
@@ -236,6 +299,7 @@ export class RoomDurableObject {
       await this.ctx.storage.deleteAlarm();
       this.parts = 0;
       this.persistedLogId=null;this.persistedEventCount=0;
+      this.storedAttempts = 0;
       for(const adapter of this.sockets.values())adapter.flush();
       return;
     }
@@ -248,14 +312,22 @@ export class RoomDurableObject {
       newEvents=checkpoint.events.slice(offset).map((value,i)=>({seq:offset+i,payload:JSON.stringify(value)}));
       checkpoint.eventCount=checkpoint.events.length;checkpoint.eventLogId=logId;
       delete checkpoint.events;
+    }
+    // The log of a match that ended (or could not be restored) goes with its checkpoint.
+    const endedLog = this.persistedLogId && this.persistedLogId !== logId ? this.persistedLogId : null;
+    if (logId || endedLog) {
       this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS match_events (match_id TEXT NOT NULL, seq INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(match_id,seq))');
     }
+    // A restored match keeps its attempt counted until a later event commits (restoreMatch).
+    const clearAttempts = this.storedAttempts > 0 && (!checkpoint || !this.loading);
     const source = JSON.stringify(snapshot);
     const count = Math.ceil(source.length / 16_000);
     const entries = { 'snapshot-meta': { parts: count } };
     for (let i = 0; i < count; i++) entries[`snapshot-${i}`] = source.slice(i * 16_000, (i + 1) * 16_000);
     await this.ctx.storage.transaction(async (txn) => {
+      if (endedLog) this.ctx.storage.sql.exec('DELETE FROM match_events WHERE match_id=?', endedLog);
       for(const row of newEvents) this.ctx.storage.sql.exec('INSERT INTO match_events VALUES (?,?,?)',logId,row.seq,row.payload);
+      if (clearAttempts) await txn.delete(RESTORE_ATTEMPTS);
       const items=Object.entries(entries);
       for(let offset=0;offset<items.length;offset+=128)await txn.put(Object.fromEntries(items.slice(offset,offset+128)));
       if(count<this.parts) {
@@ -264,7 +336,9 @@ export class RoomDurableObject {
       }
     });
     this.parts = count;
-    if(checkpoint) {this.persistedLogId=logId;this.persistedEventCount=checkpoint.eventCount;}
+    this.persistedLogId = logId;
+    this.persistedEventCount = checkpoint?.eventCount ?? 0;
+    if (clearAttempts) this.storedAttempts = 0;
     for(const adapter of this.sockets.values()) adapter.flush();
     if(this.env.ACCOUNTS && !this.releasingClaims) {
       const terminal=rt.applications.list().filter(item=>['expired','cancelled','rejected'].includes(item.status) && !item.released);

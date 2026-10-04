@@ -90,20 +90,27 @@ export class RoomRuntime {
     const broadcast=this.lobby.broadcastRoom.bind(this.lobby);
     this.lobby.broadcastRoom=(room,msg)=>{const result=broadcast(room,msg);this.spectators.broadcast(msg);return result;};
     this.lobby.onChange = onChange;
-    this.lobby.onArchive=(room,ctx,summary)=>{
-      const match=ctx.match;
-      if(!match?.recording || !room.archiveParticipants?.length) return;
-      const matchId=this.generation+':'+room.matchCount, endedAt=this.now();
-      const personal=room.archiveParticipants.map(({accountId,playerId})=>{
-        const result=summary.players?.find(p=>p.playerId===playerId), ps=match.players.get(playerId), departure=match.departures[playerId];
-        return {accountId,playerId,matchId,endedAt,startedAt:match.startedAt,mode:room.mode,difficulty:room.difficulty,
-          status:departure?'left':['error','abandoned'].includes(summary.reason)?'interrupted':'completed',
-          victory:!!summary.victory,hiddenCleared:!!summary.hiddenCleared,round:departure?.round || match.round,
-          stats:departure?.stats || {...ps?.stats,...result?.stats},operators:match.usedOperators[playerId] || [],result};
+    this.lobby.onArchive = (room, ctx, summary) => {
+      const match = ctx.match;
+      if (!match?.recording || !room.archiveParticipants?.length) return;
+      this.queueArchive(room, {
+        startedAt: match.startedAt,
+        result: summary,
+        replay: { schemaVersion: 1, rulesVersion: match.recording.rulesVersion, battles: match.replayBattles },
+        personal: (playerId) => {
+          const result = summary.players?.find((p) => p.playerId === playerId);
+          const departure = match.departures[playerId];
+          return {
+            status: departure ? 'left' : ['error', 'abandoned'].includes(summary.reason) ? 'interrupted' : 'completed',
+            victory: !!summary.victory,
+            hiddenCleared: !!summary.hiddenCleared,
+            round: departure?.round || match.round,
+            stats: departure?.stats || { ...match.players.get(playerId)?.stats, ...result?.stats },
+            operators: match.usedOperators[playerId] || [],
+            result,
+          };
+        },
       });
-      this.archiveOutbox.push({archiveEncoding:2,facts:{matchId,endedAt,startedAt:match.startedAt,mode:room.mode,difficulty:room.difficulty,
-        participants:personal.map(p=>p.accountId),result:summary},
-        personal,replay:{schemaVersion:1,rulesVersion:match.recording.rulesVersion,battles:match.replayBattles}});
     };
     const handler = {
       onHello: (s, info) => {
@@ -196,16 +203,84 @@ export class RoomRuntime {
         }
       }
       for (const [id, at] of snapshot.deadlines || []) this.lobby.deadlines.set(id, at);
-      if (snapshot.matchCheckpoint && snapshot.room) {
-        const room=this.lobby.getRoom(this.code), checkpoint=snapshot.matchCheckpoint;
-        room.matchCount=Math.max(0,room.matchCount-1);
-        const Original=this.lobby.MatchClass;
-        this.lobby.MatchClass=class {constructor(options) {return (retainedMatchVersions[checkpoint.rulesVersion] || restoreMatch)(checkpoint,options);}};
-        const result=this.lobby.startMatch(room,room.matchKey);
-        this.lobby.MatchClass=Original;
-        if (result.error || !room.match) throw new Error('MATCH_RESTORE_FAILED');
-      }
+      // A running match (snapshot.matchCheckpoint) is restored separately: restoreMatch / interruptMatch.
     }
+  }
+
+  /**
+   * Run the room's persisted match again from its checkpoint (the room and its sessions are already restored).
+   * Throws the engine's own error when the log cannot be replayed (unknown rules version, a diverged state, …).
+   */
+  restoreMatch(checkpoint) {
+    const room = this.lobby.getRoom(this.code);
+    const restore = retainedMatchVersions[checkpoint.rulesVersion] || restoreMatch;
+    let failure = null;
+    // Lobby.startMatch wires the match into the room; this class only builds it from the checkpoint.
+    const MatchClass = this.lobby.MatchClass;
+    this.lobby.MatchClass = class {
+      constructor(options) {
+        try {
+          return restore(checkpoint, options);
+        } catch (error) {
+          failure = error;
+          throw error;
+        }
+      }
+    };
+    room.matchCount -= 1; // startMatch counts it again
+    let result;
+    try {
+      result = this.lobby.startMatch(room, room.matchKey);
+    } finally {
+      this.lobby.MatchClass = MatchClass;
+    }
+    if (result.error) {
+      room.matchCount += 1;
+      throw failure || new Error(`MATCH_RESTORE_FAILED: ${result.detail}`);
+    }
+  }
+
+  /**
+   * The room's persisted match cannot run again: it ends as interrupted. The participants' history records the
+   * interruption, and the room closes — its members learn `reason` (room.closed) on their next resume, and their
+   * seats are free.
+   */
+  interruptMatch(checkpoint, reason) {
+    const room = this.lobby.getRoom(this.code);
+    const view = checkpoint.view;
+    const players = view.players.map(({ playerId, seat, name, isBot, alive, lp, bandId }) => ({ playerId, seat, name, isBot, alive, lp, bandId }));
+    if (room.archiveParticipants?.length) {
+      this.queueArchive(room, {
+        startedAt: checkpoint.startedAt,
+        result: { victory: false, reason: 'interrupted', modeId: view.modeId, difficulty: room.difficulty, lastRound: view.lastRound, players },
+        replay: { schemaVersion: 1, rulesVersion: checkpoint.rulesVersion, battles: [] },
+        personal: (playerId) => ({
+          status: 'interrupted',
+          victory: false,
+          hiddenCleared: false,
+          round: view.round,
+          stats: {},
+          operators: [],
+          result: players.find((p) => p.playerId === playerId) ?? null,
+        }),
+      });
+    }
+    this.lobby.disposeRoom(room, reason);
+  }
+
+  /**
+   * Queue the archive of the room's latest match (number room.matchCount) for its account participants: the shared
+   * facts, one personal history fact per participant (`personal(playerId)` adds its outcome) and the replay.
+   */
+  queueArchive(room, { startedAt, result, replay, personal }) {
+    const common = { matchId: `${this.generation}:${room.matchCount}`, endedAt: this.now(), startedAt, mode: room.mode, difficulty: room.difficulty };
+    const facts = room.archiveParticipants.map(({ accountId, playerId }) => ({ accountId, playerId, ...common, ...personal(playerId) }));
+    this.archiveOutbox.push({
+      archiveEncoding: 2,
+      facts: { ...common, participants: facts.map((p) => p.accountId), result },
+      personal: facts,
+      replay,
+    });
   }
 
   reserve(code, accountId = null) {

@@ -17,6 +17,11 @@ function connect(rt,accountId,ticket,token,ip='8.8.8.8'){
   const ws=new Socket();rt.connect(ws,{accountId,ticket,ip});
   send(rt,ws,'hello',{name:accountId,token});return ws;
 }
+// What the Durable Object does on wake: the room from its snapshot, then its running match.
+function restore(t,snapshot){
+  const rt=new RoomRuntime({accounts:true,snapshot});t.after(()=>rt.lobby.shutdown());
+  rt.restoreMatch(snapshot.matchCheckpoint);return rt;
+}
 function setup(t){
   const rt=new RoomRuntime({accounts:true});
   const host=connect(rt,'host',rt.reserve('ABCD','host'));
@@ -109,7 +114,7 @@ test('persisted match restores players and observers separately without changing
   const a=connect(rt,'viewer');send(rt,a,'room.spectate');
   assert.equal(a.take('room.state')?.spectating,true);
   const snapshot=rt.snapshot();
-  const restored=new RoomRuntime({accounts:true,snapshot});t.after(()=>restored.lobby.shutdown());
+  const restored=restore(t,snapshot);
   const player=connect(restored,'host',undefined,host.take('welcome').token);
   assert.equal(player.take('welcome').playerId,host.take('welcome').playerId);
   assert.equal(player.take('m.public').phase,'INFO_CHECK');
@@ -138,7 +143,7 @@ test('a published old-rules battle restores unchanged and accepts new spectators
   assert.ok(match.fields[0]?.battleId);
   const checkpoint=JSON.parse(JSON.stringify(rt.snapshot()));
   assert.equal(checkpoint.matchCheckpoint.rulesVersion,version);
-  const restored=new RoomRuntime({snapshot:checkpoint,accounts:true});t.after(()=>restored.lobby.shutdown());
+  const restored=restore(t,checkpoint);
   const resumed=connect(restored,'host',undefined,host.take('welcome').token);
   assert.equal(resumed.take('welcome').playerId,host.take('welcome').playerId);
   assert.equal(resumed.take('b.start').battleId,match.fields[0].battleId);
