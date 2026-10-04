@@ -6,7 +6,7 @@
 //   menu      no room, no socket: status 'menu'. Requests that need a room reject NOT_IN_ROOM at once, so a leave
 //             from the menu settles at once too.
 //   entering  enter(intent) is getting into a room, one intent at a time. Any failure closes the socket and returns
-//             to the menu; enter() rejects with the reason.
+//             to the menu (an invalid login: lost); enter() rejects with the reason.
 //   room      the socket belongs to a room the player is in; Net's reconnects apply (online, reconnecting …). The room
 //             ends with room.closed (pushed by the server or emitted here) and the client returns to the menu.
 //   lost      the login is invalid (the room or the account API said so): status 'closed', lastError LOGIN_REQUIRED,
