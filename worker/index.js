@@ -35,15 +35,25 @@ export default {
   },
 };
 
+// The request limit (wrangler.jsonc "ratelimits") an /api request counts against, per network, before it reaches any
+// Durable Object (the login lookup included). Room connections count in /ws.
+function apiLimit(env, method, path) {
+  if (path === '/api/auth/github/start') return env.AUTH_LIMIT;
+  if (path === '/api/rooms') return method === 'POST' ? env.RESERVE_LIMIT : env.STATUS_LIMIT;
+  if (/^\/api\/rooms\/[A-Za-z]{4}$/.test(path)) return env.STATUS_LIMIT;
+  if (/^\/api\/rooms\/[A-Za-z]{4}\/applications$/.test(path)) return method === 'GET' ? env.STATUS_LIMIT : env.APPLICATION_LIMIT;
+  // Everything else: the account's pages (/api/me…), history and replays (/api/matches…), visibility, logout, the
+  // OAuth callback.
+  return env.API_LIMIT;
+}
+
 async function route(request, env) {
   const url = new URL(request.url);
   const path = url.pathname;
-  const backup=await handleBackupRoutes(request,env);if(backup)return backup;
-  if (path === '/api/auth/github/start' && !(await within(env.AUTH_LIMIT, networkKey(request)))) return tooMany();
-  if ((path === '/api/rooms' && request.method === 'GET') || /\/applications$/.test(path)) {
-    const limit = request.method === 'GET' ? env.STATUS_LIMIT : env.APPLICATION_LIMIT;
-    if (!(await within(limit, networkKey(request)))) return tooMany();
-  }
+  // Administrator routes: authorized by their own token, never by a player session.
+  const backup = await handleBackupRoutes(request, env);
+  if (backup) return backup;
+  if (path.startsWith('/api/') && !(await within(apiLimit(env, request.method, path), networkKey(request)))) return tooMany();
   const auth = await handleAuth(request, env);
   if (auth) return auth;
   const accountResponse = await handleAccountRoutes(request, env);
@@ -60,7 +70,6 @@ async function route(request, env) {
     if (request.method !== 'POST') return error(405, 'BAD_MSG');
     // A write: only from the game's own page.
     if (request.headers.get('Origin') !== url.origin) return error(403, 'BAD_MSG', 'origin mismatch');
-    if (!(await within(env.RESERVE_LIMIT, networkKey(request)))) return tooMany();
     const session = await authenticate(request, env);
     if (!session) return error(401, 'LOGIN_REQUIRED');
     // A create that failed after its reservation (e.g. at the first connect) goes on with that reservation.
@@ -88,7 +97,6 @@ async function route(request, env) {
     if (request.method !== 'GET') return error(405, 'BAD_MSG');
     const code = statusMatch[1].toUpperCase();
     if (!validCode(code)) return error(404, 'ROOM_NOT_FOUND');
-    if (!(await within(env.STATUS_LIMIT, networkKey(request)))) return tooMany();
     return roomStub(env, code).fetch(new Request('https://room.internal/_status'));
   }
   if (path === '/ws') {

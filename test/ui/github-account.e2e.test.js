@@ -4,7 +4,7 @@ import { existsSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { ROOT, copyRuntimeAssets, bundleWorker } from '../../tools/build-worker.mjs';
-import { createAccountHarness } from '../worker/helpers/account-harness.js';
+import { createAccountHarness, productionLimits } from '../worker/helpers/account-harness.js';
 
 const chrome=process.env.CHROME_PATH || 'C:/Program Files/Google/Chrome/Application/chrome.exe';
 test('signed-in title shows the account, returns to the lobby, and signs out without a nickname form', {
@@ -32,7 +32,8 @@ test('signed-in title shows the account, returns to the lobby, and signs out wit
       return env.ASSETS.fetch(req);
     }};
   `,{durableObjects:{SITES:{className:'TestObject',useSQLite:true},ACCOUNTS:{className:'AccountDurableObject',useSQLite:true}},
-    bindings:{AUTH_ORIGIN:'https://game.example',GITHUB_CLIENT_ID:'fixture',GITHUB_CLIENT_SECRET:'fixture'},assets:path.join(ROOT,'dist/client')});
+    bindings:{AUTH_ORIGIN:'https://game.example',GITHUB_CLIENT_ID:'fixture',GITHUB_CLIENT_SECRET:'fixture'},assets:path.join(ROOT,'dist/client'),
+    ratelimits:productionLimits});
   t.after(()=>h.dispose());
   const browser=await (await import('puppeteer-core')).default.launch({executablePath:chrome,headless:true,args:['--no-sandbox']});
   t.after(()=>browser.close());

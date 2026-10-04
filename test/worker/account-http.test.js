@@ -8,7 +8,7 @@ test('online room writes require cookie identity and ignore forged account heade
   const env={
     SITES:{idFromName:n=>n,get:()=>({getSession:async key=>key===sessionId?session:null})},
     ACCOUNTS:{idFromName:n=>n,get:()=>({getActiveSeat:async()=>null,claimSeat:async()=>({ok:true}),releaseSeat:async()=>({ok:true})})},
-    RESERVE_LIMIT:{limit:async()=>({success:true})},
+    RESERVE_LIMIT:{limit:async()=>({success:true})},API_LIMIT:{limit:async()=>({success:true})},
     ROOMS:{idFromName:n=>n,get:()=>({fetch:async req=>{calls.push(req);
       return Response.json({code:'ABCD',ticket:'b'.repeat(32),generation:'g1'},{status:201});}})},
   };

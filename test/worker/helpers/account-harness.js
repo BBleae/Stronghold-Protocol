@@ -13,6 +13,7 @@ export const productionLimits = Object.freeze({
   STATUS_LIMIT: { namespace_id: '1003', simple: { limit: 120, period: 60 } },
   AUTH_LIMIT: { namespace_id: '1004', simple: { limit: 10, period: 60 } },
   APPLICATION_LIMIT: { namespace_id: '1005', simple: { limit: 30, period: 60 } },
+  API_LIMIT: { namespace_id: '1006', simple: { limit: 600, period: 60 } },
 });
 export async function createAccountHarness(source, {durableObjects={},bindings={},assets,ratelimits={}}={}) {
   const dir = await mkdtemp(path.join(tmpdir(), 'sp-accounts-'));

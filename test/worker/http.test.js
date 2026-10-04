@@ -2,8 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import worker from '../../worker/index.js';
 
+// Request limits that never refuse (wrangler.jsonc "ratelimits").
+const unlimited = Object.fromEntries(['RESERVE_LIMIT', 'CONNECT_LIMIT', 'STATUS_LIMIT', 'AUTH_LIMIT', 'APPLICATION_LIMIT', 'API_LIMIT']
+  .map((name) => [name, { limit: async () => ({ success: true }) }]));
+
 test('private routes never reach a Durable Object and protocol failures have stable HTTP statuses', async () => {
-  const env = { ASSETS: { fetch: () => new Response('asset') } };
+  const env = { ...unlimited, ASSETS: { fetch: () => new Response('asset') } };
   const invoke = (path, init) => worker.fetch(new Request(`https://game.example${path}`, init), env);
   assert.equal((await invoke('/_reserve', { method: 'POST' })).status, 404);
   assert.equal((await invoke('/api/rooms/ABCD/_reserve', { method: 'POST' })).status, 404);
@@ -41,6 +45,34 @@ test('request limits count the network the edge reports, never forwarded headers
   assert.deepEqual([...counts], [['net:8.8.8.8', 9], ['net:2001:db8:1:2::/64', 2]]);
 });
 
+test('every /api request counts against its network before it reaches the directory', async () => {
+  let lookups = 0;
+  const counts = new Map();
+  const env = {
+    ...unlimited,
+    API_LIMIT: { async limit({ key }) {
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+      return { success: counts.get(key) <= 3 };
+    } },
+    SITES: { idFromName: (name) => name, get: () => ({ async getSession() {
+      lookups++;
+      return null;
+    } }) },
+  };
+  // A flood of requests with made-up session cookies, one of each route that looks the login up.
+  const paths = ['/api/me', '/api/me/matches', '/api/matches/x:1', '/api/me/active-match', '/api/me/preferences',
+    '/api/me/stats', '/api/matches/x:1/replay/0', '/api/rooms/ABCD/visibility'];
+  const statuses = [];
+  for (const path of paths) {
+    const response = await worker.fetch(new Request(`https://game.example${path}`, {
+      headers: { cookie: `__Host-sp_session=${'f'.repeat(64)}`, 'CF-Connecting-IP': '8.8.8.8' } }), env);
+    statuses.push(response.status);
+  }
+  assert.deepEqual(statuses, [200, 401, 401, 429, 429, 429, 429, 429]);
+  assert.equal(lookups, 3, 'a refused request never reaches the directory');
+  assert.deepEqual([...counts], [['net:8.8.8.8', 8]]);
+});
+
 test('application requests count against the account as well as its network', async () => {
   const counts = new Map();
   const env = {
@@ -67,12 +99,12 @@ test('a request ends with its own status: client errors keep their code, failure
   const token = 'a'.repeat(64);
   let failure = null;
   const env = {
+    ...unlimited,
     SITES: { idFromName: (name) => name, get: () => ({ async getSession() {
       if (failure) throw failure;
       return { accountId: 'a', expiresAt: Date.now() + 60_000 };
     } }) },
     ACCOUNTS: {},
-    APPLICATION_LIMIT: { limit: async () => ({ success: true }) },
   };
   const call = async (path, init = {}) => {
     const response = await worker.fetch(new Request(`https://game.example${path}`, { ...init,
