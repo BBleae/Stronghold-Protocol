@@ -7,7 +7,7 @@
 //     refill (PRTS 元素 "以白条显示剩余的元素值" / "元素条显示缓慢恢复至上限") drawn in the element's colour, never the
 //     white of 元素值 left — a white bar growing while the burst's stun / damage hits read as "not used up yet, but it
 //     burst";
-//   · the render clock trails the sim by ≤ 3 ticks;
+//   · the render clock trails the sim by the field view's LOOK_AHEAD (1 game s) plus a few ticks;
 //   · the gauge row is the unit's own: under its HP / SP bars and inside their span — the v2.3 ring right of the bars
 //     sat on the next operator's tier chip and bars (drawn under them) and read as that operator's gauge.
 
@@ -19,11 +19,12 @@ import { SnapshotBuffer } from '../../public/js/render/interp.js';
 import { makeBattle } from '../helpers/battleHarness.js';
 import { ELEMENT_ORDER, TICK } from '../../server/sim/constants.js';
 
-let fake, UnitView, EL_BAR, ELEMENT_RING;
+let fake, UnitView, EL_BAR, ELEMENT_RING, LOOK_AHEAD;
 before(async () => {
   fake = installFakePixi();
   ({ UnitView, EL_BAR } = await import('../../public/js/render/units.js'));
   ({ ELEMENT_RING } = await import('../../public/js/render/textures.js'));
+  ({ LOOK_AHEAD } = await import('../../public/js/render/app.js'));
 });
 after(() => fake.restore());
 
@@ -49,8 +50,8 @@ function renderRun(keys, { mods = {}, seconds = 70 } = {}) {
   const u = h.allies()[0];
   const info = h.b.fieldMeta().units.find((x) => x.id === u.id);
   const v = new UnitView(fakeViewCtx(fake.P, { cam }), info);
-  // the client runner's local feed (render/app.js setLocalFeed): ~2 frames of delay, the battle's speed
-  const buf = new SnapshotBuffer({ delay: 0.034, rate: 2, maxRate: 8 });
+  // the client runner's local feed (render/app.js): the render clock LOOK_AHEAD game s behind the sim, at the battle's speed
+  const buf = new SnapshotBuffer({ lookAhead: LOOK_AHEAD, rate: 2, maxRate: 8 });
   const truth = new Map();      // snapshot time → the sim's gauge then
   const out = new Map();
   const rows = [];
@@ -81,7 +82,7 @@ function renderRun(keys, { mods = {}, seconds = 70 } = {}) {
 function checkRows(rows) {
   let bursts = 0, prevLock = false, lastLeftBefore = null;
   for (const row of rows) {
-    assert.ok(row.t - row.renderT <= 3 * TICK + 1e-9, `the render clock trails by ≤ 3 ticks (${row.t} vs ${row.renderT})`);
+    assert.ok(row.t - row.renderT <= LOOK_AHEAD + 4 * TICK + 1e-9, `the render clock trails by LOOK_AHEAD + a few ticks (${row.t} vs ${row.renderT})`);
     const { g, lock } = row.sim;
     if (lock) {
       assert.ok(row.el, 'the 爆发冷却 shows');

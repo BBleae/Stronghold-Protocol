@@ -26,6 +26,13 @@ const enabled = process.env.RENDER_E2E === '1' && existsSync(CHROME) && existsSy
 const skip = enabled ? false : 'set RENDER_E2E=1 (needs Chrome and downloaded assets)';
 const NEURAL_TINT = ELEMENT_RING.neural.tint;
 
+/**
+ * The field view draws the battle LOOK_AHEAD (1 game s, render/app.js) behind the frames it is fed, so right after a push
+ * what is drawn is older than the feed: wait until the render clock has reached the newest frame before reading it. This
+ * relies on interp.update playing the buffered frames out to the newest once the feed stops (pinned in interp.test.js).
+ */
+const settled = (page) => page.waitForFunction(() => { const i = window.__demo.view.debug.interp; return i.renderT >= i.newestT; }, { polling: 'raf', timeout: 10000 });
+
 /** Real frames: 古米 blocking 底海滑动者 (15 % ATK 神经 per hit) until past its first burst. */
 function recordBattle(seconds = 54) {
   const h = makeBattle({ units: [{ chessId: 'chess_char_1_10_a', row: 10, col: 5 }], seed: 3, autoFinish: false, timeLimit: 600 });
@@ -165,6 +172,7 @@ describe('element gauge row in headless Chrome (user playtest #6)', { skip }, ()
         await feed(1, 2.5);
         await new Promise((r) => setTimeout(r, 1500)); // Spine models load
         await feed(2.5, 7);
+        await settled(page);
         const geo = await page.evaluate(() => {
           const out = {};
           for (const [id, x] of window.__demo.view.debug.views) {

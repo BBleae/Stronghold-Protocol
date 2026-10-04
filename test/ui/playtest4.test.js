@@ -215,6 +215,22 @@ describe('7: the detail card shows live stats against the base', () => {
     assert.ok(!textOf(pstats).includes('实时') && !textOf(pstats).includes('开战时'));
   });
 
+  test('the header HP follows the drawn picture: the snapshot\'s HP (released 0.5 s behind the sim) wins over the live HP, which fills in without it', async () => {
+    const { hpOf } = await import('../../public/js/ui/detailPanel.js');
+    const live = { src: 'battle', hp: 100, maxHp: 400 };
+    assert.deepEqual(hpOf(live, { hp: 250, max: 400 }), { hp: 250, max: 400 }, 'the drawn HP, not the sim\'s');
+    assert.deepEqual(hpOf(live, null), { hp: 100, max: 400 }, 'no drawn unit (gone from the frame / no snapshot): the live HP');
+    assert.deepEqual(hpOf({ ...live, src: 'prep' }, null), null, 'the prep preview has no HP');
+    assert.deepEqual(hpOf(null, { hp: 5, max: 9 }), { hp: 5, max: 9 });
+    assert.equal(hpOf(null, null), null);
+    // rendered: the card's bar reads the drawn HP while the stats block keeps the live numbers
+    await data.loadAll('chess', 'garrisons', 'assets', 'bonds', 'items');
+    const c = data.lookup('chess', 'chess_char_1_01_a');
+    const blocks = ChessDetail({ chess: c, piece: null, editable: false, bonds: [], loadout: null, live: { ...live, base: {} }, snapHp: { hp: 250, max: 400 } });
+    const hp = [...walk(blocks.find((b) => b.key === 'head'))].find((n) => hasClass(n, 'dhp'));
+    assert.ok(textOf(hp).includes('250 / 400'), 'the drawn HP');
+  });
+
   test('the game screen feeds it: g.unitStats for an own board unit in prep (newest answer only), the local sim in battle', () => {
     const src = read('public/js/screens/game.js');
     assert.match(src, /net\.on\('m\.unitStats'/);

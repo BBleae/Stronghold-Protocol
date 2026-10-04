@@ -35,6 +35,9 @@
 
 import { fxAtlas } from './textures.js';
 import { DMG_STYLE, dmgStyleKey, HIT_TINT, PROJ, COLORS } from './style.js';
+import { Sustains } from './fxsustain.js';
+
+export { SUSTAINED, ENEMY_AURAS, wallLine } from './fxsustain.js';
 
 /**
  * The sim's projectile speeds (server/sim/constants.js PROJECTILE_SPEEDS — pure data, served read-only at
@@ -163,7 +166,8 @@ export const FX_KINDS = Object.freeze({
   airstrike: { a: 'blast', c: 0xff8a3d, r: 1.5, heavy: true }, splash: { a: 'blast', c: 0xffc27a },
   scorchBurst: { a: 'blast', c: 0xff6a2a }, champagneBomb: { a: 'blast', c: 0xffd27a }, shockBlast: { a: 'blast', c: 0x9fd4ff, smoke: 0x1c2630 },
   frostNova: { a: 'blast', c: 0x9fe6ff, smoke: 0x1c2630 }, sunBurst: { a: 'blast', c: 0xffe28a }, meltdown: { a: 'blast', c: 0xff5a2a, r: 1.5, heavy: true },
-  iceSpike: { a: 'blast', c: 0xbfeeff, smoke: 0x1c2630 }, rockfall: { a: 'blast', c: 0xc8a878, smoke: 0x4a3f33 }, rockslide: { a: 'blast', c: 0xc8a878, smoke: 0x4a3f33 },
+  // `lead`: with a `dur` the blast lands that long after the event (boss 崩坍: a warning first, then the rocks)
+  iceSpike: { a: 'blast', c: 0xbfeeff, smoke: 0x1c2630 }, rockfall: { a: 'blast', c: 0xc8a878, smoke: 0x4a3f33, lead: true }, rockslide: { a: 'blast', c: 0xc8a878, smoke: 0x4a3f33 },
   finale: { a: 'blast', c: 0xffd45a, r: 1.5 }, swordStorm: { a: 'blast', c: 0xdfe8ff }, swordRain: { a: 'blast', c: 0xdfe8ff }, liberate: { a: 'blast', c: 0xffffff },
   quadShot: { a: 'volley', c: 0xfff2d0 }, featherArrow: { a: 'counter', c: 0xfff2d0 },
   burst: { a: 'element', c: 0xd0a0ff },
@@ -188,6 +192,10 @@ export const FX_KINDS = Object.freeze({
   // redeploy — the 替身's death clip already shows the knock-out, nothing is drawn
   dollEnd: { a: 'none', c: 0xd8b0ff },
   ulpiaReturn: { a: 'blink', c: 0x9ff0dc }, manifoldSplit: { a: 'blink', c: 0xd8b0ff },
+  // boss 刺胄之弹 launched towards (tx, ty) (the shell itself is an enemy unit); 伊内丝's 影哨 flying back to her
+  helmShell: { a: 'move', c: 0xc8b890 }, sentryRecall: { a: 'move', c: 0x8f7bff },
+  // state samples drawn only by their lasting record (render/fxsustain.js): 魔王's orbiting motes, 圣聆初雪's snow
+  motes: { a: 'none', c: 0xfff0a8 }, snowTiles: { a: 'none', c: 0xe8f6ff },
   // displacement
   pull: { a: 'move', c: 0x9fd4ff }, push: { a: 'move', c: 0xffd9a0 }, displace: { a: 'move', c: 0xd0c0a0 }, lure: { a: 'move', c: 0xffb3ec },
   charge: { a: 'move', c: 0xff9c33 }, dash: { a: 'move', c: 0xffd9a0 }, slippery: { a: 'move', c: 0x9fe6ff },
@@ -218,7 +226,9 @@ export const FX_KINDS = Object.freeze({
   // no effect [ASSUMED], so nothing is drawn (`a: 'none'`)
   hitCap: { a: 'none', c: 0xffffff },
   // beams
-  beam: { a: 'beam', c: 0xff7a5a }, link: { a: 'beam', c: 0x9ff0dc }, lightning: { a: 'bolt', c: 0xc9a2ff }, tentacle: { a: 'beam', c: 0x5fe0ff },
+  beam: { a: 'beam', c: 0xff7a5a }, link: { a: 'beam', c: 0x9ff0dc }, lightning: { a: 'bolt', c: 0xc9a2ff },
+  // 断裂生殖 tentacle: a stun area of radius `r` for `dur` (bosses.js)
+  tentacle: { a: 'zone', c: 0x5fe0ff },
   sandChains: { a: 'beam', c: 0xd8c8a0 }, sandChainsCharged: { a: 'beam', c: 0xffd45a },
   strike: { a: 'strike', c: 0xffe6a8 }, volley: { a: 'volley', c: 0xfff2d0 }, column: { a: 'pillar', c: 0x9ff0dc }, obelisk: { a: 'pillar', c: 0xc9a2ff },
   duskDragon: { a: 'blast', c: 0x9dff6a, r: 1.5 }, shadowWeave: { a: 'vanish', c: 0x8f7bff }, reweave: { a: 'summon', c: 0x8f7bff },
@@ -263,13 +273,16 @@ export function fxSpec(kind, extra = {}) {
   return spec;
 }
 
-/** Tiles covered by a blast / telegraph: `tiles` = [[r,c]…] or 'box' (Chebyshev ⌊r⌋ around the centre) or 'disc'. */
+/**
+ * Tiles covered by a blast / telegraph: `tiles` = [[r,c]…] or 'box' (Chebyshev ⌊r⌋ around the centre) or 'plus' (the
+ * centre row and column, ⌊r⌋ each way: 十字, enemies.js XI_CROSS_REACH) or 'disc'.
+ */
 export function tilesAround(x, y, r, tiles) {
   if (Array.isArray(tiles)) return tiles.filter((t) => Array.isArray(t) && Number.isInteger(t[0]) && Number.isInteger(t[1])).slice(0, 80);
   const cr = Math.round(y), cc = Math.round(x), R = Math.max(0, Math.min(6, Math.floor(r)));
   const out = [];
   for (let dr = -R; dr <= R; dr++) for (let dc = -R; dc <= R; dc++) {
-    if (tiles === 'box' || dr * dr + dc * dc <= r * r + 0.25) out.push([cr + dr, cc + dc]);
+    if (tiles === 'plus' ? dr === 0 || dc === 0 : tiles === 'box' || dr * dr + dc * dc <= r * r + 0.25) out.push([cr + dr, cc + dc]);
   }
   return out;
 }
@@ -341,6 +354,9 @@ export class FxSystem {
     this.tileGfx = new P.Graphics();
     this.tileGfx.blendMode = P.BLEND_MODES.ADD;
     ctx.layers.groundFx.addChild(this.tileGfx);
+    this.timers = [];         // delayed one-shots { t (real s), fn } (a 'lead' blast landing after its warning)
+    this.sus = new Sustains(this);   // lasting sim fx (render/fxsustain.js)
+    this.sustains = this.sus.map;    // key → record (tests, counts)
     this.tintSprite = new P.Sprite(P.Texture.WHITE);
     this.tintSprite.alpha = 0;
     this.tintSprite.blendMode = P.BLEND_MODES.ADD;
@@ -1504,6 +1520,7 @@ export class FxSystem {
    */
   skill(view, on) {
     if (!view) return;
+    this.sus.skill(view, on);
     if (!on) { this._aura(view, false); return; }
     const z = (view.z || 0) + (view.hover || 0);
     const g = this._proj(view.x, view.y, z, this._g);
@@ -1614,6 +1631,7 @@ export class FxSystem {
 
   death(view) {
     if (!view) return;
+    this.sus.died(view.id);
     const p = this._chest(view);
     const s = p.s;
     const col = view.isEnemy ? 0xff7a52 : 0xbfeee2;
@@ -1678,7 +1696,15 @@ export class FxSystem {
    */
   simFx(kind, x, y, extra) {
     const ex = extra && typeof extra === 'object' ? extra : {};
+    // a retained older rules version (replays, recovered matches) sent 伊内丝's 影哨 recall as a plain 'beam' from the sentry
+    // (x, y) to her (tx, ty), with no from / to / src: it ends the held 影哨 like 'sentryRecall'
+    if (kind === 'beam' && ex.id != null && ex.from == null && ex.to == null && ex.src == null && Number.isFinite(+ex.tx) && Number.isFinite(+ex.ty)) kind = 'sentryRecall';
     const spec = fxSpec(kind, ex);
+    // a lasting effect (render/fxsustain.js) is registered / refreshed / ended; a pure state sample draws nothing more
+    if (this.sus && this.sus.fromFx(kind, Number(x), Number(y), ex, spec.c)) return;
+    // handed over after a span nobody saw (battle/runner.js handOver: 影哨 placed / recalled meanwhile): the state only, no
+    // stale one-shot look (its summon pillar, its recall streak)
+    if (ex.late) return;
     if (spec.a === 'none') return; // an event the screen does not show (hitCap)
     const at = spec.pt ? this._point(Number(x), Number(y)) : this._where(Number(x), Number(y), ex);
     if (!Number.isFinite(at.x) || !Number.isFinite(at.y)) return;
@@ -1698,7 +1724,21 @@ export class FxSystem {
       case 'blast': {
         if (r >= 12) { this.flashScreen(col, 0.5); break; }
         if (kind === 'bombard') { this._touchLocks(ex.id ?? ex.src ?? null); this._landed(ex.id ?? ex.src ?? null, at.x, at.y, r); }
-        this.explosion(at.x, at.y, at.z, r, col, { smoke: spec.smoke, heavy: !!spec.heavy, tiles: ex.tiles ? tilesAround(at.x, at.y, r, ex.tiles) : null });
+        // the area a skill covers (its range / grid, sim content/fxtiles.js): those tiles flash, a small burst at the
+        // caster and a flare on each tile — not one big disc of the default radius
+        const area = Array.isArray(ex.tiles) && ex.r == null && ex.radius == null ? tilesAround(at.x, at.y, r, ex.tiles) : null;
+        const o = { smoke: spec.smoke, heavy: !!spec.heavy, tiles: area || (ex.tiles ? tilesAround(at.x, at.y, r, ex.tiles) : null) };
+        const go = () => {
+          const v = at.v && !at.v.destroyed ? at.v : null;
+          this.explosion(v ? v.x : at.x, v ? v.y : at.y, at.z, area ? Math.min(r, 0.8) : r, col, o);
+          if (area) this._tileFlares(area, col);
+        };
+        if (spec.lead && dur > 0) {
+          // boss 崩坍: the rocks land `dur` after the event — a warning ring until then (the hit lands with them)
+          this.zone(at.x, at.y, at.z, Math.max(0.6, r), col, dur, 'ring', true);
+          this.timers.push({ t: dur, fn: go });
+          if (this.timers.length > 64) this.timers.shift();
+        } else go();
         break;
       }
       case 'shell': {
@@ -1708,9 +1748,15 @@ export class FxSystem {
         this.mortar(this._viewOf(ex.id ?? ex.src), at.x, at.y, r, flight);
         break;
       }
-      case 'zone': this.zone(at.x, at.y, at.z, r, col, Math.max(0.6, dur || 1.5), spec.tex); break;
+      case 'zone': {
+        // an area given by its tiles (莫斯提马 S2: her range) lights those tiles for the whole time
+        if (Array.isArray(ex.tiles)) this.tileFlash(tilesAround(at.x, at.y, r, ex.tiles), col, Math.max(0.6, dur || 1.5), false, true);
+        else this.zone(at.x, at.y, at.z, r, col, Math.max(0.6, dur || 1.5), spec.tex);
+        break;
+      }
       case 'wall': {
-        // a line of burning tiles through the anchor tile along `axis` ('col' | 'row', from the sim event)
+        // a line of burning tiles through the anchor tile along `axis` ('col' | 'row', from the sim event): the FALLBACK
+        // look — while his skill runs the held wall (fxsustain) took the event and simFx never gets here
         const rect = this.ctx.fieldRect ? this.ctx.fieldRect() : null;
         this.tileFlash(wallTiles(Number(x), Number(y), ex.axis === 'row' ? 'row' : 'col', rect), col, Math.max(0.6, dur || 1.5));
         this.zone(at.x, at.y, at.z, 0.6, col, Math.max(0.6, dur || 1.5), spec.tex);
@@ -1723,8 +1769,27 @@ export class FxSystem {
         else this.zone(at.x, at.y, at.z, r, col, d, 'ring', true);
         break;
       }
-      case 'chill': this.flashScreen(col, 0.35, 0.8); this.snowfall(col); break;
-      case 'heal': this.heal(at.v || { x: at.x, y: at.y, z: at.z }, 0); break;
+      case 'chill': {
+        // 灵知 S3 (an operator, `id`): the cold is her range, held by her field (fxsustain) — no whole-screen tint; the
+        // Kjerag device gust (no `id`) chills every enemy on the field: screen tint + snow
+        if (ex.id != null && at.v) { this.ring(at.x, at.y, at.z, 0.2, 2.4, col, 0.7, 'shock'); this.burst(p.x, p.y, s, 10, col, { speed: 2, tex: 'dot', life: 0.6 }); break; }
+        this.flashScreen(col, 0.35, 0.8); this.snowfall(col);
+        break;
+      }
+      case 'heal': {
+        this.heal(at.v || { x: at.x, y: at.y, z: at.z }, 0);
+        if (kind !== 'hpShare') break;
+        // 归溟幽灵鲨 S1: HP swapped with ally `to` (both flash, a line between them); 魔王 S3: HP shared by `ids`
+        const a = at.v || this._viewOf(ex.id);
+        const others = ex.to != null ? [ex.to] : Array.isArray(ex.ids) ? ex.ids.slice(0, 10) : [];
+        for (const id of others) {
+          const b = this._viewOf(id);
+          if (!a || !b || a === b) continue;
+          this._beam(a, b, col, 0.45, 0.25);
+          if (ex.to != null) this.heal(b, 0);
+        }
+        break;
+      }
       case 'healAoe': {
         this.ring(at.x, at.y, at.z, 0.2, r, col, 0.6);
         const n = this.quality === 'low' ? 4 : 9;
@@ -1809,6 +1874,12 @@ export class FxSystem {
         const v = at.v;
         const hz = v ? (v.z || 0) + (v.hover || 0) + (v._headTiles || 1.2) + 0.25 : at.z + 1.4;
         const q = cam.project(at.x, at.y, hz, this._q);
+        if (kind === 'anchor') {
+          // 乌尔比安: the anchor thrown from (fromX, fromY) lands at (x, y) and hits a ring of radius r
+          const fx0 = num(ex.fromX, NaN), fy0 = num(ex.fromY, NaN);
+          if (Number.isFinite(fx0) && Number.isFinite(fy0)) this.streak(fx0, fy0, at.x, at.y, at.z + 0.5, col, 0.35);
+          if (ex.r != null) { this.ring(at.x, at.y, at.z, 0.2, r, col, 0.55, 'shock'); this.ring(at.x, at.y, at.z, r * 0.9, r, col, 0.7); }
+        }
         if (spec.a === 'mark') {
           this.particle('glow', q.x, q.y, { tint: col, life: 0.6, s0: q.s / 128 * 0.5, s1: q.s / 128 * 0.7, a0: 0.8, a1: 0 });
           this.numberAt(q.x, q.y, '!', col, 0.8);
@@ -1890,7 +1961,21 @@ export class FxSystem {
         this._flame(ex.id ?? ex.src ?? null, ex.target ?? ex.to ?? null, fx0, fy0, r, col, Math.max(0.2, dur || 0.5));
         break;
       }
-      case 'strike': case 'pillar': this.strike(at.x, at.y, at.z, col, spec.a === 'pillar'); break;
+      case 'strike': case 'pillar': {
+        // boss 冰凌: its attack hits the whole column `c` — every tile of it flashes, the light falls along it
+        const c = num(ex.c, NaN);
+        if (kind === 'column' && Number.isFinite(c)) {
+          const rect = this.ctx.fieldRect ? this.ctx.fieldRect() : null;
+          const r0 = rect && Number.isFinite(rect.r0) ? rect.r0 : Math.round(at.y) - 4, r1 = rect && Number.isFinite(rect.r1) ? rect.r1 : Math.round(at.y) + 4;
+          const col0 = [];
+          for (let rr = r0; rr <= r1; rr++) col0.push([rr, c]);
+          this.tileFlash(col0, col, 0.5);
+          for (let rr = r0; rr <= r1; rr += 2) this.strike(c, rr, this._groundZ(c, rr), col, false);
+          break;
+        }
+        this.strike(at.x, at.y, at.z, col, spec.a === 'pillar');
+        break;
+      }
       case 'volley': {
         const list = Array.isArray(ex.targets) ? ex.targets.slice(0, 12) : [];
         const src = this._viewOf(ex.src ?? ex.id);
@@ -2043,11 +2128,26 @@ export class FxSystem {
     this.zones.length = w;
   }
 
-  /** Flash a set of tiles ([[r,c]]) on the ground (telegraphed boxes, blast tiles). */
-  tileFlash(tiles, tint, dur, warn = false) {
+  /**
+   * Flash a set of tiles ([[r,c]]) on the ground (telegraphed boxes, blast tiles); `hold`: lit evenly for the whole
+   * `dur` (an area that lasts) instead of fading from the start.
+   */
+  tileFlash(tiles, tint, dur, warn = false, hold = false) {
     if (!Array.isArray(tiles) || !tiles.length) return;
-    this.tileFlashes.push({ tiles: tiles.slice(0, 60), tint, dur: Math.max(0.2, dur), t: 0, warn });
-    if (this.tileFlashes.length > 12) this.tileFlashes.shift();
+    this.tileFlashes.push({ tiles: tiles.slice(0, 60), tint, dur: Math.max(0.2, dur), t: 0, warn, hold });
+    if (this.tileFlashes.length > 16) this.tileFlashes.splice(Math.max(0, this.tileFlashes.findIndex((f) => !f.hold)), 1);
+  }
+
+  /** A short flare on each tile of an area (≤ 24, fewer at 'low'). */
+  _tileFlares(tiles, tint) {
+    const cam = this.ctx.cam();
+    const n = Math.min(tiles.length, this.quality === 'low' ? 8 : 24);
+    const step = tiles.length / n;
+    for (let i = 0; i < n; i++) {
+      const [r, c] = tiles[Math.floor(i * step)];
+      const g = cam.project(c, r, this._groundZ(c, r) + 0.25, this._g);
+      this.particle('flare', g.x, g.y, { tint, life: 0.32 + Math.random() * 0.12, s0: (g.s / 128) * 0.55, s1: (g.s / 128) * 0.2, a0: 0.9, a1: 0, rot: Math.random() * 3, fadeIn: Math.random() * 0.08 });
+    }
   }
 
   _updateTileFlashes(dt) {
@@ -2061,7 +2161,9 @@ export class FxSystem {
       f.t += dt;
       if (f.t >= f.dur) continue;
       const k = f.t / f.dur;
-      const a = (f.warn ? 0.35 + 0.35 * Math.abs(Math.sin(f.t * 7)) : 0.55 * (1 - k)) * (k > 0.85 ? (1 - k) / 0.15 : 1);
+      const a = f.hold
+        ? (0.3 + 0.06 * Math.sin(f.t * 3)) * Math.min(1, f.t / 0.25, (f.dur - f.t) / 0.3)
+        : (f.warn ? 0.35 + 0.35 * Math.abs(Math.sin(f.t * 7)) : 0.55 * (1 - k)) * (k > 0.85 ? (1 - k) / 0.15 : 1);
       for (const [r, c] of f.tiles) {
         const z = (this.ctx.heightAt ? this.ctx.heightAt(r, c) : 0) + 0.015;
         const pts = [];
@@ -2177,6 +2279,8 @@ export class FxSystem {
     this.labels.length = 0;
     this.tileFlashes.length = 0;
     this.tileGfx.clear();
+    this.sus.clear();
+    this.timers.length = 0;
     this.tintT = 0; this.tintSprite.alpha = 0;
   }
 
@@ -2192,6 +2296,8 @@ export class FxSystem {
     this._updateAuras(dt);
     this._updatePops(dt);
     this._updateZones(dt);
+    this.sus.update(dt);
+    if (this.timers.length) this._updateTimers(dt);
     this._updateLabels(dt);
     this._updateTileFlashes(dt);
     if (this.tintT > 0) {
@@ -2206,10 +2312,26 @@ export class FxSystem {
       this.vignette.width = size.width; this.vignette.height = size.height;
       this.vignette.alpha = Math.sin((this.vigT / 0.9) * Math.PI) * 0.55;
     } else if (this.vignette.alpha) this.vignette.alpha = 0;
+    // the events of the next frame make a new batch (Sustains: statuses / skills that came with an fx)
+    this.sus.endBatch();
   }
 
+  _updateTimers(dt) {
+    let w = 0;
+    const due = [];
+    for (const T of this.timers) {
+      T.t -= dt;
+      if (T.t <= 0) due.push(T); else this.timers[w++] = T;
+    }
+    this.timers.length = w;
+    for (const T of due) T.fn();
+  }
+
+  /** ['status', id, key, on] (render/app.js): lasting effects bound to a status end with it. */
+  status(view, key, on, late = false) { this.sus.status(view, key, !!on, !!late); }
+
   get counts() {
-    return { particles: this.parts.length, projectiles: this.projs.length, numbers: this.nums.length, rings: this.rings.length, auras: this.auras.size, locks: this.locks.length, flames: this.flames.length, promotions: this.promotions || 0 };
+    return { particles: this.parts.length, projectiles: this.projs.length, numbers: this.nums.length, rings: this.rings.length, auras: this.auras.size, locks: this.locks.length, flames: this.flames.length, sustains: this.sus.size, promotions: this.promotions || 0 };
   }
 
   destroy() {
@@ -2224,6 +2346,7 @@ export class FxSystem {
     this.beams.destroy();
     this.vignette.destroy();
     this.tileGfx.destroy();
+    this.sus.destroy();
     this.tintSprite.destroy();
     for (const list of this._numPools.values()) for (const t of list) t.text.destroy();
     this._numPools.clear();

@@ -1332,7 +1332,7 @@ const KITS = {
           if (!(max > 0) || group.length < 2) return;
           const ratio = hp / max;
           for (const a of group) a.hp = Math.max(1, Math.min(a.s.maxHp, a.s.maxHp * ratio));
-          battle.fx('hpShare', { x: unit.x, y: unit.y, id: unit.id, ratio: Math.round(ratio * 1000) / 1000 });
+          battle.fx('hpShare', { x: unit.x, y: unit.y, id: unit.id, ratio: Math.round(ratio * 1000) / 1000, ids: group.map((a) => a.id) });
         },
         onEnd({ battle, unit }) {
           if (unit.profile) unit.profile.auraRatio = baseRatio;
@@ -1349,7 +1349,12 @@ const KITS = {
           const cd = num(t0.cooldown, 6), dur = num(t0.talent_duration, 6), mul = num(t0['attack@trait_mul'], 1.5);
           const motes = new Array(cnt).fill(0); // per orbit slot: the time its mote is back (vanished → respawn after cd)
           const reach = orbit + MOTE_HIT_RADIUS + 0.01;
-          battle.on('deploy', (c) => { if (c.unit === unit) motes.fill(0); }, { owner: unit });
+          battle.on('deploy', (c) => {
+            if (c.unit !== unit) return;
+            motes.fill(0);
+            // (client: `n` motes orbit him at radius `r`, `spd` °/s, slot 0 straight ahead at deploy)
+            if (cnt) battle.fx('motes', { x: unit.x, y: unit.y, id: unit.id, n: cnt, r: orbit, spd: num(t0.dynamic_spd, 30) });
+          }, { owner: unit });
           whileOn(battle, unit, AURA_IV, () => {
             if (!cnt) return;
             const keep = !!unit.skill?.active; // S3: "微尘"不再消失
@@ -1372,7 +1377,7 @@ const KITS = {
               if (!hit) continue;
               battle.addBuff(hit, { key: 'cetsyr:mote', duration: dur, visible: true, data: { src: unit, mul } });
               if (!keep) motes[k] = battle.time + cd;
-              battle.fx('mote', { x: hit.x, y: hit.y, id: hit.id });
+              battle.fx('mote', { x: hit.x, y: hit.y, id: hit.id, src: unit.id, k, cd: keep ? 0 : cd });
             }
           });
           battle.on('heal', (c) => {

@@ -4,11 +4,20 @@
 // real time (DESIGN §4), so the game clock advances `rate` ≈ 2 game-s per real second. The buffer:
 //   * keeps ~2 s of snapshots (each indexed id → tuple once, at push time),
 //   * estimates `rate` from arrival times (sliding window, clamped, default 2),
-//   * runs a render clock `renderT` that trails the newest snapshot by `delay` real seconds (default 100 ms),
-//     advancing at `rate` and gently steered back when network jitter pushes it off target (hard snap when it
-//     is more than `snapAfter` real seconds off),
-//   * extrapolation guard: renderT never runs more than `maxExtrapolate` real seconds past the newest snapshot;
-//     positions are extrapolated along the last velocity for at most that long, then freeze,
+//   * runs a render clock `renderT` that trails the newest snapshot by `lag` GAME seconds (`lookAhead` option; the
+//     field view uses render/app.js LOOK_AHEAD, 1 game s = 0.5 s real at the live 2× — the look-ahead the attack
+//     swings need — whatever the game speed; the legacy real-second `delay` option, default 100 ms, is `delay × rate`
+//     game s), advancing at `rate` and gently steered toward its target (hard snap when it is more than `snapAfter`
+//     real seconds, at least 1.5 game s, off). The target is where the stream is by now — the newest snapshot plus
+//     the time since it arrived — `lag` behind, never past the newest: when snapshots stop (the battle ended, a
+//     replay paused, a long network gap) the buffered ones play out at normal speed up to the newest and hold there
+//     (with the old fixed target the clock stalled short of it and the last events — the final kill — never
+//     played). Steering never runs the clock backwards (a stall's first snapshot would otherwise pull it back by
+//     `lag` and ease in again). A solo pause is not a stall: `setPaused(true, now)` stops the clock where it is and
+//     shifts the buffer's time base by the paused time, so the stream resumes as if nothing had happened,
+//   * extrapolation guard: renderT never runs more than `maxExtrapolate` real seconds past the newest snapshot
+//     (and not at all once the stream has stopped for `lag` game s); positions are extrapolated along the last velocity
+//     for at most that long, then freeze,
 //   * sample(): per unit, lerps x/y/hp/sp between the two snapshots bracketing renderT; flags/anim come from
 //     the older one. A unit missing from the newer snapshot (died/left mid-buffer) holds its last position
 //     until renderT reaches the newer snapshot; a unit that only exists in the newer one (spawned mid-buffer)
@@ -30,6 +39,7 @@
 // Game times in both (`cooldownEnd`, `respawnAt`) are on the snapshots' clock, so a view compares them with renderT.
 
 import { fxForm } from '../../../shared/protocol.js';
+import { isLastingFxEnd } from './fxsustain.js';
 
 export const TUPLE = Object.freeze({ ID: 0, X: 1, Y: 2, HP: 3, MAXHP: 4, SP: 5, SPMAX: 6, FLAGS: 7, ANIM: 8, EL: 9, EL_FILL: 10, EL_UNTIL: 11, EL_DUR: 12 });
 /** Element keys a snapshot `elem` entry may carry (server/sim/constants.js ELEMENT_ORDER). */
@@ -45,9 +55,11 @@ export const COSMETIC_EVENTS = new Set(['atk', 'dmg', 'heal', 'fx', 'layer', 'bo
  * Whether an event may be dropped when stale or shed from a full queue. An 'fx' that carries an enemy's model `form`
  * (shared/protocol.js fxForm) is state: dropping it left the view on the old model after a long main-thread stall, on a
  * watched field after a hidden tab and on a field entered late (user report #5 after 0.1.0) — the fourth place the client
- * keeps it, with battle/runner.js keepsState and screens/game.js keepEarly.
+ * keeps it, with battle/runner.js keepsState and screens/game.js keepEarly. So is the END of a lasting fx (fxsustain.js
+ * isLastingFxEnd: 影哨's recall, a channel's end): lost, the record it ends would stay drawn (a stale lasting START is
+ * dropped like any other cosmetic one — replayed late it would draw an effect that is already over).
  */
-export const isCosmeticEvent = (ev) => Array.isArray(ev) && COSMETIC_EVENTS.has(ev[0]) && fxForm(ev) === undefined;
+export const isCosmeticEvent = (ev) => Array.isArray(ev) && COSMETIC_EVENTS.has(ev[0]) && fxForm(ev) === undefined && !isLastingFxEnd(ev);
 
 /**
  * Game time (s) of a b.snap / b.ev payload, or NaN. On the wire every frame is `{ t: '<type>', … }`, so the server
@@ -100,13 +112,14 @@ export function normalizeSnapshot(snap) {
 
 export class SnapshotBuffer {
   /**
-   * @param {{ delay?: number, rate?: number, maxExtrapolate?: number, keep?: number, teleport?: number,
-   *           snapAfter?: number, minRate?: number, maxRate?: number }} [opts]
-   *   delay / maxExtrapolate / snapAfter / keep are REAL seconds.
+   * @param {{ delay?: number, lookAhead?: number, rate?: number, maxExtrapolate?: number, keep?: number,
+   *           teleport?: number, snapAfter?: number, minRate?: number, maxRate?: number }} [opts]
+   *   delay / maxExtrapolate / snapAfter / keep are REAL seconds; lookAhead is GAME seconds and wins over delay.
    */
   constructor(options) {
     const opts = options && typeof options === 'object' ? options : {};
     this.delay = Math.max(0, finite(opts.delay, 0.1));
+    this.lookAhead = Math.max(0, finite(opts.lookAhead, 0)); // game s the clock trails the newest snapshot (0: use delay)
     this.defaultRate = clamp(finite(opts.rate, 2), 0.05, 20);
     this.minRate = finite(opts.minRate, 0.25);
     this.maxRate = finite(opts.maxRate, 8);
@@ -114,7 +127,34 @@ export class SnapshotBuffer {
     this.keep = Math.max(0.5, finite(opts.keep, 2.5));
     this.teleport = Math.max(0.5, finite(opts.teleport, 2.5));
     this.snapAfter = Math.max(0.2, finite(opts.snapAfter, 0.75));
+    // pause state (setPaused) lives outside reset(): a new battle entered while paused starts paused
+    this._pauseAt = null; this._pausedTotal = 0; this._real = 0;
     this.reset();
+  }
+
+  /** Game seconds the render clock trails the newest snapshot. */
+  get lag() { return this.lookAhead > 0 ? this.lookAhead : this.delay * this.rate; }
+  /** Real seconds the same lag takes at the current rate (what the HUD / sound follow). */
+  get delayReal() { return this.lookAhead > 0 ? this.lookAhead / Math.max(this.rate, 0.05) : this.delay; }
+  get paused() { return this._pauseAt != null; }
+  /** The buffer's own time base: real time minus everything spent paused (frozen at the pause moment while paused). */
+  _clock(now) { return (this._pauseAt != null ? this._pauseAt : now) - this._pausedTotal; }
+
+  /**
+   * Solo pause (the sim and the picture stand still together). While paused update() returns renderT untouched and
+   * the clock does not advance, so neither the render clock nor the arrival log read the pause as a stream stall;
+   * frames pushed meanwhile are accepted. `now` = real time in seconds, like push() / update().
+   * @returns {boolean} paused
+   */
+  setPaused(on, now) {
+    now = finite(now, this._real);
+    if (on && this._pauseAt == null) this._pauseAt = now;
+    else if (!on && this._pauseAt != null) {
+      this._pausedTotal += Math.max(0, now - this._pauseAt);
+      this._pauseAt = null;
+      this.lastNow = this._clock(now);
+    }
+    return this._pauseAt != null;
   }
 
   reset() {
@@ -144,7 +184,8 @@ export class SnapshotBuffer {
   push(snap, now) {
     const s = normalizeSnapshot(snap);
     if (!s) return false;
-    now = finite(now, this.lastNow || 0);
+    now = finite(now, this._real); this._real = now;
+    now = this._clock(now);
     const newest = this.newestT;
     if (this.snaps.length) {
       if (s.t < newest - 5) this.reset(); // the server restarted the stream (new battle): old events are obsolete
@@ -158,7 +199,10 @@ export class SnapshotBuffer {
     }
     this.snaps.push(s);
     this.meta = s.raw;
-    // rate estimate over a ~1.5 s window of arrivals
+    // rate estimate over a ~1.5 s window of arrivals. A gap in the stream or a catch-up burst (the runner fast-forwards
+    // a replica ≤ 240 ticks a frame) says nothing about the game speed: start the window afresh instead of pinning
+    // `rate` at its clamp
+    if (prev && (now - prev.at > 0.3 || s.t - prev.t > 2)) this.arrivals.length = 0;
     this.arrivals.push({ t: s.t, at: now });
     while (this.arrivals.length > 2 && now - this.arrivals[0].at > 1.5) this.arrivals.shift();
     if (this.arrivals.length >= 4) {
@@ -168,9 +212,9 @@ export class SnapshotBuffer {
     }
     // trim old snapshots (keep at least 2). Trimming never waits for the render clock: while the page is hidden
     // (no animation frames) snapshots keep arriving and must not pile up; a clock left behind is clamped.
-    const horizon = s.t - this.keep * this.rate;
+    const horizon = s.t - Math.max(this.keep * this.rate, this.lag + 1);
     while (this.snaps.length > 2 && this.snaps[1].t < horizon) this.snaps.shift();
-    if (!Number.isFinite(this.renderT)) this.renderT = Math.max(this.snaps[0].t, s.t - this.delay * this.rate);
+    if (!Number.isFinite(this.renderT)) this.renderT = Math.max(this.snaps[0].t, s.t - this.lag);
     else if (this.renderT < this.snaps[0].t) this.renderT = this.snaps[0].t;
     return true;
   }
@@ -214,18 +258,26 @@ export class SnapshotBuffer {
    * Advance the render clock to real time `now` (seconds). Returns renderT (NaN until the first snapshot).
    */
   update(now) {
-    now = finite(now, 0);
+    now = finite(now, 0); this._real = now;
+    now = this._clock(now);
     if (!this.snaps.length) { this.lastNow = now; return NaN; }
     const dt = Number.isFinite(this.lastNow) ? clamp(now - this.lastNow, 0, 1) : 0;
     this.lastNow = now;
-    const newest = this.newestT;
-    const target = newest - this.delay * this.rate;
+    if (this._pauseAt != null) return this.renderT; // paused: the clock stands still
+    const last = this.snaps[this.snaps.length - 1];
+    const newest = last.t;
+    // the stream's position by now, `lag` behind, never past the newest (see header)
+    const since = Number.isFinite(last.at) ? clamp(now - last.at, 0, 60) : 0;
+    const lag = this.lag;
+    const stalled = since * this.rate >= lag;
+    const target = stalled ? newest : newest - lag + since * this.rate;
     if (!Number.isFinite(this.renderT)) this.renderT = target;
+    const before = this.renderT;
     this.renderT += dt * this.rate;
     const err = target - this.renderT;
-    if (Math.abs(err) > this.snapAfter * this.rate) this.renderT = target;
-    else this.renderT += err * Math.min(1, dt * 3);
-    const cap = newest + this.maxExtrapolate * this.rate;
+    if (Math.abs(err) > Math.max(this.snapAfter * this.rate, 1.5)) this.renderT = target;
+    else { this.renderT += err * Math.min(1, dt * 3); if (this.renderT < before) this.renderT = before; } // steering never runs backwards
+    const cap = stalled ? newest : newest + this.maxExtrapolate * this.rate;
     if (this.renderT > cap) this.renderT = cap;
     if (this.renderT < this.snaps[0].t) this.renderT = this.snaps[0].t;
     return this.renderT;
@@ -323,9 +375,11 @@ export class SnapshotBuffer {
    * is a number, cosmetic events stamped earlier than it are discarded instead of returned; a state event stamped
    * earlier is returned, and when `late` (a Map) is given it records that event → how far (game s) its stamp lies
    * before `time`, so the caller can skip its stale cosmetics (render/app.js: a late form fx switches the model without
-   * replaying its telegraph and with its closing clip shortened).
+   * replaying its telegraph and with its closing clip shortened). `stamps` (an array) receives each returned event's
+   * game time (a Map in its place is taken as `late`).
    */
-  takeEvents(time = this.renderT, out = [], dropCosmeticBefore = null, late = null) {
+  takeEvents(time = this.renderT, out = [], dropCosmeticBefore = null, stamps = null, late = null) {
+    if (stamps instanceof Map) { late = stamps; stamps = null; }
     if (!this.events.length || !Number.isFinite(time)) return out;
     let n = 0;
     while (n < this.events.length && this.events[n].t <= time) n++;
@@ -338,6 +392,7 @@ export class SnapshotBuffer {
         if (late) late.set(e.ev, time - e.t);
       }
       out.push(e.ev);
+      if (stamps) stamps.push(e.t);
     }
     const rest = list.length - n;
     list.copyWithin(0, n);

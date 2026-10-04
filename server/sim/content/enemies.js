@@ -1426,7 +1426,7 @@ function kitInvisShield(ab, e) {
   const r = (e.def.raw && e.def.raw.stats && e.def.raw.stats.rawRangeRadius) || 2;
   return [...kitDeathSpawn()(ab), skill(s, (b, e2) => {
     const dur = s.bb.duration ?? T(ab, 'InvisibleShield.duration') ?? 0;
-    b.fx('telegraph', { x: e2.x, y: e2.y, r, kind: 'invisShield', id: e2.id });
+    b.fx('telegraph', { x: e2.x, y: e2.y, r, kind: 'invisShield', id: e2.id, duration: dur });
     // "获得隐匿（解除阻挡0秒后恢复）" (PRTS 清明 / 堂皇 天赋): the veil's 隐匿 is back as soon as a block ends
     for (const o of b.enemiesInRadius(e2.x, e2.y, r)) if (o !== e2 && dur > 0) b.addBuff(o, { key: 'ab:veiled', duration: dur, flags: { stealth: true }, visible: true, data: { stealthRestore: 0 } });
   })];
@@ -1688,7 +1688,7 @@ function kitRegen(ab) {
     hits, delay, stealthy: false, unblock: true, key: 'ab:regen',
     onHusk(b, e) {
       // "进入此形态时，使半径1.8范围内的其他敌方单位（无视其可选性）获得5层吸收物理/法术伤害的护盾"
-      b.fx('telegraph', { x: e.x, y: e.y, r: ACPUPP_AURA_RADIUS, kind: 'regenShield', id: e.id });
+      b.fx('telegraph', { x: e.x, y: e.y, r: ACPUPP_AURA_RADIUS, kind: 'regenShield', id: e.id, duration: delay });
       for (const o of b.enemiesInRadius(e.x, e.y, ACPUPP_AURA_RADIUS)) if (o !== e && block > 0) { const oab = abOf(b, o); oab.hitShield = Math.max(oab.hitShield, block); }
     },
   })];
