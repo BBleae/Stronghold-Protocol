@@ -1,7 +1,8 @@
 // Account-mode flows on the real Workers bundle in miniflare with the real client in headless Chrome (GitHub mocked at
 // the Worker's outbound fetch and at the authorize page): an invite link survives the GitHub login and turns into an
-// application, a logged-in friend's invite link applies at once, a reload mid-match resumes the seat, and a login
-// revoked elsewhere stops the room client and asks for a new login. Opt-in: SP_ACCOUNTS_E2E=1 (and Chrome).
+// application, a logged-in friend's invite link applies at once, the lobby reads the account's seat without polling it,
+// a reload mid-match resumes the seat, and a login revoked elsewhere stops the room client and asks for a new login,
+// also after leaving the room. Opt-in: SP_ACCOUNTS_E2E=1 (and Chrome).
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
@@ -56,16 +57,19 @@ test('account flows: invite through the GitHub login, invite while logged in, re
   const browser = await (await import('puppeteer-core')).default.launch({ executablePath: chrome, headless: true, args: ['--no-sandbox'] });
   t.after(() => browser.close());
   const errors = [];
+  const seatReads = new Map(); // page → GET /api/me/active-match requests (each one asks the seat's room)
 
   /** A fresh browser profile; GitHub's authorize page answers at once with the code of `githubId`. */
   const open = async (githubId = 0) => {
     const page = await (await browser.createBrowserContext()).newPage();
+    seatReads.set(page, 0);
     page.on('pageerror', (e) => errors.push(e.message));
     await page.setViewport({ width: 1366, height: 768 });
     await page.evaluateOnNewDocument(() => { localStorage.setItem('stronghold-resource-mode', 'ondemand'); globalThis.__SP_RENDER__ = 'fallback'; });
     await page.setRequestInterception(true);
     page.on('request', (req) => {
       const u = new URL(req.url());
+      if (u.pathname === '/api/me/active-match') seatReads.set(page, seatReads.get(page) + 1);
       if (u.hostname !== 'github.com') return req.continue();
       const back = `${base}api/auth/github/callback?code=u${githubId}&state=${u.searchParams.get('state')}`;
       return req.respond({ status: 200, contentType: 'text/html', body: `<script>location.replace(${JSON.stringify(back)})</script>` });
@@ -106,6 +110,11 @@ test('account flows: invite through the GitHub login, invite while logged in, re
   await click(host, '拒绝');
   await other.waitForFunction((code) => document.body.innerText.includes(`${code} · 申请已被拒绝`), { timeout: 15000 }, code);
 
+  // The lobby reads the account's seat when it shows, when the tab becomes visible and after 继续对局, never on a timer.
+  const reads = seatReads.get(other);
+  await new Promise((resolve) => setTimeout(resolve, 11000));
+  assert.equal(seatReads.get(other), reads, 'no periodic seat reads in the lobby');
+
   // 继续对局 for a seat whose room ended meanwhile (the same account left it on another device): the attempt says so
   // and the button goes away.
   const elsewhere = await open();
@@ -139,5 +148,14 @@ test('account flows: invite through the GitHub login, invite while logged in, re
   await friend.evaluate(() => { window.__statuses = []; __SP__.net.on('status', (s) => window.__statuses.push(s.status)); });
   await new Promise((resolve) => setTimeout(resolve, 3000));
   assert.deepEqual(await friend.evaluate(() => window.__statuses), [], 'no reconnect attempts');
+
+  // A login revoked while idling in a waiting room is found by the first message, 离开: the player is in the lobby,
+  // still asked to log in again.
+  await call(elsewhere, 'room.create', { mode: 'coop', difficulty: 'FUNNY' });
+  await elsewhere.evaluate(() => fetch('/api/auth/logout', { method: 'POST' }));
+  await elsewhere.waitForSelector('button[aria-label="离开同盟"]');
+  await elsewhere.click('button[aria-label="离开同盟"]');
+  await elsewhere.waitForFunction(() => !__SP__.store.get().room && __SP__.net.status === 'closed', { timeout: 15000 });
+  assert.ok(await elsewhere.evaluate(() => [...document.querySelectorAll('.conn-banner button')].some((b) => b.textContent.includes('重新登录'))));
   assert.deepEqual(errors, []);
 });
