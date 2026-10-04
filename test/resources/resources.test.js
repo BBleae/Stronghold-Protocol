@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { Zip, ZipPassThrough, zipSync, unzipSync } from 'fflate';
 import { buildResourceManifest, validateManifest, writeResourcePack } from '../../tools/resource-pack.mjs';
 import { DownloadError, ResourceStore } from '../../public/js/resources/store.js';
-import { importResourceZip } from '../../public/js/resources/zip.js';
+import { exportResourceZip, importResourceZip } from '../../public/js/resources/zip.js';
 import { cachedResponse, resourceKeys } from '../../public/js/resources/service.js';
 
 const zipjs = await import('@zip.js/zip.js');
@@ -87,7 +87,7 @@ test('the build validates manifests: resource paths only, no traversal, unique U
   assert.throws(() => validateManifest(manifest([good.files[0], good.files[0]])), /duplicate/i);
 });
 
-test('manifest build is deterministic, lists only referenced assets and fonts, and packs the ZIP the import accepts', async t => {
+test('manifest build is deterministic, lists every art, audio and font file (the local client extraction too), and packs the ZIP the import accepts', async t => {
   const root = await mkdtemp(join(tmpdir(), 'stronghold-resources-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   await mkdir(join(root, 'public/assets/audio'), { recursive: true });
@@ -96,7 +96,7 @@ test('manifest build is deterministic, lists only referenced assets and fonts, a
   await writeFile(join(root, 'public/fonts/a.woff2'), 'font');
   await writeFile(join(root, 'public/assets/no.js'), 'private');
   await writeFile(join(root, 'public/index.html'), 'private');
-  // files only this machine has: the local client extraction and leftovers no manifest references
+  // the local client extraction and files data/assets.json does not reference are resources too
   await mkdir(join(root, 'public/assets/local/spine'), { recursive: true });
   await writeFile(join(root, 'public/assets/local/spine/x.png'), 'local');
   await writeFile(join(root, 'public/assets/audio/stale.mp3'), 'stale');
@@ -105,15 +105,15 @@ test('manifest build is deterministic, lists only referenced assets and fonts, a
   const first = await buildResourceManifest({ root });
   const second = await buildResourceManifest({ root, output: false });
   assert.deepEqual(first, second);
-  assert.deepEqual(first.files.map(f => f.url), ['/assets/audio/a.mp3', '/fonts/a.woff2']);
-  assert.equal(first.totalBytes, 7);
+  assert.deepEqual(first.files.map(f => f.url), ['/assets/audio/a.mp3', '/assets/audio/stale.mp3', '/assets/local/spine/x.png', '/fonts/a.woff2']);
+  assert.equal(first.totalBytes, 17);
   assert.equal(first.files[0].sha256, 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
   assert.equal(first.files[0].type, 'audio/mpeg');
   assert.deepEqual(JSON.parse(await readFile(join(root, 'public/resource-manifest.json'), 'utf8')), first);
   const result = await writeResourcePack({ root, manifest: first });
   assert.equal(result.path, join(root, '.cache', `stronghold-resources-${first.version.slice(0, 12)}.zip`), 'the name the Workers build reuses');
   const packed = unzipSync(await readFile(result.path));
-  assert.deepEqual(Object.keys(packed).sort(), ['assets/audio/a.mp3', 'fonts/a.woff2']);
+  assert.deepEqual(Object.keys(packed).sort(), ['assets/audio/a.mp3', 'assets/audio/stale.mp3', 'assets/local/spine/x.png', 'fonts/a.woff2']);
   assert.equal(new TextDecoder().decode(packed['assets/audio/a.mp3']), 'abc');
   const store = storeOf(first);
   await importResourceZip(new Blob([await readFile(result.path)]), store, { zipjs });
@@ -459,6 +459,29 @@ test('streamed stored ZIP imports binary files containing ZIP signatures without
   const store = storeOf(manifest([file]));
   await importResourceZip(new Blob(parts), store, { zipjs });
   assert.equal((await store.check()).complete, true);
+});
+
+test('a complete local installation exports the pack the import accepts (Blob or a save-dialog stream)', async () => {
+  const font = { ...entry('/fonts/x.woff2', 'font'), type: 'font/woff2' };
+  const m = manifest([entry('/assets/voice/cn/a%20b.mp3', 'abc'), font]);
+  const source = storeOf(m);
+  await source.reconcile();
+  await source.put(m.files[0], bytes('abc'));
+  await assert.rejects(exportResourceZip(source, { zipjs }), /全部保存/, 'only a complete installation');
+  await source.put(font, bytes('font'));
+  const { name, blob } = await exportResourceZip(source, { zipjs });
+  assert.equal(name, `stronghold-resources-${m.version.slice(0, 12)}.zip`, 'named like the site pack');
+  assert.deepEqual(Object.keys(unzipSync(new Uint8Array(await blob.arrayBuffer()))), ['assets/voice/cn/a b.mp3', 'fonts/x.woff2'], 'the CLI pack layout');
+  assert.equal((await importResourceZip(blob, storeOf(m), { zipjs })).complete, true);
+  const chunks = [];
+  let closed = false;
+  const streamed = await exportResourceZip(source, { zipjs, writable: new WritableStream({ write(c) { chunks.push(c); }, close() { closed = true; } }) });
+  assert.ok(closed, 'the file stream is closed (committed)');
+  assert.equal(streamed.blob, undefined);
+  assert.equal((await importResourceZip(new Blob(chunks), storeOf(m), { zipjs })).complete, true);
+  // a file the browser evicted (or that changed) is never exported
+  await source.cache.put(m.files[0].url, new Response('xyz', { headers: { 'X-Resource-SHA256': m.files[0].sha256, 'Content-Length': '3' } }));
+  await assert.rejects(exportResourceZip(source, { zipjs }), /全部保存|校验失败/);
 });
 
 test('a pack of another deployment imports the files that match and skips the rest', async () => {

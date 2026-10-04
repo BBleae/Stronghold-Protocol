@@ -26,6 +26,22 @@ async function copyTree(source, target, allow, prefix = '') {
   }
 }
 
+/** data/local-assets.json, or null when this machine has no local client extraction. */
+async function readLocalAssets(root) {
+  try { return JSON.parse(await fs.readFile(path.join(root, 'data/local-assets.json'), 'utf8')); }
+  catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+}
+
+/** The /assets/ files a data/local-assets.json lists (decoded). */
+function localAssetPaths(local) {
+  const urls = new Set();
+  (function walk(value) {
+    if (typeof value === 'string') { if (value.startsWith('/assets/')) urls.add(decodeURIComponent(value)); }
+    else if (value && typeof value === 'object') for (const v of Object.values(value)) walk(v);
+  })(local);
+  return [...urls];
+}
+
 /** The deployed commit (Workers Builds: WORKERS_CI_COMMIT_SHA; else git), shown by /healthz and the settings. */
 export function buildId({ root = ROOT, env = process.env } = {}) {
   const sha = env.WORKERS_CI_COMMIT_SHA || spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).stdout?.trim();
@@ -34,8 +50,7 @@ export function buildId({ root = ROOT, env = process.env } = {}) {
 
 /**
  * The public tree in <root>/dist/client. The game's resource files (public/assets, public/fonts) are published as the
- * resource manifest (tools/resource-pack.mjs) lists them, and only those: the local client extraction
- * (public/assets/local) and leftovers no manifest references stay out.
+ * resource manifest (tools/resource-pack.mjs) lists them, the local client extraction (public/assets/local) included.
  */
 export async function copyRuntimeAssets({ root = ROOT, out = path.join(root, 'dist/client'), buildTag = 'local', rulesVersion = 'development-v1', manifest = null } = {}) {
   root = path.resolve(root);
@@ -60,9 +75,18 @@ export async function copyRuntimeAssets({ root = ROOT, out = path.join(root, 'di
   await copyTree(path.join(root, 'shared'), path.join(out, 'shared'), (name, dir) => dir || name.endsWith('.js'));
   await copyTree(path.join(root, 'server/sim'), path.join(out, 'sim'), (name, dir) => dir || (name.endsWith('.js') && !name.toLowerCase().endsWith('nodedata.js')));
   await fs.writeFile(path.join(out, 'data.js'), SHIM);
-  // data/local-assets.json lists this machine's local client extraction (public/assets/local), which is never
-  // published: the deployed site always says there is none.
-  await fs.writeFile(path.join(out, 'data/local-assets.json'), JSON.stringify({ version: 1, source: 'none', count: 0, groups: {} }));
+  // data/local-assets.json lists the local client extraction (public/assets/local), which the game prefers where it
+  // exists (official 3D board, module icons, emotes, guide…). It is published when the manifest publishes every file it
+  // lists; a build without resource files says there is none, and one that lacks a listed file fails.
+  const local = await readLocalAssets(root);
+  const published = new Set((manifest?.files ?? []).map((file) => decodeURIComponent(file.url)));
+  const missingLocal = localAssetPaths(local).filter((url) => !published.has(url));
+  if (manifest && local && missingLocal.length) {
+    throw new Error(`data/local-assets.json lists ${missingLocal.length} files the resource manifest lacks, e.g. ${missingLocal[0]}`);
+  }
+  if (!manifest || !local) {
+    await fs.writeFile(path.join(out, 'data/local-assets.json'), JSON.stringify({ version: 1, source: 'none', count: 0, groups: {} }));
+  }
   let html = await fs.readFile(path.join(out, 'index.html'), 'utf8');
   // data-sp-rules: the rules version of the page's own simulation (/sim/), compared with a battle's (battle/runner.js)
   html = html.replace('<html ', `<html data-sp-runtime="cloudflare" data-sp-build="${buildTag}" data-sp-rules="${rulesVersion}" `);

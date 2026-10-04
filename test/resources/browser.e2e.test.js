@@ -222,6 +222,7 @@ test('resource cache in a real browser', { skip: !enabled, timeout: 240000 }, as
     assert.equal(await page.evaluate(() => window.__spResourcesPreparing), true);
     assert.equal(await page.evaluate(() => !!window.gameReady), false, 'a first visit waits for the choice');
     await page.waitForSelector('[data-action="download"]:not(:disabled)');
+    assert.equal(await page.$eval('[data-action="export"]', node => node.disabled), true, 'nothing to export yet');
     assert.match(await text(page, '.resource-dialog'), /完整资源约.*下载中断后可以继续补齐/);
     assert.equal(await text(page, '[data-action="download"]'), '在线下载 / 继续下载');
     assert.equal(await page.$eval('[data-action="pack"]', node => node.getAttribute('href')), '/stronghold-resources.zip');
@@ -234,6 +235,21 @@ test('resource cache in a real browser', { skip: !enabled, timeout: 240000 }, as
     assert.equal(await page.$eval('[data-action="download"]', node => node.disabled), true);
     assert.equal(await text(page, '[data-action="download"]'), '资源已全部保存');
     assert.equal(await text(page, '[data-action="continue"]'), '资源已就绪，进入游戏');
+    // 导出 ZIP writes the pack to the file the save dialog gives (a stub here), read from the local cache only.
+    await page.evaluate(() => {
+      window.exported = [];
+      window.showSaveFilePicker = async ({ suggestedName }) => ({ createWritable: async () => new WritableStream({
+        write(chunk) { window.exported.push(...new Uint8Array(chunk.buffer ?? chunk, chunk.byteOffset ?? 0, chunk.byteLength ?? chunk.length)); },
+        close() { window.exportedName = suggestedName; },
+      }) });
+    });
+    const beforeExport = server.hits.length;
+    await page.click('[data-action="export"]');
+    await waitText(page, '.resource-message', '已导出 stronghold-resources-');
+    assert.deepEqual(resourceHits(beforeExport), [], 'exported from the local cache');
+    const exported = await page.evaluate(() => ({ name: window.exportedName, bytes: window.exported }));
+    assert.equal(exported.name, `stronghold-resources-${v1.manifest.version.slice(0, 12)}.zip`);
+    assert.deepEqual(Object.keys(unzipSync(new Uint8Array(exported.bytes))).sort(), v1.manifest.files.map(f => decodeURIComponent(f.url.slice(1))).sort());
     // Even a stale enabled control must not start another operation.
     assert.equal(await page.$eval('[data-action="download"]', async node => {
       node.disabled = false;
