@@ -226,7 +226,7 @@ export function TitleScreen() {
             <${LogoutButton} />
           </div>
           <${Button} class="title-login__enter" variant="primary" size="xl" block=${true} onClick=${enterAccount}>进入大厅<//>
-        ` : signIn ? html`<${AccountCard} pendingJoin=${pendingJoin} />` : html`
+        ` : signIn ? html`<${AccountCard} pendingJoin=${pendingJoin} autoFocus=${!touchUi} />` : html`
         <${TextField} label="博士代号" micro="CALLSIGN" size="lg" icon="user" value=${name} maxLength=${NAME_MAX_LEN}
           placeholder="输入你的代号（最多 ${NAME_MAX_LEN} 字）" autoFocus=${!touchUi}
           onInput=${setName} onEnter=${start} />

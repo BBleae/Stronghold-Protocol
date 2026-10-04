@@ -75,9 +75,10 @@ const TABS = [{ id: 'login', label: '登录' }, { id: 'register', label: '注册
 /**
  * The title screen's account card (account mode, signed out): 登录 / 注册 with a username and password, 使用 GitHub 登录
  * when the server offers it, and 浏览在线大厅. A login starts the page over as the account (its preferences, its seat),
- * at the invite it was opened with.
+ * at the invite it was opened with. `autoFocus`: the username field takes the focus (not on touch screens, where it
+ * would pop the keyboard up over the screen).
  */
-export function AccountCard({ pendingJoin }) {
+export function AccountCard({ pendingJoin, autoFocus }) {
   const [tab, setTab] = useState('login');
   const form = useForm({ username: '', password: '', confirm: '', nickname: '' });
   const register = tab === 'register';
@@ -99,7 +100,7 @@ export function AccountCard({ pendingJoin }) {
   return html`
     <${Tabs} items=${TABS} value=${tab} onChange=${switchTab} />
     <form class="title-login__form" onSubmit=${send}>
-      <${TextField} label="用户名" micro="USERNAME" icon="user" autocomplete="username" maxLength=${20}
+      <${TextField} label="用户名" micro="USERNAME" icon="user" autocomplete="username" maxLength=${20} autoFocus=${autoFocus}
         placeholder=${register ? '仅用于登录，不会展示给其他博士' : '输入用户名'} ...${form.field('username')} />
       ${register ? html`<${TextField} label="博士代号" micro="CALLSIGN" icon="edit" placeholder="输入你的代号（最多 12 字）"
         ...${form.field('nickname')} />` : null}
