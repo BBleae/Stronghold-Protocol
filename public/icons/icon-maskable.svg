@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Maskable / home-screen icon: full bleed, the rook inside the 80 % safe zone (Android masks, iOS rounds the corners). -->
+  <rect width="512" height="512" fill="#0c0f0e"/>
+  <circle cx="256" cy="256" r="176" fill="none" stroke="#4ed8af" stroke-opacity=".22" stroke-width="5"/>
+  <path transform="translate(256 256) scale(12.5) translate(-12 -12)" fill="#4ed8af" d="M5 3h3v2h2V3h4v2h2V3h3v5l-2 2v7l2 2v2H5v-2l2-2v-7L5 8z"/>
+</svg>

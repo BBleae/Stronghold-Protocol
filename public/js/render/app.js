@@ -73,7 +73,8 @@
 // The round's leader (community report #12, owner's decision 2026-10-04; research 09 §2.2: in the official Final Assault
 // prep image the boss stands on the boss field with its HP bar): a nextEnemies entry with its spawn tile `start`
 // (render/prepfield.js leaderStand) stands there — idle, with its (full) HP bar, facing the player's half, a tap shows its
-// details like a pen enemy — instead of in the pen, shown by the boss-field prep camera only (`leaderShown`); while an
+// details like a pen enemy — instead of in the pen, shown by the boss-field cameras only (`leaderShown`: the own prep half,
+// and during prep a teammate's scouted / a spectated boss field, Match.prepFieldMeta, issue #9); while an
 // operator's range preview shows (a RANGE_GROUPS highlight: the direction wheel's 'facing', a selected piece's range) its
 // hit tiles (the sim's hit rectangle, render/pick.js hitTiles) are lit in red beside it (LEADER_HIT_STYLE). Display only.
 // Final Assault / Hidden Core prep (research 09 §1.2, render/prepfield.js): `view.setCamera('bossPrep', { side })`
@@ -265,8 +266,11 @@ export function fieldRows(kind) {
 
 /** Are the pen's figures shown for a view kind (a camera flight shows them when either end is the pen)? */
 export const penShown = (vk, prevVk = null) => vk === 'pen' || prevVk === 'pen';
-/** Is the prep's leader on the boss field shown for a view kind (a flight shows it when either end is the boss-field prep)? */
-export const leaderShown = (vk, prevVk = null) => vk === 'bossPrep' || prevVk === 'bossPrep';
+/**
+ * Is the prep's leader on the boss field shown for a view kind (a flight shows it when either end shows it): the own
+ * boss-field prep, and a teammate's scouted / a spectated boss field during prep (Match.prepFieldMeta, issue #9).
+ */
+export const leaderShown = (vk, prevVk = null) => [vk, prevVk].some((k) => k === 'bossPrep' || k === 'boss' || k === 'hidden');
 
 /**
  * 'die' reason of an operator that enters the battle already knocked out — a 联防 helper's operator down at the end of
@@ -306,6 +310,9 @@ export function renderInfo(u) {
     // tap hands them to the detail card (a teammate's unit shows its owner's skill / module)
     skillIndex: Number.isInteger(u.skillIndex) ? u.skillIndex : undefined,
     moduleId: typeof u.moduleId === 'string' ? u.moduleId : undefined,
+    // where a scouted prep piece stands (Match.prepFieldMeta: 'board' | 'hand' | 'temp'): a tap on a bench / temp
+    // operator opens its card without a range (ui/facing.js unitRange)
+    area: typeof u.area === 'string' ? u.area : undefined,
   };
 }
 
@@ -556,7 +563,7 @@ export async function createFieldView(host, options = {}) {
   let ownPen = null;          // the own m.private.nextEnemies (fallback composition of a scouted teammate's pen)
   let camBeforePen = null;    // { kind, opts } the camera the pen returns to
   let leader = null;          // { key, view, stand, area } the round leader standing on the boss field in the prep (setLeader)
-  let leaderHidden = true;    // shown only by the boss-field prep camera (leaderShown)
+  let leaderHidden = true;    // shown only by the boss-field cameras (leaderShown)
 
   const heightAt = (r, c) => (tiles ? tiles.heightAt(r, c) : 0);
   const ctx = {
@@ -569,7 +576,6 @@ export async function createFieldView(host, options = {}) {
     renderer: app.renderer,
     frameNo: () => frameNo,
     impostorInterval: () => impInterval,
-    clipAllowed: () => clipAllowed,
     viewport: () => vp,
     loadLevel: () => loadLevel,
     // the slowest a Spine model may animate (frames between skeleton updates): ~20 updates a second (render/loadlevel.js)
@@ -1374,8 +1380,9 @@ export async function createFieldView(host, options = {}) {
         const payload = { unitId: v.id, uid: info?.uid ?? null, unit: info, button: e.button, detail: e.button === 2, clientX: e.clientX, clientY: e.clientY };
         emit('pieceClick', payload);
         if (e.button === 2) emit('pieceDetail', payload);
-      } else if (penViews.size) {
-        const pv = penUnitAt(ev.x, ev.y);
+      } else if (leader || penViews.size) {
+        // a scouting board: the round's leader on its boss field, the pen's figures
+        const pv = leaderAt(ev.x, ev.y) || penUnitAt(ev.x, ev.y);
         if (pv) emitPenClick(pv, e);
       }
       return;
@@ -1745,14 +1752,9 @@ export async function createFieldView(host, options = {}) {
   // Crowded fields render skeletons through staggered RenderTexture impostors (units.js): the interval grows with
   // the number of Spine units so the per-frame vertex work stays roughly constant (hysteresis: re-evaluated
   // every 30 frames). Prep and ordinary fields keep full-rate direct rendering.
-  // Spine clipping masks (only eyeball clips on the current roster, invisible at chibi scale) each cost a stencil
-  // render-pass break (~2–5 ms of GPU on tiled GPUs): kept only for a lone clipped skeleton at high quality
-  let clipAllowed = true;
-  function pickClipping() {
-    let n = 0;
-    for (const v of views.values()) if (v.actor && v.actor.clipped && v.alive !== false) n++;
-    return settings.quality === 'high' && n <= 1;
-  }
+  // Spine clipping masks stay on: the battle chibis blink by switching the eye-cut clip of their eyes (32 operators),
+  // and without it the eyeballs showed over the closed eyelids (user report 2026-10). Clipped skeletons draw through
+  // the impostor atlas's clip pages (units.js), which keeps their stencil passes out of the main pass.
   function pickImpostorInterval() {
     let n = 0;
     for (const v of views.values()) if (v.actor && v.spineReady) n++;
@@ -1770,7 +1772,7 @@ export async function createFieldView(host, options = {}) {
   function frameBody(now) {
     frameNo++;
     if (frameNo % 30 === 1) {
-      impInterval = pickImpostorInterval(); clipAllowed = pickClipping();
+      impInterval = pickImpostorInterval();
       culledCount = 0;
       for (const v of views.values()) if (v.culled) culledCount++;
       for (const v of penViews.values()) if (v.culled) culledCount++;

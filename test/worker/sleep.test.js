@@ -116,6 +116,41 @@ test('a room the public lobby shows wakes to refresh its listing; made private, 
   assert.deepEqual(listed, []);
 });
 
+test('a room whose last player left leaves the lobby at once, not when its lease lapses', { timeout: 120000 }, async (t) => {
+  const world = await createWorld(t);
+  await world.seed('a');
+  await world.seed('b');
+  const route = (await world.api('a', '/api/rooms', { method: 'POST' })).body;
+  const host = await world.player('a', route);
+  await host.request('room.create', { mode: 'coop', difficulty: 'FUNNY' });
+  let listed = [];
+  for (let i = 0; i < 100 && !listed.length; i++) {
+    listed = (await world.api('b', '/api/rooms')).body.items;
+    await sleep(50);
+  }
+  assert.deepEqual(listed.map((room) => room.roomId), [route.code]);
+
+  // The room is disposed with its last player: an application to it can only fail, so the lobby must not offer it.
+  assert.equal((await host.request('room.leave')).t, 'ok');
+  for (let i = 0; i < 100 && listed.length; i++) {
+    listed = (await world.api('b', '/api/rooms')).body.items;
+    await sleep(50);
+  }
+  assert.deepEqual(listed, [], 'withdrawn well before the 60 s lease');
+  const applied = await world.api('b', `/api/rooms/${route.code}/applications`, { method: 'POST', body: { action: 'apply' } });
+  assert.equal(applied.status, 404);
+
+  // A later room is listed as usual.
+  const next = (await world.api('b', '/api/rooms', { method: 'POST' })).body;
+  const guest = await world.player('b', next);
+  await guest.request('room.create', { mode: 'coop', difficulty: 'FUNNY' });
+  for (let i = 0; i < 100 && !listed.length; i++) {
+    listed = (await world.api('a', '/api/rooms')).body.items;
+    await sleep(50);
+  }
+  assert.deepEqual(listed.map((room) => room.roomId), [next.code]);
+});
+
 test('a failed listing is logged once and retried after its backoff, even when the room changes meanwhile', { timeout: 120000 }, async (t) => {
   const world = await createWorld(t);
   await world.seed('a');

@@ -1,0 +1,23 @@
+{
+  "id": "/",
+  "name": "卫戍协议：盟约",
+  "short_name": "卫戍协议",
+  "description": "卫戍协议：盟约 · 网页联机复刻（非官方同人作品）",
+  "lang": "zh-CN",
+  "dir": "ltr",
+  "start_url": "/",
+  "scope": "/",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#0c0f0e",
+  "theme_color": "#0c0f0e",
+  "categories": ["games"],
+  "launch_handler": { "client_mode": "focus-existing" },
+  "prefer_related_applications": false,
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "/icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

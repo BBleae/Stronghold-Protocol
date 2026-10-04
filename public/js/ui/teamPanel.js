@@ -1,6 +1,8 @@
 // Left team panel (research 06 §11.1, research 09 §3.1): one row per seat — avatar (band icon once picked), name, LP
 // tower, status glyph (… acting / ✓ ready / ⌛ deciding / ⚔ combat / door left / ✕ dead), AI badge, "you" marker, the
-// field being watched (eye badge), and emote bubbles.
+// field being watched (eye badge), and emote bubbles. A player whose avatar is a GitHub picture / an AI portrait shows
+// the picked strategy (band) as a small icon beside the name at the top of the row (issue #6: the avatar no longer
+// shows it — for teammates and public spectators alike).
 // Observing (client-side combat, `observe` prop — the official flow): tapping a teammate's avatar expands a mint
 // "前往查看" button under the row (when that teammate can be observed now; otherwise the reason is toasted through
 // onWatch); while observing, the own row shows a "返回战场" button. Without `observe` (server-run combat) a click
@@ -17,11 +19,12 @@
 import { useEffect, useState } from '../../vendor/hooks.module.js';
 import { PHASE } from '../../../shared/constants.js';
 import { html, Icon, Tooltip, PlayerName } from './components.js';
-import { PlayerAvatar, LpTower, GIcon, LocalSprite } from './gameComponents.js';
+import { PlayerAvatar, LpTower, GIcon, LocalSprite, BandIcon } from './gameComponents.js';
 import { EmoteBubble } from './emotes.js';
 import { STATUS_META, sortedPlayers } from './gameLogic.js';
 import { MissTag, uniteRemaining } from './hud.js';
 import { localAsset } from '../data.js';
+import { useStore } from '../store.js';
 
 const cx = (...p) => p.flat().filter(Boolean).join(' ');
 
@@ -65,6 +68,16 @@ export function rowLpTip(lp, cap = 10) {
 }
 
 /**
+ * Whether a row's avatar is something other than the player's band icon (an account picture, an AI's portrait), so
+ * the strategy needs its own tag (PlayerAvatar falls back to the band icon only for a human without a picture).
+ * @param {any} p m.public players[] entry @param {string|null|undefined} seatAvatar room seat avatarUrl
+ */
+export function bandTagShown(p, seatAvatar) {
+  if (!p || typeof p.bandId !== 'string' || !p.bandId) return false;
+  return !!p.isBot || !!(seatAvatar || p.avatarUrl);
+}
+
+/**
  * @param {{ pub:any, myId:string, watching:string|null, bubbles: Map<string,{id:string,seq:number}>, onWatch:(p:any)=>void,
  *   compact?: boolean, teamLp?: number|null, self?: { lp?: number|null, pending: number, unite: boolean, left?: number|null } | null,
  *   cap?: number, uniteLocal?: Record<string, number> | null,
@@ -73,6 +86,7 @@ export function rowLpTip(lp, cap = 10) {
  */
 export function TeamPanel({ pub, myId, watching, bubbles, onWatch, compact = false, observe = null, self: selfLive = null, cap = 10, uniteLocal = null }) {
   const [openPid, setOpenPid] = useState(null);
+  const seats = useStore((s) => s.room?.seats);
   const phaseKey = `${pub?.phase}:${pub?.round}`;
   useEffect(() => { setOpenPid(null); }, [phaseKey, watching, observe?.observing]);
   const players = sortedPlayers(pub);
@@ -104,7 +118,11 @@ export function TeamPanel({ pub, myId, watching, bubbles, onWatch, compact = fal
           ${self ? html`<span class="team__you"><${Icon} name="user" /></span>` : null}
         </button>
         <div class="team__info">
-          <span class="team__name"><${PlayerName} name=${p.name || '博士'} /></span>
+          <span class="team__top">
+            ${bandTagShown(p, Array.isArray(seats) ? seats.find((x) => x && x.playerId === p.playerId)?.avatarUrl : null)
+              ? html`<${BandIcon} bandId=${p.bandId} size="sm" class="team__band" />` : null}
+            <span class="team__name"><${PlayerName} name=${p.name || '博士'} /></span>
+          </span>
           <div class="team__line">
             <${LpTower} value=${lp.lp} size="sm" tone=${Number.isFinite(lp.lp) && lp.lp - lp.pending <= 5 ? 'danger' : null} pending=${lp.pending}
               tip=${rowLpTip(lp, cap)} />

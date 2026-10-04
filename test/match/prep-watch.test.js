@@ -31,7 +31,8 @@ test('#87 prep watch: seat B moves during prep and seat A\'s view of B changes b
     const first = h.lastTo(pid, 'm.field');
     assert.equal(first.fieldId, 'n:p_1');
     assert.equal(first.prep, true);
-    assert.equal(first.units.some((u) => u.uid === piece.uid), false, `${pid}: the piece is still in the hand`);
+    // the bench travels with the board (Match.prepFieldMeta, fork issue #7)
+    assert.equal(first.units.find((u) => u.uid === piece.uid)?.area, 'hand', `${pid}: the piece is still on the bench`);
   }
   assert.equal(h.allTo(S, 'm.private').length, 0);
   const beforeA = h.allTo('p_0', 'm.field').length;
@@ -45,11 +46,18 @@ test('#87 prep watch: seat B moves during prep and seat A\'s view of B changes b
     const last = fields.at(-1);
     const u = last.units.find((x) => x.uid === piece.uid);
     assert.ok(u, `${pid}: the moved piece is on the watched board`);
-    assert.deepEqual([u.x, u.y, u.dir], [c, r, 'LEFT']);
+    assert.deepEqual([u.area, u.x, u.y, u.dir], ['board', c, r, 'LEFT']);
   }
   const n = h.allTo('p_0', 'm.field').length;
   assert.deepEqual(m.handle('p_1', { t: 'g.freeze' }), { ok: true });
   assert.equal(h.allTo('p_0', 'm.field').length, n, 'a shop toggle is not a board change');
+  // a bench-only change is a change of the view (the bench is shown)
+  const second = give(m, b, id);
+  const slot = b.hand.findIndex((x) => x == null);
+  assert.deepEqual(m.handle('p_1', { t: 'g.move', uid: second.uid, to: { area: 'hand', idx: slot } }), { ok: true });
+  const benched = h.allTo('p_0', 'm.field');
+  assert.equal(benched.length, n + 1, 'one new view for the bench move');
+  assert.deepEqual([benched.at(-1).units.find((x) => x.uid === second.uid)?.area, benched.at(-1).units.find((x) => x.uid === second.uid)?.x], ['hand', slot]);
   assert.equal(h.allTo(S, 'm.private').length, 0);
   m.dispose();
 });

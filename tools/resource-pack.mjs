@@ -1,5 +1,5 @@
 import { createReadStream } from 'node:fs';
-import { mkdir, readdir, readFile, writeFile, open, rename, rm } from 'node:fs/promises';
+import { mkdir, readdir, writeFile, open, rename, rm } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -57,27 +57,15 @@ export function validateManifest(manifest) {
   return manifest;
 }
 
-/** The /assets/ URLs data/assets.json references (decoded). */
-async function referencedAssets(root) {
-  const urls = new Set();
-  (function walk(value) {
-    if (typeof value === 'string') { if (value.startsWith('/assets/')) urls.add(decodeURIComponent(value)); }
-    else if (value && typeof value === 'object') for (const v of Object.values(value)) walk(v);
-  })(JSON.parse(await readFile(join(root, 'data/assets.json'), 'utf8')));
-  return urls;
-}
-
 /**
- * The resources the site publishes and a player downloads or imports: every file data/assets.json references (anyone
- * can fetch them with `npm run assets`) and the fonts. Files only this machine has — the local client extraction
- * (public/assets/local, listed in data/local-assets.json) and leftovers no manifest references — are not resources:
- * a player's own ZIP could never complete them.
+ * The resources the site publishes and a player downloads or imports: every resource file under public/assets and
+ * public/fonts — the fetched art and audio, the local client extraction (public/assets/local, listed in
+ * data/local-assets.json, which the game prefers where it exists) and the fonts.
  * root is the repository root; output defaults to public/resource-manifest.json; false means no write.
  */
 export async function buildResourceManifest({ root = repository, output = join(root, 'public/resource-manifest.json') } = {}) {
   const files = [];
   const publicRoot = join(root, 'public');
-  const referenced = await referencedAssets(root);
   async function walk(directory) {
     let entries;
     try { entries = await readdir(directory, { withFileTypes: true }); } catch (error) { if (error.code === 'ENOENT') return; throw error; }
@@ -88,7 +76,7 @@ export async function buildResourceManifest({ root = repository, output = join(r
       else if (entry.isFile()) {
         const url = '/' + relative(publicRoot, path).split(sep).map(encodeURIComponent).join('/');
         const type = resourceType(url);
-        if (!type || (url.startsWith('/assets/') && !referenced.has(decodeURIComponent(url)))) continue;
+        if (!type) continue;
         const hash = createHash('sha256');
         let size = 0;
         for await (const chunk of createReadStream(path)) { hash.update(chunk); size += chunk.length; }
@@ -152,9 +140,11 @@ export async function writeResourcePack({ root = repository, manifest, output } 
   }
 }
 
-// node tools/resource-pack.mjs [--manifest-only]   (the ZIP goes to .cache/, never public/)
+// node tools/resource-pack.mjs [--manifest-only] [--out=DIR]   (DIR: where the ZIP goes, default .cache; not public/)
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const manifest = await buildResourceManifest();
   console.log(`Resources: ${manifest.files.length} files, ${(manifest.totalBytes / 1048576).toFixed(1)} MiB, version ${manifest.version}`);
-  if (!process.argv.includes('--manifest-only')) console.log(`Local ZIP: ${(await writeResourcePack({ manifest })).path}`);
+  const outDir = process.argv.find(a => a.startsWith('--out='))?.slice(6);
+  const output = outDir ? join(resolve(outDir), `stronghold-resources-${manifest.version.slice(0, 12)}.zip`) : undefined;
+  if (!process.argv.includes('--manifest-only')) console.log(`Local ZIP: ${(await writeResourcePack({ manifest, output })).path}`);
 }

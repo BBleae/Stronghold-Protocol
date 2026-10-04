@@ -995,11 +995,8 @@ export class UnitView {
         this._far = this._far ? s < 60 : s < 52;
         if (lvl >= 2 || this._far) interval = Math.max(interval, 2);
       }
-      if (this.actor.clipped) {
-        const clip = this.ctx.clipAllowed ? this.ctx.clipAllowed() : true;
-        this.actor.setClipping(clip);
-        if (clip && this.ctx.impostors) interval = Math.max(1, interval);
-      }
+      // a clipped skeleton (eye clips) always draws through the impostor atlas: its stencil masks stay out of the main pass
+      if (this.actor.clipped && this.ctx.impostors) interval = Math.max(1, interval);
       // never slower than ~20 skeleton updates a second (render/app.js maxAnimInterval) and at most every 2nd frame while
       // two clips blend (a blend sampled every few frames is a jump) — unless the device struggles (level 2+: crowds
       // animate at 5–10 Hz) or is under load (level 1: no blend refresh). Review of the upstream PR (2026-10): an
@@ -1346,7 +1343,7 @@ export class UnitView {
     const ox = -box.x0 * sc, oy = -box.y0 * sc;
     if (atlas) {
       let slot = imp.slot;
-      const clip = !!(this.actor.clipped && this.actor.clipOn);
+      const clip = !!this.actor.clipped;
       if (!slot || w > slot.w || h > slot.h || w < slot.w * 0.6 || h < slot.h * 0.6 || slot.clip !== clip) {
         if (slot) atlas.free(slot);
         slot = imp.slot = atlas.alloc(w, h, { clip });
