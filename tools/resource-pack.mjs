@@ -1,17 +1,83 @@
 import { createReadStream } from 'node:fs';
-import { mkdir, readdir, writeFile, open, rename, rm } from 'node:fs/promises';
+import { mkdir, readdir, readFile, writeFile, open, rename, rm } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Zip, ZipPassThrough } from 'fflate';
-import { resourceType, validateManifest } from '../public/js/resources/common.js';
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
-/** root is the repository root; output defaults to public/resource-manifest.json; false means no write. */
+// The import holds one whole file in memory (public/js/resources/zip.js).
+const MAX_FILE_BYTES = 25 * 1024 * 1024;
+
+/** Content-Type per resource file extension; other files under public/assets and public/fonts are not resources. */
+const RESOURCE_TYPES = Object.freeze({
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif', svg: 'image/svg+xml',
+  mp3: 'audio/mpeg', ogg: 'audio/ogg', wav: 'audio/wav', m4a: 'audio/mp4', mp4: 'video/mp4',
+  woff: 'font/woff', woff2: 'font/woff2', ttf: 'font/ttf', otf: 'font/otf', css: 'text/css; charset=utf-8',
+  atlas: 'text/plain; charset=utf-8', obj: 'text/plain; charset=utf-8', json: 'application/json', skel: 'application/octet-stream',
+});
+
+function resourceType(url) {
+  return RESOURCE_TYPES[url.split('.').pop().toLowerCase()];
+}
+
+function validateResourceUrl(url) {
+  if (typeof url !== 'string' || !/^\/(assets|fonts)\//.test(url) || /[?#\\\x00-\x1f]/.test(url)) throw new Error(`Invalid resource path: ${url}`);
+  let decoded;
+  try {
+    decoded = decodeURIComponent(url);
+  } catch {
+    throw new Error(`Invalid resource path encoding: ${url}`);
+  }
+  const segments = decoded.split('/').slice(1);
+  if (/[?#\\\x00-\x1f]/.test(decoded) || segments.some(part => !part || part === '.' || part === '..') || !resourceType(decoded)) {
+    throw new Error(`Invalid resource path or type: ${url}`);
+  }
+}
+
+/**
+ * Check a manifest: resource paths only (no traversal, no programs), unique URLs, sizes within the static asset limit,
+ * SHA-256 hashes, Content-Types matching the extensions, and the total. The page and the pack trust what passes.
+ */
+export function validateManifest(manifest) {
+  if (manifest?.format !== 1 || !/^[a-f0-9]{64}$/.test(manifest.version) || !Array.isArray(manifest.files)) throw new Error('Invalid resource manifest');
+  const urls = new Set();
+  let total = 0;
+  for (const file of manifest.files) {
+    validateResourceUrl(file.url);
+    if (urls.has(file.url)) throw new Error(`Duplicate resource URL: ${file.url}`);
+    urls.add(file.url);
+    if (!Number.isSafeInteger(file.size) || file.size < 0 || file.size > MAX_FILE_BYTES) throw new Error(`Invalid resource size: ${file.url}`);
+    if (!/^[a-f0-9]{64}$/.test(file.sha256)) throw new Error(`Invalid resource hash: ${file.url}`);
+    if (file.type !== resourceType(decodeURIComponent(file.url))) throw new Error(`Invalid resource type: ${file.url}`);
+    total += file.size;
+  }
+  if (manifest.totalBytes !== total) throw new Error('Invalid resource manifest total size');
+  return manifest;
+}
+
+/** The /assets/ URLs data/assets.json references (decoded). */
+async function referencedAssets(root) {
+  const urls = new Set();
+  (function walk(value) {
+    if (typeof value === 'string') { if (value.startsWith('/assets/')) urls.add(decodeURIComponent(value)); }
+    else if (value && typeof value === 'object') for (const v of Object.values(value)) walk(v);
+  })(JSON.parse(await readFile(join(root, 'data/assets.json'), 'utf8')));
+  return urls;
+}
+
+/**
+ * The resources a player can import: every file data/assets.json references (anyone can fetch them with
+ * `npm run assets`) and the fonts. Files only this machine has — the local client extraction (public/assets/local,
+ * listed in data/local-assets.json) and leftovers no manifest references — are not resources: a player's own ZIP
+ * could never complete them.
+ * root is the repository root; output defaults to public/resource-manifest.json; false means no write.
+ */
 export async function buildResourceManifest({ root = repository, output = join(root, 'public/resource-manifest.json') } = {}) {
   const files = [];
   const publicRoot = join(root, 'public');
+  const referenced = await referencedAssets(root);
   async function walk(directory) {
     let entries;
     try { entries = await readdir(directory, { withFileTypes: true }); } catch (error) { if (error.code === 'ENOENT') return; throw error; }
@@ -22,7 +88,7 @@ export async function buildResourceManifest({ root = repository, output = join(r
       else if (entry.isFile()) {
         const url = '/' + relative(publicRoot, path).split(sep).map(encodeURIComponent).join('/');
         const type = resourceType(url);
-        if (!type) continue;
+        if (!type || (url.startsWith('/assets/') && !referenced.has(decodeURIComponent(url)))) continue;
         const hash = createHash('sha256');
         let size = 0;
         for await (const chunk of createReadStream(path)) { hash.update(chunk); size += chunk.length; }
@@ -41,7 +107,8 @@ export async function buildResourceManifest({ root = repository, output = join(r
 /** Stored ZIP entries keep already-compressed assets fast and streamable. ZIP is never a deployment asset. */
 export async function writeResourcePack({ root = repository, manifest, output } = {}) {
   manifest = validateManifest(manifest ?? await buildResourceManifest({ root }));
-  const path = resolve(output ?? join(root, '.cache', `stronghold-resources-${manifest.version}.zip`));
+  // The name carries the resource version the ZIP was made for.
+  const path = resolve(output ?? join(root, '.cache', `stronghold-resources-${manifest.version.slice(0, 12)}.zip`));
   const publicRoot = resolve(root, 'public');
   const withinPublic = relative(publicRoot, path);
   if (!withinPublic || (!withinPublic.startsWith('..' + sep) && withinPublic !== '..' && !isAbsolute(withinPublic))) throw new Error('Resource ZIP must remain outside the public deployment directory');
@@ -85,11 +152,9 @@ export async function writeResourcePack({ root = repository, manifest, output } 
   }
 }
 
-// node tools/resource-pack.mjs [--manifest-only] [--out=DIR]   (DIR: where the ZIP goes, default .cache; not public/)
+// node tools/resource-pack.mjs [--manifest-only]   (the ZIP goes to .cache/, never public/)
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const manifest = await buildResourceManifest();
   console.log(`Resources: ${manifest.files.length} files, ${(manifest.totalBytes / 1048576).toFixed(1)} MiB, version ${manifest.version}`);
-  const outDir = process.argv.find(a => a.startsWith('--out='))?.slice(6);
-  const output = outDir ? join(resolve(outDir), `stronghold-resources-${manifest.version.slice(0, 12)}.zip`) : undefined;
-  if (!process.argv.includes('--manifest-only')) console.log(`Local ZIP: ${(await writeResourcePack({ manifest, output })).path}`);
+  if (!process.argv.includes('--manifest-only')) console.log(`Local ZIP: ${(await writeResourcePack({ manifest })).path}`);
 }

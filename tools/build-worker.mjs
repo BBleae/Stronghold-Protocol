@@ -51,8 +51,9 @@ export async function copyRuntimeAssets({ root = ROOT, out = path.join(root, 'di
   await copyTree(path.join(root, 'shared'), path.join(out, 'shared'), (name, dir) => dir || name.endsWith('.js'));
   await copyTree(path.join(root, 'server/sim'), path.join(out, 'sim'), (name, dir) => dir || (name.endsWith('.js') && !name.toLowerCase().endsWith('nodedata.js')));
   await fs.writeFile(path.join(out, 'data.js'), SHIM);
-  try { await fs.access(path.join(out, 'data/local-assets.json')); }
-  catch { await fs.writeFile(path.join(out, 'data/local-assets.json'), JSON.stringify({ version: 1, source: 'none', count: 0, groups: {} })); }
+  // data/local-assets.json lists this machine's local client extraction (public/assets/local), which is never
+  // published: the deployed site always says there is none.
+  await fs.writeFile(path.join(out, 'data/local-assets.json'), JSON.stringify({ version: 1, source: 'none', count: 0, groups: {} }));
   let html = await fs.readFile(path.join(out, 'index.html'), 'utf8');
   html = html.replace('<html ', `<html data-sp-runtime="cloudflare" data-sp-build="${buildTag}" `);
   html = html.replace('src="/js/main.js"', 'src="/js/worker-entry.js"');
@@ -60,24 +61,13 @@ export async function copyRuntimeAssets({ root = ROOT, out = path.join(root, 'di
   html = html.replace(/\s*<link[^>]+https:\/\/fonts\.(?:googleapis|gstatic)\.com[^>]*>/g, '');
   html = html.replace('</head>', '  <link rel="stylesheet" href="/css/resources.css" />\n</head>');
   await fs.writeFile(path.join(out, 'index.html'), html);
-  await fs.writeFile(path.join(out, '_headers'), `/*
+  await fs.writeFile(path.join(out, '_headers'), `# Every rule whose path matches applies, and the values of a header set by several of them are joined:
+# each header is set by one rule per path. No path has a Cache-Control rule: all get the platform default
+# "public, max-age=0, must-revalidate", so pages, code, /vendor (it must match the code importing it), data,
+# the resource manifest and service worker revalidate on every use.
+/*
   X-Content-Type-Options: nosniff
   Referrer-Policy: same-origin
-  Cache-Control: no-cache
-/assets/*
-  Cache-Control: public, max-age=86400
-/fonts/*
-  Cache-Control: public, max-age=86400
-/vendor/*
-  Cache-Control: public, max-age=86400
-/assets/*.atlas
-  Content-Type: text/plain; charset=utf-8
-/assets/*.skel
-  Content-Type: application/octet-stream
-/resource-manifest.json
-  Cache-Control: no-cache
-/resource-sw.js
-  Cache-Control: no-cache
 `);
   let count = 0;
   async function check(directory) {

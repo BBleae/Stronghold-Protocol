@@ -10,25 +10,26 @@ export function ResourceLauncher({ onOpen }) {
   if (route === 'game') return null;
   return html`<div class="resource-launcher">
     <${Button} id="resource-manager-open" size="sm" onClick=${onOpen}
-      title="下载、导入、导出或清理本地游戏资源">资源管理<//>
+      title="导入或清理本地游戏资源">资源管理<//>
   </div>`;
 }
 
-export function ResourceDialog({ state, firstTime, available, totalBytes, onClose, onDownload, onImport, onExport, onClear, onCancel }) {
+export function ResourceDialog({ state, firstTime, totalBytes, onClose, onImport, onClear, onCancel }) {
   const route = useStore(selectRoute);
   const input = useRef(null);
   useEffect(() => { if (!firstTime && route === 'game') void onClose(); }, [route, firstTime, onClose]);
-  const { status, busy, phase, message, error } = state;
+  const { status, busy, waiting, phase, message, error } = state;
   const complete = status?.complete ?? false;
-  const disabled = busy || !available;
-  const phaseLabel = { checking: '正在检查本地资源', download: '正在下载', import: '正在导入', export: '正在导出', clear: '正在清理' }[phase];
-  const continueText = firstTime ? complete ? '资源已就绪，进入游戏' : '暂时跳过，按需加载' : '返回游戏';
+  // Another page of the site (or this page's boot check) is using the local resources.
+  const phaseLabel = waiting ? '等待其他资源操作完成'
+    : { checking: '正在检查本地资源', import: '正在导入', clear: '正在清理' }[phase];
+  const continueText = firstTime ? complete ? '资源已就绪，进入游戏' : '暂时跳过（使用占位图）' : '返回游戏';
   return html`<${Modal} open=${true} class="resource-dialog" width="min(8rem, 94vw)"
     title=${firstTime ? '准备游戏资源' : '资源管理'} micro="RESOURCE MANAGER // 本地资源"
     closeOnBackdrop=${false} onClose=${onClose}
     actions=${html`<${Button} data-action="continue" iconRight="chevronRight" onClick=${onClose}>${continueText}<//>`}>
     <div class="resource-card">
-      <p class="resource-intro modal__text">完整资源约 ${mib(totalBytes)}。提前保存可减少对局中的等待；下载中断后可以继续补齐。</p>
+      <p class="resource-intro modal__text">原版美术与音频需要导入本地资源 ZIP（完整约 ${mib(totalBytes)}），只在本机读取，不会上传。未导入时，游戏使用占位图，没有声音。</p>
       <${Panel} class="resource-cache">
         <div class="resource-summary">
           <${MicroLabel} tone="mint">LOCAL CACHE // 本地缓存<//>
@@ -37,17 +38,15 @@ export function ResourceDialog({ state, firstTime, available, totalBytes, onClos
         </div>
         <div class="resource-stat num" aria-live="polite">${status
           ? `${status.count} / ${status.total} 个文件 · ${mib(status.bytes)} / ${mib(status.totalBytes)}`
-          : available ? '正在检查本地资源…' : '按需加载可用'}</div>
+          : '正在检查本地资源…'}</div>
         <${ProgressBar} class="resource-progress" value=${status?.bytes ?? 0} max=${status?.totalBytes || 1} />
       <//>
       <p class=${`resource-message ${error ? 't-gold' : 't-lo'}`} role="status">${message}</p>
       <div class="resource-actions">
-        <${Button} variant="primary" data-action="download" disabled=${disabled || complete} loading=${busy && phase === 'download'}
-          onClick=${onDownload}>${complete ? '资源已全部保存' : '在线下载 / 继续下载'}<//>
-        <${Button} data-action="import" disabled=${disabled} onClick=${() => input.current?.click()}>导入本地 ZIP<//>
-        <${Button} data-action="export" disabled=${disabled || !complete} onClick=${onExport}>导出 ZIP（发给朋友）<//>
-        <${Button} variant="ghost" data-action="clear" disabled=${disabled} onClick=${onClear}>清理本地资源<//>
-        ${busy && phase !== 'checking' ? html`<${Button} class="resource-cancel" data-action="cancel" onClick=${onCancel}>暂停<//>` : null}
+        <${Button} variant=${complete ? 'secondary' : 'primary'} data-action="import" disabled=${busy}
+          loading=${busy && phase === 'import'} onClick=${() => input.current?.click()}>导入本地 ZIP<//>
+        <${Button} variant="ghost" data-action="clear" disabled=${busy} onClick=${onClear}>清理本地资源<//>
+        ${busy && phase !== 'checking' ? html`<${Button} class="resource-cancel" data-action="cancel" onClick=${onCancel}>取消<//>` : null}
       </div>
       <input ref=${input} type="file" hidden aria-label="选择本地资源 ZIP" onChange=${event => {
         const file = event.currentTarget.files[0];
@@ -56,8 +55,8 @@ export function ResourceDialog({ state, firstTime, available, totalBytes, onClos
       }} />
       <div class="resource-note">
         <${MicroLabel}>LOCAL ONLY // 本机处理<//>
-        <p>ZIP 只在本机读取，不会上传。仅导入本站需要的资源，其余文件直接跳过，不解压、不校验。</p>
-        <p>资源全部保存后可导出 ZIP 发给朋友。浏览器可能清理缓存，之后可重新补齐。</p>
+        <p>仅导入本站需要的资源，其余文件直接跳过，不解压、不校验。</p>
+        <p>导入的资源保存在本浏览器的网站数据中；清除网站数据后，需要重新导入。</p>
       </div>
     </div>
   <//>${firstTime ? html`<${ToastHost} />` : null}`;
