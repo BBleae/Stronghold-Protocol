@@ -8,11 +8,14 @@
 //   otherwise              → Lobby
 // Deep link `?room=CODE`: remembered at boot, auto-joined once the player has entered and the
 // session is online (after a short grace period in case the server restores a room on resume).
+// Account mode (Workers, room-net.js): the join is an application sent from the menu; a logged-out
+// player keeps the invite, and the GitHub login carries it back (account.js loginUrl).
 // Reloading a tab that already passed the title re-enters automatically (sessionStorage flag) and
 // resumes the server session with the saved token; stale room/match state is dropped if the
 // server does not re-push it within RESTORE_GRACE_MS after `welcome`. Boot waits for
 // `identity.init()` (which token this tab may use without stealing another live tab's session)
-// before the first connect; a page restored from the back/forward cache reloads.
+// before the first connect; a page restored from the back/forward cache reloads. In account mode
+// the token resumes the account's seat (RoomNet.restore), and the menu forgets it.
 // A `welcome` with a NEW playerId (the server restarted / the session expired) while a room or match was on screen:
 // toast 「服务器会话已重置，上一局模拟已结束」 (store.js sessionResetNotice) and return to the lobby with nothing stale.
 //
@@ -47,6 +50,7 @@ import { installDeviceSupport } from './ui/device.js';
 import { LoadoutHost } from './screens/loadout.js';
 import { installLoadoutSync } from './ui/loadoutSync.js';
 import { account, loadAccount } from './account.js';
+import { applicationSent } from './ui/accountMenu.js';
 import { HistoryScreen } from './screens/history.js';
 import { ReplayScreen } from './screens/replay.js';
 
@@ -87,13 +91,18 @@ function clearPendingJoin() {
   clearRoomParam();
 }
 
-/** Auto-join the deep-linked room once entered + online (idempotent). */
+/** The player has entered and the client can join a room: online, or (account mode) in the menu. */
+const joinReady = (s) => s.session.entered && (s.connection.status === 'online' || s.connection.status === 'menu');
+
+/** Auto-join the deep-linked room once joinReady (idempotent). */
 function schedulePendingJoin() {
   clearTimeout(joinTimer);
   joinTimer = setTimeout(async () => {
     const s = store.get();
     const code = s.ui.pendingJoin;
-    if (!code || joinInFlight || !s.session.entered || net.status !== 'online') return;
+    if (!code || joinInFlight || !joinReady(s)) return;
+    // Logged out (account mode): the invite waits for the GitHub login, which brings it back.
+    if (account.enabled && !account.user) return;
     if (s.room) {
       if (s.room.code !== code) toast('你已在其他同盟中，请先离开当前同盟', 'warn');
       clearPendingJoin();
@@ -101,7 +110,8 @@ function schedulePendingJoin() {
     }
     joinInFlight = true;
     try {
-      await net.request('room.join', { code });
+      const reply = await net.request('room.join', { code });
+      if (reply?.application) applicationSent(code);
     } catch (err) {
       toastError(err);
     } finally {
@@ -137,7 +147,8 @@ function backToLobby() {
 }
 
 function onWelcome(msg) {
-  identity.saveToken(msg.token);
+  // Only an online session's token is worth resuming: a welcome RoomNet turned away (its room is over) left it in the menu.
+  if (net.status === 'online') identity.saveToken(msg.token);
   const prev = store.get();
   const prevId = prev.me.playerId;
   const name = typeof msg.name === 'string' && msg.name ? msg.name : prev.me.name;
@@ -163,7 +174,6 @@ function onWelcome(msg) {
       store.patch('ui', { restoring: false });
     }, RESTORE_GRACE_MS);
   }
-  schedulePendingJoin();
 }
 
 function onRoomState(msg) {
@@ -190,11 +200,18 @@ const CLOSE_REASON = {
   host_left: '创建者已离开，同盟已解散', timeout: '由于长时间断开连接，你已离开同盟', empty: '同盟已解散',
   kicked: '你已被移出同盟', ended: '模拟已结束', expired: '同盟已过期', shutdown: '服务器维护中，同盟已关闭',
   restart: '服务器已更新或重启，本局已结束，请重新创建房间',
+  // account mode (room-net.js): 继续对局 on another page or device took this seat over
+  replaced: '已在其他页面或设备继续对局',
+  // account mode: the room Worker cannot restore a match recorded by a newer deployment (a rollback)
+  rollback: '服务器版本已回退，本局无法继续',
 };
 
 function wireNet() {
   net.on('status', (snap) => {
     const cur = store.get().connection;
+    // Account mode: back in the menu the tab is in no room, so its room token goes (a reload must not resume a room
+    // the player left).
+    if (snap.status === 'menu' && cur.status !== 'menu') identity.clearToken();
     store.set({
       connection: {
         status: snap.status, ping: snap.ping, attempt: snap.attempt, retryAt: snap.retryAt,
@@ -234,11 +251,13 @@ function wireNet() {
     store.set((s) => ({ emotes: [...s.emotes.slice(-(EMOTE_KEEP - 1)), { seq: ++seq, playerId: msg.playerId, id: msg.id, at: Date.now() }] }));
   });
 
-  // Entering (title → lobby) while already online also needs the deep-link join.
+  // The deep-link join goes out once the player has entered and the client can join (whichever comes last).
   store.subscribe((s, prev) => {
-    if (s.session.entered && !prev.session.entered) schedulePendingJoin();
+    if (joinReady(s) && !joinReady(prev)) schedulePendingJoin();
     // in a room (co-op or solo, also a resumed one) a match is near: its data starts downloading
     if (s.room && !prev.room) warmGameData();
+    // an approved join application enters the room from any page: the account pages give way to it
+    if (s.room && !prev.room && s.ui.accountPage) store.patch('ui', { accountPage: null });
   });
 }
 
@@ -321,8 +340,7 @@ async function boot() {
   if (document.documentElement.dataset.spRuntime === 'cloudflare') {
     const profile = await loadAccount();
     if (profile.capabilities?.accountSystem) await preferences.start(account.user?.accountId);
-    net.accountMode = account.enabled;
-    if(account.application)net.application={...account.application,code:account.application.roomId,status:'pending'};
+    if (account.application) net.watchApplication({ ...account.application, code: account.application.roomId, status: 'pending' });
     const resources = await import('./resources/index.js');
     await resources.prepareResources();
     resources.installResourceManager();
@@ -353,6 +371,9 @@ async function boot() {
   data.load('local').catch(() => {});
 
   const connectWhenReady = identityReady.then(() => {
+    // Account mode: a reload, or a tab the browser discarded, mid-match resumes this tab's seat. That room's socket is
+    // the first connection; without one the client starts in the menu (which forgets the token, see wireNet).
+    if (account.enabled) net.restore(identity.getToken(), account.activeSeat).catch((err) => toastError(err));
     if (entered) net.setName(savedName);
     else net.connect();
   });

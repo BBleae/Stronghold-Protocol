@@ -39,7 +39,7 @@ test('account preferences restore in a clean browser, survive offline reload, an
   const browser=await (await import('puppeteer-core')).default.launch({executablePath:chrome,headless:true,args:['--no-sandbox']});
   t.after(()=>browser.close());
   const base=String(await h.url()).replace('127.0.0.1','localhost'),errors=[];
-  const ready=page=>page.waitForFunction(()=>globalThis.__SP__?.net.status==='online');
+  const ready=page=>page.waitForFunction(()=>globalThis.__SP__?.net.status==='menu');
   const open=async()=>{
     const context=await browser.createBrowserContext(),page=await context.newPage();
     page.on('pageerror',e=>errors.push(e.message));await page.setViewport({width:1366,height:768});
@@ -89,7 +89,7 @@ test('account preferences restore in a clean browser, survive offline reload, an
   assert.equal(switched['lobby.mode'],'coop');assert.deepEqual(switched.recentRooms,[]);
   await b.goto(base+'__test/login/a');await ready(b);
   assert.deepEqual(await read(b),{...expected,'lobby.difficulty':'HARD'});
-  // Deployment recovery must work in the already-open browser, without resumeActive() or reload().
+  // Deployment recovery must work in the already-open browser, without 继续对局 or reload().
   await b.evaluate(async()=>{
     await __SP__.net.request('room.create',{mode:'solo',difficulty:'FUNNY'});
     await __SP__.net.request('room.start');

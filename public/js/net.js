@@ -46,6 +46,28 @@ export const CLIENT_ERR_TEXT = Object.freeze({
   CLOSED: '连接已关闭',
   REPLACED: '该身份已在其他页面登录',
   VERSION: '客户端版本与服务器不一致，请刷新页面',
+  // Account mode: the room client (room-net.js) and the account API (account.js accountRequest).
+  ALREADY_IN_ROOM: '请先离开当前房间',
+  BUSY: '正在进入房间，请稍候',
+  ROOM_GONE: '房间已关闭或已过期',
+  NO_ACTIVE_MATCH: '对局已结束或恢复时间已过',
+  UNAVAILABLE: '服务器暂时不可用，请稍后重试',
+  LOGIN_REQUIRED: '登录已失效，请重新登录',
+  AUTH_UNAVAILABLE: 'GitHub 登录尚未配置',
+  ACCOUNT_UNAVAILABLE: '账户服务暂时不可用，请稍后重试',
+  ALREADY_SEATED: '你已有一个房间，请先继续对局或离开',
+  APPLICATION_PENDING: '已有一个加入申请，请先取消或等待处理',
+  APPLICATION_EXPIRED: '申请已过期，请重新申请',
+  APPLICATION_NOT_FOUND: '该申请已失效',
+  ALREADY_JOINED: '已加入该同盟',
+  TOO_MANY_APPLICATIONS: '该同盟待处理的申请过多，请稍后再试',
+  APPLICATION_FAILED: '申请处理失败，请重试',
+  APPLICANT_BUSY: '对方已在其他房间，申请已失效',
+  LOBBY_UNAVAILABLE: '在线大厅暂时不可用，请稍后重试',
+  HISTORY_UNAVAILABLE: '对局记录暂时不可用，请重试',
+  ARCHIVE_NOT_READY: '对局记录尚未生成，请稍后再试',
+  REPLAY_INCOMPLETE: '回放记录不完整，暂时无法播放',
+  FORBIDDEN: '无权查看该内容',
 });
 
 /** Server close code: the session was taken over by another socket (server/net.js CLOSE.REPLACED). */
