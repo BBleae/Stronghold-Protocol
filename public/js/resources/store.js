@@ -75,8 +75,9 @@ export class ResourceStore {
     this.manifest = manifest;
     this.caches = caches;
     this.fetcher = fetcher;
-    // Where new files go; reconcile() and check() switch to the cache that already exists.
-    this.cacheName = CACHE_PREFIX;
+    // The cache the last check() or reconcile() found; put() and save() write into it. A cache deleted meanwhile
+    // (the player clears the site's data) takes the files and the status entry written later with it.
+    this.cache = null;
   }
 
   static async load(options = {}) {
@@ -93,10 +94,11 @@ export class ResourceStore {
     const names = await this.#cacheNames();
     if (!names.length) return cacheStatus(this.manifest, 0, 0);
     if (names.length === 1) {
-      const saved = await (await this.caches.open(names[0])).match(STATUS_KEY);
+      const cache = await this.caches.open(names[0]);
+      const saved = await cache.match(STATUS_KEY);
       const status = saved && await saved.json();
       if (status?.version === this.manifest.version) {
-        this.cacheName = names[0];
+        this.cache = cache;
         return cacheStatus(this.manifest, status.count, status.bytes);
       }
     }
@@ -140,16 +142,15 @@ export class ResourceStore {
       }
       await this.caches.delete(other.name);
     }
-    this.cacheName = home.name;
+    this.cache = home.cache;
     await this.save(status);
     return status;
   }
 
   /** Record a status, so that the next check() of the same site version needs no scan. */
   async save(status) {
-    const cache = await this.caches.open(this.cacheName);
     const body = JSON.stringify({ version: status.version, count: status.count, bytes: status.bytes });
-    await cache.put(STATUS_KEY, new Response(body, { headers: { 'Content-Type': 'application/json' } }));
+    await this.cache.put(STATUS_KEY, new Response(body, { headers: { 'Content-Type': 'application/json' } }));
   }
 
   /** Verify a file against the manifest and store it. */
@@ -157,8 +158,7 @@ export class ResourceStore {
     checkAbort(signal);
     await verifyBytes(file, bytes);
     checkAbort(signal);
-    const cache = await this.caches.open(this.cacheName);
-    await cache.put(file.url, resourceResponse(file, bytes));
+    await this.cache.put(file.url, resourceResponse(file, bytes));
   }
 
   /** Fetch the manifest again; true when the site version changed (the store then follows the new one). */
@@ -228,6 +228,6 @@ export class ResourceStore {
   /** Delete every resource cache. */
   async clear() {
     for (const name of await this.#cacheNames()) await this.caches.delete(name);
-    this.cacheName = CACHE_PREFIX;
+    this.cache = null;
   }
 }

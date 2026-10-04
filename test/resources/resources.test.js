@@ -73,7 +73,7 @@ function site(files, version = 'a'.repeat(64)) {
   return server;
 }
 
-/** The store of a site that serves `siteManifest` and no files: for imports. */
+/** The store of a site that serves `siteManifest` and no files: for imports and files the test puts in. */
 const storeOf = (siteManifest, caches = new MemoryCaches()) =>
   new ResourceStore(siteManifest, { caches, fetcher: async () => Response.json(siteManifest) });
 
@@ -338,6 +338,18 @@ test('pausing keeps the finished files; a full disk stops at once; clearing leav
   assert.equal((await store.check()).count, 0);
 });
 
+test('a cache deleted during a download takes its status entry along: the next check reports what is stored', async () => {
+  const caches = new MemoryCaches();
+  const server = site([['/assets/a.mp3', 'abc'], ['/assets/b.mp3', 'def'], ['/assets/c.mp3', 'ghi']]);
+  const store = new ResourceStore(server.manifest, { caches, fetcher: server.fetcher });
+  // The player clears the site's data after the first file.
+  const onProgress = status => { if (status.count === 1) void caches.delete('stronghold-resources'); };
+  await store.download({ concurrency: 1, retryDelays: NO_WAIT, onProgress });
+  assert.deepEqual(await caches.keys(), [], 'nothing re-created under the name');
+  const next = await ResourceStore.load({ caches, fetcher: server.fetcher });
+  assert.equal((await next.check()).count, 0);
+});
+
 test('ZIP imports use the trusted manifest, validate hashes and read files by range', async () => {
   const a = entry('/assets/a.mp3', 'abc');
   const b = entry('/assets/b.mp3', 'def');
@@ -405,6 +417,7 @@ test('ZIP imports accept large unrelated payloads and repeated unrelated entries
 test('ZIP imports report no matching resources without changing existing progress', async () => {
   const a = entry('/assets/a.mp3', 'abc');
   const store = storeOf(manifest([a]));
+  await store.reconcile();
   await store.put(a, bytes('abc'));
   await assert.rejects(importResourceZip(new Blob([zipSync({ 'README.txt': bytes('unused') })]), store, { zipjs }), /没有.*匹配/);
   assert.equal((await store.check()).complete, true);
@@ -471,8 +484,9 @@ test('the service worker maps same-origin GETs of resource files, and /media/ au
   }
   assert.equal(keys(`${ORIGIN}/assets/a.mp3`, { method: 'POST' }), null);
   const caches = new MemoryCaches();
-  const store = new ResourceStore(manifest([{ ...entry('/assets/audio/bgm/b.ogg', 'ogg'), type: 'audio/ogg' }, entry('/assets/audio/bgm/a.mp3', 'mp3'),
-    { ...entry('/assets/audio/bgm/a.ogg', 'ogg'), type: 'audio/ogg' }]), { caches });
+  const store = storeOf(manifest([{ ...entry('/assets/audio/bgm/b.ogg', 'ogg'), type: 'audio/ogg' }, entry('/assets/audio/bgm/a.mp3', 'mp3'),
+    { ...entry('/assets/audio/bgm/a.ogg', 'ogg'), type: 'audio/ogg' }]), caches);
+  await store.reconcile();
   for (const file of store.manifest.files) await store.put(file, bytes(file.url.endsWith('.mp3') ? 'mp3' : 'ogg'));
   const media = async path => (await cachedResponse(keys(`${ORIGIN}${path}`), caches))?.text();
   assert.equal(await media('/media/bgm/a'), 'mp3', 'extension order of shared/media.js: mp3 first');
@@ -483,7 +497,9 @@ test('the service worker maps same-origin GETs of resource files, and /media/ au
 test('the service worker answers cached files without any manifest, and everything else from the network', async t => {
   const caches = new MemoryCaches();
   const a = entry('/assets/a.mp3', 'abc');
-  await new ResourceStore(manifest([a]), { caches }).put(a, bytes('abc'));
+  const store = storeOf(manifest([a]), caches);
+  await store.reconcile();
+  await store.put(a, bytes('abc'));
   const listeners = {};
   const network = [];
   const saved = { self: globalThis.self, caches: globalThis.caches, fetch: globalThis.fetch };
