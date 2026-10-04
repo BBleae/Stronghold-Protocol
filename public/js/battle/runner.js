@@ -23,9 +23,16 @@
 // time (`gt`): the render engine then knows how late a form fx is and skips a change clip that has already ended.
 // Display replicas (a teammate's field after the own battle, 联防 observers, the partner of a boss pair) run the same
 // spec fast-forwarded to the server's clock (`elapsed`) and never report.
-// A b.result lost with the socket (the request failed DISCONNECTED / OFFLINE, or timed out twice) is kept and sent
-// again when the session is back online ('status' → 'online') or when a b.start still names this finished battle
-// authoritative (the server is waiting for it); the server takes a duplicate idempotently. A server refusal is final.
+// A b.result goes out right behind its battle's final b.progress, on the same session. One that could not go out
+// (offline) or was lost with the socket (the request failed DISCONNECTED / OFFLINE, or timed out twice) is kept and
+// sent again on the next session ('welcome') or when a b.start still names this finished battle authoritative (the
+// server is waiting for it); the server takes a duplicate idempotently. A server refusal is final.
+// Replay log (account mode): every battle simulated here logs its tick inputs — the b.pool syncs and the b.end — the way
+// the replay re-applies them (battle/replay-runner.js). An authoritative battle's b.progress carries the part of the log
+// the server's copy (server/match/recorder.js) lacks, at most REPORT_INPUTS inputs per report (a longer backlog goes out
+// as several reports), each report claiming the tick it covers. A report counts once it went out on an open socket.
+// Whenever the server's copy is unknown — the battle's first report, authority gained (a boss handover), a new
+// session — the reports start a new segment (seq 0) with the whole log, which replaces the server's copy.
 // Solo pause (g.pause, DESIGN §14): while `m.public.paused` is true every local battle clock stands still (no ticks, no
 // reports); on resume the clocks move on by the paused time, like the server's field clock.
 // Live leaks (user playtest #3 item 2): every normal field simulated here keeps its counted leaks so far — the settle
@@ -106,8 +113,11 @@ export function compactHeld(list) {
 /** Data files the simulation reads (DataSource + content/support gameData()). */
 export const SIM_DATA_FILES = Object.freeze(['chess', 'enemies', 'tokens', 'stages', 'waves', 'bonds', 'items', 'garrisons', 'bands', 'effects']);
 
-/** Request failures after which a b.result counts as never delivered (re-sent on resume / b.start). */
+/** Request failures after which a b.result counts as never delivered (re-sent on the next session / b.start). */
 export const LOST_RESULT_CODES = Object.freeze(['DISCONNECTED', 'OFFLINE', 'TIMEOUT']);
+
+/** The most replay-log inputs one b.progress report carries (shared/protocol.js isReplayReport). */
+export const REPORT_INPUTS = 128;
 
 /** Ticks per frame at a speed (same cap as the server pacing: server/match/fields.js maxTicksPerInterval). */
 export const ticksPerFrameCap = (speed) => Math.max(8, Math.ceil((Number(speed) || 2) * 4));
@@ -411,12 +421,22 @@ export function createBattleRunner(deps) {
     if (e && e.battle.finished && (e.held.length || e.stale)) emitFrame(e, false);
   }
 
-  function progress(e, force = false) {
+  /** An authoritative battle reports its progress ~1 Hz (boss fields 4 Hz) until its result is out. */
+  function progress(e) {
     if (!e.authoritative || e.resultSent || !net) return;
     const t = now();
     const every = bossLike(e) ? 250 : 1000;
-    if (!force && t - e.lastProgressAt < every) return;
+    if (t - e.lastProgressAt < every) return;
     e.lastProgressAt = t;
+    report(e);
+  }
+
+  /**
+   * Send the battle's b.progress; in account mode with the part of its replay log the server's copy lacks (see the
+   * header): one report per REPORT_INPUTS inputs, the last one claiming the current tick, each counted once it went out.
+   * → false when a report could not go out (offline: the next session's new segment carries the whole log again).
+   */
+  function report(e) {
     const p = e.sim.spec.battleProgress(e.battle);
     const msg = { battleId: e.battleId, gt: Math.min(1e5, p.gt), killed: Math.min(p.killed, p.total), total: Math.min(1e5, p.total), done: !!p.done };
     if (bossLike(e)) {
@@ -433,14 +453,21 @@ export function createBattleRunner(deps) {
       // 联防: the leakers' enemies still standing (shared/protocol.js b.progress `left`, ≤ 4 players)
       if (p.left) msg.left = Object.fromEntries(Object.entries(p.left).slice(0, 4));
     }
-    if(net.accountMode) {const replay=replayReport(e);if(replay)msg.replay=replay;}
-    try { net.send('b.progress', msg); } catch { /* offline */ }
-  }
-
-  function replayReport(e) {
-    if(e.replayInputs.length>128 || e.replayBroken) {e.replayBroken=true;e.replayInputs=[];return null;}
-    const report={segment:e.replaySegment,seq:e.replaySeq++,tick:e.battle.tickCount,inputs:e.replayInputs.splice(0)};
-    e.lastReplay=report;return report;
+    if (!net.accountMode) return net.send('b.progress', msg);
+    if (!e.segment) {
+      e.segment = crypto.randomUUID();
+      e.seq = 0;
+      e.sent = 0;
+    }
+    do {
+      const inputs = e.inputs.slice(e.sent, e.sent + REPORT_INPUTS);
+      const all = e.sent + inputs.length === e.inputs.length;
+      const tick = all ? e.battle.tickCount : inputs[inputs.length - 1].tick;
+      if (!net.send('b.progress', { ...msg, replay: { segment: e.segment, seq: e.seq, tick, inputs } })) return false;
+      e.seq++;
+      e.sent += inputs.length;
+    } while (e.sent < e.inputs.length);
+    return true;
   }
 
   function finished(e) {
@@ -448,7 +475,6 @@ export function createBattleRunner(deps) {
     e.done = true;
     noteLeaks(e);
     if (e.authoritative && !e.resultSent && net) {
-      progress(e, true);
       e.resultSent = true;
       let result = null;
       try {
@@ -466,35 +492,36 @@ export function createBattleRunner(deps) {
   }
 
   /**
-   * Send an entry's b.result (retried once on a timeout). `e.delivery`: 'pending' while a request is out, 'delivered'
-   * once the server answered (ok, or a refusal — final), 'undelivered' when it never got there (LOST_RESULT_CODES): kept
-   * for redeliver() (session back online) and for an authoritative b.start of the finished battle.
+   * Send an entry's b.result right behind its final b.progress (the rest of its replay log), on the same session: a
+   * result request queued while offline would reach the server ahead of the replay log the next session sends again.
+   * Retried once on a timeout. `e.delivery`: 'pending' while a request is out, 'delivered' once the server answered
+   * (ok, or a refusal — final), 'undelivered' when it could not go out or never got there (LOST_RESULT_CODES): kept for
+   * redeliver() (the next session) and for an authoritative b.start of the finished battle.
    */
-  function deliver(e) {
-    if (!net || !e.result || e.delivery === 'pending') return;
+  function deliver(e, retries = 1) {
+    if (!e.result || e.delivery === 'pending') return;
+    if (!report(e)) {
+      e.delivery = 'undelivered';
+      console.warn('[runner] b.result not sent (offline) — sent on the next session');
+      return;
+    }
     e.delivery = 'pending';
-    const msg = { battleId: e.battleId, result: e.result };
-    if(net.accountMode) {const replay=e.finalReplay || (e.finalReplay=replayReport(e));if(replay)msg.replay=replay;}
-    const send = (tries) => {
-      let req;
-      try { req = net.request('b.result', msg, { timeout: 15000 }); } catch (err) { req = Promise.reject(err); }
-      return Promise.resolve(req).then(() => { e.delivery = 'delivered'; }, (err) => {
-        const code = err && err.code;
-        if (code === 'TIMEOUT' && tries > 0) return send(tries - 1);
-        if (LOST_RESULT_CODES.includes(code)) {
-          e.delivery = 'undelivered';
-          console.warn(`[runner] b.result not delivered (${code}) — sent again when the session resumes`);
-        } else {
-          e.delivery = 'delivered';
-          console.warn('[runner] b.result refused', code);
-        }
-        return null;
-      });
-    };
-    send(1);
+    net.request('b.result', { battleId: e.battleId, result: e.result }, { timeout: 15000 }).then(() => {
+      e.delivery = 'delivered';
+    }, (err) => {
+      const code = err && err.code;
+      if (!LOST_RESULT_CODES.includes(code)) {
+        e.delivery = 'delivered';
+        console.warn('[runner] b.result refused', code);
+        return;
+      }
+      e.delivery = 'undelivered';
+      if (code === 'TIMEOUT' && retries > 0) deliver(e, retries - 1);
+      else console.warn(`[runner] b.result not delivered (${code}) — sent again on the next session`);
+    });
   }
 
-  /** The session is back: every result lost with the socket goes out again. */
+  /** A new session: every result that could not go out or was lost with the old socket goes out again. */
   function redeliver() {
     for (const e of entries.values()) if (e.delivery === 'undelivered') deliver(e);
   }
@@ -602,9 +629,11 @@ export function createBattleRunner(deps) {
       // the server still waits for this finished battle's result (lost with the socket, or its answer was): again
       if (msg.authoritative && existing.resultSent) deliver(existing);
       if (existing.authoritative && !was) {
-        // handover (the partner left): continue from the field's clock and report from now on
+        // handover (the partner left): continue from the field's clock and report from now on — the whole replay log
+        // the replica kept, in a new segment
         existing.t0 = clock() - ((Number(msg.elapsed) || 0) / speed) * 1000;
         existing.lastProgressAt = -Infinity;
+        existing.segment = null;
         if (existing.battle.finished) { existing.done = false; finished(existing); }
       }
       ++startSeq;
@@ -640,7 +669,9 @@ export function createBattleRunner(deps) {
       members: (msg.spec.players || []).map((p) => p && p.playerId).filter(Boolean),
       t0: clock() - ((Number(msg.elapsed) || 0) / speed) * 1000, lastProgressAt: -Infinity, done: false, resultSent: false,
       result: null, delivery: null,
-      replaySegment:globalThis.crypto?.randomUUID?.() || String(Date.now()),replaySeq:0,replayInputs:[],
+      // the replay log (tick inputs: b.pool syncs, the b.end) and how far its report segment got: segment id (null: the
+      // next report starts a new one), the segment's next seq and the inputs it has carried
+      inputs: [], segment: null, seq: 0, sent: 0,
       meter: sim.spec.attachLpMeter(battle),
       // counted leaks so far (normal fields; noteLeaks) and the Battle state they were counted at; 联防 fields: each
       // leaker's enemies still standing (noteUniteLeft)
@@ -652,10 +683,7 @@ export function createBattleRunner(deps) {
       // view from the field meta); the event batches of the current sliced step (stepEntry)
       held: [], stale: false, slices: [],
     };
-    if (lastPool && battle.sharedBoss && typeof battle.sharedBoss.sync === 'function') {
-      e.replayInputs.push({tick:0,kind:'pool',hp:lastPool.hp,acked:lastPool.acked?.[e.fieldId] ?? null});
-      battle.sharedBoss.sync(lastPool.hp, lastPool.acked ? lastPool.acked[e.fieldId] : undefined);
-    }
+    if (lastPool && battle.sharedBoss) syncPool(e, lastPool);
     // silent catch-up to the field's clock before it is shown (a reconnect / observing a running field)
     while (!battle.finished && targetTick(e, clock()) - battle.tickCount > ticksPerFrameCap(speed)) {
       const n = Math.min(PREPARE_SLICE, targetTick(e, clock()) - battle.tickCount);
@@ -678,16 +706,17 @@ export function createBattleRunner(deps) {
     if (battle.finished) finished(e);
   }
 
+  /** A b.pool into a boss battle's shared pool, logged at this tick while the battle runs (the replay re-applies it). */
+  function syncPool(e, msg) {
+    const acked = msg.acked ? msg.acked[e.fieldId] : undefined;
+    if (!e.battle.finished) e.inputs.push({ tick: e.battle.tickCount, kind: 'pool', hp: msg.hp, acked: acked ?? null });
+    e.battle.sharedBoss.sync(msg.hp, acked);
+  }
+
   function onPool(msg) {
     if (!msg || typeof msg !== 'object') return;
     lastPool = msg;
-    for (const e of entries.values()) {
-      const pool = e.battle.sharedBoss;
-      if (pool && typeof pool.sync === 'function') {
-        if(!e.battle.finished) e.replayInputs.push({tick:e.battle.tickCount,kind:'pool',hp:msg.hp,acked:msg.acked?.[e.fieldId] ?? null});
-        pool.sync(msg.hp, msg.acked ? msg.acked[e.fieldId] : undefined);
-      }
-    }
+    for (const e of entries.values()) if (e.battle.sharedBoss) syncPool(e, msg);
     emit('pool', msg);
   }
 
@@ -701,8 +730,9 @@ export function createBattleRunner(deps) {
       return;
     }
     if (!e.battle.finished) {
-      e.replayInputs.push({tick:e.battle.tickCount,kind:'end',reason:msg.reason==='timeout'?'timeout':'forced'});
-      try { e.battle.forceEnd(msg.reason === 'timeout' ? 'timeout' : 'forced'); } catch { /* ignore */ }
+      const reason = msg.reason === 'timeout' ? 'timeout' : 'forced';
+      e.inputs.push({ tick: e.battle.tickCount, kind: 'end', reason });
+      try { e.battle.forceEnd(reason); } catch { /* ignore */ }
     }
     if (e === cur) emitFrame(e, false);
     finished(e);
@@ -731,8 +761,12 @@ export function createBattleRunner(deps) {
     offs.push(net.on('b.start', (m) => { onStart(m).catch((err) => console.warn('[runner] b.start failed', err)); }));
     offs.push(net.on('b.pool', onPool));
     offs.push(net.on('b.end', onEnd));
-    // the session is back (reconnect / resume): results lost with the old socket go out again
-    offs.push(net.on('status', (st) => { if (st && st.status === 'online') redeliver(); }));
+    // a new session (reconnect / resume): the server's copy of every replay log is unknown — the reports start new
+    // segments — and the results that could not go out or were lost with the old socket go out again
+    offs.push(net.on('welcome', () => {
+      for (const e of entries.values()) e.segment = null;
+      redeliver();
+    }));
   }
   // phase changes: combat fields live until the next prep; leaving the match drops everything
   let lastPhase = null;
