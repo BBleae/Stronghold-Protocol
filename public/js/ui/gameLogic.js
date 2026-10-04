@@ -4,7 +4,8 @@
 // light legal tiles while dragging; the server stays authoritative and may still refuse a move.
 //
 //   Board = own normal field (GEO.FIELD rows 9–12, cols 2–10). Melee chess stand on `melee` deploy tiles
-//   (LOW, buildable ALL/MELEE); ranged chess on `melee ∪ rangedOnly` (stages.json → deployTiles.normal,
+//   (LOW, buildable ALL/MELEE) — a 钩索师 / 推击手 ("可以放置于远程位", chess.json `placement` 'all') on any deploy
+//   tile, the 高台 included (piecePosition 'ALL'); ranged chess on `melee ∪ rangedOnly` (stages.json → deployTiles.normal,
 //   derived from the tile legend when missing — the legend's `buildable` is the effective type: 深水区 tile_deepsea
 //   refuses deployment, PRTS 深水区 地形信息 "拒绝部署（待补充）", player report #3 after 0.1.0). Tokens follow their
 //   own `position`; a summon whose text reads "只能部署在召唤者攻击范围内" (tokens.json `ownerRange`: 伺夜's 狼群,
@@ -1025,10 +1026,18 @@ export function placementContext({ priv, stage, editable, field = 'normal', getC
   return { priv, pieces, boardAt, handAt, deploy, cap, count, field, editable: !!editable, getChess, getToken, getItem };
 }
 
-/** Deploy position ('MELEE'|'RANGED') of a chess/token piece, or null for items. */
+/**
+ * Deploy position ('MELEE'|'RANGED'|'ALL') of a chess/token piece, or null for items. A MELEE operator whose branch
+ * trait reads "可以放置于远程位" (钩索师, 推击手: chess.json `placement` 'all') is 'ALL': any deployable tile, the 高台
+ * included (server/match/board.js positionClass; GitHub issue #32 item 4, DESIGN §22.6 [ASSUMED]).
+ */
 export function piecePosition(ctx, piece) {
   if (!isObj(piece)) return null;
-  if (piece.kind === 'chess') return ctx.getChess(piece.id)?.position === 'MELEE' ? 'MELEE' : 'RANGED';
+  if (piece.kind === 'chess') {
+    const rec = ctx.getChess(piece.id);
+    if (rec?.placement === 'all') return 'ALL';
+    return rec?.position === 'MELEE' ? 'MELEE' : 'RANGED';
+  }
   // tokens: MELEE → ground only; RANGED / ALL → any deployable tile
   if (piece.kind === 'token') return ctx.getToken(piece.id)?.position === 'MELEE' ? 'MELEE' : 'RANGED';
   return null;
@@ -1421,6 +1430,122 @@ export function factionTypes(factions) {
 }
 
 // ---- snapshots / battle HUD ---------------------------------------------------------------------------------
+
+/**
+ * The own-field values of the battle HUD, shown when the render engine draws the frames they belong to (render/app.js
+ * renderLag(): the field is drawn 0.5 s behind its frames). `push(field, hud, lagMs, extra)` queues one frame's values:
+ * `hud` → `onHud` (killed / total / dp / boss), `extra.battle` → `onBattle` (a slice of the runner's state(): leaks,
+ * 联防 ×N, bond layers, done — see pickDrawn), `extra.units` → `onUnits` (the snapshot's unit tuples: the unit card's
+ * HP). Everything due is released together, in order: per channel the later value overrides the earlier one (hud and
+ * battle merge field by field), so a value is never held back behind a newer frame that was already drawn. Values of
+ * another field than the one on screen (`field()`, a watch switch) are dropped. At most one timer runs (each push used to
+ * arm another one: the timers multiplied for the whole battle). `setPaused(true)` (solo pause) holds every release and
+ * stops the queue's clock like the frozen picture: on resume the pending values wait out the rest of their lag.
+ * What the original relays on the server clock (teammates' rows, team LP, boss pool, settlement) is not queued here.
+ */
+export function createHudDelay({ onHud, onBattle = null, onUnits = null, field = () => null, now = () => performance.now(), setTimer = setTimeout, clearTimer = clearTimeout, cap = 400 }) {
+  const q = [];
+  let timer = null;
+  let pausedAt = null; // real time the pause began; `held` = real ms spent paused so far (the queue's clock skips them)
+  let held = 0;
+  const clock = () => (pausedAt != null ? pausedAt : now()) - held;
+  const drain = () => {
+    clearTimer(timer);
+    timer = null;
+    if (pausedAt != null) return;
+    const t = clock(), cur = field();
+    let h = null, b = null, u = null;
+    while (q.length && q[0].at <= t) {
+      const e = q.shift();
+      if (e.f !== cur) continue;
+      if (e.h) h = h ? { ...h, ...e.h } : e.h;
+      if (e.b) b = b ? { ...b, ...e.b } : e.b;
+      if (e.u) u = e.u;
+    }
+    if (u && onUnits) onUnits(u);
+    if (h) onHud(h);
+    if (b && onBattle) onBattle(b);
+    if (q.length) timer = setTimer(drain, Math.max(0, q[0].at - t));
+  };
+  const clear = () => { clearTimer(timer); timer = null; q.length = 0; };
+  const push = (f, h, lagMs = 0, extra = null) => {
+    const b = extra && extra.battle, u = extra && extra.units;
+    if (!h && !b && !u) return;
+    q.push({ at: clock() + Math.max(0, Number(lagMs) || 0), f, h: h || null, b: b || null, u: u || null });
+    if (q.length > cap) q.shift();
+    drain();
+  };
+  return {
+    push,
+    pushBattle: (f, b, lagMs = 0) => push(f, null, lagMs, { battle: b }),
+    setPaused(on) {
+      if ((pausedAt != null) === !!on) return;
+      if (on) { pausedAt = now(); clearTimer(timer); timer = null; }
+      else { held += now() - pausedAt; pausedAt = null; drain(); }
+    },
+    /** Drop what is queued (the field was entered again: its picture restarts at once). */
+    clear,
+    get size() { return q.length; },
+    dispose: clear,
+  };
+}
+
+/**
+ * The slice of the battle runner's state() the HUD shows with the drawn picture — leaks per field, 联防 uniteLeft per
+ * leaker, bond layers and `done` — plus the identity fields the gates read (battleId, fieldId, kind, own, watch). null
+ * for no battle on screen (nothing, or one still loading). The values are the runner's own copies (state() builds fresh
+ * objects per call) and are kept as they are.
+ * @param {any} s battleRunner.state()
+ */
+export function pickDrawn(s) {
+  if (!isObj(s) || typeof s.fieldId !== 'string' || !s.fieldId || typeof s.own !== 'boolean') return null;
+  return {
+    battleId: s.battleId ?? null, fieldId: s.fieldId, kind: s.kind ?? null, own: s.own, watch: !!s.watch, done: !!s.done,
+    leaks: isObj(s.leaks) ? s.leaks : {}, uniteLeft: isObj(s.uniteLeft) ? s.uniteLeft : null, bondLayers: isObj(s.bondLayers) ? s.bondLayers : null,
+  };
+}
+
+/** Whether two drawn slices differ in anything the HUD shows (leaks, 联防 counts, layers, done, which battle). */
+export function drawnChanged(a, b) {
+  if (a === b) return false;
+  if (!a || !b) return true;
+  return JSON.stringify(a) !== JSON.stringify(b);
+}
+
+/** Whether the capsule's numbers (killed / total) differ: a drawn kill goes out at once, DP alone keeps the HUD throttle. */
+export const hudChanged = (a, b) => !a || !b || a.killed !== b.killed || a.total !== b.total;
+
+/**
+ * The battle values the HUD shows: the released (drawn) slice of the battle `sim` is running, else the live state — a
+ * battle whose entry frame is drawn at once (the game screen seeds the slice then), or one the screen has not entered yet.
+ * @param {any} sim battleRunner.state() @param {any} drawn the last released pickDrawn slice
+ */
+export function drawnOf(sim, drawn) {
+  return drawn && isObj(sim) && drawn.battleId === (sim.battleId ?? null) && drawn.fieldId === sim.fieldId ? drawn : sim || null;
+}
+
+/**
+ * What the own battle on screen lets the HUD read. `sim` = battleRunner.state() (null without client-side combat), `ownFid`
+ * = the player's own field id. `onScreen`: the own normal battle is the one in view; `simDone`: the sim finished (gates the
+ * pause button: the server refuses a pause once the field ended); `drawnDone`: the drawn picture finished (the 作战结束
+ * pill, 前往查看); `serverOk`: the server's relayed numbers (pendingLp, status done, uniteLeft) may join in — not while the
+ * own picture still runs, they arrive up to 0.5 s ahead of it (the authority reports from the sim clock); afterwards they
+ * can only confirm or correct (a result the server replaced).
+ * @param {any} sim @param {any} drawn @param {string} ownFid
+ */
+export function ownFieldGate(sim, drawn, ownFid) {
+  const onScreen = isObj(sim) && sim.own === true && !sim.watch && sim.fieldId === ownFid;
+  const simDone = onScreen && !!sim.done;
+  const drawnDone = onScreen && !!drawnOf(sim, drawn)?.done;
+  return { onScreen, simDone, drawnDone, serverOk: !onScreen || drawnDone };
+}
+
+/** The units of a b.snap by id (tuples [id, x, y, hp, maxHp, …]): the unit card's drawn HP. */
+export function snapUnits(snap) {
+  const mp = new Map();
+  if (isObj(snap) && Array.isArray(snap.units)) for (const t of snap.units) if (Array.isArray(t)) mp.set(t[0], t);
+  return mp;
+}
 
 /**
  * HUD numbers from a b.snap: { killed, total, dp, boss } (boss: { hp, max } when present).

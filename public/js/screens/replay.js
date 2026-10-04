@@ -46,7 +46,7 @@ export function ReplayScreen() {
         if (stage) view.setStage(stage);
         view.enterBattle(meta);
         view.setCamera(meta.kind === 'hidden' ? 'boss' : meta.kind || 'normal', { rect: meta.rect });
-        view.raw?.setLocalFeed?.({ on: true, speed: 1 });
+        view.raw?.setLocalFeed?.({ on: true, speed: r.state().speed });
       },
       onFrame: (frame) => {
         view.pushEvents(frame.events);
@@ -69,8 +69,10 @@ export function ReplayScreen() {
   }, [view, loaded]);
   const battle = loaded?.replay.battles[selected];
   useEffect(() => {
-    if (runner && battle?.complete) runner.select(battle);
-  }, [runner, battle]);
+    if (!runner || !battle?.complete) return;
+    view?.raw?.setPaused?.(false);
+    runner.select(battle);
+  }, [runner, battle, view]);
   return html`<div class="screen replay-screen">
     <header class="topbar"><div class="topbar__left"><${Button} variant="ghost" icon="chevronLeft" onClick=${() => store.patch('ui', { accountPage: 'history' })}>返回记录<//></div>
       <div class="topbar__center"><${MicroLabel} tone="mint">SIMULATION REPLAY<//><h1 class="topbar__title">对局回放</h1></div></header>
@@ -85,22 +87,37 @@ export function ReplayScreen() {
     </div>${error ? html`<${Panel}><p role="alert">${error}</p><//>` : !loaded ? html`<${Spinner}/>` : !loaded.replay.battles.length ? html`<p class="t-lo">本局没有进入战斗阶段</p>` : null}
     ${battle && !battle.complete ? html`<p class="t-lo" role="status">此战场录制不完整，无法播放。结算结果仍保存在对局记录中。</p>` : null}
     <div ref=${host} class="replay-field" style=${battle?.complete ? '' : 'visibility:hidden'}></div>
-    <${ReplayControls} runner=${runner} battle=${battle}/></main></div>`;
+    <${ReplayControls} runner=${runner} battle=${battle} view=${view}/></main></div>`;
 }
 
 /**
  * Play / restart / speed and the clock of the battle on screen. It follows the replay clock by itself
- * (runner.subscribe: a player's action, each whole replay second), so playing re-renders this bar only.
+ * (runner.subscribe: a player's action, each whole replay second), so playing re-renders this bar only. The battle
+ * picture's own clock (its animations and effects: render/app.js setPaused, setLocalFeed) follows the player's
+ * choices: it stands still after 暂停 and runs at the replay's speed.
  */
-function ReplayControls({ runner, battle }) {
+function ReplayControls({ runner, battle, view }) {
   const [clock, setClock] = useState(null);
   useEffect(() => runner?.subscribe(setClock), [runner]);
   // an incomplete battle is never selected: the runner still holds the previous one
   const playable = !!(runner && clock && battle?.complete);
+  const playPause = () => {
+    view?.raw?.setPaused?.(clock.playing);
+    if (clock.playing) runner.pause();
+    else runner.play();
+  };
+  const restart = () => {
+    view?.raw?.setPaused?.(false);
+    runner.select(battle);
+  };
+  const setSpeed = (speed) => {
+    runner?.setSpeed(speed);
+    view?.raw?.setLocalFeed?.({ on: true, speed });
+  };
   return html`<div class="replay-toolbar">
-    <${Button} disabled=${!playable} onClick=${() => (clock.playing ? runner.pause() : runner.play())}>${playable && clock.playing ? '暂停' : '播放'}<//>
-    <${Button} variant="ghost" disabled=${!playable} onClick=${() => runner.select(battle)}>从头播放<//>
-    ${[0.5, 1, 2, 4].map((speed) => html`<${Button} size="sm" variant=${clock?.speed === speed ? 'primary' : 'ghost'} onClick=${() => runner?.setSpeed(speed)}>${speed}×<//>`)}
+    <${Button} disabled=${!playable} onClick=${playPause}>${playable && clock.playing ? '暂停' : '播放'}<//>
+    <${Button} variant="ghost" disabled=${!playable} onClick=${restart}>从头播放<//>
+    ${[0.5, 1, 2, 4].map((speed) => html`<${Button} size="sm" variant=${clock?.speed === speed ? 'primary' : 'ghost'} onClick=${() => setSpeed(speed)}>${speed}×<//>`)}
     ${playable ? html`<span class="num">${clock.seconds} / ${clock.duration} 秒</span>` : null}
   </div>`;
 }

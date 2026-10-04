@@ -186,7 +186,7 @@ test('a hidden-tab backlog of status toggles beyond HELD_MAX is compacted: no re
   r.advance(1000 / 60);
   assert.equal(r.feed.fields.length, 1, 'no re-entry');
   const first = all(r.feed);
-  assert.deepEqual(first.filter((x) => x[0] === 'status' && x[2] === 'stun'), [['status', tr.id, 'stun', 1]], 'the last toggle only');
+  assert.deepEqual(first.filter((x) => x[0] === 'status' && x[2] === 'stun'), [['status', tr.id, 'stun', 1, 'late']], 'the last toggle only (a status that is on comes marked late: runner.js handOver)');
   assert.deepEqual(formsOf(first, tr.id), ['translator_youling'], 'the form fx kept');
   r.runner.dispose();
 });
@@ -234,7 +234,7 @@ test('a hidden-tab backlog still beyond HELD_MAX after compaction: the first fra
 
 test('screens/game.js buffers the form fx with the state-bearing events it replays when a field is entered late', () => {
   const src = readFileSync(path.join(ROOT, 'public/js/screens/game.js'), 'utf8');
-  assert.match(src, /const keepEarly = \(e\) => Array\.isArray\(e\) && \(STATE_EV\.has\(e\[0\]\) \|\| fxForm\(e\) !== undefined\);/);
+  assert.match(src, /const keepEarly = \(e\) => Array\.isArray\(e\) && \(STATE_EV\.has\(e\[0\]\) \|\| fxForm\(e\) !== undefined \|\| isLastingFxEvent\(e\)\);/);
   assert.match(src, /for \(const e of msg\.ev\) if \(keepEarly\(e\)\) buf\.push\(e\);/);
   // a new m.field for the field on screen buffers its frames until the enter effect re-enters it (enterBattle resets)
   assert.match(src, /if \(msg\.fieldId === lastFieldRef\.current\) reentryRef\.current = msg\.fieldId;/);

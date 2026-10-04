@@ -1,6 +1,6 @@
 {
-  "name": "stronghold-protocol-covenant",
-  "version": "0.1.1",
+  "name": "stronghold-protocol-alliance",
+  "version": "0.1.2",
   "private": true,
   "description": "明日方舟「卫戍协议：盟约」非官方同人联机网页复刻（1–4 人合作，Node.js 服务器 + 浏览器客户端）",
   "license": "GPL-3.0-or-later",
@@ -55,6 +55,7 @@
     "ws": "^8.22.0"
   },
   "devDependencies": {
+    "@pixi-spine/runtime-3.8": "^4.0.6",
     "esbuild": "0.28.2",
     "miniflare": "^5.20261001.0-alpha",
     "puppeteer-core": "^25.12.0",

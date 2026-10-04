@@ -68,7 +68,7 @@ const HELP = `Usage: node tools/fetch-assets.mjs [options]
 /**
  * Parse CLI flags.
  * @param {string[]} argv
- * @returns {{concurrency:number, force:boolean, offline:boolean, dryRun:boolean, refreshIndex:boolean, prune:boolean, allowShrink:boolean, localSpines:boolean, voice?:string[], help:boolean}}
+ * @returns {{concurrency:number, force:boolean, offline:boolean, dryRun:boolean, refreshIndex:boolean, prune:boolean, allowShrink:boolean, localSpines:boolean, help:boolean}}
  */
 export function parseArgs(argv) {
   const o = { concurrency: 16, force: false, offline: false, dryRun: false, refreshIndex: false, prune: false, allowShrink: false, localSpines: false, help: false };
@@ -80,9 +80,9 @@ export function parseArgs(argv) {
     else if (k === '--dry-run') o.dryRun = true;
     else if (k === '--refresh-index') o.refreshIndex = true;
     else if (k === '--prune') o.prune = true;
+    else if (k === '--voice') o.voice = parseVoiceLangs(v);
     else if (k === '--allow-shrink') o.allowShrink = true;
     else if (k === '--local-spines') o.localSpines = true;
-    else if (k === '--voice') o.voice = parseVoiceLangs(v);
     else if (k === '--help' || k === '-h') o.help = true;
     else throw new Error(`unknown option ${a}\n${HELP}`);
   }

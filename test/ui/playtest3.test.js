@@ -78,7 +78,8 @@ describe('2: the own LP drops live while the battle runs', () => {
     assert.equal(ownLeaks(4, undefined), 4);
     for (const [a, b] of [[undefined, undefined], [NaN, null], [-2, 'x']]) assert.equal(ownLeaks(a, b), 0);
     // the game screen feeds liveLp with it
-    assert.match(read('public/js/screens/game.js'), /leaks: ownLeaks\(localLeaks, meP\?\.pendingLp\)/);
+    assert.match(read('public/js/screens/game.js'), /leaks: ownLeaks\(localLeaks, gate\.serverOk \? meP\?\.pendingLp : undefined\)/, 'the server\'s count joins once the own picture finished');
+    assert.match(read('public/js/screens/game.js'), /const localLeaks = drawnBattle && drawnBattle\.leaks \? drawnBattle\.leaks\[ownFieldId\(myId\)\] : undefined;/, 'the local count is the drawn one (test/ui/hud-drawn-clock.test.js)');
   });
 
   /** Feed liveLp a sequence of states, keeping its base like the game screen (lpBaseRef). */

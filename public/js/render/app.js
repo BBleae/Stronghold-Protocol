@@ -20,7 +20,9 @@
 //                                               mid-battle starts in the current model form)
 //   view.pushSnapshot(snap); view.pushEvents(ev | { ev, gt })  b.snap / b.ev wire frames as received (game time in
 //                                               `gt`; a numeric `t` is accepted for raw Battle snapshots / recordings)
-//                                               — 100 ms interpolation buffer; b.snap `down` keeps knocked-out
+//                                               — drawn LOOK_AHEAD (1 game s) behind them, a look-ahead for attack
+//                                               swings (render/spine.js); emits 'battleEvents' as they are drawn
+//                                               (the sound follows); b.snap `down` keeps knocked-out
 //                                               operators on the field under a redeploy ring and `elem` draws the
 //                                               element gauges (user playtest #4 items 8 / 9, render/units.js); a
 //                                               'die' with reason FORCED_EXIT (an operator entering 联防 knocked out,
@@ -28,7 +30,10 @@
 //                                               fx with a `form` (shared/protocol.js fxForm) switches the enemy's
 //                                               model to that clip set (render/units.js FORMS)
 //   view.setLocalFeed({ on, speed })            frames come from the local sim every frame (client-side combat):
-//                                               ~2-frame buffer at the battle's game speed
+//                                               the same LOOK_AHEAD, at the battle's game speed
+//   view.setPaused(on)                          solo pause: the battle picture (units, effects, tiles, the render clock)
+//                                               stands still with the sim; the camera and the UI keep running
+//   view.renderLag()                            real seconds the battle is drawn behind its frames (the HUD follows)
 //   view.highlightTiles(tiles, style)           [[r,c]] | [{row,col}]; style 'legal'|'illegal'|'range'|'rangeStand'|
 //                                               'hover'|'target'|{color,fill,line,group}; highlightTiles(null) clears all
 //   view.on(name, fn) → unsubscribe ; view.off(name, fn)
@@ -118,12 +123,19 @@ import { layoutPen, penSignature } from './pen.js';
 import { IDENTITY, bossPrepField, tilesToDisp } from './prepfield.js';
 import { pickOnTile, pickBattle, hitRectAt } from './pick.js';
 import { promotionsOf } from './promote.js';
+import { createLoadGovernor, maxAnimInterval } from './loadlevel.js';
 
 const VENDOR = { pixi: '/vendor/pixi.min.js', spine: '/vendor/pixi-spine.js' };
 const PIECE_DIRS = new Set(['UP', 'RIGHT', 'DOWN', 'LEFT']);
 /** Stored facing of a prep piece (m.private board pieces carry `dir`; bench pieces have none ⇒ undefined). */
 const pieceDirOf = (piece) => (typeof piece?.dir === 'string' && PIECE_DIRS.has(piece.dir.toUpperCase()) ? piece.dir.toUpperCase() : undefined);
 const CAMERA_MS = 750;
+/**
+ * Game seconds the battle is drawn behind the simulation (render/interp.js lookAhead): enough for the whole wind-up of
+ * 99% of the attack clips and for Texas' Attack_Start + strike (0.97 s). In GAME time so it holds at every battle /
+ * replay speed; at the live 2× it is 0.5 s real (renderLag()).
+ */
+export const LOOK_AHEAD = 1.0;
 /** Camera pan to / from the enemy preview pen (configBlackBoard move_time 0.25). */
 export const PEN_CAMERA_MS = 250;
 /** Recovery of a lost 3D board context: delays of the rebuild attempts (ms) and how soon a new loss counts as failure. */
@@ -258,8 +270,9 @@ export const showsDeathFx = (info, consumed = false, reason = null) => !consumed
 
 /**
  * The views' info of a battle unit from its UnitInfo (m.field / fieldMeta `units`, a 'spawn' event; snapshot.js
- * unitInfo), sanitised; null for a malformed entry. `form` — an enemy's current model form (content/enemies.js setForm:
- * 转译基底·α's forms, a 逐火 余烬, a leader after its 重生, 掠海漂移体's crawl) — makes a view built mid-battle (a teammate's
+ * unitInfo), sanitised; null for a malformed entry. `form` — the unit's current model form (an enemy's, content/enemies.js
+ * setForm: 转译基底·α's forms, a 逐火 余烬, a leader after its 重生, 掠海漂移体's crawl; a 傀儡师 fighting as its 替身, sim
+ * professions.js) — makes a view built mid-battle (a teammate's
  * field watched later, 联防 observers, a reconnect, server-run watchers: no fx of the change is replayed) start on that
  * clip set (render/units.js FORMS); it used to be dropped here, so such views drew the first form (player report #5).
  */
@@ -273,7 +286,7 @@ export function renderInfo(u) {
     // deploy direction of allies (UnitInfo.dir, DESIGN §3): the model (Back for UP, mirrored for LEFT) and the
     // ground wedge follow it; absent = unknown (legacy frames) → derived from `facing`, no wedge
     dir: typeof u.dir === 'string' ? u.dir : undefined,
-    // an enemy's current model form (UnitInfo.form): the view starts in it (UnitView reads info.form)
+    // the unit's current model form (UnitInfo.form: an enemy's mode, a 傀儡师's 替身): the view starts in it (UnitView reads info.form)
     form: typeof u.form === 'string' ? u.form : undefined,
     // DESIGN §16 loadout of an ally (UnitInfo.skillIndex / moduleId): the Spine actor plays that skill's clip, and a
     // tap hands them to the detail card (a teammate's unit shows its owner's skill / module)
@@ -500,7 +513,12 @@ export async function createFieldView(host, options = {}) {
   // dead units for DIE_ANIM_TIME), which must not bring the view back; a spawn / deploy / live sample clears it
   const gone = new Set();
   const woundUp = new WeakSet(); // atk event tuples whose attack wind-up already started
-  const interp = new SnapshotBuffer({ delay: 0.1, rate: 2 });
+  // The battle is drawn LOOK_AHEAD game seconds behind the simulation (local or networked): the look-ahead lets every
+  // operator play its attack as the original does — the whole wind-up (begin clip + the strike frame: up to ~1 game s,
+  // 2× speed) before the hit the sim already resolved — and start a swing only when an attack is really coming (user
+  // report: swings cut in mid-clip, swings at nothing). Sound (battleEvents) and the HUD follow the same clock.
+  const interp = new SnapshotBuffer({ lookAhead: LOOK_AHEAD, rate: 2 });
+  let battlePaused = false;   // solo pause (view.setPaused): the battle picture stands still, the camera and the UI do not
   const sample = new Map();
   const meleePending = new Map(); // target id → { src, t }
   const consumedIds = new Set();  // battle ids used up by their own effect (fx `consumed`): no death particles
@@ -538,6 +556,8 @@ export async function createFieldView(host, options = {}) {
     clipAllowed: () => clipAllowed,
     viewport: () => vp,
     loadLevel: () => loadLevel,
+    // the slowest a Spine model may animate (frames between skeleton updates): ~20 updates a second (render/loadlevel.js)
+    maxAnimInterval: () => maxAnimInterval(governor.periodMs),
     surfaceLayer: (row) => tiles.surfaceLayer(row),
   };
   const tiles = new TileField({ ground: layers.ground, overlay: layers.overlay, props: layers.units, anim: layers.anim });
@@ -547,7 +567,9 @@ export async function createFieldView(host, options = {}) {
     loadLevel: () => loadLevel,
     fieldRect: () => (mode === 'battle' && battleMeta ? battleMeta.rect : null),
     subProfOf: (defId) => data.chess(defId)?.subProfessionId || null,
-    view: (id) => views.get(id) || null,
+    // a unit the field meta announced but no frame has drawn yet (a field entered mid-battle: its hand-over events come
+    // before the first snapshot builds the views) gets its view now, so its statuses / lasting fx are not lost
+    view: (id) => views.get(id) || battleView(id),
     screenSize: size,
     fieldTop: () => {
       const R = camRect();
@@ -1412,30 +1434,45 @@ export async function createFieldView(host, options = {}) {
     return interp.pushEvents(list, performance.now() / 1000, t);
   }
 
-  // attack wind-ups: an 'atk' still queued in the buffer starts its Spine clip early enough for the strike frame to
-  // land when the event is rendered (the look-ahead is the interpolation delay, ~0.2 game s)
+  // attack wind-ups: an 'atk' still queued in the buffer (up to the scan window ahead of the render clock, which trails
+  // the newest snapshot by LOOK_AHEAD game s) starts its Spine clip early enough for the strike frame to land when the
+  // event is rendered — asked every frame until a swing is started for that very attack (the event's time is its
+  // identity). Every unit also learns how far ahead its next attack is (Infinity: none in the look-ahead) and how far the
+  // look-ahead reaches (newest − render clock): an attack loop ends when no attack follows (render/spine.js).
   function windUpAttacks(renderT) {
     upcomingT = renderT;
-    interp.forEachUpcoming(renderT, renderT + 1.5, onUpcoming);
+    nextAtk.clear();
+    interp.forEachUpcoming(renderT, renderT + Math.max(1.5, LOOK_AHEAD + 0.5), onUpcoming);
+    const horizon = Number.isFinite(interp.newestT) ? Math.max(0, interp.newestT - renderT) : 0;
+    for (const [id, v] of views) if (v.setUpcoming) v.setUpcoming(nextAtk.get(id) ?? Infinity, horizon);
   }
   let upcomingT = 0;
+  const nextAtk = new Map(); // unit id → game s to its next queued attack
   function onUpcoming(e, t) {
-    if (e[0] !== 'atk' || woundUp.has(e) || CHAIN_KINDS.has(e[3])) return;
+    if (e[0] !== 'atk' || CHAIN_KINDS.has(e[3])) return;
+    if (!nextAtk.has(e[1])) nextAtk.set(e[1], t - upcomingT);
+    if (woundUp.has(e)) return;
     const v = views.get(e[1]);
     if (!v || !v.windUp) return;
-    if (v.windUp(t - upcomingT, e[3])) woundUp.add(e);
+    if (v.windUp(t - upcomingT, views.get(e[2]) || null, t, e[3])) woundUp.add(e);
   }
 
-  const EVS = [];
+  const EVS = [], EVT = [], HEARD = [];
   /** State events handed out more than 1.5 game s late (a stall, a hidden tab, a field entered late) → how late. */
   const LATE = new Map();
   function processEvents(renderT) {
-    EVS.length = 0;
+    EVS.length = 0; EVT.length = 0;
     LATE.clear();
-    interp.takeEvents(renderT, EVS, renderT - 1.5, LATE);
+    interp.takeEvents(renderT, EVS, renderT - 1.5, EVT, LATE);
     for (const e of EVS) {
       try { handleEvent(e, renderT); } catch (err) { if (!handleEvent.warned) { handleEvent.warned = true; console.warn('[render] event failed', e, err); } }
     }
+    // the events as they are shown, for the sound (screens/game.js → audio): stale ones (a field entered mid-battle
+    // replays its state events) are silent, spawns always pass (the unit map)
+    if (!EVS.length || !listeners.get('battleEvents')?.size) return;
+    HEARD.length = 0;
+    for (let i = 0; i < EVS.length; i++) if (EVS[i][0] === 'spawn' || EVT[i] >= renderT - 0.6) HEARD.push(EVS[i]);
+    if (HEARD.length) emit('battleEvents', HEARD.slice());
   }
 
   function handleEvent(e, now) {
@@ -1445,7 +1482,7 @@ export async function createFieldView(host, options = {}) {
         if (!info) break;
         gone.delete(info.id);
         const v = battleView(info.id);
-        if (v && info.side === 'enemy' && renderT0Battle != null && now - renderT0Battle > 0.2) fx.ring(info.x, info.y, 0, 0.1, 0.7, 0xff5a4a, 0.4);
+        if (v && info.side === 'enemy' && !e[2] && renderT0Battle != null && now - renderT0Battle > 0.2) fx.ring(info.x, info.y, 0, 0.1, 0.7, 0xff5a4a, 0.4);
         break;
       }
       case 'deploy': {
@@ -1474,7 +1511,7 @@ export async function createFieldView(host, options = {}) {
         break;
       }
       case 'heal': { const v = views.get(e[1]); if (v) fx.heal(v, Number(e[2]) || 0); break; }
-      case 'skill': { const v = views.get(e[1]); if (v) { v.setSkill?.(!!e[2]); fx.skill(v, !!e[2]); } break; }
+      case 'skill': { const v = views.get(e[1]) || battleView(e[1]); if (v) { v.setSkill?.(!!e[2]); fx.skill(v, !!e[2]); } break; }
       case 'die': {
         const v = views.get(e[1]);
         const used = consumedIds.delete(e[1]);
@@ -1491,7 +1528,7 @@ export async function createFieldView(host, options = {}) {
         fx.leak();
         break;
       }
-      case 'status': { const v = views.get(e[1]); if (v) v.onStatus?.(e[2], !!e[3]); break; }
+      case 'status': { const v = views.get(e[1]) || battleView(e[1]); if (v) { v.onStatus?.(e[2], !!e[3]); fx.status(v, e[2], !!e[3], e[4] === 'late'); } break; }
       case 'fx': {
         if (e[4] && typeof e[4] === 'object' && e[4].consumed && e[4].id != null) {
           consumedIds.add(e[4].id);
@@ -1560,7 +1597,8 @@ export async function createFieldView(host, options = {}) {
       }
       if (!v) v = battleView(id) || createUnknown(id, s);
       if (!v) continue;
-      if (!v._seen) { v._seen = true; v.fadeIn = 0; }
+      // (first drawn while the battle picture is paused: shown at once — a fade needs the frozen clock)
+      if (!v._seen) { v._seen = true; v.fadeIn = battlePaused ? 1 : 0; }
       if (v.alive || v.info?.kind === 'device') v.sync(s, renderT);
       else if (v.dying > 0) { v.x = s.x; v.y = s.y; }
       else if (s.anim !== ANIM.DIE && s.hp > 0) { v.revive?.(); v.sync(s, renderT); }
@@ -1616,16 +1654,15 @@ export async function createFieldView(host, options = {}) {
   let impInterval = 0;
   let vp = { width: s0.width, height: s0.height };   // viewport (CSS px) of this frame: unit culling
   let culledCount = 0;
-  // Adaptive load level 0–3: a device that cannot hold the frame rate with the current work switches crowds to
-  // impostors earlier and animates small / far units at a lower rate (units.js); it steps back after a calm spell.
-  let loadLevel = 0, slowFor = 0, fastFor = 0;
+  // Adaptive load level 0–3 (render/loadlevel.js): measured against the display's own frame period — estimated from
+  // the animation-frame timestamps (the ticker's elapsedMS, vsync aligned; the callback start time jitters) — or a
+  // frame's own CPU time.
+  let loadLevel = 0;
+  const governor = createLoadGovernor({ onChange: (lvl) => { loadLevel = lvl; impInterval = pickImpostorInterval(); } });
   function adaptLoad(dtRaw) {
     if (!(dtRaw > 0) || dtRaw > 0.25 || globalThis.document?.hidden) return;
-    const busy = views.size + penViews.size > 8;
-    if (frameMs > 19.5 && busy) { slowFor += dtRaw; fastFor = 0; }
-    else if (frameMs < 17.6) { fastFor += dtRaw; slowFor = 0; }
-    if (slowFor > 1 && loadLevel < 3) { loadLevel++; slowFor = 0; fastFor = 0; impInterval = pickImpostorInterval(); }
-    else if (loadLevel > 0 && (fastFor > 6 * loadLevel || !busy && fastFor > 2)) { loadLevel--; fastFor = 0; impInterval = pickImpostorInterval(); }
+    const tickMs = Number(app.ticker?.elapsedMS);
+    governor.step(dtRaw, tickMs > 0 ? tickMs : dtRaw * 1000, frameMs, cpuMs, views.size + penViews.size > 8);
   }
   // Crowded fields render skeletons through staggered RenderTexture impostors (units.js): the interval grows with
   // the number of Spine units so the per-frame vertex work stays roughly constant (hysteresis: re-evaluated
@@ -1663,6 +1700,7 @@ export async function createFieldView(host, options = {}) {
     const dtRaw = (now - lastNow) / 1000;
     lastNow = now;
     const dt = Math.min(0.1, Math.max(0, dtRaw));
+    const bdt = battlePaused && mode === 'battle' ? 0 : dt; // the battle's frame time (units, effects, tiles): 0 while paused
     if (dtRaw < 0.25) frameMs = frameMs * 0.9 + dtRaw * 1000 * 0.1;
     fps = 1000 / Math.max(1, frameMs);
     adaptLoad(dtRaw);
@@ -1701,12 +1739,12 @@ export async function createFieldView(host, options = {}) {
           v.x = tw.fx + (tw.tx - tw.fx) * k; v.y = tw.fy + (tw.ty - tw.fy) * k; v.z = tw.fz + (tw.tz - tw.fz) * k;
           if (tw.t >= 1) v._tween = null;
         }
-        v.update(dt, cam, clock);
+        v.update(bdt, cam, clock);
         if (v.remove) { dropView(key); if (mode === 'battle') gone.add(key); }
       }
       if (!penHidden) for (const v of penViews.values()) v.update(dt, cam, clock);
-      tiles.update(dt);
-      fx.update(dt);
+      tiles.update(bdt);
+      fx.update(bdt);
       impostors.flush();
     } catch (err) {
       if (!frame.warned) { frame.warned = true; console.error('[render] frame failed', err); }
@@ -1778,14 +1816,29 @@ export async function createFieldView(host, options = {}) {
     pushSnapshot,
     pushEvents,
     /**
+     * Real seconds the battle is drawn behind the frames it receives (the HUD and sound follow it): LOOK_AHEAD game s at
+     * the current game speed, 0.5 s at the live 2×.
+     */
+    renderLag() { return interp.delayReal; },
+    /**
+     * Solo pause (screens/game.js m.public.paused): freezes the battle picture — the render clock, unit animation,
+     * effects and tiles — and resumes it where it stood, like the original's pause (sim and picture stop together). It
+     * must not look like a stalled stream to the render clock (render/interp.js setPaused). The camera, the backdrop
+     * and the prep / pen views keep running. Survives enterBattle().
+     */
+    setPaused(on) {
+      battlePaused = !!on;
+      interp.setPaused(battlePaused, performance.now() / 1000);
+      return battlePaused;
+    },
+    /**
      * Client-side combat glue (DESIGN §14): battle frames come from the local simulation (public/js/battle/runner.js)
-     * every animation frame instead of the network, so the render clock trails them by ~2 frames (not the 100 ms
-     * jitter buffer) and runs at the battle's game speed. `{ on: false }` restores the network settings.
+     * every animation frame instead of the network; the render clock trails them by LOOK_AHEAD game s like a networked
+     * feed (the attack look-ahead) and runs at the battle's game speed. `{ on: false }` restores the network settings.
      */
     setLocalFeed(o) {
       const on = !!(o && o.on);
       const speed = Number(o && o.speed) > 0 ? Number(o.speed) : 2;
-      interp.delay = on ? 0.034 : 0.1;
       interp.defaultRate = on ? Math.min(20, speed) : 2;
       interp.maxRate = on ? Math.max(8, speed * 1.5) : 8;
       return true;
@@ -1921,6 +1974,7 @@ export async function createFieldView(host, options = {}) {
     /** Dev hooks (demo / tests). */
     debug: {
       app, get cam() { return cam; }, get board3d() { return board3d; }, tiles, views, penViews, interp, fx, ctx, drag, get camKind() { return viewKind(camKind, camOpts); },
+      get lag() { return interp.lag; }, lookAhead: LOOK_AHEAD, get paused() { return battlePaused; },
       promotions,
       // picking (render/pick.js) at canvas px: the prep piece / battle view / pen view there, the ground tile under it
       pick: { pieceAt, battleUnitAt, penUnitAt, groundTile },

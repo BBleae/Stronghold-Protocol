@@ -397,8 +397,11 @@ test(`${nm('enemy_1158_divman')}: in deep water ATK +Swim.atk and stealth; immun
   h.run(0.5);
   approx(e.s.atk, dry.s.atk * (1 + tb('enemy_1158_divman', 'Swim.atk')));
   assert.ok(e.s.flags.stealth && !dry.s.flags.stealth);
-  h.b.dealDamage(null, e, { amount: 40, type: 'true', tags: ['terrain'] });
+  // 免疫水蚀: devices.js' deep-water tick (tag 'deepsea'); 环境伤害 ('terrain', e.g. 活性源石) still lands
+  h.b.dealDamage(null, e, { amount: 40, type: 'true', canDodge: false, sourceless: true, noSp: true, tags: ['dot', 'periodic', 'deepsea'] });
   assert.equal(e.hp, e.s.maxHp);
+  h.b.dealDamage(null, e, { amount: 40, type: 'true', tags: ['terrain'] });
+  assert.equal(e.hp, e.s.maxHp - 40);
 });
 
 for (const key of ['enemy_1160_hvyslr', 'enemy_1160_hvyslr_2']) {
@@ -1990,7 +1993,7 @@ test('假想敌：胄: arts ray on a random target in range; <20 % pool: damage 
   approx(e.s.artsTakenMul, tb('enemy_9013_acstmk', '1.damage_scale'));
   assert.equal(e.s.trueTakenMul, 1);
   h.run(skb('enemy_9013_acstmk', '1').initCooldown - 9);
-  assert.equal(h.eventsOf('fx').filter((f) => f[1] === 'shell').length, 1);
+  assert.equal(h.eventsOf('fx').filter((f) => f[1] === 'helmShell').length, 1);
   assert.equal(alive(h, 'enemy_9016_acstmr').length, 1);
 });
 
@@ -2107,7 +2110,7 @@ for (const key of ['enemy_9013_acstmk', 'enemy_9013_acstmk_2']) {
     const e = put(h, key, [3, 12], { tag: 'boss' });
     e.profile.noAttack = true;
     h.run(skb(key, '1').initCooldown + 0.1);
-    const f = h.eventsOf('fx').find((x) => x[1] === 'shell');
+    const f = h.eventsOf('fx').find((x) => x[1] === 'helmShell');
     assert.ok(f);
     assert.equal(f[4].tx, h.unit('t_wall2').tileC, 'the high-ATK operator is out of range (col 2 vs 12, range 8)');
   });

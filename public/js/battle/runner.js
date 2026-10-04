@@ -46,6 +46,11 @@
 // { [playerId]: { [bondId]: n } } (every battle of the round: the own one, the teammates' replicas) whenever one grows;
 // the bond strip of the player on screen — the own one, or a watched teammate's — shows them live (ui/watchBonds.js).
 //
+// What such a backlog / catch-up frame hands over (keepsState, handOver) also keeps 影哨 placed / recalled, never a skill
+// START (the snapshot's SKILL flag turns a running skill on; replayed, it flashed its activation and played its voice long
+// after), and marks a status that is on and a 影哨 event as late: the view makes the lasting look the status names
+// (render/fxsustain.js) and no stale one-shot (review of the animation / effects PR, point 8).
+//
 // The sim (≈ 0.2–1 ms per tick) runs on the main thread: one battle at a time is stepped for display (plus an
 // authoritative one if it is not the one on screen). stats() exposes the measured cost.
 //
@@ -84,7 +89,19 @@ const STATE_EV = new Set(['spawn', 'die', 'deploy', 'status', 'skill', 'leak']);
  * The b.ev tuples a catch-up frame or the hidden-tab backlog keeps: the state-bearing kinds, and every fx that sets an
  * enemy's model form (shared/protocol.js fxForm — dropped, the view kept the old model: player report #5 after 0.1.0).
  */
-export const keepsState = (x) => Array.isArray(x) && (STATE_EV.has(x[0]) || fxForm(x) !== undefined);
+export const keepsState = (x) => Array.isArray(x) && (STATE_EV.has(x[0]) || fxForm(x) !== undefined || isSentryFx(x));
+/** 伊内丝's 影哨 placed / recalled: kept with the state too — lost, it stays missing / drawn. */
+export const isSentryFx = (x) => Array.isArray(x) && x[0] === 'fx' && (x[1] === 'sentry' || x[1] === 'sentryRecall') && !!x[4] && typeof x[4] === 'object' && x[4].id != null;
+/**
+ * A kept tuple as the view gets it after the span it did not see (the hidden-tab backlog, a catch-up frame): a status
+ * that is on marked 'late' — its lasting look is made from it (render/fxsustain.js status), the fx that came with it
+ * being one-shot and not kept —, a 影哨 event marked `late` — its record only, no stale summon pillar / recall streak.
+ */
+export function handOver(x) {
+  if (x[0] === 'status' && x[3]) return [x[0], x[1], x[2], x[3], 'late'];
+  if (isSentryFx(x)) return [x[0], x[1], x[2], x[3], { ...x[4], late: true }];
+  return x;
+}
 /**
  * Hidden-tab backlog cap (tuples) of the battle on screen. Past it the backlog is compacted (compactHeld: only the last
  * 'status' per unit and status, the last 'skill' per unit — what the view ends up showing); only a backlog still past it
@@ -429,11 +446,11 @@ export function createBattleRunner(deps) {
     for (const x of held) {
       const at = heldAt.get(x) ?? gt;
       if (!run || run.gt !== at) { if (run) emit('ev', run); run = { t: 'b.ev', fieldId: e.fieldId, gt: at, ev: [] }; }
-      run.ev.push(x);
+      run.ev.push(handOver(x));
     }
     if (run) emit('ev', run);
     for (const s of drainSlices(e, gt)) {
-      const list = catchingUp ? s.ev.filter(keepsState) : s.ev;
+      const list = catchingUp ? s.ev.filter(keepsState).map(handOver) : s.ev;
       if (list.length) emit('ev', { t: 'b.ev', fieldId: e.fieldId, gt: s.gt, ev: list });
     }
     try { emit('snap', frameOf(e)); } catch (err) { console.warn('[runner] snapshot failed', err); }
@@ -447,7 +464,9 @@ export function createBattleRunner(deps) {
   function hold(e) {
     const batches = drainSlices(e, Number(e.battle.time) || 0);
     if (e !== cur || e.stale) return;
-    for (const s of batches) for (const x of s.ev) if (keepsState(x)) { e.held.push(x); heldAt.set(x, s.gt); }
+    // (a skill START is not kept: one that still runs comes back with the snapshot's SKILL flag — replayed, it would
+    // flash its activation and play its voice long after it began; its END is)
+    for (const s of batches) for (const x of s.ev) if (keepsState(x) && !(x[0] === 'skill' && x[2])) { e.held.push(x); heldAt.set(x, s.gt); }
     if (e.held.length > HELD_MAX) {
       e.held = compactHeld(e.held);
       if (e.held.length > HELD_MAX) { e.held = []; e.stale = true; }
