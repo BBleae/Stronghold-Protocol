@@ -92,7 +92,7 @@ import {
   snapHud, activeBubbles, shortcutFor, shortcutBlocked, closesOnFieldPress, phaseTotalSeconds, homeFieldId, ownFieldId, normalizeSp, sortedPlayers,
   countdownState, shopBlockReason, stageOverrides, effectiveStage, watchTarget, dropFailureReason,
   previewEnemyKey, prepCamera, prepCameraFor, foldCamera, deployFieldOf, panelSide, panelSlots, bondPopupPlace, chessLoadout, unitLoadout,
-  mergeTarget, modeOffBonds, pieceCharId, voiceLeader,
+  mergeTarget, modeOffBonds, pieceCharId,
 } from '../ui/gameLogic.js';
 import { toast } from '../ui/toasts.js';
 import { BriefingScreen } from './briefing.js';
@@ -547,8 +547,6 @@ function MatchScreen() {
     toast('当前设备无法启用 3D / WebGL 渲染，已切换为简化视图（功能不受影响）', 'info', { ttl: 5000 });
   }, [viewKind]);
 
-  useEffect(() => () => audio.battleEnd(), []);
-
   // phase changes: banners, sounds, resets
   const phaseKey = `${phase}:${pub?.round}`;
   const prevPhase = useRef(null);
@@ -556,15 +554,8 @@ function MatchScreen() {
     const prev = prevPhase.current;
     prevPhase.current = phase;
     if (prev === phase) return;
-    audio.battleEnd();
     const b = phaseBanner(phase, pub);
     if (b) setBanner({ ...b, key: phaseKey });
-    // operator voice (as in the official mode): every battle, its squad leader says 行动开始 at the first enemy
-    // (js/audio.js battleStart; keyed by phase + round, so a re-mount mid-battle does not say it again); the end line
-    // is said once, on the result screen
-    if ((phase === PHASE.COMBAT || phase === PHASE.FINAL_ASSAULT || phase === PHASE.HIDDEN_CORE) && alive) {
-      audio.battleStart(voiceLeader(live.current.priv, getChess), phaseKey);
-    } else if (!isCombatPhase(phase)) audio.battleOver();
     if (phase === PHASE.ROUND_START) audio.sfx('roundStart');
     else if (phase === PHASE.PREP) audio.sfx('rest', { volume: 0.7 });
     else if (phase === PHASE.COMBAT) audio.sfx('battleStart');

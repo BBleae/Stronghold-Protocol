@@ -122,38 +122,50 @@ game plays a line — and downloads them from the ArknightsAssets2 `voice` branc
 |---|---|---|
 | `select` | 选中干员1 / 2 (`BATTLE_SELECT`) | tapping an own operator during a battle phase (not in 结算) — `FOCUS_CHAR` |
 | `deploy` | 部署1 / 2 (`BATTLE_PLACE`) | an operator successfully deployed from the bench in prep, once its direction is confirmed (buying or dragging one says nothing) — `PLACE_CHAR` |
-| `combat` | 作战中1–4 (`BATTLE_SKILL_1..4`) | an own operator's skill starts, after the battle's 行动开始 — `SKILL_PASSIVE_IMP` (SP cost ≥ 10) / `SKILL_PASSIVE_NOR` |
+| `combat` | 作战中1–4 (`BATTLE_SKILL_1..4`) | an own operator's skill starts, after the battle's 行动开始 — `SKILL_PASSIVE_IMP` |
 | `start` | 行动开始 (`BATTLE_FACE_ENEMY`) | once per battle: the squad leader, when its first enemy appears — `ENCOUNTER_ENEMY` |
 | `win3` / `win` / `fail` | 3星结束行动 / 非3星结束行动 / 行动失败 (`THREE_STAR` / `TWO_STAR` / `LOSE`) | once per match, on the result screen once `m.result` has arrived: the squad leader — won without LP lost / won / lost |
 
-- **When a line may play** follows the official battle voice rules, `audio_data.json` `battleVoice` (copied to
-  `data/assets.json` `audio.voiceRules`; `BATTLE_VOICE` in `audio.js` when absent): each voice type has a priority, a
-  cooldown and `overlapIfSamePriority`. One line plays at a time; a line of a higher priority cuts in (0.1 s
-  cross-fade), one of the same priority only when its type overlaps, a lower one is dropped. A tap (`FOCUS_CHAR`,
-  priority 10) never cuts a skill line.
-- **作战中 stays occasional, with clear gaps** (the official per-type rule alone gave back-to-back lines: an important
-  line cut a normal one, and each type had its own 10 s): the two passive types share **one** 10 s cooldown (start to
-  start) and one 作战中 never cuts another — about 2–4 per battle, never two in a row.
+- **When a line may play** follows the official battle voice rules, `audio_data.json` `battleVoice`, which
+  `tools/fetch-assets.mjs` copies next to the lines (`data/assets.json` `audio.voiceRules`; the client has no other
+  copy, and plays no line without it): each voice type has a priority, a cooldown and `overlapIfSamePriority`. One line
+  plays at a time; a line of a higher priority cuts in (0.1 s cross-fade), one of the same priority only when its type
+  overlaps, a lower one is dropped. A tap (`FOCUS_CHAR`, priority 10) never cuts a skill line. A cooldown runs from the
+  start of a line that plays.
+- **作战中 stays occasional, with clear gaps**: every 作战中 is `SKILL_PASSIVE_IMP`, so its 10 s cooldown runs start to
+  start and one 作战中 never cuts another — about 2–4 per battle, never two in a row. The official split by SP cost
+  (`minSpCostForImportantPassiveSkill`: `SKILL_PASSIVE_IMP` / `SKILL_PASSIVE_NOR`, each with its own 10 s, the important
+  one cutting the normal one) gave back-to-back lines.
 
   | Voice type | Priority | Same priority replaces | Cooldown |
   |---|---|---|---|
   | `BATTLE_START` (行动出发, not used) | 100 | yes | 0 |
-  | `ENCOUNTER_ENEMY` | 90 | no | 0 (`minTimeDeltaForEnemyEncounter` 3 s after the battle starts) |
+  | `ENCOUNTER_ENEMY` (行动开始) | 90 | no | 0 (`minTimeDeltaForEnemyEncounter` 3 s after the battle starts) |
   | `SKILL_ACTIVE` (a skill the player activates — none in this mode) | 70 | yes | 0 |
-  | `SKILL_PASSIVE_IMP` (`minSpCostForImportantPassiveSkill` 10) | 60 | no | 10 s |
-  | `SKILL_PASSIVE_NOR` | 50 | no | 10 s |
-  | `PLACE_CHAR` | 20 | yes | 0 |
-  | `FOCUS_CHAR` | 10 | yes | 0 |
+  | `SKILL_PASSIVE_IMP` (作战中) | 60 | no | 10 s |
+  | `SKILL_PASSIVE_NOR` (not used) | 50 | no | 10 s |
+  | `PLACE_CHAR` (部署) | 20 | yes | 0 |
+  | `FOCUS_CHAR` (选中干员) | 10 | yes | 0 |
   | `NORMAL_ATTACK` (not used) | 5 | no | 36000 s |
+
+  The end-of-operation lines are ours (not a battle voice type): priority 100, replace anything, no cooldown.
 
 - **The moments follow a recording of the official mode** (卫戍协议 gameplay): buying or dragging a bench operator says
   nothing; a successful deployment says 部署; every battle opens with the leader's 行动开始; 作战中 now and then, with
   clear gaps; the end line only once, when the match is settled.
-- Every skill of this mode is cast automatically (技能策略), so 作战中 uses the passive types, important or normal by
-  the equipped skill's SP cost. Skills are cast from the first second of a battle; no 作战中 is said before the
-  battle's 行动开始 (held at most 15 s), and 行动开始 (priority 90) is never cut by one.
-- All voice timing is real time (battles run at 2x, so 10 s is 20 s of battle time). A battle screen that re-mounts
-  mid-battle (reconnect) does not say 行动开始 again; no line starts while the page is hidden.
+- Every skill of this mode is cast automatically (技能策略), so 作战中 uses a passive type. Skills are cast from the
+  first second of a battle; no 作战中 is said before the battle's 行动开始, and 行动开始 (priority 90) is never cut by one.
+- The battle voice follows the match state, like the BGM: a battle is its phase and round (`COMBAT` /
+  `FINAL_ASSAULT` / `HIDDEN_CORE` while the player is still in the match; 联防 goes on with the round's battle).
+  行动开始 belongs to the battle's first 15 s: said once, at its first enemy; a battle that faces none in that time has
+  none, and 作战中 waits for it that long at most. Hiding the page or a battle screen that re-mounts (reconnect)
+  changes nothing of that: 行动开始 that comes due while the page is hidden is said on return (still within the 15 s).
+  Leaving a battle drops its pending lines, so none reaches the settlement, the result screen or the next battle. The
+  end line is said once per match, when the result arrives, by the leader who opened the latest battle.
+- All voice timing is real time (battles run at 2x, so 10 s is 20 s of battle time). Nothing plays while the page is
+  hidden (the line playing stops).
+- A voice file that fails to load plays nothing (logged once) and starts no cooldown; it is fetched again by a request
+  10 s or more after the failure (BGM and sound effects alike), never on every use meanwhile.
 - Only own operators speak: a teammate's operator on a shared field (最终攻势) or a watched one (前往查看) says nothing
   on this client.
 - The squad leader (队长) of a normal stage has no slot in this mode: it is the rarest operator on the board (then 精锐,
@@ -221,7 +233,10 @@ All paths are URL paths relative to the site root, for example `/assets/char/ava
       units:  { [charId|tokenId|enemyId]: { attack?, hit?, skill?, skills?: {[skillIndex]: url}, die?, born? } }
     },
     // operator battle voice (tools/assets/voice.mjs; absent with --voice=none); arrays are played at random
-    voice?: { [cn|jp]: { [charId]: { select: [url], deploy: [url], combat: [url], start, win3, win, fail } } }
+    voice?: { [cn|jp]: { [charId]: { select: [url], deploy: [url], combat: [url], start, win3, win, fail } } },
+    // with voice: the official battle voice rules (audio_data.json battleVoice, see Operator voice)
+    voiceRules?: { crossfade, minTimeDeltaForEnemyEncounter, minSpCostForImportantPassiveSkill,
+                   voiceTypeOptions: [{ voiceType, priority, overlapIfSamePriority, cooldown, delay }] }
   },
   // units' attack / hit (tools/assets/audio.mjs pickUnitSfx): operators get normal-mode banks only — the plain
   // `attack` / `combat` ability first, never a bank holding a skill-mode file (`_d` / `_h` / `_s`; the normal attack's end

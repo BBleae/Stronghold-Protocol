@@ -825,8 +825,9 @@ async function facingTour(c, did) {
     await c.waitFor((x) => x.board > s0.board, 'placed', 6000);
     await checkStoredDir(c, p.uid, 'UP');
     if (await voiceOf(p.id)) {
+      // the log lists the lines that started playing: the 部署 line once it has loaded
+      await c.page.waitForFunction(() => globalThis.__SP__.audio.voiceLog.length > 0, { timeout: 4000 });
       assert.deepEqual(await voiceLog(), ['deploy'], 'picked up: nothing; deployed: 部署');
-      await c.waitUntil(() => c.voiceUrls.length > 0, '部署 voice line fetched', 4000);
       c.note(`voice: ${c.voiceUrls.join(', ')}`);
     }
     await sleep(700);
