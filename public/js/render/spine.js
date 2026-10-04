@@ -111,17 +111,10 @@ export class SpineActor {
     this.spine.autoUpdate = false;
     this.names = new Set((spineData.animations || []).map((a) => a.name));
     /**
-     * Clipping attachments render as stencil masks (≈1.5 ms of GPU each per frame on tiled GPUs): such skeletons
-     * are drawn through the impostor atlas while clipping is on, and clipping is switched off (unclipped slots,
-     * visually negligible on battle chibis) when too many of them share a field (app.js budget).
+     * Clipping attachments (the eye clips a blink switches) render as stencil masks: such skeletons are drawn through
+     * the impostor atlas (units.js), never unclipped — the eyeballs would show over closed eyelids.
      */
     this.clipped = hasClipping(spineData);
-    this.clipOn = true;
-    if (this.clipped) {
-      const sp = this.spine;
-      const orig = typeof sp.createGraphics === 'function' ? sp.createGraphics.bind(sp) : null;
-      if (orig) sp.createGraphics = (slot, att) => { const g = orig(slot, att); if (!this.clipOn && slot.clippingContainer) { slot.clippingContainer.mask = null; g.renderable = false; } return g; };
-    }
     this.rate = 2;                // game seconds per real second (setRate): blends are real-time
     try { this.spine.stateData.defaultMix = MIX.base * this.rate; } catch { /* ignore */ }
     this.base = 'idle';
@@ -153,19 +146,6 @@ export class SpineActor {
     // strike frames known for this skeleton (manifest `hits`); a skeleton without any keeps the old rule
     this.hitData = !!entry.hits && Object.keys(entry.hits).length > 0;
     this._play(this._idleName(), true);
-  }
-
-  /** Enable / disable the skeleton's clipping masks. */
-  setClipping(on) {
-    on = !!on;
-    if (!this.clipped || on === this.clipOn) return;
-    this.clipOn = on;
-    for (const slot of this.spine?.skeleton?.slots || []) {
-      if (!slot.clippingContainer) continue;
-      slot.clippingContainer.mask = on ? slot.currentGraphics || null : null;
-      // PIXI makes a released mask renderable again: the clip polygon must never draw as a white shape
-      if (slot.currentGraphics) slot.currentGraphics.renderable = false;
-    }
   }
 
   /**

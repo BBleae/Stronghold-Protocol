@@ -230,6 +230,28 @@ describe('bounds (view.pieceScreenRect)', () => {
   });
 });
 
+describe('clipped skeletons (eye clips)', () => {
+  test('keep their clipping masks at any quality: drawn through a clip page of the impostor atlas', async () => {
+    // the battle chibis blink by switching the clip of their eyes: drawn unclipped, the eyeballs showed over the closed
+    // eyelids (user report 2026-10; the field used to switch clipping off below high quality or with two clipped units)
+    const clips = [];
+    const atlas = {
+      alloc: (w, h, o = {}) => { clips.push(!!o.clip); return { w, h, tex: new fake.P.Texture(), clip: !!o.clip }; },
+      free() {}, park(o) { o.visible = false; }, unpark(o) { o.visible = true; }, draw() {},
+    };
+    const assets = store({ spine: true });
+    assets.spine = { acquire: async () => ({ animations: [{ name: 'Idle' }], skins: [{ getAttachments: () => [{ attachment: { type: 6 } }] }] }), release() {} };
+    const ctx = fakeViewCtx(fake.P, { assets, cam, impostors: atlas, settings: { damageNumbers: true, quality: 'low' }, renderer: { resolution: 1, render() {} } });
+    const v = new UnitView(ctx, { id: 1, side: 'ally', kind: 'chess', defId: 'char_x', tier: 3, x: 5, y: 12, maxHp: 1000 });
+    await tick(); await tick();
+    assert.ok(v.spineReady && v.actor.clipped, 'a skeleton with a clipping attachment');
+    for (let i = 0; i < 4; i++) v.update(1 / 60, cam(), i / 60);
+    assert.ok(v.imp?.slot?.clip, 'drawn through a clip page');
+    assert.ok(clips.length > 0 && clips.every(Boolean), 'never an unclipped slot');
+    assert.equal(typeof v.actor.setClipping, 'undefined', 'nothing can switch its clipping off');
+  });
+});
+
 describe('enemy preview pen figures (lod idle)', () => {
   /** A UnitView of a pen figure with a Spine model, an impostor atlas (full or not) and a counting renderer. */
   async function penFigure(full) {

@@ -126,6 +126,7 @@
 .title-corner { position: absolute; z-index: 2; display: flex; align-items: flex-start; gap: .12rem; line-height: 1.7; }
 .title-corner--tl { left: .44rem; top: .38rem; }
 .title-corner--tr { right: .44rem; top: .38rem; text-align: right; }
+.title-corner--tr .title-install { margin-top: -.04rem; } /* 安装 (js/ui/install.js): only where the site can be installed */
 .title-corner__mark {
   width: .32rem;
   height: .32rem;
@@ -257,6 +258,8 @@
 .title-invite b { font-size: .2rem; letter-spacing: .2em; color: #ffd08a; }
 .title-conn { display: flex; align-items: center; justify-content: center; gap: .1rem; min-height: .32rem; overflow-x: clip; font-size: .14rem; color: var(--text-lo); }
 .title-conn .ping { height: .26rem; font-size: .15rem; }
+/* 安装 help (js/ui/install.js, shown in the shared alert dialog) */
+.install-steps { margin: 0 0 .1rem; padding-left: 1.4em; line-height: 1.75; color: var(--text-hi); }
 
 .title-foot {
   position: absolute;
