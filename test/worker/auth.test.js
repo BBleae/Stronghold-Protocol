@@ -23,12 +23,15 @@ function setup({ secret = 'secret' } = {}) {
   const account = { async applyGithubLogin(identity) { return {...identity, name: identity.name + '#0001'}; } };
   const env = {AUTH_ORIGIN: 'https://game.example', GITHUB_CLIENT_ID: 'client', GITHUB_CLIENT_SECRET: secret,
     SITES: {idFromName: n => n, get: () => directory}, ACCOUNTS: {idFromName: n => n, get: () => account}};
-  let login = 'Alice', providerFailure = false, tokenError = null;
+  // tokenError: GitHub's answer to the login's code; checkAnswer: its answer to the credentials check's made-up code.
+  let login = 'Alice', providerFailure = false, tokenError = null, checkAnswer = 'bad_verification_code';
   const deps = {now: () => now, fetch: async (url, init) => {
     githubCalls++;
     if (providerFailure) return new Response('upstream failed', {status: 502});
     if (String(url).includes('access_token')) {
-      assert.ok(new URLSearchParams(init.body).get('code_verifier'));
+      const body = new URLSearchParams(init.body);
+      if (body.get('code') === 'stronghold-credentials-check') return Response.json({error: checkAnswer});
+      assert.ok(body.get('code_verifier'));
       return Response.json(tokenError ? {error: tokenError} : {access_token: 'DO-NOT-EXPOSE', token_type: 'bearer'});
     }
     return Response.json({id: 42, login, avatar_url: 'https://avatars.githubusercontent.com/u/42'});
@@ -45,7 +48,8 @@ function setup({ secret = 'secret' } = {}) {
   };
   const finish = b => handle('/api/auth/github/callback?code=ok&state=' + b.state, {headers: {cookie: b.cookie}});
   return {env, deps, request, handle, begin, finish, sessions, verdicts, calls: () => githubCalls,
-    rename: v => login = v, advance: ms => now += ms, failProvider: () => providerFailure = true, failToken: (error) => tokenError = error};
+    rename: v => login = v, advance: ms => now += ms, failProvider: () => providerFailure = true, failToken: (error) => tokenError = error,
+    answerCheck: (error) => checkAnswer = error};
 }
 test('OAuth ties state to the browser, uses PKCE, creates private revocable sessions and stable identity', async () => {
   const h = setup(), b = await h.begin();
@@ -103,11 +107,12 @@ test('a cancelled login goes back to the invite it started from, with the notice
   assert.equal(back.headers.get('location'), '/?room=ABCD&authError=OAUTH_EXPIRED_OR_DENIED');
   assert.equal(h.sessions.size, 0);
 });
-test('a login that meets invalid credentials records them at once and says GitHub is unavailable', async () => {
+test('a login refused as if the credentials were invalid has them checked; invalid ones are recorded at once', async () => {
   for (const error of ['incorrect_client_credentials', 'redirect_uri_mismatch']) {
     const h = setup({secret: 'revoked-' + error});
     const b = await h.begin();
     h.failToken(error);
+    h.answerCheck(error);
     const back = await h.handle('/api/auth/github/callback?code=ok&state=' + b.state, {headers: {cookie: b.cookie, Accept: 'text/html'}});
     assert.equal(back.headers.get('location'), '/?authError=GITHUB_UNAVAILABLE', error);
     assert.deepEqual(h.verdicts, ['invalid'], error);
@@ -116,6 +121,18 @@ test('a login that meets invalid credentials records them at once and says GitHu
     const again = await h.handle('/api/auth/github/start', {headers: {Accept: 'text/html'}});
     assert.equal(again.headers.get('location'), '/?authError=GITHUB_UNAVAILABLE', error);
   }
+});
+test('a code refused for its redirect URI does not hide GitHub from everyone: the credentials check decides', async () => {
+  // A visitor brings a code issued for another redirect URI (GitHub's wildcard matching); the credentials are fine.
+  const h = setup({secret: 'replayed-code'});
+  const b = await h.begin();
+  h.failToken('redirect_uri_mismatch');
+  const back = await h.handle('/api/auth/github/callback?code=ok&state=' + b.state, {headers: {cookie: b.cookie, Accept: 'text/html'}});
+  assert.equal(back.headers.get('location'), '/?authError=OAUTH_PROVIDER_FAILED');
+  assert.deepEqual(h.verdicts, ['valid']);
+  assert.equal(h.sessions.size, 0);
+  const again = await h.handle('/api/auth/github/start', {headers: {Accept: 'text/html'}});
+  assert.equal(new URL(again.headers.get('location')).hostname, 'github.com', 'GitHub sign-in is still offered');
 });
 test('GitHub routes are unavailable without a complete configuration', async () => {
   for (const [key, value] of [['GITHUB_CLIENT_ID', ''], ['GITHUB_CLIENT_SECRET', undefined], ['AUTH_ORIGIN', 'http://game.example'],

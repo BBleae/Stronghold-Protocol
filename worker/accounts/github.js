@@ -6,8 +6,9 @@
 // ones (https://docs.github.com/en/apps/oauth-apps/maintaining-oauth-apps/troubleshooting-oauth-app-access-token-request-errors).
 // The verdict is kept per configuration (a digest of the client id, secret and origin: new credentials are checked
 // again) in the directory, for every isolate, and in this isolate: valid for 24 h, invalid for 1 h, unknown (any other
-// answer, no answer) for 5 min, during which the sign-in stays offered. A real login that meets invalid credentials
-// records the verdict at once.
+// answer, no answer) for 5 min, during which the sign-in stays offered. A real login whose code GitHub refuses with one
+// of the invalid answers has the credentials checked at once: that code is the visitor's (it may have been issued for
+// another redirect URI), so only the check, which nobody else can influence, decides for every player.
 
 import { ACCOUNT_LIMITS, AccountError } from '../../shared/account-protocol.js';
 import { logWarn, logError, errorFields } from '../log.js';
@@ -108,9 +109,11 @@ export async function handleGithub(request, env, { now = Date.now, fetch: provid
     if (!tokens.ok) throw new AccountError('OAUTH_PROVIDER_FAILED', 502);
     const token = await tokens.json();
     if (VERDICTS[token.error] === 'invalid') {
-      logError('github_credentials_invalid', { error: token.error });
-      await record(env, await fingerprintOf(env), 'invalid', now);
-      throw new AccountError('GITHUB_UNAVAILABLE', 503);
+      const verdict = await check(env, providerFetch);
+      await record(env, await fingerprintOf(env), verdict, now);
+      if (verdict === 'invalid') throw new AccountError('GITHUB_UNAVAILABLE', 503);
+      logWarn('github_code_refused', { error: token.error, verdict });
+      throw new AccountError('OAUTH_PROVIDER_FAILED', 502);
     }
     if (typeof token.access_token !== 'string' || !token.access_token) throw new AccountError('OAUTH_PROVIDER_FAILED', 502);
     const response = await providerFetch('https://api.github.com/user', { headers: {

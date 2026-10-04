@@ -85,6 +85,7 @@ Wrangler 执行构建、上传本地静态文件，保留 `ROOMS`（房间），
 | `room_runtime` | 规则代码（大厅、连接、对局）的警告和错误；恢复时重放出的行带 `restoring: true` |
 | `github_credentials_invalid` | GitHub OAuth App 的凭据无效（`incorrect_client_credentials` / `redirect_uri_mismatch`）：「使用 GitHub 登录」不再显示，1 小时后再检查；更换 secret 后立即重新检查 |
 | `github_check_failed` | 检查 GitHub 凭据时没有得到明确答复（网络错误或其他答复）；照常显示 GitHub 登录，5 分钟后再检查 |
+| `github_code_refused` | 一次 GitHub 登录的授权码被以「凭据无效」类答复拒绝，随即的凭据检查却认为凭据没问题（授权码可能是为其他回调地址签发的）：只有这次登录失败，GitHub 登录照常显示（带 GitHub 的答复和检查结论） |
 | `account_password_reset` | 管理员重置了一个账号的密码（带账号 ID），该账号的登录全部失效 |
 | `backup_profile_missing` | 导出备份时某个账号没有账号资料（带账号 ID），导出失败 |
 
