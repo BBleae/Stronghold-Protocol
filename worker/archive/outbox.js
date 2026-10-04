@@ -19,6 +19,6 @@ export async function publishArchive(env,entry) {
   for(const chunk of encoded.chunks)await archive.appendChunk({index:chunk.index,text:chunk.text});
   const facts={...entry.facts,personal:entry.personal,manifest:encoded.manifest};
   await archive.finalize(facts);
-  if(env.SITES)await directoryOf(env).registerArchive(facts.matchId);
+  await directoryOf(env).registerArchive(facts.matchId);
   for(const fact of entry.personal) await accountOf(env,fact.accountId).applyMatch(fact);
 }

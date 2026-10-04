@@ -12,6 +12,8 @@ test('real RoomDO stores a large snapshot in parts and a finished match archive 
   const h=await createAccountHarness(`
     import {RoomDurableObject} from ${JSON.stringify(file.replaceAll('\\','/'))};
     export class TestObject extends RoomDurableObject {
+      // Where a finished match waits is the subject here, not its publication: it stays in flight.
+      archiveNext(){if(this.outboxSize)this.archiving=true;}
       async fetch(req){
         await this.ready;const i=await req.json(),rt=this.runtime;
         // Any part of the room state may be large; a resume ticket carries the payload here.

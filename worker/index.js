@@ -70,23 +70,21 @@ async function route(request, env) {
   if (path.startsWith('/_')) return error(404, 'ROOM_NOT_FOUND');
   if (path === '/api/rooms') {
     if (request.method !== 'POST') return error(405, 'BAD_MSG');
-    if (!sameOrigin(request)) return error(403, 'BAD_MSG', 'origin mismatch');
+    // A write: only from the game's own page.
+    if (request.headers.get('Origin') !== url.origin) return error(403, 'BAD_MSG', 'origin mismatch');
     if (!(await within(env.RESERVE_LIMIT, network(request)))) return tooMany();
-    const session = env.ACCOUNTS ? await authenticate(request, env) : null;
-    if (env.ACCOUNTS && !session) return error(401, 'LOGIN_REQUIRED');
-    if (session && request.headers.get('Origin') !== url.origin) return error(403, 'BAD_MSG');
-    if (session) {
-      // A create that failed after its reservation (e.g. at the first connect) goes on with that reservation.
-      const seat = await seatOf(env, session.accountId, 'POST');
-      if (seat?.reserved) return json({ code: seat.code, ticket: seat.ticket, generation: seat.generation });
-      if (seat) return error(409, 'ALREADY_SEATED');
-    }
+    const session = await authenticate(request, env);
+    if (!session) return error(401, 'LOGIN_REQUIRED');
+    // A create that failed after its reservation (e.g. at the first connect) goes on with that reservation.
+    const seat = await seatOf(env, session.accountId, 'POST');
+    if (seat?.reserved) return json({ code: seat.code, ticket: seat.ticket, generation: seat.generation });
+    if (seat) return error(409, 'ALREADY_SEATED');
     for (let i = 0; i < 12; i++) {
       const code = Array.from({ length: 4 }, () => CODE_ALPHABET[randomInt(CODE_ALPHABET.length)]).join('');
       const response = await roomStub(env, code).fetch(new Request(`https://room.internal/_reserve?room=${code}`, {
-        method: 'POST', headers: session ? {'X-Account-ID':session.accountId} : {} }));
+        method: 'POST', headers: { 'X-Account-ID': session.accountId } }));
       if (response.status !== 409) {
-        if (response.ok && session) {
+        if (response.ok) {
           const route = await response.clone().json();
           const claim = await accountOf(env, session.accountId).claimSeat({ claimId: crypto.randomUUID(),
             seat: { roomId: route.code, roomGeneration: route.generation, matchId: null, seatId: null } });
@@ -115,34 +113,29 @@ async function route(request, env) {
     const ip = edgeIp(request);
     // Connections count against the network before the login is looked up, and against the account after.
     if (!(await within(env.CONNECT_LIMIT, network(request)))) return refuseSocket(CLOSE.TRY_LATER, 'too many connections');
-    const session = env.ACCOUNTS ? await authenticate(request,env) : null;
-    if (env.ACCOUNTS && !session) return refuseSocket(CLOSE.LOGIN_INVALID, 'login required');
-    if (session && !(await within(env.CONNECT_LIMIT, 'account:' + session.accountId))) {
-      return refuseSocket(CLOSE.TRY_LATER, 'too many connections');
-    }
+    const session = await authenticate(request, env);
+    if (!session) return refuseSocket(CLOSE.LOGIN_INVALID, 'login required');
+    if (!(await within(env.CONNECT_LIMIT, 'account:' + session.accountId))) return refuseSocket(CLOSE.TRY_LATER, 'too many connections');
     const dest = new URL('https://room.internal/_ws');
     dest.searchParams.set('room', code);
     const ticket = url.searchParams.get('ticket');
     if (ticket && /^[0-9a-f]{32}$/.test(ticket)) dest.searchParams.set('ticket', ticket);
-    const headers = { Upgrade: 'websocket', 'X-Room-IP': ip };
-    if (session) {
-      // The room keeps the login with the socket (and checks it again on its own schedule) and shows the account's
-      // avatar: both are read here, so the room's critical section never waits on another object for them.
-      const profile = await accountOf(env, session.accountId).getProfile();
-      Object.assign(headers, { 'X-Account-ID': session.accountId, 'X-Session-ID': session.sessionId,
-        'X-Session-Expires': String(session.expiresAt), 'X-Avatar-URL': profile?.avatarUrl ?? '' });
-    }
-    return roomStub(env, code).fetch(new Request(dest, { headers }));
+    // The room keeps the login with the socket (and checks it again on its own schedule) and shows the account's
+    // avatar: both are read here, so the room's critical section never waits on another object for them.
+    const profile = await accountOf(env, session.accountId).getProfile();
+    return roomStub(env, code).fetch(new Request(dest, { headers: { Upgrade: 'websocket', 'X-Room-IP': ip,
+      'X-Account-ID': session.accountId, 'X-Session-ID': session.sessionId, 'X-Session-Expires': String(session.expiresAt),
+      'X-Avatar-URL': profile?.avatarUrl ?? '' } }));
   }
   if (path === PACK_PATH) return servePack(request, env);
   if (path.startsWith('/api/')) return error(404, 'ROOM_NOT_FOUND');
   return env.ASSETS ? env.ASSETS.fetch(request) : error(404, 'ROOM_NOT_FOUND');
 }
 
-// Adapt the Workers WebSocket surface to the existing Network's small EventEmitter-like contract. A buffered socket
-// (account rooms) holds an event's output until the event committed (flush): its frames, then a close the event made.
+// Adapt the Workers WebSocket surface to the existing Network's small EventEmitter-like contract. An event's output
+// waits for the event's commit (flush): its frames, then a close the event made.
 class SocketAdapter {
-  constructor(socket, buffered=false) { this.socket = socket; this.handlers = new Map(); this.closed = false; this.buffered=buffered; this.pending=[]; this.closing = null; }
+  constructor(socket) { this.socket = socket; this.handlers = new Map(); this.closed = false; this.pending = []; this.closing = null; }
   get readyState() { return this.closed ? 3 : this.socket.readyState; }
   get bufferedAmount() { return this.socket.bufferedAmount || 0; }
   on(type, fn) {
@@ -150,7 +143,7 @@ class SocketAdapter {
     this.handlers.get(type).push(fn);
   }
   emit(type, ...args) { for (const fn of this.handlers.get(type) || []) fn(...args); }
-  send(data, callback) { if(this.buffered) this.pending.push(data); else this.socket.send(data); callback?.(); }
+  send(data, callback) { this.pending.push(data); callback?.(); }
   flush() {
     for (const data of this.pending) this.socket.send(data);
     this.pending = [];
@@ -160,12 +153,8 @@ class SocketAdapter {
   close(code, reason) {
     if (this.closed) return;
     this.closed = true;
-    try {
-      if (this.buffered) this.closing = { code, reason };
-      else this.socket.close(code, reason);
-    } finally {
-      this.emit('close');
-    }
+    this.closing = { code, reason };
+    this.emit('close');
   }
   terminate() { this.close(CLOSE.POLICY, 'connection terminated'); }
 }
@@ -230,16 +219,15 @@ export class RoomDurableObject {
   async load() {
     this.loading = true;
     const snapshot = await this.readSnapshot();
-    // Account rooms run their matches on the virtual scheduler, inside events: every change ends in the event's commit.
-    this.runtime = new RoomRuntime({ snapshot, accounts: !!this.env.ACCOUNTS, onChange: this.env.ACCOUNTS ? undefined : () => this.queuePersist() });
+    // Rooms run their matches on the virtual scheduler, inside events: every change ends in the event's commit.
+    this.runtime = new RoomRuntime({ snapshot });
     for (const ws of this.ctx.getWebSockets()) {
       // Closing sockets may still be enumerated; never rebind one over its replacement.
       if (ws.readyState !== 1) continue;
-      if (snapshot?.running && !snapshot.matchCheckpoint) { try { ws.close(1012, 'active match interrupted by server restart'); } catch {} continue; }
       const attachment = ws.deserializeAttachment();
       if (!attachment) { try { ws.close(CLOSE.LOST, 'missing session'); } catch {} continue; }
       // Its login is checked again in the background when due (checkLogins), not before the wake can go on.
-      const adapter = new SocketAdapter(ws,!!this.env.ACCOUNTS);
+      const adapter = new SocketAdapter(ws);
       this.sockets.set(ws, adapter);
       this.runtime.connect(adapter, { ip: attachment.ip, attachment });
     }
@@ -334,10 +322,6 @@ export class RoomDurableObject {
       const session = this.runtime.network.conns.get(adapter)?.session;
       if (session && Number.isFinite(at)) session.lastSeen = Math.max(session.lastSeen, at);
     }
-  }
-  queuePersist() {
-    // Anonymous rooms: a match on real timers can end outside any event.
-    this.ctx.waitUntil(this.ctx.blockConcurrencyWhile(() => this.commit()));
   }
 
   // One event, one critical section: due match timers run first, then the event, then the timers it made due at
@@ -496,7 +480,7 @@ export class RoomDurableObject {
   // The oldest due archive is published. A failed one waits for its own backoff, stored with it: it neither blocks the
   // archives of later matches nor is retried at every event.
   archiveNext() {
-    if (!this.env.MATCH_ARCHIVES || !this.outboxSize || this.archiving) return;
+    if (!this.outboxSize || this.archiving) return;
     const sql = this.ctx.storage.sql;
     const row = sql.exec('SELECT match_id, entry, attempts FROM archive_outbox WHERE retry_at<=? ORDER BY retry_at, rowid LIMIT 1', Date.now()).toArray()[0];
     if (!row) return;
@@ -530,7 +514,7 @@ export class RoomDurableObject {
     const room = rt.lobby.getRoom(rt.code);
     const job = this.listing;
     const now = Date.now();
-    if (!this.env.SITES || !room || job.busy || now < job.retryAt) return;
+    if (!room || job.busy || now < job.retryAt) return;
     const listing = {
       roomId: rt.code,
       generation: rt.generation,
@@ -565,7 +549,7 @@ export class RoomDurableObject {
   // sockets with 4003 within that time, and no message ever waits for the directory. A failed check closes nothing.
   checkLogins() {
     const job = this.logins;
-    if (!this.env.SITES || job.busy || Date.now() < job.retryAt) return;
+    if (job.busy || Date.now() < job.retryAt) return;
     const due = this.runtime.loginsDue();
     if (!due.length) return;
     job.busy = true;
@@ -587,12 +571,12 @@ export class RoomDurableObject {
   // When the next background job is due (Infinity: none): an archive's retry, the listing's retry or lease refresh,
   // the next login check.
   jobsDue() {
-    const archive = !this.env.MATCH_ARCHIVES || !this.outboxSize || this.archiving ? Infinity
+    const archive = !this.outboxSize || this.archiving ? Infinity
       : this.ctx.storage.sql.exec('SELECT MIN(retry_at) AS at FROM archive_outbox').one().at;
     const job = this.listing;
-    const listing = !this.env.SITES || job.busy || !this.runtime.lobby.getRoom(this.runtime.code) ? Infinity
+    const listing = job.busy || !this.runtime.lobby.getRoom(this.runtime.code) ? Infinity
       : job.failures ? job.retryAt : job.refreshAt;
-    const logins = !this.env.SITES || this.logins.busy ? Infinity : Math.max(this.logins.retryAt, this.runtime.nextLoginCheck());
+    const logins = this.logins.busy ? Infinity : Math.max(this.logins.retryAt, this.runtime.nextLoginCheck());
     return Math.min(archive, listing, logins);
   }
 
@@ -605,12 +589,12 @@ export class RoomDurableObject {
   async route(request) {
     const url = new URL(request.url);
     const rt = this.runtime;
-    if (this.env.ACCOUNTS && ['/_applications', '/_visibility'].includes(url.pathname)) return roomApplications(rt, request, this.env);
+    if (['/_applications', '/_visibility'].includes(url.pathname)) return roomApplications(rt, request, this.env);
     if (url.pathname === '/_reserve' && request.method === 'POST') {
       const code = url.searchParams.get('room');
       if (!validCode(code)) return error(400, 'BAD_MSG');
       const ticket = rt.reserve(code, request.headers.get('X-Account-ID'));
-      return ticket ? json({ code, ticket, ...(rt.accounts ? { generation: rt.generation } : {}) }, 201) : error(409, 'ROOM_FULL');
+      return ticket ? json({ code, ticket, generation: rt.generation }, 201) : error(409, 'ROOM_FULL');
     }
     if (url.pathname === '/_account') {
       // The room is the truth about an account's seat (worker/accounts/routes.js seatOf): 404 releases it.
@@ -637,7 +621,7 @@ export class RoomDurableObject {
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
     this.ctx.acceptWebSocket(server);
-    const adapter = new SocketAdapter(server,!!this.env.ACCOUNTS);
+    const adapter = new SocketAdapter(server);
     this.sockets.set(server, adapter);
     const expires = request.headers.get('X-Session-Expires');
     rt.connect(adapter, { ip, ticket: url.searchParams.get('ticket'), accountId,

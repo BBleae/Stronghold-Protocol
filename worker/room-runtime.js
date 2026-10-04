@@ -1,8 +1,10 @@
-// Platform adapter only: the authoritative game rules remain in Lobby / Network / Match.
+// Platform adapter only: the authoritative game rules remain in Lobby / Network / Match. Every room belongs to accounts
+// (GitHub logins): its seats, approvals and running match are tied to them, and its match is recorded (RecordedMatch)
+// so it survives a restart.
 import { Buffer } from 'node:buffer';
 import { randomBytes } from 'node:crypto';
 import { Lobby, Room, CODE_ALPHABET } from '../server/lobby.js';
-import { Network, Session, SessionRegistry, TokenBucket, encode, sendSession, normalizeIp, limitKeyOf } from '../server/net.js';
+import { Network, Session, SessionRegistry, TokenBucket, encode, normalizeIp, limitKeyOf } from '../server/net.js';
 import { ERR, MAX_SEATS } from '../shared/constants.js';
 import { RecordedMatch, exportMatch, restoreMatch } from '../server/match/checkpoint.js';
 import { ApplicationQueue } from './rooms/applications.js';
@@ -23,21 +25,19 @@ export const validCode = (s) => typeof s === 'string' && s.length === 4 && [...s
 class RoomNetwork extends Network {
   onHelloMsg(conn, msg, now) {
     const prefix = `${this.roomRuntime.code}.`;
-    let token = typeof msg.token === 'string' && msg.token.startsWith(prefix) ? msg.token.slice(prefix.length) : undefined;
-    if (this.roomRuntime.accounts) {
-      const meta = this.roomRuntime.socketMeta.get(conn.ws);
-      if (!meta?.accountId) { conn.close(CLOSE.LOGIN_INVALID, 'login required'); return; }
-      const previous = [...this.registry.all()].find(s => s.accountId === meta.accountId);
-      const presented = token && this.registry.byToken(token);
-      if (presented && presented.accountId !== meta.accountId) {
-        this.reply(conn, {t: 'error', code: ERR.BAD_MSG, detail: 'account mismatch', rid: msg.rid}); return;
-      }
-      if (previous && this.roomRuntime.lobby.roomOf(previous) && !conn.session && !meta.takeover && token !== previous.token) {
-        this.reply(conn, {t: 'error', code: ERR.BAD_MSG, detail: 'resume required', rid: msg.rid}); return;
-      }
-      token = previous?.token;
+    const token = typeof msg.token === 'string' && msg.token.startsWith(prefix) ? msg.token.slice(prefix.length) : undefined;
+    const meta = this.roomRuntime.socketMeta.get(conn.ws);
+    if (!meta?.accountId) { conn.close(CLOSE.LOGIN_INVALID, 'login required'); return; }
+    const previous = [...this.registry.all()].find(s => s.accountId === meta.accountId);
+    const presented = token && this.registry.byToken(token);
+    if (presented && presented.accountId !== meta.accountId) {
+      this.reply(conn, {t: 'error', code: ERR.BAD_MSG, detail: 'account mismatch', rid: msg.rid}); return;
     }
-    super.onHelloMsg(conn, { ...msg, token }, now);
+    if (previous && this.roomRuntime.lobby.roomOf(previous) && !conn.session && !meta.takeover && token !== previous.token) {
+      this.reply(conn, {t: 'error', code: ERR.BAD_MSG, detail: 'resume required', rid: msg.rid}); return;
+    }
+    // An account has one session in the room.
+    super.onHelloMsg(conn, { ...msg, token: previous?.token }, now);
   }
   reply(conn, msg) {
     return super.reply(conn, msg.t === 'welcome' ? { ...msg, token: `${this.roomRuntime.code}.${msg.token}` } : msg);
@@ -64,7 +64,6 @@ class AlarmLobby extends Lobby {
       frames = [room.replay.publicFrame, encode({ t: 'm.result', ...shared })].filter(Boolean);
     }
     this.onSpectatorEnd?.(frames);
-    this.onChange?.();
   }
   expireGrace() {
     for (const [id, at] of this.deadlines) {
@@ -81,8 +80,7 @@ class AlarmLobby extends Lobby {
 }
 
 export class RoomRuntime {
-  constructor({ snapshot, now = Date.now, onChange = () => {}, accounts = false } = {}) {
-    this.accounts = accounts;
+  constructor({ snapshot, now = Date.now } = {}) {
     this.generation = snapshot?.generation || randomBytes(16).toString('hex');
     this.resumeTickets = new Map(snapshot?.resumeTickets || []);
     this.applications = new ApplicationQueue({snapshot:snapshot?.applications,now});
@@ -91,7 +89,6 @@ export class RoomRuntime {
     this.now = now;
     this.code = snapshot?.code || null;
     this.reservation = snapshot?.reservation || null;
-    this.interruptedUntil = snapshot?.interruptedUntil || 0;
     this.socketMeta = new Map();
     // The upstream Lobby, Network and Match log through this: their warnings and errors become structured lines of
     // this room (info and debug are per-match chatter, dropped). Lines a restore's replay repeats say so.
@@ -104,8 +101,7 @@ export class RoomRuntime {
       error: (message, detail) => logError('room_runtime', { ...context(message), ...(detail ? { error: errorFields(detail) } : {}) }),
     };
     this.registry = new SessionRegistry({ now, maxSessions: ROOM_LIMITS.sessions });
-    this.lobby = new AlarmLobby({ registry: this.registry, now, log, options: { maxRooms: 1 },
-      ...(accounts ? {MatchClass:RecordedMatch} : {}) });
+    this.lobby = new AlarmLobby({ registry: this.registry, now, log, options: { maxRooms: 1 }, MatchClass: RecordedMatch });
     this.lobby.genCode = () => this.code;
     // Spectators (worker/rooms/spectators.js) see the room's state and the match's broadcasts.
     this.spectators = new Spectators(this);
@@ -118,7 +114,6 @@ export class RoomRuntime {
       this.spectators.forward(msg);
       return result;
     };
-    this.lobby.onChange = onChange;
     this.lobby.onArchive = (room, ctx, summary) => {
       const match = ctx.match;
       if (!match?.recording || !room.archiveParticipants?.length) return;
@@ -144,45 +139,48 @@ export class RoomRuntime {
     const handler = {
       onHello: (s, info) => {
         const meta = this.socketMeta.get(s.ws);
-        if (this.accounts && meta?.accountId) {
-          s.accountId = meta.accountId;
-          if (meta.avatarUrl !== undefined) s.avatarUrl = meta.avatarUrl;
-          if (!info.repeat) s.connectionEpoch = (s.connectionEpoch || 0) + 1;
-          meta.connectionEpoch = s.connectionEpoch;
-        }
-        if (this.socketMeta.get(s.ws)?.canCreate && this.reservation) s.canCreate = true;
+        s.accountId = meta.accountId;
+        if (meta.avatarUrl !== undefined) s.avatarUrl = meta.avatarUrl;
+        if (!info.repeat) s.connectionEpoch = (s.connectionEpoch || 0) + 1;
+        meta.connectionEpoch = s.connectionEpoch;
+        if (meta.canCreate && this.reservation) s.canCreate = true;
         if (s.spectating) this.spectators.hello(s, info);
         else this.lobby.onHello(s, info);
-        if (this.interruptedUntil > this.now()) sendSession(s, { t: 'room.closed', reason: 'restart' });
       },
       onMessage: (s, msg) => {
-        if(msg.t==='room.spectate')return this.spectators.join(s);
-        if(s.spectating)return this.spectators.command(s,msg);
-        if(this.accounts && msg.t==='room.start') {
-          const room=this.lobby.roomOf(s);
-          if(room && !room.match) room.archiveParticipants=room.activeHumans().map(p=>({
-            playerId:p.playerId,accountId:this.registry.byId(p.playerId)?.accountId})).filter(p=>p.accountId);
+        if (msg.t === 'room.spectate') return this.spectators.join(s);
+        if (s.spectating) return this.spectators.command(s, msg);
+        const room = this.lobby.roomOf(s);
+        if (msg.t === 'room.start' && room && !room.match) {
+          // The accounts whose history records the match.
+          room.archiveParticipants = room.activeHumans()
+            .map((p) => ({ playerId: p.playerId, accountId: this.registry.byId(p.playerId)?.accountId }))
+            .filter((p) => p.accountId);
         }
-        if(this.accounts && msg.t==='room.join' && !this.lobby.roomOf(s)) {
-          const ticket=this.socketMeta.get(s.ws)?.joinTicket;
-          const entry=this.applications.list(s.accountId).find(x=>x.status==='approved' && x.ticket===ticket);
-          if(!entry) return {error:ERR.NOT_HOST,detail:'approval required'};
-          const result=this.lobby.onMessage(s,msg);
-          if(!result.error) this.applications.consume(s.accountId,ticket);
+        if (msg.t === 'room.join' && !room) {
+          // Joining takes the host's approval (worker/rooms/routes.js), used once.
+          const ticket = this.socketMeta.get(s.ws)?.joinTicket;
+          const entry = this.applications.list(s.accountId).find((x) => x.status === 'approved' && x.ticket === ticket);
+          if (!entry) return { error: ERR.NOT_HOST, detail: 'approval required' };
+          const result = this.lobby.onMessage(s, msg);
+          if (!result.error) this.applications.consume(s.accountId, ticket);
           return result;
         }
-        if(this.accounts && msg.t==='room.addBot') {
-          const room=this.lobby.roomOf(s);
-          if(room && room.seats.filter(x=>!x).length<=this.applications.reservedCount()) return {error:ERR.ROOM_FULL};
+        // Approved applicants keep their seats free.
+        if (msg.t === 'room.addBot' && room && room.seats.filter((x) => !x).length <= this.applications.reservedCount()) {
+          return { error: ERR.ROOM_FULL };
         }
         if (msg.t === 'room.create') {
           if (!s.canCreate || !this.reservation) return { error: ERR.NOT_HOST, detail: 'reservation required' };
           const result = this.lobby.onMessage(s, msg);
-          if (!result.error) {this.reservation = null;this.publicRoom=this.accounts && msg.mode==='coop';}
+          if (!result.error) {
+            this.reservation = null;
+            this.publicRoom = msg.mode === 'coop';
+          }
           return result;
         }
-        const result=this.lobby.onMessage(s, msg);
-        if(!result.error && msg.t==='room.start') this.applications.invalidate();
+        const result = this.lobby.onMessage(s, msg);
+        if (!result.error && msg.t === 'room.start') this.applications.invalidate();
         return result;
       },
       routeGame: (s, msg) => s.spectating?this.spectators.command(s,msg):this.lobby.routeGame(s, msg),
@@ -193,11 +191,8 @@ export class RoomRuntime {
       options: { autoTimers: false, trustProxy: false, maxConnections: ROOM_LIMITS.sockets,
         maxConnectionsPerAddr: ROOM_LIMITS.socketsPerIp, maxSessions: ROOM_LIMITS.sessions } });
     this.network.roomRuntime = this;
-    if (snapshot?.running && !snapshot.matchCheckpoint) {
-      // Match memory and timers cannot be recovered after a deployment/eviction. Invalidate all secrets.
-      this.reservation = null;
-      this.interruptedUntil = now() + ROOM_LIMITS.reservationMs;
-    } else if (snapshot) {
+    // interruptedUntil: a field of the former anonymous rooms, no longer read.
+    if (snapshot) {
       // The room and its sessions as saved. A session saved while connected waits for its socket (the Durable Object
       // attaches the sockets that survived hibernation), then reconcileSockets disconnects it if none did.
       // commandResults: a former per-session command store, no longer kept.
@@ -329,8 +324,7 @@ export class RoomRuntime {
       full: room.mode === 'solo' || room.freeSeat() < 0 } : null;
   }
   isEmpty() {
-    return !this.archiveOutbox.length && !this.reservation && !this.lobby.rooms.size && !this.registry.size && !this.network.connectionCount
-      && this.interruptedUntil <= this.now();
+    return !this.archiveOutbox.length && !this.reservation && !this.lobby.rooms.size && !this.registry.size && !this.network.connectionCount;
   }
   /**
    * Whether a socket of `accountId` has anything to do here: the room, the account's reservation, or a session of the
@@ -338,7 +332,6 @@ export class RoomRuntime {
    */
   canConnect(accountId) {
     if (!this.code || this.isEmpty()) return false;
-    if (!this.accounts) return true;
     if (this.hasAccount(accountId) || [...this.registry.all()].some((s) => s.accountId === accountId)) return true;
     // Anyone else may only watch the room's running public match.
     const room = this.lobby.getRoom(this.code);
@@ -348,7 +341,7 @@ export class RoomRuntime {
     if (this.network.connectionCount >= ROOM_LIMITS.sockets) return 'full';
     const key = limitKeyOf(normalizeIp(ip) || '0.0.0.0');
     if ([...this.socketMeta.values()].filter((m) => m.key === key).length >= ROOM_LIMITS.socketsPerIp) return 'per-address';
-    if(this.accounts && this.lobby.getRoom(this.code)?.match && !this.hasAccount(accountId)) {
+    if (this.lobby.getRoom(this.code)?.match && !this.hasAccount(accountId)) {
       // Reserve every player seat plus one overlap during authenticated reconnect.
       // Include sockets still awaiting hello so connection churn cannot steal the reserve.
       const observers=[...this.socketMeta.values()].filter(m=>!this.hasAccount(m.accountId));
@@ -375,14 +368,14 @@ export class RoomRuntime {
       // Sockets saved before logins were kept with them have neither: their first check is due at once.
       sessionExpiresAt: attachment ? attachment.sessionExpiresAt ?? null : sessionExpiresAt,
       sessionCheckedAt: attachment ? attachment.sessionCheckedAt ?? 0 : this.now(),
-      canCreate: !!attachment?.canCreate || !!(ticket && this.reservation && ticket === this.reservation.ticket &&
-        (!this.accounts || this.reservation.accountId===accountId)) });
+      canCreate: !!attachment?.canCreate
+        || !!(ticket && this.reservation && ticket === this.reservation.ticket && this.reservation.accountId === accountId) });
     this.network.handleConnection(ws, { socket: { remoteAddress: normalized }, headers: {} });
     ws.on('close', () => this.socketMeta.delete(ws));
     const conn = this.network.conns.get(ws);
     // A stranger's new socket (it can only spectate) sends little: its message bucket is a spectator's, kept with the
     // socket's other state across hibernation (attachment.bucket).
-    if (this.accounts && !attachment && !this.hasAccount(accountId)) {
+    if (!attachment && !this.hasAccount(accountId)) {
       conn.bucket = new TokenBucket(ROOM_LIMITS.observerPerSec, ROOM_LIMITS.observerBurst, this.now());
     }
     if (attachment) {
@@ -391,7 +384,7 @@ export class RoomRuntime {
       if (attachment.heavy) Object.assign(conn.heavy, attachment.heavy);
       const session = this.registry.byId(attachment.playerId);
       if (session) {
-        if(this.accounts && (attachment.accountId!==session.accountId || attachment.connectionEpoch!==session.connectionEpoch)) {
+        if (attachment.accountId !== session.accountId || attachment.connectionEpoch !== session.connectionEpoch) {
           conn.close(CLOSE.REPLACED,'session replaced');return conn;
         }
         conn.session = session;
@@ -418,7 +411,7 @@ export class RoomRuntime {
       conn.close(CLOSE.LOGIN_INVALID, 'login expired');
       return;
     }
-    if (this.accounts && conn.session && (conn.session.ws !== ws ||
+    if (conn.session && (conn.session.ws !== ws ||
         this.socketMeta.get(ws)?.connectionEpoch !== conn.session.connectionEpoch)) return;
     const binary = typeof message !== 'string';
     const bytes = binary ? message.byteLength : Buffer.byteLength(message, 'utf8');
@@ -462,7 +455,6 @@ export class RoomRuntime {
     const deadlines = [...this.lobby.deadlines.values()];
     for(const item of this.applications.list()) if(['approved','pending'].includes(item.status)) deadlines.push(item.expiresAt);
     if (this.reservation) deadlines.push(Math.max(this.now() + 30_000, this.reservation.expiresAt));
-    if (this.interruptedUntil > this.now()) deadlines.push(this.interruptedUntil);
     for (const c of this.network.conns.values()) deadlines.push(c.session
       ? c.session.lastSeen + ROOM_LIMITS.idleSocketMs : c.openedAt + this.network.opts.helloTimeoutMs);
     for (const s of this.registry.all()) if (!s.connected) deadlines.push(s.disconnectedAt + this.registry.windowOf(s) + 1);
@@ -532,10 +524,8 @@ export class RoomRuntime {
     const room = this.lobby.getRoom(this.code);
     const base = { version: 1, code: this.code, reservation: this.reservation,
       generation:this.generation,resumeTickets:[...this.resumeTickets],
-      publicRoom:this.publicRoom,applications:this.applications.snapshot(),
-      interruptedUntil: this.interruptedUntil, running: !!room?.match };
-    if (base.running && !room.match.recording) return base;
-    if (room?.match?.recording) base.matchCheckpoint = this.checkpoint(room.match);
+      publicRoom:this.publicRoom,applications:this.applications.snapshot(), running: !!room?.match };
+    if (room?.match) base.matchCheckpoint = this.checkpoint(room.match);
     return { ...base, sessions: [...this.registry.all()].map(({ ws, ...s }) => ({ ...s,
       resyncAt: Number.isFinite(s.resyncAt) ? s.resyncAt : null })), deadlines: [...this.lobby.deadlines],
     room: room ? { code: room.code, mode: room.mode, difficulty: room.difficulty, hostId: room.hostId,

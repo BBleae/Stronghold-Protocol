@@ -66,7 +66,7 @@ Wrangler 执行构建、上传本地静态文件，保留 `ROOMS`（房间），
 
 登录后普通断网使用绑定账号的房间 token 重连，换设备可点击「继续对局」接管原席位。房间连接被拒绝或结束时，服务器以 WebSocket 关闭码说明原因（席位被接管 4001、登录失效 4003、房间不存在或已结束 4004、连接过多 1013 等），浏览器读不到被拒绝升级请求的 HTTP 状态，所以拒绝也先接受连接再关闭；完整列表见 `worker/close-codes.js`。登录只在建立连接时由 Worker 验证；之后房间在后台每分钟向账号目录确认一次（退出登录最迟约一分钟后以 4003 断开），会话到期则在下一条消息时断开，游戏消息从不等待账号目录。等候房间、玩家席位、审批和活动对局日志持久化，支持 DO 休眠/重启后恢复。房间代码 / token 不与其他房间共用。
 
-账号模式的进行中对局通过原版本规则及完整有序日志恢复；构建会保留旧规则引擎。无法恢复的对局按中断结束并释放席位（见 [持久状态说明](persistence-fields.md)）：在 Cloudflare 上回滚到更早的部署会中断所有在新规则版本上进行的对局（玩家看到「服务器版本已回退」），修复问题应提交回退改动重新部署（前滚）。首次从匿名版本迁移时仍须先结束旧局，不能为旧内存对局补造历史。恢复成本随对局长度增长，长时间对局、AI 计算、回放体积和 DO 请求 / 存储写入仍受 Cloudflare 配额限制，具体边界见 [持久化与备份说明](ACCOUNTS-HISTORY.md)。PITR 不能代替独立备份。
+账号模式的进行中对局通过原版本规则及完整有序日志恢复；构建会保留旧规则引擎。无法恢复的对局按中断结束并释放席位（见 [持久状态说明](persistence-fields.md)）：在 Cloudflare 上回滚到更早的部署会中断所有在新规则版本上进行的对局（玩家看到「服务器版本已回退」），修复问题应提交回退改动重新部署（前滚）。Worker 只有账号模式（房间都属于 GitHub 账号，对局都有日志）；Node 本地模式保持原匿名流程。恢复成本随对局长度增长，长时间对局、AI 计算、回放体积和 DO 请求 / 存储写入仍受 Cloudflare 配额限制，具体边界见 [持久化与备份说明](ACCOUNTS-HISTORY.md)。PITR 不能代替独立备份。
 
 ## 运行日志
 
@@ -88,8 +88,10 @@ npm test
 node --test test/worker-client.test.js test/worker-build.test.js test/worker/*.test.js test/resources/*.test.js
 $env:SP_RESOURCES_E2E = '1'
 node --test test/resources/browser.e2e.test.js
-$env:SP_WORKER_URL = 'http://127.0.0.1:8787'
-node --test test/worker-browser.e2e.test.js
+$env:SP_ACCOUNTS_E2E = '1'
+node --test test/ui/account-history.e2e.test.js test/ui/preferences.e2e.test.js test/ui/github-account.e2e.test.js
+$env:SP_SPECTATORS_E2E = '1'
+node --test test/ui/spectators.e2e.test.js
 ```
 
 资源浏览器测试使用系统 Chrome，可用 `CHROME_PATH` 指定路径。后端集成测试使用生产打包方式与 Miniflare / workerd。部署后应检查 `/healthz`、清单和素材响应，并实测两个玩家加入同一房间、准备、开局与断线重连。

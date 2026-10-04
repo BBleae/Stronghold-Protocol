@@ -16,15 +16,21 @@ test('private routes never reach a Durable Object and protocol failures have sta
 
 test('request limits count the network the edge reports, never forwarded headers', async () => {
   const counts = new Map();
+  const token = 'a'.repeat(64);
   const env = {
+    SITES: { idFromName: (name) => name, get: () => ({ getSession: async () => ({ accountId: 'a', expiresAt: Date.now() + 60_000 }) }) },
+    ACCOUNTS: { idFromName: (name) => name, get: () => ({ getActiveSeat: async () => null, claimSeat: async () => ({ ok: true }) }) },
     RESERVE_LIMIT: { async limit({ key }) {
       counts.set(key, (counts.get(key) ?? 0) + 1);
       return { success: counts.get(key) <= 8 };
     } },
-    ROOMS: { idFromName(name) { return name; }, get() { return { fetch() { return Response.json({ code: 'ABCD', ticket: 'secret' }, { status: 201 }); } }; } },
+    ROOMS: { idFromName(name) { return name; }, get() { return { fetch() {
+      return Response.json({ code: 'ABCD', ticket: 'secret', generation: 'g' }, { status: 201 });
+    } }; } },
   };
   const request = (ip, forwarded) => new Request('https://game.example/api/rooms', { method: 'POST',
-    headers: { 'CF-Connecting-IP': ip, 'X-Forwarded-For': forwarded, 'X-Real-IP': forwarded } });
+    headers: { Origin: 'https://game.example', cookie: `__Host-sp_session=${token}`,
+      'CF-Connecting-IP': ip, 'X-Forwarded-For': forwarded, 'X-Real-IP': forwarded } });
   for (let n = 0; n < 8; n++) assert.equal((await worker.fetch(request('8.8.8.8', `9.9.9.${n}`), env)).status, 201);
   const refused = await worker.fetch(request('8.8.8.8', '1.1.1.1'), env);
   assert.equal(refused.status, 429);

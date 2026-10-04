@@ -6,7 +6,7 @@ export async function handleHistoryRoutes(request,env) {
   if(!own && !match) return null;
   if(request.method!=='GET') return json({error:'METHOD'},405);
   const session=await authenticate(request,env);
-  if(!session || !env.ACCOUNTS || !env.MATCH_ARCHIVES) return json({error:'LOGIN_REQUIRED'},401);
+  if(!session) return json({error:'LOGIN_REQUIRED'},401);
   if(own) {
     const filters={mode:u.searchParams.get('mode')||'',difficulty:u.searchParams.get('difficulty')||''};
     return json(u.pathname.endsWith('/stats') ? await accountOf(env,session.accountId).getStats(filters)

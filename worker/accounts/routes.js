@@ -50,7 +50,7 @@ export async function handleAccountRoutes(request, env) {
   if (preferences ? !['GET','POST'].includes(request.method) : request.method !== (path.endsWith('/resume') ? 'POST' : 'GET')) return json({error:'METHOD'},405);
   if (request.method === 'POST') requireOrigin(request);
   const session = await authenticate(request,env);
-  if (!session || !env.ACCOUNTS) return json({error:'LOGIN_REQUIRED'},401);
+  if (!session) return json({error:'LOGIN_REQUIRED'},401);
   const account = accountOf(env,session.accountId);
   if (preferences) {
     if (request.method === 'GET') return json({accountId:session.accountId,preferences:await account.getPreferences()});

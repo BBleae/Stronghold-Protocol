@@ -58,7 +58,7 @@ export class Spectators {
   /** room.spectate: watch the room's running match (a public co-op room's, and not as one of its members). */
   join(session) {
     const room = this.room;
-    if (!this.rt.accounts || !this.rt.publicRoom || room?.mode !== 'coop' || !room.match) return { error: 'ROOM_NOT_FOUND' };
+    if (!this.rt.publicRoom || room?.mode !== 'coop' || !room.match) return { error: 'ROOM_NOT_FOUND' };
     if (this.rt.lobby.roomOf(session)) return { error: 'ROOM_STARTED' };
     if (session.spectating) {
       this.state(session);
