@@ -3,6 +3,7 @@
 .account-row { display:flex; gap:.16rem; align-items:center; flex-wrap:wrap; padding:.12rem 0; }
 .account-row > :first-child { flex:1; min-width:0; overflow-wrap:anywhere; }
 .account-row h2 { margin:0; }
+.account-form { display:flex; flex-direction:column; gap:.16rem; }
 .public-rooms { margin-bottom:.24rem; }
 .public-rooms__list { max-height:3rem; overflow-y:auto; }
 .public-room + .public-room { border-top:1px solid var(--line); }

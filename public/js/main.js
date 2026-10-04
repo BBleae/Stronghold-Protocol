@@ -9,7 +9,7 @@
 // Deep link `?room=CODE`: remembered at boot, auto-joined once the player has entered and the
 // session is online (after a short grace period in case the server restores a room on resume).
 // Account mode (Workers, room-net.js): the join is an application sent from the menu; a logged-out
-// player keeps the invite, and the GitHub login carries it back (account.js loginUrl).
+// player keeps the invite, and the login brings it back (account.js returnPath, githubLoginUrl).
 // Reloading a tab that already passed the title re-enters automatically (sessionStorage flag) and
 // resumes the server session with the saved token; stale room/match state is dropped if the
 // server does not re-push it within RESTORE_GRACE_MS after `welcome`. Boot waits for
@@ -35,11 +35,12 @@ import { useErrorBoundary } from '../vendor/hooks.module.js';
 import { html, UiHosts, Button, MicroLabel, closeAllDialogs } from './ui/components.js';
 import { ConnectionBanner } from './ui/connBanner.js';
 import { ToastHost, toast, toastError, describeError } from './ui/toasts.js';
-import { net, identity, NetError } from './net.js';
+import { net, identity, NetError, CLIENT_ERR_TEXT } from './net.js';
 import { store, useStore, emptyMatch, selectRoute, sessionResetNotice } from './store.js';
 import { data, getChess } from './data.js';
 import { GAME_FILES } from './ui/gameComponents.js';
-import { TitleScreen, sanitizeName } from './screens/title.js';
+import { TitleScreen } from './screens/title.js';
+import { sanitizeName } from './names.js';
 import { LobbyScreen, rememberRoom, parseRoomParam } from './screens/lobby.js';
 import { RoomScreen } from './screens/room.js';
 import { GameScreen } from './screens/game.js';
@@ -101,7 +102,7 @@ function schedulePendingJoin() {
     const s = store.get();
     const code = s.ui.pendingJoin;
     if (!code || joinInFlight || !joinReady(s)) return;
-    // Logged out (account mode): the invite waits for the GitHub login, which brings it back.
+    // Logged out (account mode): the invite waits for the login, which brings it back.
     if (account.enabled && !account.user) return;
     if (s.room) {
       if (s.room.code !== code) toast('你已在其他同盟中，请先离开当前同盟', 'warn');
@@ -343,8 +344,8 @@ async function boot() {
   // touch / hover / fullscreen classes, zoom-gesture blocking, rotation re-layout (ui/device.js, css/devices.css)
   installDeviceSupport();
   if (document.documentElement.dataset.spRuntime === 'cloudflare') {
-    const profile = await loadAccount();
-    if (profile.capabilities?.accountSystem) await preferences.start(account.user?.accountId);
+    await loadAccount();
+    if (account.enabled) await preferences.start(account.user?.accountId);
     if (account.application) net.watchApplication({ ...account.application, code: account.application.roomId, status: 'pending' });
     const resources = await import('./resources/index.js');
     await resources.prepareResources();
@@ -356,7 +357,9 @@ async function boot() {
   const identityReady = identity.init();
 
   const pendingJoin = parseRoomParam(location.search);
-  const savedName = sanitizeName(account.user?.name || identity.loadName());
+  // Account mode: the page shows the account's display name (昵称#NNNN, up to 17 characters); the room names the session
+  // after the account, so the hello's name (at most NAME_MAX_LEN) is not used there.
+  const savedName = account.user ? account.user.name : sanitizeName(identity.loadName());
   const entered = !!account.user || identity.wasEntered() && !!savedName;
   store.set((s) => ({
     me: { ...s.me, name: savedName },
@@ -379,15 +382,19 @@ async function boot() {
     // Account mode: a reload, or a tab the browser discarded, mid-match resumes this tab's seat. That room's socket is
     // the first connection; without one the client starts in the menu (which forgets the token, see wireNet).
     if (account.enabled) net.restore(identity.getToken(), account.activeSeat).catch((err) => toastError(err));
-    if (entered) net.setName(savedName);
+    if (entered) net.setName(sanitizeName(savedName));
     else net.connect();
   });
   await Promise.all([waitForFonts(1200), connectWhenReady]);
   const root = document.getElementById('app');
   render(html`<${App} />`, root);
-  if(new URLSearchParams(location.search).has('authError')) {
-    toast('GitHub 登录未完成，请重试','warn');
-    const url=new URL(location.href);url.searchParams.delete('authError');history.replaceState(null,'',url.pathname+url.search);
+  // A GitHub login that did not complete came back with the code of what went wrong (worker/accounts/github.js).
+  const authError = new URLSearchParams(location.search).get('authError');
+  if (authError !== null) {
+    toast(authError === 'GITHUB_UNAVAILABLE' ? CLIENT_ERR_TEXT.GITHUB_UNAVAILABLE : 'GitHub 登录未完成，请重试', 'warn');
+    const url = new URL(location.href);
+    url.searchParams.delete('authError');
+    history.replaceState(null, '', url.pathname + url.search);
   }
 
   const splash = document.getElementById('boot');

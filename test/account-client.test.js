@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { account, accountRequest, loadAccount, loginUrl, ACCOUNT_REQUEST_TIMEOUT_MS } from '../public/js/account.js';
+import { account, accountRequest, loadAccount, githubLoginUrl, returnPath, ACCOUNT_REQUEST_TIMEOUT_MS } from '../public/js/account.js';
 import { NetError } from '../public/js/net.js';
 
 const answer = (status, body) => async () => Response.json(body, { status });
@@ -9,12 +9,12 @@ test('loadAccount reads /api/me once: capabilities, user, seat and application',
   const calls = [];
   const fetch = async (url, init) => {
     calls.push({ url, init });
-    return Response.json({ user: { name: 'Alice' }, capabilities: { accounts: true, accountSystem: true },
+    return Response.json({ user: { name: 'Alice#0042' }, capabilities: { password: true, github: false },
       activeSeat: { roomId: 'ABCD' }, application: null });
   };
-  assert.equal((await loadAccount(fetch)).user.name, 'Alice');
+  assert.equal((await loadAccount(fetch)).user.name, 'Alice#0042');
   assert.deepEqual(calls.map((c) => c.url), ['/api/me']);
-  assert.deepEqual({ ...account }, { enabled: true, loginReady: true, user: { name: 'Alice' }, activeSeat: { roomId: 'ABCD' }, application: null });
+  assert.deepEqual({ ...account }, { enabled: true, github: false, user: { name: 'Alice#0042' }, activeSeat: { roomId: 'ABCD' }, application: null });
   assert.equal(await accountRequest('/api/auth/logout', {}, async () => new Response(null, { status: 204 })), null);
 });
 
@@ -34,7 +34,8 @@ test('account errors are NetErrors with the player-facing text of their code', a
 test('every code the account API answers in a player flow has Chinese text', () => {
   // worker/index.js, worker/accounts/*, worker/rooms/*, worker/archive/routes.js: answers to the lobby, applications,
   // seats, history and replays (APPLICANT_BUSY: the host approves an applicant who is seated elsewhere meanwhile)
-  const codes = ['LOGIN_REQUIRED', 'AUTH_UNAVAILABLE', 'ACCOUNT_UNAVAILABLE', 'ALREADY_SEATED', 'APPLICATION_PENDING',
+  const codes = ['LOGIN_REQUIRED', 'GITHUB_UNAVAILABLE', 'INVALID_USERNAME', 'USERNAME_TAKEN', 'INVALID_PASSWORD', 'INVALID_NICKNAME',
+    'NICKNAME_FULL', 'BAD_CREDENTIALS', 'WRONG_PASSWORD', 'RATE_LIMITED', 'ACCOUNT_UNAVAILABLE', 'ALREADY_SEATED', 'APPLICATION_PENDING',
     'APPLICATION_EXPIRED', 'APPLICATION_NOT_FOUND', 'ALREADY_JOINED', 'TOO_MANY_APPLICATIONS', 'APPLICATION_FAILED',
     'APPLICANT_BUSY', 'LOBBY_UNAVAILABLE', 'HISTORY_UNAVAILABLE', 'ARCHIVE_NOT_READY', 'REPLAY_INCOMPLETE', 'FORBIDDEN',
     'ROOM_NOT_FOUND', 'ROOM_FULL', 'ROOM_STARTED', 'NOT_HOST', 'RATE', 'BAD_MSG', 'INTERNAL'];
@@ -67,8 +68,20 @@ test('no answer is OFFLINE; an answer that is not the API\'s JSON is UNAVAILABLE
   assert.equal(warn.mock.callCount(), 1);
 });
 
-test('the GitHub login carries a pending invite code back, nothing else', () => {
-  assert.equal(loginUrl(), '/api/auth/github/start');
-  assert.equal(loginUrl('ABCD'), '/api/auth/github/start?return=%2F%3Froom%3DABCD');
-  for (const room of ['AB12', 'abcd', 'ABCDE', '/evil']) assert.equal(loginUrl(room), '/api/auth/github/start');
+test('a login (password or GitHub) carries a pending invite code back, nothing else', () => {
+  assert.equal(returnPath(), '/');
+  assert.equal(returnPath('ABCD'), '/?room=ABCD');
+  assert.equal(githubLoginUrl(), '/api/auth/github/start');
+  assert.equal(githubLoginUrl('ABCD'), '/api/auth/github/start?return=%2F%3Froom%3DABCD');
+  for (const room of ['AB12', 'abcd', 'ABCDE', '/evil']) {
+    assert.equal(returnPath(room), '/');
+    assert.equal(githubLoginUrl(room), '/api/auth/github/start');
+  }
+});
+
+test('the sign-in texts are the ones the player is told', () => {
+  const texts = { INVALID_USERNAME: '用户名为 3–20 位字母、数字或下划线', USERNAME_TAKEN: '用户名已被使用', INVALID_PASSWORD: '密码长度为 8–128 位',
+    INVALID_NICKNAME: '代号为 1–12 个字，不能包含 #', NICKNAME_FULL: '这个代号已被太多人使用，请换一个', BAD_CREDENTIALS: '用户名或密码错误',
+    WRONG_PASSWORD: '当前密码不正确', RATE_LIMITED: '尝试次数过多，请稍后再试', GITHUB_UNAVAILABLE: 'GitHub 登录暂不可用' };
+  for (const [code, text] of Object.entries(texts)) assert.equal(new NetError(code).message, text, code);
 });

@@ -134,14 +134,20 @@
 }
 
 /* ---- centre column ------------------------------------------------------------------------------- */
+/* Raised .3rem above the centre (its padding is below). A screen too short for it (a phone, with the account card's
+   forms) scrolls it rather than cutting its top and bottom off; the side padding keeps the glows uncut. */
 .title-main {
   position: relative;
   z-index: 2;
   display: flex;
   flex-direction: column;
   align-items: center;
-  margin-top: -.3rem;
+  max-height: 100%;
+  padding: 0 .5rem .6rem;
+  overflow-y: auto;
 }
+/* Account mode, signed out: the account card's forms take the emblem's room. */
+.title-screen--sign-in .emblem { display: none; }
 
 .emblem { position: relative; display: flex; align-items: center; gap: .26rem; margin-bottom: .26rem; animation: rise-in 600ms var(--ease-out) backwards; }
 .emblem__svg { width: 1.3rem; height: 1.4rem; overflow: visible; filter: drop-shadow(0 0 .12rem rgba(210, 255, 240, .25)); }
@@ -225,6 +231,8 @@
 }
 .title-login .btn--xl { letter-spacing: .6em; padding-left: calc(.48rem + .3em); }
 .title-login .title-login__github, .title-login .title-login__enter { letter-spacing: normal; padding-inline: .24rem; }
+/* The account card's form: its fields and button are rows of the card like the others. */
+.title-login__form { display: contents; }
 .title-login__account { display: flex; align-items: center; gap: .12rem; }
 .title-login__identity { flex: 1; min-width: 0; }
 .title-login__identity > span { display: block; font-size: .13rem; color: var(--text-lo); }

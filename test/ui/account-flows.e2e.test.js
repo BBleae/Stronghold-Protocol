@@ -25,8 +25,11 @@ test('account flows: invite through the GitHub login, invite while logged in, re
     // GitHub at the Worker's outbound fetch: the OAuth code names the GitHub user (code u<id>).
     globalThis.fetch=async(input,init)=>{
       const href=typeof input==='string'?input:input.url;
-      if(href==='https://github.com/login/oauth/access_token')
-        return Response.json({access_token:'gho_'+new URLSearchParams(String(init.body)).get('code')});
+      if(href==='https://github.com/login/oauth/access_token') {
+        // The credentials check (a made-up code) finds them valid; a login's code names the user.
+        const code=new URLSearchParams(String(init.body)).get('code');
+        return Response.json(code==='stronghold-credentials-check'?{error:'bad_verification_code'}:{access_token:'gho_'+code});
+      }
       if(href==='https://api.github.com/user') {
         const id=Number(new Headers(init.headers).get('Authorization').replace('Bearer gho_u',''));
         return Response.json({id,login:'friend'+id,name:'Friend'+id,avatar_url:null});
@@ -140,20 +143,18 @@ test('account flows: invite through the GitHub login, invite while logged in, re
   assert.equal(await friend.evaluate(() => __SP__.net.playerId), playerId);
   assert.equal(await friend.evaluate(() => __SP__.store.get().room.code), code);
 
-  // Logging out elsewhere revokes the session: the room client stops and asks for a new login.
-  await friend.evaluate(() => fetch('/api/auth/logout', { method: 'POST' }));
-  await friend.evaluate(() => __SP__.net.request('g.infoReady').catch(() => {}));
-  await friend.waitForFunction(() => __SP__.net.status === 'closed', { timeout: 15000 });
+  // Logging out elsewhere revokes the session. A room notices within a minute (its login check, worker/index.js
+  // checkLogins), in a match as in a waiting room: the room client stops and asks for a new login.
+  await call(elsewhere, 'room.create', { mode: 'coop', difficulty: 'FUNNY' });
+  await Promise.all([friend, elsewhere].map((page) => page.evaluate(() => fetch('/api/auth/logout', { method: 'POST' }))));
+  await Promise.all([friend, elsewhere].map((page) => page.waitForFunction(() => __SP__.net.status === 'closed', { timeout: 90000 })));
   assert.match(await text(friend), /登录已失效，请重新登录/);
   assert.ok(await friend.evaluate(() => [...document.querySelectorAll('.conn-banner button')].some((b) => b.textContent.includes('重新登录'))));
   await friend.evaluate(() => { window.__statuses = []; __SP__.net.on('status', (s) => window.__statuses.push(s.status)); });
   await new Promise((resolve) => setTimeout(resolve, 3000));
   assert.deepEqual(await friend.evaluate(() => window.__statuses), [], 'no reconnect attempts');
 
-  // A login revoked while idling in a waiting room is found by the first message, 离开: the player is in the lobby,
-  // still asked to log in again.
-  await call(elsewhere, 'room.create', { mode: 'coop', difficulty: 'FUNNY' });
-  await elsewhere.evaluate(() => fetch('/api/auth/logout', { method: 'POST' }));
+  // 离开 the waiting room whose login was lost: the player is in the lobby, still asked to log in again.
   await elsewhere.waitForSelector('button[aria-label="离开同盟"]');
   await elsewhere.click('button[aria-label="离开同盟"]');
   await elsewhere.waitForFunction(() => !__SP__.store.get().room && __SP__.net.status === 'closed', { timeout: 15000 });

@@ -944,7 +944,8 @@ describe('data.js', () => {
 
 describe('screen helpers', () => {
   test('title: sanitizeName / isValidName / findUiAsset', async () => {
-    const { sanitizeName, isValidName, findUiAsset } = await mod('screens/title.js');
+    const { findUiAsset } = await mod('screens/title.js');
+    const { sanitizeName, isValidName } = await mod('names.js');
     assert.equal(sanitizeName('  凯尔希  '), '凯尔希');
     assert.equal(sanitizeName('a\u0000b\u200bc\u202ed'), 'abcd');
     assert.equal(sanitizeName('a   b'), 'a b');

@@ -236,7 +236,7 @@ export function LobbyScreen() {
   const codeOk = CODE_RE.test(code);
 
   const run = async (kind, fn) => {
-    if (account.enabled && !account.user) { toast('请先使用 GitHub 登录', 'warn'); return; }
+    if (account.enabled && !account.user) { toast('请先登录', 'warn'); return; }
     if (inFlight.current) return;
     if (!ready) { toast('尚未连接到服务器，请稍候', 'warn'); return; }
     inFlight.current = true;
@@ -277,7 +277,7 @@ export function LobbyScreen() {
         <div class="me-chip">
           <${AvatarFrame} size="sm" name=${displayName} src=${account.user?.avatarUrl} seat=${0} self=${true} />
           <div class="me-chip__text">
-            <span class="me-chip__name">${displayName || '博士'}</span>
+            <span class="me-chip__name" title=${displayName || '博士'}>${displayName || '博士'}</span>
             <${MicroLabel}>${me.playerId != null ? `DOCTOR #${doctorNo(me.playerId)}` : 'DOCTOR'}<//>
           </div>
         </div>
