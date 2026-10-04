@@ -4,7 +4,6 @@ import { CODE_ALPHABET } from '../server/lobby.js';
 import { normalizeIp, limitKeyOf, TokenBucket } from '../server/net.js';
 import { RoomRuntime, validCode } from './room-runtime.js';
 import { prepareMatchVersion } from './match-versions.js';
-import { PACK_PATH, servePack } from './pack.js';
 import { handleAuth, authenticate, accountOf, directoryOf } from './accounts/auth.js';
 import { handleAccountRoutes } from './accounts/routes.js';
 import { handleLobbyRoutes, roomApplications } from './rooms/routes.js';
@@ -99,7 +98,6 @@ export default {
       return roomStub(env, code).fetch(new Request(dest, { headers: { Upgrade: 'websocket', 'X-Room-IP': ip,
         ...(session ? {'X-Account-ID':session.accountId,'X-Session-ID':session.sessionId} : {}) } }));
     }
-    if (path === PACK_PATH) return servePack(request, env);
     if (path.startsWith('/api/')) return error(404, 'ROOM_NOT_FOUND');
     return env.ASSETS ? env.ASSETS.fetch(request) : error(404, 'ROOM_NOT_FOUND');
   },

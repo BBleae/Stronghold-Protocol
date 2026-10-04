@@ -4,12 +4,12 @@ import { mkdtemp, mkdir, writeFile, readFile, access, rm } from 'node:fs/promise
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-test('Workers static build preserves public routes without publishing private source or ZIPs', async t => {
+test('Workers static build preserves public routes without publishing game resources, private source or ZIPs', async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'sp-build-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const files = {
     'public/index.html': '<html lang="zh-CN"><body><script type="module" src="/js/main.js"></script></body></html>',
-    'public/assets/a.png': 'image', 'public/.secret': 'secret',
+    'public/assets/a.png': 'image', 'public/fonts/f.woff2': 'font', 'public/js/main.js': 'code', 'public/.secret': 'secret',
     'public/dev/recording.json': 'private dev data', 'public/bundle.zip': 'archive',
     'shared/protocol.js': 'export {}', 'data/config.json': '{}',
     'server/sim/Battle.js': 'export {}', 'server/sim/nodeData.js': 'private loader',
@@ -22,13 +22,14 @@ test('Workers static build preserves public routes without publishing private so
   const { copyRuntimeAssets } = await import('../tools/build-worker.mjs');
   const out = path.join(root, 'dist/client');
   await copyRuntimeAssets({ root, out });
-  assert.equal(await readFile(path.join(out, 'assets/a.png'), 'utf8'), 'image');
+  assert.equal(await readFile(path.join(out, 'js/main.js'), 'utf8'), 'code');
   assert.match(await readFile(path.join(out, 'index.html'), 'utf8'), /data-sp-runtime="cloudflare"/);
   assert.match(await readFile(path.join(out, 'index.html'), 'utf8'), /src="\/js\/worker-entry.js"/);
   assert.match(await readFile(path.join(out, 'data.js'), 'utf8'), /getSimData/);
   await access(path.join(out, 'sim/Battle.js'));
   await access(path.join(out, 'data/config.json'));
-  for (const name of ['.secret', 'dev/recording.json', 'bundle.zip', 'sim/nodeData.js', 'server/private.js']) {
+  // the game's art, audio and fonts are never published: players import their own resource ZIP
+  for (const name of ['assets/a.png', 'fonts/f.woff2', '.secret', 'dev/recording.json', 'bundle.zip', 'sim/nodeData.js', 'server/private.js']) {
     await assert.rejects(access(path.join(out, name)), { code: 'ENOENT' });
   }
 });
