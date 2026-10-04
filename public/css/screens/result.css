@@ -45,7 +45,8 @@
 .rcard__head { display: grid; grid-template-columns: auto minmax(1.5rem, 2.1rem) minmax(0, 1fr) auto 2.3rem; gap: .18rem; align-items: center; }
 .rcard__head .pavatar { --pa: .6rem; }
 .rcard__who { display: flex; flex-direction: column; gap: .03rem; min-width: 0; }
-.rcard__name { font-size: .22rem; display: flex; align-items: center; gap: .08rem; }
+/* A display name (up to 17 characters: 昵称#NNNN) wraps rather than spilling into the lineup column. */
+.rcard__name { font-size: .22rem; display: flex; align-items: center; gap: .08rem; overflow-wrap: anywhere; }
 .rcard__ai, .rcard__you { font-size: .11rem; padding: 0 .05rem; font-weight: 700; }
 .rcard__ai { background: #a9c3d8; color: #0b1520; }
 .rcard__you { background: var(--mint-500); color: var(--text-on-mint); }
