@@ -1,8 +1,8 @@
 // The replay log of a client-simulated battle (public/js/battle/runner.js, account mode) as the server archives it
 // (server/match/checkpoint.js RecordedMatch, server/match/recorder.js): it stays complete — and re-simulates
 // (battle/replay-runner.js) to the battle that was played — across a short offline window the server never notices, a
-// dead socket that swallowed reports, a battle that ends while offline, and a boss handover whose replica kept more
-// inputs than one report carries.
+// dead socket that swallowed reports, a battle that ends while offline, a reconnect while a battle is still catching up
+// to the field clock, and a boss handover whose replica kept more inputs than one report carries.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createBattleRunner, REPORT_INPUTS } from '../../public/js/battle/runner.js';
@@ -28,6 +28,32 @@ function runnerFor(net, now) {
     loadSim: async () => ({ spec: specMod, ds: DS }), logger: QUIET,
   });
   return { runner, frame: (t) => { for (const fn of frames.splice(0)) fn(t); } };
+}
+
+/**
+ * A socket stand-in (account mode) that keeps what reaches the server in `sent`; while `lossy` it takes frames that
+ * never arrive (a dead connection the heartbeat has not noticed yet).
+ */
+function recordingNet() {
+  const handlers = new Map();
+  const net = {
+    accountMode: true, lossy: false, sent: [],
+    on(k, fn) { if (!handlers.has(k)) handlers.set(k, new Set()); handlers.get(k).add(fn); return () => handlers.get(k).delete(fn); },
+    emit(k, msg) { for (const fn of handlers.get(k) || []) fn({ t: k, ...msg }); },
+    send(k, fields) {
+      const msg = { ...fields, t: k };
+      assert.equal(validateC2S(msg), null, `invalid ${k}`);
+      if (!net.lossy) net.sent.push(msg);
+      return true;
+    },
+    request(k, fields) {
+      const msg = { ...fields, t: k, rid: 1 };
+      assert.equal(validateC2S(msg), null, `invalid ${k}`);
+      net.sent.push(msg);
+      return Promise.resolve({ t: 'ok' });
+    },
+  };
+  return net;
 }
 
 /** Re-simulate an archived client battle; its last snapshot and result must be the live battle's. */
@@ -203,6 +229,39 @@ test('the server noticed the disconnect: it took the field over and archives its
   x.dispose();
 });
 
+test('a reconnect while an authoritative battle is still catching up to the field clock: its reports start over too', { timeout: 120000 }, async () => {
+  const h = makeMatch({ mode: 'coop', difficulty: 'NORMAL', humans: 1, bots: 1, seed: 7441, captureFrames: false, clientCombat: true, clients: false });
+  h.autoHumans();
+  h.m.start();
+  h.run(() => h.m.phase === PHASE.COMBAT && h.m.round === 2, { maxSteps: 3e6 });
+  const start = h.lastTo('p_0', 'b.start');
+  h.m.dispose();
+  let t = 1000;
+  const net = recordingNet();
+  const { runner, frame } = runnerFor(net, () => t);
+  const settle = async () => { for (let i = 0; i < 50; i++) { await tick(); frame(t); } };
+  // a resumed tab takes over its running field 20 game s in: the first catch-up slice reports, into a dead socket
+  net.lossy = true;
+  net.emit('b.start', { ...start, elapsed: 20 });
+  for (let i = 0; i < 5; i++) await tick();
+  assert.equal(runner._entries.size, 0, 'still catching up');
+  net.lossy = false;
+  net.emit('welcome', {});
+  await settle();
+  for (let i = 0; i < 300 && !runner._entries.get(start.battleId)?.done; i++) {
+    t += 50;
+    frame(t);
+  }
+  await settle();
+  const live = runner._entries.get(start.battleId).battle;
+  assert.ok(live.finished);
+  const field = { authority: start.spec.players[0].playerId };
+  for (const x of net.sent.filter((m) => m.replay)) assert.equal(appendReplayReport(field, field.authority, x.replay), true, `report ${x.replay.seq} accepted`);
+  assert.equal(field.replayTrace.tick, live.tickCount, 'complete to the last tick');
+  assertReplays({ source: 'client', spec: start.spec, ...field.replayTrace }, live);
+  runner.dispose();
+});
+
 let bossStart = null;
 /** A real b.start of a Final Assault boss field (client-side combat). */
 function realBossStart() {
@@ -221,15 +280,8 @@ function realBossStart() {
 test(`boss handover: the replica's whole replay log (more than ${REPORT_INPUTS} pool syncs) reaches the server in several reports and replaces the old authority's`, { timeout: 120000 }, async () => {
   const start = realBossStart();
   let t = 1000;
-  const sent = [];
-  const handlers = new Map();
-  const net = {
-    accountMode: true,
-    on(k, fn) { if (!handlers.has(k)) handlers.set(k, new Set()); handlers.get(k).add(fn); return () => handlers.get(k).delete(fn); },
-    emit(k, msg) { for (const fn of handlers.get(k) || []) fn({ t: k, ...msg }); },
-    send(k, fields) { const msg = { ...fields, t: k }; assert.equal(validateC2S(msg), null, `invalid ${k}`); sent.push(msg); return true; },
-    request(k, fields) { const msg = { ...fields, t: k, rid: 1 }; assert.equal(validateC2S(msg), null, `invalid ${k}`); sent.push(msg); return Promise.resolve({ t: 'ok' }); },
-  };
+  const net = recordingNet();
+  const sent = net.sent;
   const { runner, frame } = runnerFor(net, () => t);
   const advance = (ms) => { const end = t + ms; while (t < end) { t = Math.min(end, t + 1000 / 60); frame(t); } };
   const settle = async () => { for (let i = 0; i < 50; i++) { await tick(); frame(t); } };

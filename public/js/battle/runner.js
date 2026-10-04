@@ -206,6 +206,8 @@ export function createBattleRunner(deps) {
   let pausedAt = null;
   /** a normal field's leak count (or a battle's bond layers) changed since the last publishState() */
   let leaksDirty = false;
+  /** sessions so far ('welcome'): a replay report segment belongs to the session it started in */
+  let session = 0;
   const stats = { ticks: 0, stepMs: 0, maxFrameMs: 0, catchups: 0, errors: 0, battles: 0, frames: 0 };
   /** Hidden-tab backlog tuple → the game time it was drained at (emitFrame batches the backlog by it). */
   const heldAt = new WeakMap();
@@ -454,19 +456,16 @@ export function createBattleRunner(deps) {
       if (p.left) msg.left = Object.fromEntries(Object.entries(p.left).slice(0, 4));
     }
     if (!net.accountMode) return net.send('b.progress', msg);
-    if (!e.segment) {
-      e.segment = crypto.randomUUID();
-      e.seq = 0;
-      e.sent = 0;
-    }
+    if (!e.segment || e.segment.session !== session) e.segment = { id: crypto.randomUUID(), session, seq: 0, sent: 0 };
+    const seg = e.segment;
     do {
-      const inputs = e.inputs.slice(e.sent, e.sent + REPORT_INPUTS);
-      const all = e.sent + inputs.length === e.inputs.length;
+      const inputs = e.inputs.slice(seg.sent, seg.sent + REPORT_INPUTS);
+      const all = seg.sent + inputs.length === e.inputs.length;
       const tick = all ? e.battle.tickCount : inputs[inputs.length - 1].tick;
-      if (!net.send('b.progress', { ...msg, replay: { segment: e.segment, seq: e.seq, tick, inputs } })) return false;
-      e.seq++;
-      e.sent += inputs.length;
-    } while (e.sent < e.inputs.length);
+      if (!net.send('b.progress', { ...msg, replay: { segment: seg.id, seq: seg.seq, tick, inputs } })) return false;
+      seg.seq++;
+      seg.sent += inputs.length;
+    } while (seg.sent < e.inputs.length);
     return true;
   }
 
@@ -669,9 +668,9 @@ export function createBattleRunner(deps) {
       members: (msg.spec.players || []).map((p) => p && p.playerId).filter(Boolean),
       t0: clock() - ((Number(msg.elapsed) || 0) / speed) * 1000, lastProgressAt: -Infinity, done: false, resultSent: false,
       result: null, delivery: null,
-      // the replay log (tick inputs: b.pool syncs, the b.end) and how far its report segment got: segment id (null: the
-      // next report starts a new one), the segment's next seq and the inputs it has carried
-      inputs: [], segment: null, seq: 0, sent: 0,
+      // the replay log (tick inputs: b.pool syncs, the b.end) and its report segment { id, session, seq: the next one,
+      // sent: the inputs it carried } (null: the next report starts one)
+      inputs: [], segment: null,
       meter: sim.spec.attachLpMeter(battle),
       // counted leaks so far (normal fields; noteLeaks) and the Battle state they were counted at; 联防 fields: each
       // leaker's enemies still standing (noteUniteLeft)
@@ -764,7 +763,7 @@ export function createBattleRunner(deps) {
     // a new session (reconnect / resume): the server's copy of every replay log is unknown — the reports start new
     // segments — and the results that could not go out or were lost with the old socket go out again
     offs.push(net.on('welcome', () => {
-      for (const e of entries.values()) e.segment = null;
+      session++;
       redeliver();
     }));
   }
