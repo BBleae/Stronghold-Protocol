@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { unitRange } from '../../public/js/ui/facing.js';
 import { bandTagShown } from '../../public/js/ui/teamPanel.js';
-import { leaderShown, penShown } from '../../public/js/render/app.js';
+import { leaderShown, penShown, renderInfo } from '../../public/js/render/app.js';
 
 const GRID = [[0, 0], [0, 1]];
 const lookups = {
@@ -41,4 +41,14 @@ test('the leader is drawn with the boss field cameras, the pen figures only with
   for (const k of ['prep', 'normal', 'unite', 'pen']) assert.equal(leaderShown(k), false, k);
   assert.equal(leaderShown('pen', 'bossPrep'), true, 'kept while the camera flies away');
   assert.equal(penShown('bossPrep'), false);
+});
+
+test('a scouted bench / temp operator tapped on the field has no range (renderInfo keeps UnitInfo `area`)', () => {
+  // the click payload's unit is the render info (pieceClick: infos.get(id) || v.info), not the raw m.field UnitInfo
+  const base = { id: 7, uid: 7, side: 'ally', kind: 'op', defId: 'chess_x', x: 2, y: 0, dir: 'RIGHT' };
+  assert.equal(renderInfo({ ...base, area: 'hand' }).area, 'hand');
+  assert.equal(unitRange(renderInfo({ ...base, area: 'hand' }), lookups), null);
+  assert.equal(unitRange(renderInfo({ ...base, area: 'temp' }), lookups), null);
+  assert.ok(unitRange(renderInfo({ ...base, area: 'board' }), lookups));
+  assert.ok(unitRange(renderInfo(base), lookups), 'a battle unit (no area) shows its range');
 });
