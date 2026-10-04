@@ -45,7 +45,7 @@ test('public spectator UI: live board, presence, read-only controls and restart 
     await page.evaluateOnNewDocument(()=>{localStorage.setItem('stronghold-resource-mode','ondemand');globalThis.__SP_RENDER__='fallback';});
     await page.goto(base+'__test/login/'+actor,{waitUntil:'domcontentloaded'});
     await page.addStyleTag({content:'*,*::before,*::after {animation:none!important;transition:none!important}'});
-    try{await page.waitForFunction(()=>globalThis.__SP__?.net.status==='online',{timeout:15000});}
+    try{await page.waitForFunction(()=>globalThis.__SP__?.net.status==='menu',{timeout:15000});}
     catch(e){throw new Error(JSON.stringify({errors,state:await page.evaluate(()=>({text:document.body.innerText,net:globalThis.__SP__?.net.status,url:location.href}))}),{cause:e});}return page;
   };
 
