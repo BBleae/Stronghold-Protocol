@@ -31,13 +31,11 @@ test('refused upgrades close with a code: login invalid 4003, room gone 4004, to
   assert.deepEqual(await refusal('a', route.code), { code: 1013, reason: 'connection limit (per-address)' });
   for (const socket of open) socket.ws.close(1000);
 
-  // A room that ended is gone for everyone but the accounts that still have a session there (to resume it, or to
-  // learn why it closed).
+  // A room that ended is gone, for the member who left it too: nothing is left to resume.
   await world.seed('b');
   assert.equal((await host.request('room.leave')).t, 'ok');
   assert.deepEqual(await refusal('b', route.code), { code: 4004, reason: 'no such room' });
-  const own = await world.player('a', { code: route.code, token: host.welcome.token });
-  assert.equal(own.welcome.resumed, true);
+  assert.deepEqual(await refusal('a', route.code), { code: 4004, reason: 'no such room' });
 });
 
 test('a spectator whose match ended is told so before its socket closes with 4004', { timeout: 120000 }, async (t) => {
@@ -58,6 +56,44 @@ test('a spectator whose match ended is told so before its socket closes with 400
   assert.deepEqual(await viewer.waitClosed(), { code: 4004, reason: 'match ended' });
   assert.equal(viewer.frames.at(-1).t, 'room.closed');
   assert.equal(viewer.frames.at(-1).reason, 'ended');
+});
+
+test('once a match ended, its spectators have nothing left in the room but its end to collect, with two sockets at most', { timeout: 120000 }, async (t) => {
+  const world = await createWorld(t);
+  for (const actor of ['a', 'b', 'c']) await world.seed(actor);
+  const route = (await world.api('a', '/api/rooms', { method: 'POST' })).body;
+  const host = await world.player('a', route);
+  await host.request('room.create', { mode: 'coop', difficulty: 'FUNNY' });
+  assert.equal((await host.request('room.start')).t, 'ok');
+  // b watches until the end; c watched, and is offline when the match ends.
+  const watching = await world.player('b', { code: route.code, ip: '10.0.0.1' });
+  assert.equal((await watching.request('room.spectate')).t, 'ok');
+  const away = await world.player('c', { code: route.code, ip: '10.0.0.2' });
+  assert.equal((await away.request('room.spectate')).t, 'ok');
+  away.ws.close(1000);
+  await away.waitClosed();
+  assert.equal((await host.request('g.leave')).t, 'ok');
+  assert.deepEqual(await watching.waitClosed(), { code: 4004, reason: 'match ended' });
+
+  const socket = async (actor, ip) => {
+    const opened = await world.socket(actor, { code: route.code, ip });
+    assert.equal(opened.status, 101);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    return opened;
+  };
+  // b saw the end: nothing is left for it here.
+  assert.deepEqual(await (await socket('b', '10.0.0.1')).waitClosed(), { code: 4004, reason: 'no such room' });
+  // c has the end to collect: it may connect, with a stranger's two sockets at most.
+  const first = await socket('c', '10.0.0.2');
+  const second = await socket('c', '10.0.0.3');
+  assert.equal(first.closed, null);
+  assert.equal(second.closed, null);
+  assert.deepEqual(await (await socket('c', '10.0.0.4')).waitClosed(), { code: 1013, reason: 'connection limit (spectators-per-account)' });
+  first.send({ t: 'hello', name: 'Player c', token: away.welcome.token });
+  assert.equal((await first.wait('room.closed')).reason, 'ended');
+  // Collected: nothing is left for c either.
+  second.ws.close(1000);
+  assert.deepEqual(await (await socket('c', '10.0.0.3')).waitClosed(), { code: 4004, reason: 'no such room' });
 });
 
 test('strangers may only watch a running public match, with few sockets and few connections', { timeout: 120000 }, async (t) => {

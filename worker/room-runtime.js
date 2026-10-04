@@ -338,29 +338,34 @@ export class RoomRuntime {
     return !this.archiveOutbox.length && !this.reservation && !this.lobby.rooms.size && !this.registry.size && !this.network.connectionCount;
   }
   /**
-   * Whether a socket of `accountId` has anything to do here: the room, the account's reservation, or a session of the
-   * account (to resume, or to learn why its room closed). Anything else is refused as a room that is gone.
+   * Whether a socket of `accountId` has anything to do here: the account's place in the room (a seat, its
+   * reservation, an approval), something its session has yet to collect (why its room closed, a result), or the
+   * room's running public match to watch. Anything else is refused as a room that is gone.
    */
   canConnect(accountId) {
     if (!this.code || this.isEmpty()) return false;
-    if (this.hasAccount(accountId) || [...this.registry.all()].some((s) => s.accountId === accountId)) return true;
-    // Anyone else may only watch the room's running public match.
+    if (this.hasAccount(accountId)) return true;
+    if ([...this.registry.all()].some((s) => s.accountId === accountId && (s.notice || s.pendingResult))) return true;
     const room = this.lobby.getRoom(this.code);
     return !!room?.match && this.publicRoom && room.mode === 'coop';
   }
+
+  /**
+   * Why a new socket from `ip` of `accountId` is refused (null: admitted). Accounts with no place in the room
+   * (strangers: spectators, accounts collecting why their room closed) share what the members do not need: every
+   * player seat plus one overlap during a reconnect stays free for the members, in the lobby as in a match. Sockets
+   * still awaiting hello count, so connection churn cannot take the members' share.
+   */
   admission(ip, accountId) {
     if (this.network.connectionCount >= ROOM_LIMITS.sockets) return 'full';
     const key = limitKeyOf(normalizeIp(ip) || '0.0.0.0');
     if ([...this.socketMeta.values()].filter((m) => m.key === key).length >= ROOM_LIMITS.socketsPerIp) return 'per-address';
-    if (this.lobby.getRoom(this.code)?.match && !this.hasAccount(accountId)) {
-      // Reserve every player seat plus one overlap during authenticated reconnect.
-      // Include sockets still awaiting hello so connection churn cannot steal the reserve.
-      const observers=[...this.socketMeta.values()].filter(m=>!this.hasAccount(m.accountId));
-      const reserve=MAX_SEATS+1;
-      if(observers.length>=ROOM_LIMITS.sockets-reserve)return 'spectators-full';
-      if(observers.filter(m=>m.key===key).length>=ROOM_LIMITS.socketsPerIp-reserve)return 'spectators-per-address';
-      if (observers.filter((m) => m.accountId === accountId).length >= ROOM_LIMITS.spectatorsPerAccount) return 'spectators-per-account';
-    }
+    if (this.hasAccount(accountId)) return null;
+    const strangers = [...this.socketMeta.values()].filter((m) => !this.hasAccount(m.accountId));
+    const reserve = MAX_SEATS + 1;
+    if (strangers.length >= ROOM_LIMITS.sockets - reserve) return 'spectators-full';
+    if (strangers.filter((m) => m.key === key).length >= ROOM_LIMITS.socketsPerIp - reserve) return 'spectators-per-address';
+    if (strangers.filter((m) => m.accountId === accountId).length >= ROOM_LIMITS.spectatorsPerAccount) return 'spectators-per-account';
     return null;
   }
   // `sessionId` / `sessionExpiresAt`: the login the Worker validated at the upgrade (checkLogins checks it again).

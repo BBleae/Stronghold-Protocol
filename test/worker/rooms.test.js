@@ -152,7 +152,12 @@ test('a disconnected solo match keeps its 24-hour resume window when the alarm s
 
 test('sockets per network and idle sessions stay bounded', (t) => {
   const s = setup(t);
-  const sockets = Array.from({ length: 9 }, (_, i) => connect(s.rt, `visitor${i}`));
+  // A member's network has 8 sockets (a stranger's 3: test/worker/spectators.test.js).
+  const sockets = Array.from({ length: 9 }, () => {
+    const ws = new Socket();
+    s.rt.connect(ws, { ip: '8.8.8.8', accountId: 'owner' });
+    return ws;
+  });
   assert.equal(sockets[8].closed.code, 1013);
   assert.equal(s.rt.network.connectionCount, 8);
   for (const ws of sockets) ws.close(1000, 'done');
