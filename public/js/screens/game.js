@@ -86,7 +86,7 @@ import { openGuide } from '../ui/guide.js';
 import { actions } from '../ui/gameActions.js';
 import { FacingWheel, holdPiece, setPieceDir, syncPieceDirs, showRange, useTileScreen } from '../ui/facingWheel.js';
 import { Underframe, underframeRect, TempRowNotice } from '../ui/underframe.js';
-import { needsFacing, facingIntent, previewGrid, pieceDir, underframeActions, retreatSlot, itemDestroyable } from '../ui/facing.js';
+import { needsFacing, facingIntent, previewGrid, pieceDir, underframeActions, retreatSlot, itemDestroyable, unitRange } from '../ui/facing.js';
 import { EquipReplaceDialog, replaceRequest, replaceIntent } from '../ui/equipReplace.js';
 import { pauseAvailable, isPaused, frozenNow } from '../ui/matchStatus.js';
 import { pieceTile } from '../render/drag.js';
@@ -444,7 +444,11 @@ function MatchScreen() {
     // a lone player's boss field (solo modes, the odd player of a co-op Final Assault: the `_s` templates route every
     // enemy to the left objective) is framed on its own half like the ‹ › half view; pairs start on 全景
     const lone = kind === 'boss' && members.length === 1;
-    setCam(kind, lone ? { rect: field.rect, side, half: true } : { rect: field.rect, side });
+    // a scouted / spectated normal board during prep is framed like the own prep view: the bench and temp rows with
+    // the field (the scouting meta carries their operators, issue #7); a boss round's scouting board is the pair's boss
+    // field (Match.prepFieldMeta) on 全景
+    if (field.prep && kind === 'normal') setCam('prep', { rect: field.rect, side: 'L' });
+    else setCam(kind, lone ? { rect: field.rect, side, half: true } : { rect: field.rect, side });
     audio.setFieldUnits(field.units);
     if (early && early.length) {
       // replay state-bearing events and lasting fx only (a burst of stale hit sparks / damage numbers would look wrong);
@@ -1027,6 +1031,21 @@ function MatchScreen() {
     showRange(view, previewGrid(lookups, selEntry.piece), selEntry.row, selEntry.col, pieceDir(selEntry.piece), SEL_RANGE);
     return () => showRange(view, null, 0, 0, null, SEL_RANGE);
   }, [view, selRangeKey]);
+  // the range of the operator whose card is open without a selection (issue #8): an own board piece opened read-only
+  // (ready / not editable), or a unit on the field on screen — a battle, a teammate's scouted board, a spectated one
+  const cardRange = selRangeKey || !detail ? null
+    : detail.kind === 'piece' && showPrep ? (() => {
+      const e = placeCtx.pieces.get(detail.uid);
+      const grid = e && e.area === 'board' ? previewGrid(lookups, e.piece) : null;
+      return grid ? { grid, row: e.row, col: e.col, dir: pieceDir(e.piece) } : null;
+    })()
+    : detail.kind === 'unit' && !showPrep ? unitRange(detail.unit, lookups) : null;
+  const cardRangeKey = cardRange ? `${cardRange.row},${cardRange.col}:${cardRange.dir}:${JSON.stringify(cardRange.grid)}` : '';
+  useEffect(() => {
+    if (!view || !cardRange) return undefined;
+    showRange(view, cardRange.grid, cardRange.row, cardRange.col, cardRange.dir, SEL_RANGE);
+    return () => showRange(view, null, 0, 0, null, SEL_RANGE);
+  }, [view, cardRangeKey]);
   // the selected piece's underframe on screen: the detail card docks on the side away from it (user playtest #2
   // item 8 — at some aspect ratios a bench unit's 出售 sat under the left card); the underframe is drawn above every
   // panel anyway (css z-index), this keeps it visible too

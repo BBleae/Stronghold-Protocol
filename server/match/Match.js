@@ -133,7 +133,7 @@ import { EffectDispatcher, getDefaultRegistry } from './effectsMeta.js';
 import { generateDraft, applyCard, cardView, bountyBattles, isMultiRoundBounty } from './choices.js';
 import { setupMatchWaves, buildNormalWave, buildBossWave, bountySpawns, withBounties, previewOf, weightedPick } from './waves.js';
 import { planUnite, uniteBattleOpts, uniteSurvivors } from './unite.js';
-import { pairPlayers, bossPoolHp, SharedBossPool, hiddenEligible, BOSS_HIT_STEPS } from './finalAssault.js';
+import { pairPlayers, bossPoolHp, SharedBossPool, hiddenEligible, BOSS_HIT_STEPS, bossFieldPlacement } from './finalAssault.js';
 import {
   FieldRunner, DeadBattle, GAME_SPEED, snapFrame, runHeadless, timelineAt, HeadlessPacer, syntheticResult,
   validateClientResult, RESULT_GRACE_MS, BOSS_SILENCE_MS, HARD_CAP_SECONDS, HeadlessJob, HEADLESS_SLICE_MS, CATCHUP_TICKS_PER_INTERVAL,
@@ -880,31 +880,65 @@ export class Match {
     return previewOf([...this.wave.spawns, ...bounty]);
   }
 
-  /** UnitInfo list of a player's board (prep scouting). */
-  prepFieldMeta(ps) {
+  /**
+   * UnitInfo list of a player's pieces for prep scouting: the board, and the bench / temp operators (`area` 'hand' /
+   * 'temp', rows 7 / 8 like the own prep view; items are not drawn). `side` 'L' | 'R' places them on that half of the
+   * boss field (finalAssault.js bossFieldPlacement: rows ≥ 7 shift −7, the right half mirrored); null = the own board.
+   */
+  _scoutUnits(ps, side = null) {
     const units = [];
-    for (const { r, c, piece } of boardOrder(ps.board)) {
+    const add = (piece, r, c, area) => {
+      if (!piece || (piece.kind !== 'chess' && piece.kind !== 'token')) return;
       const rec = piece.kind === 'token' ? this.gd.token(piece.id) : this.gd.chess(piece.id);
       const assets = (rec && rec.assets) || {};
       // DESIGN §16: the skill / module THIS player's operator fights with (the scout's detail card shows it, like the
       // sim's UnitInfo in a shared field); moduleId only for an elite
       const lo = piece.kind === 'chess' && rec ? ps.loadoutFor(rec) : null;
+      const at = side ? bossFieldPlacement(side, r, c, area === 'board' ? pieceDir(piece) : 'RIGHT') : { row: r, col: c, dir: area === 'board' ? pieceDir(piece) : 'RIGHT' };
       units.push({
         id: piece.uid, uid: piece.uid, kind: piece.kind === 'token' ? 'token' : 'op', side: 'ally', ownerId: ps.playerId, defId: piece.id,
         name: rec ? rec.name : piece.id, tier: rec && Number.isInteger(rec.tier) ? rec.tier : 1, golden: !!(rec && rec.isGolden),
         spine: assets.spine || (rec && rec.charId) || piece.id, avatar: assets.avatar || (rec && rec.charId) || piece.id,
-        x: c, y: r, dir: pieceDir(piece), facing: pieceDir(piece) === 'LEFT' ? -1 : 1, maxHp: rec && rec.stats && Number.isFinite(rec.stats.maxHp) ? rec.stats.maxHp : 1,
+        x: at.col, y: at.row, dir: at.dir, facing: at.dir === 'LEFT' ? -1 : 1, maxHp: rec && rec.stats && Number.isFinite(rec.stats.maxHp) ? rec.stats.maxHp : 1,
         skillIndex: lo && Number.isInteger(lo.skillIndex) ? lo.skillIndex : undefined,
         moduleId: lo && typeof lo.moduleId === 'string' ? lo.moduleId : undefined,
         // the equipped items (like the sim's UnitInfo): a 变形同构体 wearer shows as a member of the bond it grants
         items: piece.kind === 'chess' && Array.isArray(piece.items) && piece.items.length ? piece.items.map((it) => it.id) : undefined,
+        area,
       });
-    }
+    };
+    for (const { r, c, piece } of boardOrder(ps.board)) add(piece, r, c, 'board');
+    (ps.hand || []).forEach((piece, i) => add(piece, GEO.HAND_ROW, i, 'hand'));
+    (ps.temp || []).forEach((piece, i) => add(piece, GEO.TEMP_ROW, GEO.TEMP_C0 + i, 'temp'));
+    return units;
+  }
+
+  /**
+   * The scouting view of a player during prep (m.field `prep: true`). Normally the player's own board; in a boss round
+   * (最终攻势 / 隐秘核心) the boss field the player's group will fight on — both halves of the pair (bossGroupOf), so a
+   * teammate / public spectator sees the shared field like the battle that follows (issue #9).
+   */
+  prepFieldMeta(ps) {
     // `nextEnemies`: the scouted player's coming enemies — their preview pen shows on the scouting board too (research 09
-    // §2.2 "Teammates"; render/app.js enterBattle({ prep: true, nextEnemies }))
+    // §2.2 "Teammates"; render/app.js enterBattle({ prep: true, nextEnemies })); a boss round's leader is drawn on the
+    // boss field instead (its entry carries `pos`, render/app.js setPenList)
     let nextEnemies = [];
     try { nextEnemies = this.nextEnemiesFor(ps); } catch (e) { this.reportError('nextEnemies', e); }
-    return { t: 'm.field', fieldId: `n:${ps.playerId}`, kind: 'normal', rect: { ...GEO.NORMAL_RECT }, stageId: this.stageId, units, prep: true, nextEnemies };
+    const g = this.bossGroupOf(ps);
+    if (g) {
+      const sides = {};
+      const units = [];
+      for (const pid of g.players) {
+        const member = this.players.get(pid);
+        if (!member) continue;
+        const side = g.players.indexOf(pid) === 1 ? 'R' : 'L';
+        sides[pid] = side;
+        units.push(...this._scoutUnits(member, side));
+      }
+      return { t: 'm.field', fieldId: `n:${ps.playerId}`, kind: 'boss', rect: { ...GEO.BOSS_RECT }, stageId: this.stageId, units, prep: true, nextEnemies,
+        players: g.players.slice(), sides };
+    }
+    return { t: 'm.field', fieldId: `n:${ps.playerId}`, kind: 'normal', rect: { ...GEO.NORMAL_RECT }, stageId: this.stageId, units: this._scoutUnits(ps), prep: true, nextEnemies };
   }
 
   _sendField(playerId, fieldId) {
