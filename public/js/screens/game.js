@@ -120,7 +120,9 @@ const keepEarly = (e) => Array.isArray(e) && (STATE_EV.has(e[0]) || fxForm(e) !=
 
 /** Router for the in-match screens. */
 export function GameScreen() {
-  const room = useStore((s) => s.room);
+  // Only what the routing needs: a room.state that changes nothing of it (a spectator count) does not render it.
+  const spectating = useStore((s) => !!s.room?.spectating);
+  const coop = useStore((s) => s.room?.mode === 'coop');
   const pub = useStore((s) => s.match.public);
   const hasResult = useStore((s) => !!s.match.result);
   const ended = useStore((s) => !!s.room && !s.room.inMatch && !!s.match.public);
@@ -135,15 +137,24 @@ export function GameScreen() {
   }
   const mode = phaseMode(pub.phase);
   let body;
-  if (room?.spectating) body = html`<${MatchScreen} />`;
+  if (spectating) body = html`<${MatchScreen} />`;
   else if (hasResult || mode === 'result') body = html`<${ResultScreen} />`;
   else if (mode === 'briefing') body = html`<${BriefingScreen} />`;
   else if (mode === 'draft') body = html`<${BandDraftScreen} />`;
   else body = html`<${MatchScreen} />`;
   return html`${body}
-    ${room?.mode==='coop' ? html`<div class="spectator-presence" role="status" aria-live="polite"><span>${room.spectating?'正在观战 · ':''}${room.spectatorCount || 0} 人观战</span>${room.spectating?html`<${Button} size="sm" variant="ghost" onClick=${quitMatch}>退出观战<//>`:null}</div>`:null}
+    ${coop ? html`<${SpectatorPresence} spectating=${spectating} />` : null}
     ${(away || autoplay) && !hasResult && mode !== 'result' && !ended ? html`<${AwayOverlay} />` : null}
     ${ended && !hasResult && mode !== 'result' ? html`<${MatchEnded} />` : null}`;
+}
+
+/** The spectator count of a co-op match (and a spectator's way out): the only part a count update renders. */
+function SpectatorPresence({ spectating }) {
+  const count = useStore((s) => s.room?.spectatorCount || 0);
+  return html`<div class="spectator-presence" role="status" aria-live="polite">
+    <span>${spectating ? '正在观战 · ' : ''}${count} 人观战</span>
+    ${spectating ? html`<${Button} size="sm" variant="ghost" onClick=${quitMatch}>退出观战<//>` : null}
+  </div>`;
 }
 
 /** The room went back to its lobby without a result (match aborted): offer the way back. */
