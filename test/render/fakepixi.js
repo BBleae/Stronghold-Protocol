@@ -139,7 +139,7 @@ export function fakeViewCtx(P, extra = {}) {
   return {
     P, layers, settings: { damageNumbers: true, quality: 'high' }, fx: null,
     heightAt: () => 0, animRate: () => 1, timeScale: () => 1, lookupDef: () => null, crowded: () => false,
-    frameNo: () => 0, impostorInterval: () => 0, clipAllowed: () => true, surfaceLayer: () => null,
+    frameNo: () => 0, impostorInterval: () => 0, surfaceLayer: () => null,
     ...extra,
   };
 }

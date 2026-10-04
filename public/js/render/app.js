@@ -553,7 +553,6 @@ export async function createFieldView(host, options = {}) {
     renderer: app.renderer,
     frameNo: () => frameNo,
     impostorInterval: () => impInterval,
-    clipAllowed: () => clipAllowed,
     viewport: () => vp,
     loadLevel: () => loadLevel,
     // the slowest a Spine model may animate (frames between skeleton updates): ~20 updates a second (render/loadlevel.js)
@@ -1667,14 +1666,9 @@ export async function createFieldView(host, options = {}) {
   // Crowded fields render skeletons through staggered RenderTexture impostors (units.js): the interval grows with
   // the number of Spine units so the per-frame vertex work stays roughly constant (hysteresis: re-evaluated
   // every 30 frames). Prep and ordinary fields keep full-rate direct rendering.
-  // Spine clipping masks (only eyeball clips on the current roster, invisible at chibi scale) each cost a stencil
-  // render-pass break (~2–5 ms of GPU on tiled GPUs): kept only for a lone clipped skeleton at high quality
-  let clipAllowed = true;
-  function pickClipping() {
-    let n = 0;
-    for (const v of views.values()) if (v.actor && v.actor.clipped && v.alive !== false) n++;
-    return settings.quality === 'high' && n <= 1;
-  }
+  // Spine clipping masks stay on: the battle chibis blink by switching the eye-cut clip of their eyes (32 operators),
+  // and without it the eyeballs showed over the closed eyelids (user report 2026-10). Clipped skeletons draw through
+  // the impostor atlas's clip pages (units.js), which keeps their stencil passes out of the main pass.
   function pickImpostorInterval() {
     let n = 0;
     for (const v of views.values()) if (v.actor && v.spineReady) n++;
@@ -1692,7 +1686,7 @@ export async function createFieldView(host, options = {}) {
   function frameBody(now) {
     frameNo++;
     if (frameNo % 30 === 1) {
-      impInterval = pickImpostorInterval(); clipAllowed = pickClipping();
+      impInterval = pickImpostorInterval();
       culledCount = 0;
       for (const v of views.values()) if (v.culled) culledCount++;
       for (const v of penViews.values()) if (v.culled) culledCount++;
