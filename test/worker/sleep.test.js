@@ -1,0 +1,182 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createWorld } from './helpers/world.js';
+
+// A room writes only what changed. A match stays in memory while someone is connected to it; nobody connected, it
+// sleeps until its next deadline (waking a sleeping match costs a full restore).
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+test('a running match writes on change only and sleeps once its player has gone', { timeout: 120000 }, async (t) => {
+  const world = await createWorld(t);
+  await world.seed('a');
+  const route = (await world.api('a', '/api/rooms', { method: 'POST' })).body;
+  const player = await world.player('a', route);
+  await player.request('room.create', { mode: 'solo', difficulty: 'FUNNY' });
+  await player.request('room.start');
+  assert.equal((await player.wait('m.public')).phase, 'INFO_CHECK');
+
+  // The briefing has no timer, but its player is connected: the room stays in memory (a timer at most a minute away).
+  const { timerAt } = await world.room(route.code, 'timer');
+  assert.ok(timerAt > Date.now() && timerAt <= Date.now() + 60_000, `in-memory timer (${timerAt - Date.now()} ms)`);
+  // Pings keep the socket alive without writing anything: nothing changed.
+  const before = await world.room(route.code, 'writes');
+  for (let i = 0; i < 5; i++) {
+    player.send({ t: 'ping', c: i + 1 });
+    await player.wait('pong', (f) => f.c === i + 1);
+  }
+  assert.deepEqual(await world.room(route.code, 'writes'), before);
+  // A change is written.
+  assert.equal((await player.request('g.infoReady')).t, 'ok');
+  assert.ok((await world.room(route.code, 'writes')).transactions > before.transactions);
+
+  // The player leaves the untimed band draft: nothing is due until the solo run's 24-hour resume window ends.
+  await player.wait('m.public', (f) => f.phase === 'BAND_DRAFT');
+  player.ws.close(1000, 'gone');
+  await sleep(300);
+  assert.equal((await world.room(route.code, 'timer')).timerAt, null, 'nothing keeps the room in memory');
+  const alarm = await world.room(route.code, 'alarm');
+  assert.ok(alarm > Date.now() + 23 * 3600_000, `the room wakes at the resume deadline, not before (${alarm - Date.now()} ms)`);
+
+  // Wherever it slept, the player resumes the same run.
+  await world.restart();
+  const resumed = await world.player('a', { code: route.code, token: player.welcome.token });
+  assert.equal(resumed.welcome.resumed, true);
+  assert.equal((await resumed.wait('m.public')).phase, 'BAND_DRAFT');
+});
+
+test('a listed match nobody is connected to sleeps through its lobby lease; the next wake lists it again', { timeout: 120000 }, async (t) => {
+  const world = await createWorld(t);
+  await world.seed('a');
+  const route = (await world.api('a', '/api/rooms', { method: 'POST' })).body;
+  const player = await world.player('a', route);
+  // A public co-op match with a lone human: its briefing has no timer (Match soloUntimed).
+  await player.request('room.create', { mode: 'coop', difficulty: 'FUNNY' });
+  await player.request('room.start');
+  assert.equal((await player.wait('m.public')).phase, 'INFO_CHECK');
+  // The lobby's listing of the room, once it shows `connectedHumans`.
+  const listed = async (connectedHumans) => {
+    for (let i = 0; i < 50; i++) {
+      const room = (await world.api('a', '/api/rooms')).body.items.find((item) => item.roomId === route.code);
+      if (room?.connectedHumans === connectedHumans) return room;
+      await sleep(100);
+    }
+    assert.fail(`not listed with ${connectedHumans} connected`);
+  };
+  assert.equal((await listed(1)).inMatch, true);
+
+  // The player's tab closes: the room may sleep. It wakes when the player's reconnect window ends, not to refresh
+  // its listing (every 20 s while it stays in memory).
+  const closedAt = Date.now();
+  player.ws.close(1000, 'gone');
+  await listed(0);
+  // The disconnect's last step (the match's throttled public view) runs first.
+  let timer;
+  for (let i = 0; i < 50 && (timer = await world.room(route.code, 'timer')).timerAt != null; i++) await sleep(100);
+  assert.equal(timer.timerAt, null);
+  const alarm = await world.room(route.code, 'alarm');
+  assert.ok(alarm > Date.now() + 9 * 60_000, `the room wakes at the end of the reconnect window (${alarm - Date.now()} ms)`);
+
+  // The platform evicts it, and nothing wakes it (the log lines are read through another room).
+  const restores = async () => (await world.room('WXYZ', 'logs'))
+    .filter((line) => line.event === 'match_restored' && line.room === route.code).length;
+  await world.evict(route.code);
+  await sleep(closedAt + 25_000 - Date.now());
+  assert.equal(await restores(), 0, 'not restored for a lease refresh');
+
+  // The player comes back: the match is restored, and its wake publishes the listing again.
+  const back = await world.player('a', { code: route.code, token: player.welcome.token });
+  assert.equal(back.welcome.resumed, true);
+  assert.equal((await back.wait('m.public')).phase, 'INFO_CHECK');
+  assert.equal(await restores(), 1);
+  assert.equal((await listed(1)).inMatch, true);
+});
+
+test('a room the public lobby shows wakes to refresh its listing; made private, it leaves the lobby at once', { timeout: 120000 }, async (t) => {
+  const world = await createWorld(t);
+  await world.seed('a');
+  const route = (await world.api('a', '/api/rooms', { method: 'POST' })).body;
+  const host = await world.player('a', route);
+  await host.request('room.create', { mode: 'coop', difficulty: 'FUNNY' });
+  let listed = [];
+  for (let i = 0; i < 100 && !listed.length; i++) {
+    listed = (await world.api('a', '/api/rooms')).body.items;
+    await sleep(50);
+  }
+  assert.deepEqual(listed.map((room) => room.roomId), [route.code]);
+  // The directory hides a listing a minute after its last refresh.
+  const alarm = await world.room(route.code, 'alarm');
+  assert.ok(alarm - Date.now() <= 20_000, `refresh within 20 s (${alarm - Date.now()} ms)`);
+
+  assert.equal((await world.api('a', `/api/rooms/${route.code}/visibility`, { method: 'POST', body: { public: false } })).status, 200);
+  for (let i = 0; i < 100 && listed.length; i++) {
+    listed = (await world.api('a', '/api/rooms')).body.items;
+    await sleep(50);
+  }
+  assert.deepEqual(listed, []);
+});
+
+test('a failed listing is logged once and retried after its backoff, even when the room changes meanwhile', { timeout: 120000 }, async (t) => {
+  const world = await createWorld(t);
+  await world.seed('a');
+  await world.failDirectory('publishRoom');
+  const route = (await world.api('a', '/api/rooms', { method: 'POST' })).body;
+  const host = await world.player('a', route);
+  await host.request('room.create', { mode: 'coop', difficulty: 'FUNNY' });
+  const failures = async () => (await world.room(route.code, 'logs'))
+    .filter((line) => line.event === 'listing_publish_failed' && line.room === route.code);
+  let lines = [];
+  for (let i = 0; i < 100 && !lines.length; i++) {
+    lines = await failures();
+    await sleep(20);
+  }
+  const [line] = lines;
+  assert.deepEqual({ level: line.level, attempts: line.attempts }, { level: 'warn', attempts: 1 });
+  assert.ok(line.retryAt - Date.now() > 20_000 && line.retryAt - Date.now() <= 30_000, 'first retry after 30 s');
+
+  // A change of the listing (a seat taken) waits for the retry too: nothing is sent to the directory meanwhile. The
+  // room wakes for the retry (an alarm armed earlier, here the socket's hello timeout, wakes it first and re-arms).
+  const publishes = await world.publishes();
+  assert.equal((await host.request('room.addBot')).t, 'ok');
+  assert.equal((await host.request('room.ready', { ready: true })).t, 'ok');
+  assert.equal(await world.publishes(), publishes);
+  assert.equal((await failures()).length, 1);
+  const alarm = await world.room(route.code, 'alarm');
+  assert.ok(alarm > Date.now() && alarm <= line.retryAt, `alarm ${alarm - line.retryAt} ms from the retry`);
+
+  // The directory is back: the retry lists the room as it is now.
+  await world.failDirectory('publishRoom', false);
+  await world.room(route.code, 'retries-due');
+  let listed = [];
+  for (let i = 0; i < 50 && !listed.length; i++) {
+    listed = (await world.api('a', '/api/rooms')).body.items;
+    await sleep(50);
+  }
+  assert.deepEqual(listed.map((room) => [room.roomId, room.occupied]), [[route.code, 2]]);
+});
+
+test('spectators coming and going write nothing to the lobby directory', { timeout: 120000 }, async (t) => {
+  const world = await createWorld(t);
+  await world.seed('a');
+  await world.seed('b');
+  const route = (await world.api('a', '/api/rooms', { method: 'POST' })).body;
+  const host = await world.player('a', route);
+  await host.request('room.create', { mode: 'coop', difficulty: 'FUNNY' });
+  assert.equal((await host.request('room.start')).t, 'ok');
+  let listed = [];
+  for (let i = 0; i < 50 && !listed.some((room) => room.inMatch); i++) {
+    listed = (await world.api('a', '/api/rooms')).body.items;
+    await sleep(50);
+  }
+  const publishes = await world.publishes();
+
+  // The count reaches the room once a second, and the directory with the listing's next refresh (every 20 s).
+  const viewer = await world.player('b', { code: route.code });
+  for (let i = 0; i < 4; i++) {
+    assert.equal((await viewer.request('room.spectate')).t, 'ok');
+    assert.equal((await viewer.request('room.leave')).t, 'ok');
+  }
+  assert.equal((await viewer.request('room.spectate')).t, 'ok');
+  assert.equal((await host.wait('room.state', (f) => f.spectatorCount === 1)).inMatch, true);
+  assert.equal(await world.publishes(), publishes);
+});

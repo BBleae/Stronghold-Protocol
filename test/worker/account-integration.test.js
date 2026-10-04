@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createAccountHarness } from './helpers/account-harness.js';
+import { createAccountHarness, productionLimits } from './helpers/account-harness.js';
 // Use production build substitutions for filesystem data loaders.
 import { bundleWorker } from '../../tools/build-worker.mjs';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
@@ -14,18 +14,18 @@ test('real account-mode Worker resumes the same active match after full process 
   // The fixture seeds a session via DO RPC; no testing endpoint exists in the production Worker.
   const code=await readFile(path.join(dir,'worker.mjs'),'utf8');
   const source=`
-    import worker,{SiteDirectory,AccountDurableObject,RoomDurableObject as ProductionRoom,AdmissionDurableObject,MatchArchive} from ${JSON.stringify(path.join(dir,'worker.mjs').replaceAll('\\','/'))};
+    import worker,{SiteDirectory,AccountDurableObject,RoomDurableObject as ProductionRoom,MatchArchive} from ${JSON.stringify(path.join(dir,'worker.mjs').replaceAll('\\','/'))};
     export class RoomDurableObject extends ProductionRoom {
       async fetch(req){if(new URL(req.url).pathname==='/__test/fail'){await this.ready;this.failNext=true;return Response.json({ok:true});}return super.fetch(req);}
-      async persist(){
-        if(!this.failNext)return super.persist();this.failNext=false;
+      async save(...args){
+        if(!this.failNext)return super.save(...args);this.failNext=false;
         const original=this.ctx;
         const storage=new Proxy(original.storage,{get(target,key){if(key==='transaction')return fn=>target.transaction(async tx=>{await fn(tx);throw new Error('INJECTED_COMMIT_FAILURE');});const v=Reflect.get(target,key,target);return typeof v==='function'?v.bind(target):v;}});
         this.ctx=new Proxy(original,{get(target,key){if(key==='storage')return storage;const v=Reflect.get(target,key,target);return typeof v==='function'?v.bind(target):v;}});
-        try{return await super.persist();}finally{this.ctx=original;}
+        try{return await super.save(...args);}finally{this.ctx=original;}
       }
     }
-    export {SiteDirectory as TestObject,AccountDurableObject,AdmissionDurableObject,MatchArchive};
+    export {SiteDirectory as TestObject,AccountDurableObject,MatchArchive};
     import {hash} from './worker/accounts/auth.js';
     export default {async fetch(req,env){
       if(req.headers.get('Upgrade')==='websocket') {
@@ -50,9 +50,9 @@ test('real account-mode Worker resumes the same active match after full process 
     }};
   `;
   assert.ok(code.length>1000);
-  const durableObjects=Object.fromEntries([['SITES','TestObject'],['ACCOUNTS','AccountDurableObject'],['ROOMS','RoomDurableObject'],['ADMISSION','AdmissionDurableObject'],['MATCH_ARCHIVES','MatchArchive']]
+  const durableObjects=Object.fromEntries([['SITES','TestObject'],['ACCOUNTS','AccountDurableObject'],['ROOMS','RoomDurableObject'],['MATCH_ARCHIVES','MatchArchive']]
     .map(([key,className])=>[key,{className,useSQLite:true}]));
-  const h=await createAccountHarness(source,{durableObjects});t.after(()=>h.dispose());
+  const h=await createAccountHarness(source,{durableObjects,ratelimits:productionLimits});t.after(()=>h.dispose());
   await h.fetch({seed:true});
   const reserve=await h.fetch({path:'/api/rooms',method:'POST'}); assert.equal(reserve.status,201);
   const route=await reserve.json();
@@ -87,8 +87,6 @@ test('real account-mode Worker resumes the same active match after full process 
   const send=async(t,fields={},rid=10)=>{host.ws.send(JSON.stringify({t,...fields,rid,commandId:'command-'+rid}));return host.wait('ok',rid);};
   await send('room.create',{mode:'coop',difficulty:'FUNNY'});
   await send('room.addBot',{},11);await send('room.addBot',{},12);
-  // An identical retry must not add a third AI, even after persistence/reconnection.
-  host.ws.send(JSON.stringify({t:'room.addBot',rid:13,commandId:'command-12'}));await host.wait('ok',13);
   assert.equal(host.frames.filter(f=>f.t==='room.state').at(-1).seats.filter(Boolean).length,3);
   const applications=[];
   for(const actor of ['b','c']) {

@@ -10,7 +10,7 @@ test('old partial raw outboxes retain byte boundaries; new outboxes freeze compr
   for(let offset=0;offset<raw.length;offset+=16000)parts.push(raw.slice(offset,offset+16000));
   const writes=new Map([[0,parts[0]]]);let finalized;
   const archive={async appendChunk({index,text}){if(writes.has(index))assert.equal(text,writes.get(index));writes.set(index,text);},async finalize(facts){finalized=facts;}};
-  const env={MATCH_ARCHIVES:{idFromName:x=>x,get:()=>archive}};
+  const env={MATCH_ARCHIVES:{idFromName:x=>x,get:()=>archive},SITES:{idFromName:x=>x,get:()=>({registerArchive(){}})}};
   await publishArchive(env,entry);assert.equal(finalized.manifest.schemaVersion,1);assert.equal([...writes.values()].join(''),raw);
   const compressed={...entry,archiveEncoding:2};compressed.encodedReplay=await prepareArchive(compressed);delete compressed.replay;
   const first=JSON.stringify(compressed.encodedReplay);const restored=JSON.parse(JSON.stringify(compressed));
@@ -45,12 +45,41 @@ test('archive chunks survive restart, reject mutation and enforce participant re
   assert.equal((await call('readChunk','alice',0)).text,'{"events":[]}');
 });
 
+test('reading a match nobody published writes nothing', { timeout: 60000 }, async (t) => {
+  const h = await createAccountHarness(`
+    import { MatchArchive } from './worker/archive/archive.js';
+    export class TestObject extends MatchArchive {
+      tables() {
+        return this.ctx.storage.sql.exec("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").toArray().map((row) => row.name);
+      }
+    }
+    export default { async fetch(req, env) {
+      const { id, op, args } = await req.json();
+      try {
+        return Response.json((await env.TEST.get(env.TEST.idFromName(id))[op](...args)) ?? null);
+      } catch (error) {
+        return Response.json({ error: error.message });
+      }
+    } };`);
+  t.after(() => h.dispose());
+  const call = async (id, op, ...args) => (await h.fetch({ id, op, args })).json();
+  // Any logged-in account may ask for any id (GET /api/matches/:id).
+  assert.equal((await call('bogus', 'read', 'alice')).error, 'ARCHIVE_NOT_READY');
+  assert.equal((await call('bogus', 'readChunk', 'alice', 0)).error, 'ARCHIVE_NOT_READY');
+  assert.equal((await call('bogus', 'exportArchive')).error, 'ARCHIVE_NOT_READY');
+  assert.deepEqual(await call('bogus', 'checkImport', { matchId: 'bogus' }, []), { ok: true });
+  assert.deepEqual(await call('bogus', 'tables'), []);
+  await call('published', 'appendChunk', { index: 0, text: '{}' });
+  assert.deepEqual(await call('published', 'tables'), ['archive_meta', 'chunks']);
+});
+
 test('publication retries after finalize and a partial personal-index failure without double counting', {timeout:60000},async t=>{
   const h=await createAccountHarness(`
     import {DurableObject} from 'cloudflare:workers';
     import {publishArchive} from './worker/archive/outbox.js';
     import {AccountDurableObject} from './worker/accounts/account.js';
     export {MatchArchive} from './worker/archive/archive.js';
+    export {SiteDirectory} from './worker/accounts/directory.js';
     export class Account extends AccountDurableObject {
       async applyMatch(fact){if(fact.accountId==='bob' && !await this.ctx.storage.get('injected')){
         await this.ctx.storage.put('injected',true);throw new Error('INJECTED_INDEX_FAILURE');}
@@ -66,7 +95,8 @@ test('publication retries after finalize and a partial personal-index failure wi
       if(i.stats)return Response.json(await env.ACCOUNTS.get(env.ACCOUNTS.idFromName(i.stats)).getStats());
       if(i.archive)return Response.json(await env.MATCH_ARCHIVES.get(env.MATCH_ARCHIVES.idFromName('m')).read('alice'));
       return Response.json((await coordinator[i.op](i.entry)) ?? null);
-    }catch(e){return Response.json({error:e.message},{status:503});}}};`,{durableObjects:{ACCOUNTS:{className:'Account',useSQLite:true},MATCH_ARCHIVES:{className:'MatchArchive',useSQLite:true}}});
+    }catch(e){return Response.json({error:e.message},{status:503});}}};`,{durableObjects:{ACCOUNTS:{className:'Account',useSQLite:true},MATCH_ARCHIVES:{className:'MatchArchive',useSQLite:true},
+      SITES:{className:'SiteDirectory',useSQLite:true}}});
   t.after(()=>h.dispose());
   const entry={facts:{matchId:'m',participants:['alice','bob'],result:{victory:true}},personal:['alice','bob'].map(accountId=>({accountId,matchId:'m',endedAt:1,mode:'coop',difficulty:'FUNNY',status:'completed',victory:true})),replay:{rulesVersion:'test',battles:[]}};
   await h.fetch({op:'seed',entry});assert.equal((await h.fetch({op:'flush'})).status,503);

@@ -7,6 +7,14 @@
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": false,
   "preview_urls": false,
+  // Workers Logs: the structured lines of worker/log.js, uncaught errors and one line per invocation. Deployments send
+  // this setting, so a dashboard toggle alone would be switched off again by the next deploy. Query strings are
+  // redacted: /ws carries room tickets and the OAuth callback its code and state.
+  "observability": {
+    "enabled": true,
+    "redact_query_string": true,
+    "logs": { "enabled": true, "invocation_logs": true }
+  },
   "vars": {
     "AUTH_ORIGIN": "https://stronghold.lunar.ag",
     "GITHUB_CLIENT_ID": "Ov23liVRPUgvbQPtKkoo"
@@ -22,10 +30,20 @@
     "run_worker_first": ["/api/*", "/ws", "/healthz"],
     "not_found_handling": "none"
   },
+  // Request limits per minute, per network (and per account for room connections and applications). Which request
+  // counts against which: worker/index.js apiLimit and /ws. API_LIMIT: every other /api route; a replay is read one
+  // chunk per request.
+  "ratelimits": [
+    { "name": "RESERVE_LIMIT", "namespace_id": "1001", "simple": { "limit": 8, "period": 60 } },
+    { "name": "CONNECT_LIMIT", "namespace_id": "1002", "simple": { "limit": 40, "period": 60 } },
+    { "name": "STATUS_LIMIT", "namespace_id": "1003", "simple": { "limit": 120, "period": 60 } },
+    { "name": "AUTH_LIMIT", "namespace_id": "1004", "simple": { "limit": 10, "period": 60 } },
+    { "name": "APPLICATION_LIMIT", "namespace_id": "1005", "simple": { "limit": 30, "period": 60 } },
+    { "name": "API_LIMIT", "namespace_id": "1006", "simple": { "limit": 600, "period": 60 } }
+  ],
   "durable_objects": {
     "bindings": [
       { "name": "ROOMS", "class_name": "RoomDurableObject" },
-      { "name": "ADMISSION", "class_name": "AdmissionDurableObject" },
       { "name": "SITES", "class_name": "SiteDirectory" },
       { "name": "ACCOUNTS", "class_name": "AccountDurableObject" },
       { "name": "MATCH_ARCHIVES", "class_name": "MatchArchive" }
@@ -33,6 +51,8 @@
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["RoomDurableObject", "AdmissionDurableObject"] },
-    { "tag": "v2-accounts", "new_sqlite_classes": ["SiteDirectory", "AccountDurableObject", "MatchArchive"] }
+    { "tag": "v2-accounts", "new_sqlite_classes": ["SiteDirectory", "AccountDurableObject", "MatchArchive"] },
+    // The per-network limiter object, replaced by the ratelimits bindings (its storage held only short-lived counters).
+    { "tag": "v3-ratelimits", "deleted_classes": ["AdmissionDurableObject"] }
   ]
 }

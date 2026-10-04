@@ -11,7 +11,7 @@ class Socket extends EventEmitter {
   last(t) { return this.frames.filter(m => m.t === t).at(-1); }
 }
 test('trusted accounts retain their seat across devices; stolen browser tokens do not cross accounts', () => {
-  const rt = new RoomRuntime({accounts: true});
+  const rt = new RoomRuntime();
   const ticket = rt.reserve('ABCD','alice');
   const connect = (accountId, token, takeover = false) => {
     const ws = new Socket();
@@ -31,7 +31,7 @@ test('trusted accounts retain their seat across devices; stolen browser tokens d
   rt.message(a, JSON.stringify({t:'room.leave'}));
   assert.equal(rt.status().code,'ABCD');
   assert.equal(rt.registry.byId(b.last('welcome').playerId).accountId,'alice');
-  const restored = new RoomRuntime({snapshot:rt.snapshot(), accounts:true});
+  const restored = new RoomRuntime({snapshot:rt.snapshot()});
   const fresh = new Socket();
   restored.connect(fresh,{accountId:'alice',takeover:true});
   restored.message(fresh,JSON.stringify({t:'hello',name:'Player'}));

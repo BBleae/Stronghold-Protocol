@@ -7,6 +7,7 @@ export { SiteDirectory as TestObject } from './worker/accounts/directory.js';
 export { AccountDurableObject } from './worker/accounts/account.js';
 import { handleAccountRoutes } from './worker/accounts/routes.js';
 import { hash } from './worker/accounts/auth.js';
+import { errorResponse } from './worker/http.js';
 export default {async fetch(req,env) {
   const input=await req.json(), actor=input.actor || 'a';
   if(input.seed) {
@@ -15,11 +16,14 @@ export default {async fetch(req,env) {
     return Response.json({ok:true});
   }
   env.SITES=env.TEST;
-  return await handleAccountRoutes(new Request('https://game.example/api/me/preferences',{
-    method:input.method || 'GET',headers:{Origin:'https://game.example',
-      cookie:'__Host-sp_session='+actor.repeat(64),...input.headers},
-    body:input.raw ?? (input.body ? JSON.stringify(input.body) : undefined)}),env)
-    || new Response('missing preferences endpoint',{status:404});
+  // As the Worker answers it: an error ends in its route wrapper (worker/index.js, worker/http.js errorResponse).
+  try {
+    return await handleAccountRoutes(new Request('https://game.example/api/me/preferences',{
+      method:input.method || 'GET',headers:{Origin:'https://game.example',
+        cookie:'__Host-sp_session='+actor.repeat(64),...input.headers},
+      body:input.raw ?? (input.body ? JSON.stringify(input.body) : undefined)}),env)
+      || new Response('missing preferences endpoint',{status:404});
+  } catch (error) { return errorResponse(error, {}); }
 }};`;
 
 const choices = {loadout:{v:1,entries:{chess_test:{skill:0,module:'none'}}},

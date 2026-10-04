@@ -41,7 +41,7 @@ npm run deploy:worker
 
 若已安装 Bun，也可在完成上述 `npm ci` 后运行 `bun run dev:worker` 和 `bun run deploy:worker`，同样调用项目内 Wrangler；Bun 是可选工具，不是部署前提。
 
-Wrangler 执行构建、上传本地静态文件，保留 `ROOMS`（房间）和 `ADMISSION`（短期 IP 限流），并通过追加迁移增加 `SITES`（身份/目录）、`ACCOUNTS`（个人索引）、`MATCH_ARCHIVES`（历史/回放）SQLite DO。GitHub OAuth 配置、迁移、独立备份见 [账号与历史指南](ACCOUNTS-HISTORY.md)。Cloudflare 插件可用于账号、Worker 配置和部署版本的管理、检查；本地批量文件上传使用 Wrangler。
+Wrangler 执行构建、上传本地静态文件，保留 `ROOMS`（房间），并通过追加迁移增加 `SITES`（身份/目录）、`ACCOUNTS`（个人索引）、`MATCH_ARCHIVES`（历史/回放）SQLite DO。按网络（IPv4 地址 / IPv6 /64）和账号的请求限流使用 Cloudflare 的 rate limiting 绑定（`wrangler.jsonc` 的 `ratelimits`，每分钟计数，不写存储）：每个 `/api` 请求和房间连接先按网络计数，再接触任何 DO（包括登录查询）；原来的 `ADMISSION` 限流 DO 由迁移 `v3-ratelimits` 删除（它只存短期计数）。GitHub OAuth 配置、迁移、独立备份见 [账号与历史指南](ACCOUNTS-HISTORY.md)。Cloudflare 插件可用于账号、Worker 配置和部署版本的管理、检查；本地批量文件上传使用 Wrangler。
 
 构建只发布 `dist/client/` 以及 `dist/worker/index.mjs`。前端保持 `/data/`、`/shared/`、`/sim/` 的既有路径；Node 文件系统数据读取由构建时 JSON 导入替换。`public/dev/`、ZIP、日志、source map 和服务端私有数据读取模块不会发布。不要手动把整个仓库上传为静态站点。
 
@@ -66,9 +66,23 @@ Wrangler 执行构建、上传本地静态文件，保留 `ROOMS`（房间）和
 
 ## 对局与更新限制
 
-登录后普通断网使用绑定账号的房间 token 重连，换设备可点击「继续对局」接管原席位。等候房间、玩家席位、审批和活动对局日志持久化，支持 DO 休眠/重启后恢复。房间代码 / token 不与其他房间共用。
+登录后普通断网使用绑定账号的房间 token 重连，换设备可点击「继续对局」接管原席位。房间连接被拒绝或结束时，服务器以 WebSocket 关闭码说明原因（席位被接管 4001、登录失效 4003、房间不存在或已结束 4004、连接过多 1013 等），浏览器读不到被拒绝升级请求的 HTTP 状态，所以拒绝也先接受连接再关闭；完整列表见 `worker/close-codes.js`。登录只在建立连接时由 Worker 验证；之后房间在后台每分钟向账号目录确认一次（退出登录最迟约一分钟后以 4003 断开），会话到期则在下一条消息时断开，游戏消息从不等待账号目录。等候房间、玩家席位、审批和活动对局日志持久化，支持 DO 休眠/重启后恢复。房间代码 / token 不与其他房间共用。
 
-账号模式的进行中对局通过原版本规则及完整有序日志恢复；构建会保留旧规则引擎。首次从匿名版本迁移时仍须先结束旧局，不能为旧内存对局补造历史。恢复成本随对局长度增长，长时间对局、AI 计算、回放体积和 DO 请求 / 存储写入仍受 Cloudflare 配额限制，具体边界见 [持久化与备份说明](ACCOUNTS-HISTORY.md)。PITR 不能代替独立备份。
+账号模式的进行中对局通过原版本规则及完整有序日志恢复；构建会保留旧规则引擎。无法恢复的对局按中断结束并释放席位（见 [持久状态说明](persistence-fields.md)）：在 Cloudflare 上回滚到更早的部署会中断所有在新规则版本上进行的对局（玩家看到「服务器版本已回退」），修复问题应提交回退改动重新部署（前滚）。Worker 只有账号模式（房间都属于 GitHub 账号，对局都有日志）；Node 本地模式保持原匿名流程。恢复成本随对局长度增长，长时间对局、AI 计算、回放体积和 DO 请求 / 存储写入仍受 Cloudflare 配额限制，具体边界见 [持久化与备份说明](ACCOUNTS-HISTORY.md)。PITR 不能代替独立备份。
+
+## 运行日志
+
+`wrangler.jsonc` 开启 Workers Logs（`observability`），每次部署都会带上该设置；只在控制台打开会被下一次部署关掉。URL 的查询字符串不记录（`/ws` 带房间票据，OAuth 回调带授权码）。Worker 自己写一行一个 JSON 对象，`event` 说明发生了什么，其余字段给出房间代码、对局编号、规则版本等上下文，从不记录 Cookie、会话或票据：
+
+| event | 含义 |
+| --- | --- |
+| `request_failed` / `request_unavailable` | 请求以 500 INTERNAL（程序错误）/ 503 UNAVAILABLE（DO 过载或重启）结束；带方法和路径。客户端错误（4xx）不记录 |
+| `room_event_failed` / `room_load_failed` | 房间 DO 处理事件 / 唤醒加载时出错，实例回到最后一次提交 |
+| `match_restored` / `match_restore_failed` | 进行中对局恢复成功 / 无法恢复而按中断结束（带规则版本、事件数、尝试次数和原因） |
+| `archive_publish_failed` | 对局归档发布失败；30 秒后重试，之后每次加倍，最多每小时一次，其他对局的归档照常发布 |
+| `listing_publish_failed` | 在线大厅列表更新失败，按同样的退避重试（带下次重试时间 `retryAt`） |
+| `login_check_failed` | 房间向账号目录复核已连接的登录失败；不断开任何连接，按同样的退避重试（带 `retryAt`） |
+| `room_runtime` | 规则代码（大厅、连接、对局）的警告和错误；恢复时重放出的行带 `restoring: true` |
 
 ## 验证
 
@@ -77,8 +91,10 @@ npm test
 node --test test/worker-client.test.js test/worker-build.test.js test/worker/*.test.js test/resources/*.test.js
 $env:SP_RESOURCES_E2E = '1'
 node --test test/resources/browser.e2e.test.js
-$env:SP_WORKER_URL = 'http://127.0.0.1:8787'
-node --test test/worker-browser.e2e.test.js
+$env:SP_ACCOUNTS_E2E = '1'
+node --test test/ui/account-history.e2e.test.js test/ui/preferences.e2e.test.js test/ui/github-account.e2e.test.js
+$env:SP_SPECTATORS_E2E = '1'
+node --test test/ui/spectators.e2e.test.js
 ```
 
 资源浏览器测试使用系统 Chrome，可用 `CHROME_PATH` 指定路径。后端集成测试使用生产打包方式与 Miniflare / workerd。部署后应检查 `/healthz`、清单和素材响应，并实测两个玩家加入同一房间、准备、开局与断线重连。
@@ -93,6 +109,6 @@ node --test test/worker-browser.e2e.test.js
 
 ## 公开对局观战
 
-公开同盟房开局后，登录玩家可在主界面在线大厅点击「进入观战」，无需房主审批，也不占玩家席位。观战界面可选择玩家阵地，所有玩家和观战者都实时看到在线观战人数；退出或断线会更新人数。私密房、独立模拟和未开局房间不开放此入口。对局结束后观战者返回大厅。
+公开同盟房开局后，登录玩家可在主界面在线大厅点击「进入观战」，无需房主审批，也不占玩家席位。观战界面可选择玩家阵地，所有玩家和观战者都实时看到在线观战人数；退出或断线会更新人数。私密房、独立模拟和未开局房间不开放此入口。对局结束时观战者与玩家一样收到结算（先 `room.closed {ended}`，再是最终画面与结算），随后连接关闭（4004），闲置的观战页不会占用下一局的观战名额；掉线的观战者下次连接时收到同样的结束通知，不会进入下一局。观战者的 hello / room.spectate 只回复其本人，观战人数的变化合并后最多每秒向房间广播一次。
 
 观战身份与原有玩家、战斗结果和历史记录分离，旧版本对局继续使用保留的恢复引擎。部署仍会触发平台 WebSocket 自动重连；已验证玩家和观战者在服务重启后恢复。已有页面需重新载入才能显示新增的观战人数界面。
