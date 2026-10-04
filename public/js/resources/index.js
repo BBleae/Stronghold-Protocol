@@ -55,6 +55,13 @@ async function exclusive(operation, { signal, onWait } = {}) {
   return navigator.locks.request(LOCK_NAME, { signal }, operation);
 }
 
+/** The installation's status. One that holds files asks the browser not to evict them under storage pressure. */
+async function checkStatus(store) {
+  const status = await store.check();
+  if (status.count) void navigator.storage.persist();
+  return status;
+}
+
 function readableError(error) {
   if (error.name === 'AbortError') return '已取消。已导入的文件会保留。';
   if (error.name === 'QuotaExceededError') return '浏览器存储空间不足，已导入的文件会保留。请释放设备空间后重新导入。';
@@ -82,7 +89,7 @@ export async function prepareResources() {
 /** Bring the cache to the live site version: a new version drops the files it changed. */
 async function checkInstallation() {
   const store = await loadStore();
-  await exclusive(() => store.check());
+  await exclusive(() => checkStatus(store));
 }
 
 /** The launcher of the resource dialog (hidden during matches). */
@@ -154,7 +161,7 @@ function showManager(store, firstTime = false) {
 
     async function check() {
       try {
-        update({ status: await locked(() => store.check()), busy: false });
+        update({ status: await locked(() => checkStatus(store)), busy: false });
       } catch (error) {
         if (error.name === 'AbortError') return; // the dialog closed while the check waited
         console.error('[resources] local resource check failed', error);
@@ -172,14 +179,12 @@ function showManager(store, firstTime = false) {
               return await action(signal);
             } finally {
               // What the operation left, read before another operation can change it.
-              update({ status: await store.check() });
+              update({ status: await checkStatus(store) });
             }
           });
           const message = done(result);
           update({ message });
           toast(message, 'success');
-          // Ask the browser not to evict a complete installation under storage pressure.
-          if (result?.complete) void navigator.storage.persist();
         } catch (error) {
           const cancelled = error.name === 'AbortError';
           if (!cancelled) console.error(`[resources] ${phase} failed`, error);

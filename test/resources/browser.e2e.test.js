@@ -235,7 +235,7 @@ test('resource cache in a real browser', { skip: !enabled, timeout: 240000 }, as
     await context.close();
   });
 
-  await t.test('an earlier installation is adopted in place and the new ZIP completes it', async () => {
+  await t.test('an earlier installation is adopted in place, the new ZIP completes it, and stored files ask not to be evicted', async () => {
     const { context, page } = await newPage();
     await returningPlayer(page);
     // An installation by an earlier release: one cache per site version, the second one partial.
@@ -249,6 +249,14 @@ test('resource cache in a real browser', { skip: !enabled, timeout: 240000 }, as
       await put(`stronghold-resources-v1-${'f'.repeat(64)}`, added);
       localStorage.setItem('stronghold-resource-mode', 'install');
     }, legacy, files[0], files[1].find(file => file.url === '/assets/c.png'));
+    await page.evaluateOnNewDocument(() => {
+      const persist = navigator.storage.persist.bind(navigator.storage);
+      window.persistRequests = 0;
+      navigator.storage.persist = () => {
+        window.persistRequests++;
+        return persist();
+      };
+    });
     server.site = v2;
     const start = server.hits.length;
     await page.goto(base);
@@ -267,6 +275,9 @@ test('resource cache in a real browser', { skip: !enabled, timeout: 240000 }, as
     assert.equal((await fetchText(page, '/assets/c.png')).body, 'added');
     assert.equal((await fetchText(page, '/fonts/fonts.css')).status, 404, 'not part of the new version');
     assert.deepEqual(resourceHits(start), [], 'the worker answered every resource request itself');
+    // Every boot that finds stored files asks the browser not to evict them.
+    await page.reload();
+    await page.waitForFunction(() => window.persistRequests > 0, { polling: 100, timeout: 10000 });
     await context.close();
   });
 
