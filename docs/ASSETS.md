@@ -158,9 +158,9 @@ game plays a line — and downloads them from the ArknightsAssets2 `voice` branc
 - The battle voice follows the match state, like the BGM: a battle is its phase and round (`COMBAT` /
   `FINAL_ASSAULT` / `HIDDEN_CORE` while the player is still in the match; 联防 goes on with the round's battle).
   行动开始 belongs to the battle's first 15 s (a solo pause holds that clock): said once, at its first enemy; a battle
-  that faces none in that time has none, and 作战中 waits for it that long at most. Hiding the page or a battle screen
-  that re-mounts (reconnect) changes nothing of that: 行动开始 that comes due while the page is hidden is said on
-  return (still within the 15 s).
+  that faces none in that time has none, and 作战中 waits for it that long at most. Hiding the page, a battle screen
+  that re-mounts or a reconnect that takes the match off the screen for a moment changes nothing of that: 行动开始 is
+  still said once, and one that comes due while the page is hidden is said on return (still within the 15 s).
   Leaving a battle drops its pending lines, so none reaches the settlement, the result screen or the next battle. The
   end line is said once per match, when the result arrives, by the leader who opened the latest battle.
 - All voice timing is real time (battles run at 2x, so 10 s is 20 s of battle time). Nothing plays while the page is

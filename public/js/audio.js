@@ -38,9 +38,9 @@
 // - The battle voice follows the match in the store (followMatch), like the BGM. Each own battle (voiceBattleKey: phase
 //   + round) opens with the squad leader's 行动开始 (ENCOUNTER_ENEMY) at its first enemy, not before
 //   minTimeDeltaForEnemyEncounter and only within its first OPENING_MS (a solo pause holds that clock); 作战中 waits for
-//   it meanwhile. A hidden page or a re-mounted battle screen changes nothing of that (行动开始 that came due on a
-//   hidden page is said on return).
-//   Leaving the battle drops its pending lines: none reaches the result screen or the next battle. The end line
+//   it meanwhile. A hidden page, a re-mounted battle screen or a reconnect that takes the match off the screen for a
+//   moment changes nothing of that (行动开始 that came due on a hidden page is said on return). Leaving the battle
+//   drops its pending lines: none reaches the result screen or the next battle. The end line
 //   (3星结束行动 without LP lost in the match / 非3星结束行动 / 行动失败), said by the latest battle's leader, plays once
 //   per match when m.result arrives. All voice timing is real time (battles run at 2x).
 // - Nothing is said on a hidden page (the context is suspended); voice off, at 0 or muted stops the line playing and
@@ -832,6 +832,13 @@ export class AudioManager {
     this.stopVoice(fade);
   }
 
+  /** The moment changed: a pending 行动开始 and a line still loading belong to the one before. */
+  _dropPending() {
+    clearTimeout(this.encounterTimer);
+    this.encounterTimer = null;
+    this._dropLoading();
+  }
+
   /**
    * Follow the match in the store (installAudio): another own battle (voiceBattleKey) drops the lines of the moment
    * before and opens with 行动开始; a paused battle (solo pause) holds its opening; m.result arriving says the end
@@ -839,11 +846,18 @@ export class AudioManager {
    * @param {any} s store state @param {any} prev the state before (null at first)
    */
   followMatch(s, prev) {
+    if (!s.match.public) {
+      // no match on screen (the lobby, or a reconnect that went past the restore grace): its battle is kept for the
+      // match's return, so 行动开始 is still said once — after its first enemy is seen again
+      if (prev?.match.public) {
+        this._dropPending();
+        if (this.voiceBattle) this.voiceBattle.faced = false;
+      }
+      return;
+    }
     const key = voiceBattleKey(s);
     if (key !== (this.voiceBattle?.key ?? null)) {
-      clearTimeout(this.encounterTimer);
-      this.encounterTimer = null;
-      this._dropLoading();
+      this._dropPending();
       this.voiceBattle = key ? { key, at: performance.now(), pausedAt: null, faced: false, said: false } : null;
     }
     const b = this.voiceBattle;

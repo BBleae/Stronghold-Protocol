@@ -710,6 +710,45 @@ describe('operator voice', () => {
     assert.deepEqual(r.played(), [['start', LEADER, 3000]]);
   });
 
+  test('a match cleared from the screen keeps its battle: 行动开始 is said once across a reconnect past the restore grace', async (t) => {
+    const r = voiceRig(t);
+    r.phase(PHASE.COMBAT, 1);
+    await r.at(1000);
+    r.enemy();
+    await r.at(2000);
+    r.store.set({ match: emptyMatch() }); // no m.public within the restore grace: back to the room
+    await r.at(4000);
+    r.board('lead', 'op', 'op2');
+    r.phase(PHASE.COMBAT, 1); // the match is pushed again
+    await r.at(4500);
+    r.units();
+    r.enemy(); // the battle's spawns seen again
+    await r.at(6000);
+    r.store.set({ match: emptyMatch() });
+    r.phase(PHASE.COMBAT, 1);
+    await r.at(6500);
+    r.enemy();
+    await r.at(10000);
+    assert.deepEqual(r.played(), [['start', LEADER, 4500]], 'not in the room, once after the return');
+  });
+
+  test('a battle left for the lobby is over for the next match, even one whose first battle has the same round', async (t) => {
+    const r = voiceRig(t);
+    r.phase(PHASE.COMBAT, 1);
+    await r.at(1000);
+    r.enemy();
+    await r.at(4000);
+    r.store.set({ room: null, match: emptyMatch() }); // 放弃模拟
+    await r.at(10000);
+    r.phase(PHASE.INFO_CHECK, 0); // the next match
+    r.board('lead');
+    r.phase(PHASE.COMBAT, 1);
+    await r.at(11000);
+    r.enemy();
+    await r.at(14000);
+    assert.deepEqual(r.played(), [['start', LEADER, 3000], ['start', LEADER, 13000]]);
+  });
+
   test('leaving a battle drops its pending 行动开始 (none on the settle or result screen); every battle has its own', async (t) => {
     const r = voiceRig(t);
     r.phase(PHASE.COMBAT, 1);
