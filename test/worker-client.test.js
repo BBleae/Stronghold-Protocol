@@ -361,15 +361,15 @@ test('a resumed seat whose session the room no longer has is not entered', async
 
 test('a reload resumes the tab\'s seat with its saved token, only while the account is seated there', async () => {
   const h = setup();
-  h.api.reply('GET /api/me/active-match', [200, { activeSeat: { roomId: 'ABCD', roomGeneration: 'g1' }, status: { inMatch: true } }]);
   const restored = h.net.restore(TOKEN, { roomId: 'ABCD' });
-  await settle();
+  assert.equal(h.net.status, 'connecting', 'the boot shows the room being resumed, never the menu');
   assert.equal(h.ws.last().url, 'wss://game.example/ws?room=ABCD', 'no ticket: the token proves the seat');
   const hello = await welcome(h, { resumed: true });
   assert.equal(hello.token, TOKEN);
   roomState(h.ws.last(), { inMatch: true });
   await restored;
   assert.equal(h.net.status, 'online');
+  assert.deepEqual(h.api.calls, []);
 
   const other = setup();
   await other.net.restore(TOKEN, { roomId: 'WXYZ' });
@@ -377,10 +377,12 @@ test('a reload resumes the tab\'s seat with its saved token, only while the acco
   assert.equal(other.ws.sockets.length, 0);
   assert.deepEqual(other.api.calls, []);
 
-  const ended = setup(); // /api/me still listed the seat, but the room no longer has it
-  ended.api.reply('GET /api/me/active-match', [200, { activeSeat: null }]);
-  await assert.rejects(ended.net.restore(TOKEN, { roomId: 'ABCD' }), { code: 'NO_ACTIVE_MATCH' });
-  assert.equal(ended.ws.sockets.length, 0);
+  const ended = setup(); // /api/me still listed the seat, but the room no longer has this account's session
+  const failed = assert.rejects(ended.net.restore(TOKEN, { roomId: 'ABCD' }),
+    { code: 'NO_ACTIVE_MATCH', message: '对局已结束或恢复时间已过' });
+  await welcome(ended, { playerId: 'p9', resumed: false });
+  await failed;
+  assert.equal(ended.ws.last().closedWith, 1000);
   assert.equal(ended.net.status, 'menu');
 });
 

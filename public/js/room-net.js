@@ -17,7 +17,8 @@
 // Intents of enter(): create {mode, difficulty} · join {code} (a join application, HTTP only: see `application`) ·
 // joinApproved {code, ticket} · resume {mode, difficulty} (继续对局, which may take the seat over from another
 // device; a seat that is still a reservation creates its room with mode/difficulty) · resume {code, token} (this
-// tab's own seat after a reload) · spectate {code}.
+// tab's own seat after a reload: the room resumes the session the token names, if this account still has it) ·
+// spectate {code}.
 //
 // What this client relies on from the room Worker:
 //   close 4001   another tab or device took the seat over          → room.closed {reason: 'replaced'}
@@ -98,7 +99,8 @@ export class RoomNet extends Net {
 
   /**
    * Boot: resume this tab's seat after a reload (or a tab the browser discarded). `token` is the room token saved at
-   * the tab's last welcome; `activeSeat` the account's seat from /api/me.
+   * the tab's last welcome; `activeSeat` the account's seat from /api/me. The room's socket opens at once (status
+   * 'connecting'), so the boot never shows the menu while a seat is being resumed.
    */
   async restore(token, activeSeat) {
     const code = roomFromToken(token);
@@ -207,7 +209,9 @@ export class RoomNet extends Net {
       case 'create': return this._enterSeat(await this._reserve(), intent);
       case 'join': return this._apply(intent.code);
       case 'joinApproved': return this._enterSeat({ code: intent.code, ticket: intent.ticket, join: true }, intent);
-      case 'resume': return intent.token ? this._rejoin(intent.code, intent.token) : this._enterSeat(await this._seat(), intent);
+      case 'resume': return intent.token
+        ? this._resumed(await this._open({ code: intent.code }, intent.token))
+        : this._enterSeat(await this._seat(), intent);
       case 'spectate':
         await this._open({ code: intent.code, spectate: true });
         return super.request('room.spectate');
@@ -245,14 +249,6 @@ export class RoomNet extends Net {
     if (seat.reserved) return super.request('room.create', { mode: intent.mode, difficulty: intent.difficulty });
     if (seat.join) return super.request('room.join', { code: seat.code });
     return this._resumed(welcome);
-  }
-
-  // This tab's own seat after a reload, with the room token saved at its last welcome, while the account is still
-  // seated in that room. (A seat another device took over must not accept the token: that device keeps playing.)
-  async _rejoin(code, token) {
-    const { activeSeat } = await accountRequest('/api/me/active-match', undefined, this.fetch);
-    if (activeSeat?.roomId !== code) throw new NetError('NO_ACTIVE_MATCH');
-    return this._resumed(await this._open({ code }, token));
   }
 
   // A resumed seat is entered once the room re-sent its state, or closed it (room.closed tells the player why).

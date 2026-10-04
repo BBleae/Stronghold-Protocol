@@ -374,12 +374,11 @@ async function boot() {
   data.load('local').catch(() => {});
 
   const connectWhenReady = identityReady.then(() => {
-    // Read the room token before the first connect: the account-mode menu forgets it (wireNet).
-    const roomToken = identity.getToken();
+    // Account mode: a reload, or a tab the browser discarded, mid-match resumes this tab's seat. That room's socket is
+    // the first connection; without one the client starts in the menu (which forgets the token, see wireNet).
+    if (account.enabled) net.restore(identity.getToken(), account.activeSeat).catch((err) => toastError(err));
     if (entered) net.setName(savedName);
     else net.connect();
-    // Account mode: a reload, or a tab the browser discarded, mid-match resumes this tab's seat.
-    if (account.enabled) net.restore(roomToken, account.activeSeat).catch((err) => toastError(err));
   });
   await Promise.all([waitForFonts(1200), connectWhenReady]);
   const root = document.getElementById('app');
