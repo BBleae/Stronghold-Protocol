@@ -275,6 +275,8 @@
 .team__info { display: flex; flex-direction: column; gap: .02rem; min-width: 0; padding: .04rem .12rem .04rem .06rem; background: linear-gradient(90deg, rgba(8, 11, 10, .82), rgba(8, 11, 10, 0)); }
 .team__name { font-size: .15rem; font-weight: 500; color: var(--text-md); max-width: 1.5rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-shadow: 0 1px 2px #000; }
 .team__line { display: flex; align-items: center; gap: .1rem; }
+.team__top { display: flex; align-items: center; gap: .06rem; min-width: 0; }
+.team__band { --bi: .22rem; border: 1px solid var(--line-2); }
 .team__status { width: .26rem; height: .26rem; display: grid; place-items: center; border: 1px solid currentColor; background: rgba(0, 0, 0, .5); }
 .team__status .icon { width: .18rem; height: .18rem; }
 .team__status .lsprite { width: .2rem; height: .2rem; object-fit: contain; }

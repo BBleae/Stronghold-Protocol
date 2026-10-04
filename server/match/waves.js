@@ -573,7 +573,11 @@ export function previewOf(spawns) {
     if (!s || typeof s.enemyKey !== 'string' || s.tag === 'part') continue;
     const tag = s.tag === 'boss' ? 'boss' : s.tag === 'bounty' ? 'bounty' : null;
     const pv = s.preview && typeof s.preview === 'object' ? s.preview : {};
+    // a boss round's leader stands on the boss field at its spawn tile during prep (research 09 §2.3 "Boss round"),
+    // not in the pen: `pos` = [row, col] of its route start
+    const pos = tag === 'boss' && Array.isArray(pv.start) && pv.start.length >= 2 && pv.start.every(Number.isFinite) ? pv.start.slice(0, 2) : null;
     out.push({
+      ...(pos ? { pos } : {}),
       enemyKey: s.enemyKey,
       count: Math.max(1, Math.trunc(Number(s.count) || 1)),
       gate: pv.gate === 'upper' ? 'upper' : 'lower',

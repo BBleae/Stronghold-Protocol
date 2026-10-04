@@ -253,6 +253,14 @@ export function fieldRows(kind) {
 
 /** Are the pen's figures shown for a view kind (a camera flight shows them when either end is the pen)? */
 export const penShown = (vk, prevVk = null) => vk === 'pen' || prevVk === 'pen';
+/**
+ * A boss round's leader (a preview entry with `boss`) never idles in the pen: during prep it stands on the boss field
+ * at its spawn tile (entry `pos` [row, col], default the field's centre; research 09 §2.3 "Boss round", issue #9) —
+ * drawn whenever a camera shows the boss field (Final Assault prep half, a scouted / spectated boss field).
+ */
+export const leaderShown = (vk, prevVk = null) => [vk, prevVk].some((k) => k === 'boss' || k === 'hidden' || k === 'bossPrep');
+/** Default leader tile on the boss field (the templates' leader route start). */
+export const LEADER_POS = Object.freeze([3, 10]);
 
 /**
  * 'die' reason of an operator that enters the battle already knocked out — a 联防 helper's operator down at the end of
@@ -538,6 +546,7 @@ export async function createFieldView(host, options = {}) {
   const penViews = new Map();
   let penSig = null;
   let penHidden = true;       // the pen's figures are shown only by the pen camera (setPenHidden)
+  let leaderHidden = true;    // a boss round's leader (penViews entries with `_leader`) only on the boss field cameras
   let penList = null;
   let ownPen = null;          // the own m.private.nextEnemies (fallback composition of a scouted teammate's pen)
   let camBeforePen = null;    // { kind, opts } the camera the pen returns to
@@ -768,6 +777,7 @@ export async function createFieldView(host, options = {}) {
       cam = target; camFrom = camTo = null;
       tiles.setView(band, focus, field);
       setPenHidden(!penShown(vk));
+      setLeaderHidden(!leaderShown(vk));
       pendingView = null;
     } else {
       camFrom = cam.clone();
@@ -777,7 +787,8 @@ export async function createFieldView(host, options = {}) {
       tiles.setView([Math.min(prevBand[0], band[0]), Math.max(prevBand[1], band[1])], focus, [Math.min(prevField[0], field[0]), Math.max(prevField[1], field[1])]);
       board3d?.setArea(unionAreas(boardArea(prevView), boardArea(vk)));
       setPenHidden(!penShown(vk, prevView));
-      pendingView = { band, focus, field, area: boardArea(vk), pen: penShown(vk) };
+      setLeaderHidden(!leaderShown(vk, prevView));
+      pendingView = { band, focus, field, area: boardArea(vk), pen: penShown(vk), leader: leaderShown(vk) };
     }
     return true;
   }
@@ -811,6 +822,7 @@ export async function createFieldView(host, options = {}) {
         tiles.setView(pendingView.band, pendingView.focus, pendingView.field);
         board3d?.setArea(pendingView.area);
         setPenHidden(!pendingView.pen);
+        setLeaderHidden(!pendingView.leader);
         pendingView = null;
         tiles.project(cam, true);
       }
@@ -1053,7 +1065,23 @@ export async function createFieldView(host, options = {}) {
     penSig = sig;
     penList = sig ? list : null;
     if (!sig) return;
-    const pen = layoutPen(list, { stage: stageRec });
+    const isLeader = (e) => !!e && (e.boss || e.tag === 'boss');
+    for (const [i, e] of list.filter(isLeader).entries()) {
+      const rec = data.enemy(e.enemyKey);
+      const pos = Array.isArray(e.pos) && e.pos.length >= 2 && e.pos.every(Number.isFinite) ? e.pos : LEADER_POS;
+      const info = {
+        id: 'e:leader:' + i, kind: 'enemy', side: 'enemy', defId: e.enemyKey, enemyKey: e.enemyKey, preview: true, name: rec?.name || e.enemyKey,
+        tier: 3, golden: false, spine: rec?.spine || e.enemyKey, avatar: rec?.iconId || rec?.avatar || e.enemyKey,
+        x: pos[1], y: pos[0], facing: -1, maxHp: 1, boss: true, motion: e.fly ? 'FLY' : undefined,
+      };
+      const v = new UnitView(ctx, info, { prep: true, lod: 'idle' });
+      v._leader = true;
+      v.setWorld(info.x, info.y, heightAt(pos[0], pos[1]));
+      v.fadeIn = 0;
+      penViews.set(info.id, v);
+      if (leaderHidden) hidePenView(v, true);
+    }
+    const pen = layoutPen(list.filter((e) => !isLeader(e)), { stage: stageRec });
     for (const f of pen.figures) {
       const rec = data.enemy(f.enemyKey);
       const rank = rec?.rank;
@@ -1074,8 +1102,15 @@ export async function createFieldView(host, options = {}) {
   /** Hide (or show again) the pen's figures: only the pen camera shows them (see the header). */
   function setPenHidden(hidden) {
     penHidden = !!hidden;
-    for (const v of penViews.values()) hidePenView(v, penHidden);
+    for (const v of penViews.values()) if (!v._leader) hidePenView(v, penHidden);
   }
+  function setLeaderHidden(hidden) {
+    if (leaderHidden === !!hidden) return;
+    leaderHidden = !!hidden;
+    for (const v of penViews.values()) if (v._leader) hidePenView(v, leaderHidden);
+  }
+  /** Whether a pen view (a pen figure or a boss round's leader) is hidden now. */
+  const penViewHidden = (v) => (v._leader ? leaderHidden : penHidden);
   function hidePenView(v, hidden) {
     if (!v || v.destroyed) return;
     if (hidden) {
@@ -1095,10 +1130,15 @@ export async function createFieldView(host, options = {}) {
 
   /** The pen enemy under a canvas point: a figure on the tile under it (render/pick.js; ≤ 3 idle per pen tile). */
   function penUnitAt(x, y) {
-    if (penHidden) return null;
     const units = [];
-    for (const v of penViews.values()) { const u = pickUnitOf(v); if (u) units.push(u); }
-    const hit = pickOnTile(units, groundTile(x, y));
+    for (const v of penViews.values()) {
+      if (penViewHidden(v)) continue;
+      // the leader on the boss field: picked like a battle boss (its ground position and `hitArea`)
+      const u = v._leader ? pickUnitOf(v, true, data.enemy(v.info.defId)?.hitArea ?? null) : pickUnitOf(v);
+      if (u) units.push(u);
+    }
+    if (!units.length) return null;
+    const hit = units.some((u) => u.ref._leader) ? pickBattle(units, groundTile(x, y), x, y) : pickOnTile(units, groundTile(x, y));
     return hit ? hit.ref : null;
   }
 
@@ -1736,7 +1776,7 @@ export async function createFieldView(host, options = {}) {
         v.update(bdt, cam, clock);
         if (v.remove) { dropView(key); if (mode === 'battle') gone.add(key); }
       }
-      if (!penHidden) for (const v of penViews.values()) v.update(dt, cam, clock);
+      for (const v of penViews.values()) if (!penViewHidden(v)) v.update(dt, cam, clock);
       tiles.update(bdt);
       fx.update(bdt);
       impostors.flush();
