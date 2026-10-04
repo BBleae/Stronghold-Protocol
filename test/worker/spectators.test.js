@@ -371,46 +371,49 @@ test('persisted match restores players and observers separately without changing
   assert.equal(restored.lobby.getRoom('ABCD').match.recording.rulesVersion, snapshot.matchCheckpoint.rulesVersion);
 });
 
-test('a published old-rules battle restores unchanged and accepts new spectators', async (t) => {
-  const version = '4bc12d6414367669161b';
-  const archive = JSON.parse(
-    gunzipSync(await readFile(new URL('../../replay-versions/' + version + '.json.gz', import.meta.url))),
-  );
-  const engine = await import('data:text/javascript;base64,' + Buffer.from(archive['recovery.mjs']).toString('base64'));
-  retainedMatchVersions[version] = engine.restore;
-  t.after(() => delete retainedMatchVersions[version]);
-  const { rt, host } = setup(t);
-  rt.lobby.MatchClass = class {
-    constructor(options) {
-      return engine.create(options);
+// Archived rules versions (the last one is what production ran before the content-addressed versions): a battle
+// recorded with one restores unchanged and takes new spectators.
+for (const version of ['4bc12d6414367669161b', 'e378e2f4f9ef8419705f']) {
+  test(`a published old-rules battle restores unchanged and accepts new spectators (${version})`, async (t) => {
+    const archive = JSON.parse(
+      gunzipSync(await readFile(new URL('../../replay-versions/' + version + '.json.gz', import.meta.url))),
+    );
+    const engine = await import('data:text/javascript;base64,' + Buffer.from(archive['recovery.mjs']).toString('base64'));
+    retainedMatchVersions[version] = engine.restore;
+    t.after(() => delete retainedMatchVersions[version]);
+    const { rt, host } = setup(t);
+    rt.lobby.MatchClass = class {
+      constructor(options) {
+        return engine.create(options);
+      }
+    };
+    send(rt, host, 'room.start');
+    send(rt, host, 'g.infoReady');
+    const match = rt.lobby.getRoom('ABCD').match;
+    for (let i = 0; i < 30 && match.phase !== 'PREP'; i++) {
+      if (match.phase === 'BAND_DRAFT') send(rt, host, 'g.band', { bandId: 'band_sarkazb' });
+      const at = match.sched.nextAt();
+      if (at != null) rt.pump(at);
     }
-  };
-  send(rt, host, 'room.start');
-  send(rt, host, 'g.infoReady');
-  const match = rt.lobby.getRoom('ABCD').match;
-  for (let i = 0; i < 30 && match.phase !== 'PREP'; i++) {
-    if (match.phase === 'BAND_DRAFT') send(rt, host, 'g.band', { bandId: 'band_sarkazb' });
-    const at = match.sched.nextAt();
-    if (at != null) rt.pump(at);
-  }
-  send(rt, host, 'g.ready', { ready: true });
-  for (let i = 0; i < 30 && !match.fields.length; i++) {
-    const at = match.sched.nextAt();
-    if (at != null) rt.pump(at);
-  }
-  assert.ok(match.fields[0]?.battleId);
-  const checkpoint = JSON.parse(JSON.stringify(rt.snapshot()));
-  assert.equal(checkpoint.matchCheckpoint.rulesVersion, version);
-  const restored = restore(t, checkpoint);
-  const resumed = connect(restored, 'host', undefined, host.take('welcome').token);
-  assert.equal(resumed.take('welcome').playerId, host.take('welcome').playerId);
-  assert.equal(resumed.take('b.start').battleId, match.fields[0].battleId);
-  const viewer = connect(restored, 'late-viewer');
-  send(restored, viewer, 'room.spectate');
-  assert.equal(viewer.take('b.start').battleId, match.fields[0].battleId);
-  assert.equal(viewer.take('b.start').authoritative, false);
-  assert.equal(restored.lobby.getRoom('ABCD').match.recording.rulesVersion, version);
-});
+    send(rt, host, 'g.ready', { ready: true });
+    for (let i = 0; i < 30 && !match.fields.length; i++) {
+      const at = match.sched.nextAt();
+      if (at != null) rt.pump(at);
+    }
+    assert.ok(match.fields[0]?.battleId);
+    const checkpoint = JSON.parse(JSON.stringify(rt.snapshot()));
+    assert.equal(checkpoint.matchCheckpoint.rulesVersion, version);
+    const restored = restore(t, checkpoint);
+    const resumed = connect(restored, 'host', undefined, host.take('welcome').token);
+    assert.equal(resumed.take('welcome').playerId, host.take('welcome').playerId);
+    assert.equal(resumed.take('b.start').battleId, match.fields[0].battleId);
+    const viewer = connect(restored, 'late-viewer');
+    send(restored, viewer, 'room.spectate');
+    assert.equal(viewer.take('b.start').battleId, match.fields[0].battleId);
+    assert.equal(viewer.take('b.start').authoritative, false);
+    assert.equal(restored.lobby.getRoom('ABCD').match.recording.rulesVersion, version);
+  });
+}
 
 test('room avatars come from authenticated profiles and survive reconnect snapshots', (t) => {
   const rt = new RoomRuntime();
