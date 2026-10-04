@@ -17,12 +17,12 @@ test('real account-mode Worker resumes the same active match after full process 
     import worker,{SiteDirectory,AccountDurableObject,RoomDurableObject as ProductionRoom,AdmissionDurableObject,MatchArchive} from ${JSON.stringify(path.join(dir,'worker.mjs').replaceAll('\\','/'))};
     export class RoomDurableObject extends ProductionRoom {
       async fetch(req){if(new URL(req.url).pathname==='/__test/fail'){await this.ready;this.failNext=true;return Response.json({ok:true});}return super.fetch(req);}
-      async persist(){
-        if(!this.failNext)return super.persist();this.failNext=false;
+      async save(...args){
+        if(!this.failNext)return super.save(...args);this.failNext=false;
         const original=this.ctx;
         const storage=new Proxy(original.storage,{get(target,key){if(key==='transaction')return fn=>target.transaction(async tx=>{await fn(tx);throw new Error('INJECTED_COMMIT_FAILURE');});const v=Reflect.get(target,key,target);return typeof v==='function'?v.bind(target):v;}});
         this.ctx=new Proxy(original,{get(target,key){if(key==='storage')return storage;const v=Reflect.get(target,key,target);return typeof v==='function'?v.bind(target):v;}});
-        try{return await super.persist();}finally{this.ctx=original;}
+        try{return await super.save(...args);}finally{this.ctx=original;}
       }
     }
     export {SiteDirectory as TestObject,AccountDurableObject,AdmissionDurableObject,MatchArchive};

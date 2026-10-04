@@ -171,7 +171,8 @@ export class RoomRuntime {
       // commandResults: a former per-session command store, no longer kept.
       for (const { commandResults, ...data } of snapshot.sessions || []) {
         const s = Object.assign(new Session(data), data, { ws: null, connected: false });
-        if (s.disconnectedAt == null) s.disconnectedAt = snapshot.at;
+        // A socket that was open at the last save was lost with the old instance: it closed now.
+        if (s.disconnectedAt == null) s.disconnectedAt = now();
         if (s.resyncAt == null) s.resyncAt = -Infinity;
         this.registry.byPlayerId.set(s.playerId, s);
         this.registry.byTokenMap.set(s.token, s);
@@ -396,14 +397,9 @@ export class RoomRuntime {
   }
   nextAlarm() {
     const deadlines = [...this.lobby.deadlines.values()];
-    if(this.archiveOutbox.length) deadlines.push(this.now()+30000);
     if(this.applications.items.some(x=>['expired','cancelled','rejected'].includes(x.status) && !x.released))deadlines.push(this.now()+30000);
     for(const item of this.applications.list()) if(['approved','pending'].includes(item.status)) deadlines.push(item.expiresAt);
     if(this.accounts && this.lobby.getRoom(this.code)?.activeHumans().some(s=>s.connected)) deadlines.push(this.now()+20000);
-    const match=this.lobby.getRoom(this.code)?.match;
-    if (match?.recording) {
-      const next=match.sched.nextAt(); if(next!=null) deadlines.push(next);
-    }
     if (this.reservation) deadlines.push(Math.max(this.now() + 30_000, this.reservation.expiresAt));
     if (this.interruptedUntil > this.now()) deadlines.push(this.interruptedUntil);
     for (const c of this.network.conns.values()) deadlines.push(c.session
@@ -411,15 +407,38 @@ export class RoomRuntime {
     for (const s of this.registry.all()) if (!s.connected) deadlines.push(s.disconnectedAt + this.registry.windowOf(s) + 1);
     return deadlines.length ? Math.max(this.now() + 100, Math.min(...deadlines)) : null;
   }
+  /** When the running match's next timer is due (null: none, or no recorded match). */
+  matchDue() {
+    const match = this.lobby.getRoom(this.code)?.match;
+    return match?.recording ? match.sched.nextAt() : null;
+  }
+
+  /** Someone (a member or a spectator) is connected. */
+  connected() {
+    for (const s of this.registry.all()) if (s.connected) return true;
+    return false;
+  }
+
+  // The running match's checkpoint: its event log (by reference) and the state that replaying the log must reproduce.
+  // A match changes only through logged events, so that state is computed again only when the log grew.
+  checkpoint(match) {
+    const count = match.recording.events.length;
+    if (this.saved?.match !== match || this.saved.count !== count) {
+      this.saved = { match, count, checkpoint: exportMatch(match, { referenceEvents: true }) };
+    }
+    return this.saved.checkpoint;
+  }
+
+  // The room's persistent state. Finished matches' archives are not part of it: the Durable Object stores them
+  // separately (archiveOutbox holds them only until then).
   snapshot() {
     const room = this.lobby.getRoom(this.code);
-    const base = { version: 1, at: this.now(), code: this.code, reservation: this.reservation,
+    const base = { version: 1, code: this.code, reservation: this.reservation,
       generation:this.generation,resumeTickets:[...this.resumeTickets],
       publicRoom:this.publicRoom,applications:this.applications.snapshot(),
-      archiveOutbox:this.archiveOutbox,
       interruptedUntil: this.interruptedUntil, running: !!room?.match };
     if (base.running && !room.match.recording) return base;
-    if (room?.match?.recording) base.matchCheckpoint=exportMatch(room.match,{referenceEvents:true});
+    if (room?.match?.recording) base.matchCheckpoint = this.checkpoint(room.match);
     return { ...base, sessions: [...this.registry.all()].map(({ ws, ...s }) => ({ ...s,
       resyncAt: Number.isFinite(s.resyncAt) ? s.resyncAt : null })), deadlines: [...this.lobby.deadlines],
     room: room ? { code: room.code, mode: room.mode, difficulty: room.difficulty, hostId: room.hostId,

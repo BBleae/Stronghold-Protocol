@@ -27,7 +27,32 @@ for (const level of ['log', 'warn', 'error']) {
   };
 }
 
+// Storage writes of each room (by room code): transactions, alarms set.
+const writes = new Map();
+function counted(ctx, self) {
+  const count = (kind) => {
+    const entry = writes.get(self.runtime?.code) ?? { transactions: 0, alarms: 0 };
+    entry[kind]++;
+    writes.set(self.runtime?.code, entry);
+  };
+  const storage = new Proxy(ctx.storage, { get(target, key) {
+    if (key === 'transaction') return (fn) => { count('transactions'); return target.transaction(fn); };
+    if (key === 'setAlarm') return (...args) => { count('alarms'); return target.setAlarm(...args); };
+    const value = Reflect.get(target, key, target);
+    return typeof value === 'function' ? value.bind(target) : value;
+  } });
+  return new Proxy(ctx, { get(target, key) {
+    if (key === 'storage') return storage;
+    const value = Reflect.get(target, key, target);
+    return typeof value === 'function' ? value.bind(target) : value;
+  } });
+}
+
 export class RoomDurableObject extends ProductionRoom {
+  constructor(ctx, env) {
+    super(ctx, env);
+    this.ctx = counted(ctx, this);
+  }
   async readSnapshot() {
     const snapshot = await super.readSnapshot();
     const rewrite = await this.ctx.storage.get('test-rewrite');
@@ -49,6 +74,8 @@ export class RoomDurableObject extends ProductionRoom {
       case '/__test/sql': return Response.json(storage.sql.exec(input.query, ...(input.params || [])).toArray());
       case '/__test/logs': await this.ready; return Response.json(logs);
       case '/__test/snapshot': await this.ready; return Response.json((await this.readSnapshot()) ?? null);
+      case '/__test/alarm': await this.ready; return Response.json(await storage.getAlarm());
+      case '/__test/writes': await this.ready; return Response.json(writes.get(this.runtime.code) ?? { transactions: 0, alarms: 0 });
       default: return new Response('unknown hook', { status: 404 });
     }
   }
