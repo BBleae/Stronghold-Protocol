@@ -13,6 +13,7 @@ test('Workers static build preserves public routes and publishes the manifest re
     'public/js/main.js': 'code', 'public/.secret': 'secret',
     'public/dev/recording.json': 'private dev data', 'public/bundle.zip': 'archive',
     'shared/protocol.js': 'export {}', 'data/config.json': '{}', 'data/assets.json': JSON.stringify({ chars: { a: '/assets/a.png' } }),
+    'data/local-assets.json': JSON.stringify(LOCAL),
     'server/sim/Battle.js': 'export {}', 'server/sim/nodeData.js': 'private loader',
     'server/private.js': 'secret',
   };
@@ -29,17 +30,26 @@ test('Workers static build preserves public routes and publishes the manifest re
   // the resource files the manifest lists: what the in-site download and /stronghold-resources.zip provide
   assert.equal(await readFile(path.join(out, 'assets/a.png'), 'utf8'), 'image');
   assert.equal(await readFile(path.join(out, 'fonts/f.woff2'), 'utf8'), 'font');
+  // the local client extraction too, with the manifest of it the game prefers
+  assert.equal(await readFile(path.join(out, 'assets/local/x.png'), 'utf8'), 'local client art');
+  assert.deepEqual(JSON.parse(await readFile(path.join(out, 'data/local-assets.json'), 'utf8')), LOCAL);
   assert.match(await readFile(path.join(out, 'index.html'), 'utf8'), /data-sp-runtime="cloudflare"/);
   assert.match(await readFile(path.join(out, 'index.html'), 'utf8'), /data-sp-rules="0123456789abcdef0123"/, 'the page knows its rules version');
   assert.match(await readFile(path.join(out, 'index.html'), 'utf8'), /src="\/js\/worker-entry.js"/);
   assert.match(await readFile(path.join(out, 'data.js'), 'utf8'), /getSimData/);
   await access(path.join(out, 'sim/Battle.js'));
   await access(path.join(out, 'data/config.json'));
-  // the local client extraction is not a resource (no manifest lists it)
-  for (const name of ['assets/local/x.png', '.secret', 'dev/recording.json', 'bundle.zip', 'sim/nodeData.js', 'server/private.js']) {
+  for (const name of ['.secret', 'dev/recording.json', 'bundle.zip', 'sim/nodeData.js', 'server/private.js']) {
     await assert.rejects(access(path.join(out, name)), { code: 'ENOENT' });
   }
+  // without resource files the site has no local art; a listed file the manifest lacks fails the build
+  await copyRuntimeAssets({ root, out });
+  assert.equal(JSON.parse(await readFile(path.join(out, 'data/local-assets.json'), 'utf8')).source, 'none');
+  const partial = { ...manifest, files: manifest.files.filter((file) => file.url !== '/assets/local/x.png') };
+  await assert.rejects(copyRuntimeAssets({ root, out, manifest: partial }), /local-assets\.json lists 1 files the resource manifest lacks/);
 });
+
+const LOCAL = { version: 1, source: 'local-client', count: 1, groups: { 'ui/battle': { x: { path: '/assets/local/x.png', w: 1, h: 1 } } } };
 
 test('Workers static assets (_headers): each path gets one Cache-Control; resource files keep a day, pack parts for good, the rest revalidates', async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'sp-headers-'));

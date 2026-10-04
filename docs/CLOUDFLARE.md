@@ -43,14 +43,14 @@ npm run deploy:worker
 
 Wrangler 执行构建、上传本地静态文件，保留 `ROOMS`（房间），并通过追加迁移增加 `SITES`（身份/目录）、`ACCOUNTS`（个人索引）、`MATCH_ARCHIVES`（历史/回放）SQLite DO。按网络（IPv4 地址 / IPv6 /64）和账号的请求限流使用 Cloudflare 的 rate limiting 绑定（`wrangler.jsonc` 的 `ratelimits`，每分钟计数，不写存储）：每个 `/api` 请求和房间连接先按网络计数，再接触任何 DO（包括登录查询）；注册、登录和修改密码另按网络计数（`REGISTER_LIMIT`、`LOGIN_LIMIT`），登录和修改密码再按「用户名 + 网络」计数（`USERNAME_LIMIT`，别人的尝试不会用掉玩家自己的次数）；原来的 `ADMISSION` 限流 DO 由迁移 `v3-ratelimits` 删除（它只存短期计数）。限流绑定的 `namespace_id` 在同一 Cloudflare 账号内必须唯一。账号的两种登录方式（用户名密码，以及配置有效时的 GitHub）、管理员重置密码的凭据 `ACCOUNT_ADMIN_TOKEN` 与 `npm run accounts:reset-password`、迁移、独立备份见 [账号与历史指南](ACCOUNTS-HISTORY.md)。
 
-构建只发布 `dist/client/` 以及 `dist/worker/index.mjs`。前端保持 `/data/`、`/shared/`、`/sim/` 的既有路径；Node 文件系统数据读取由构建时 JSON 导入替换。`public/assets/`、`public/fonts/` 只发布资源清单列出的文件（本机客户端提取的 `public/assets/local/` 等不在清单内的文件不发布）；`public/dev/`、ZIP、日志、source map 和服务端私有数据读取模块不会发布。不要手动把整个仓库上传为静态站点。
+构建只发布 `dist/client/` 以及 `dist/worker/index.mjs`。前端保持 `/data/`、`/shared/`、`/sim/` 的既有路径；Node 文件系统数据读取由构建时 JSON 导入替换。`public/assets/`、`public/fonts/` 发布资源清单列出的全部文件，包括本机客户端提取的 `public/assets/local/`；`data/local-assets.json` 原样发布，游戏优先使用其中列出的本地提取素材（官方 3D 棋盘、模组图标、表情、指南等），清单缺少它列出的文件时构建失败；`public/dev/`、ZIP、日志、source map 和服务端私有数据读取模块不会发布。不要手动把整个仓库上传为静态站点。
 
 ## 资源包
 
-站点发布资源清单 `/resource-manifest.json`（每个文件的路径、大小与 SHA-256）和清单所列的全部文件。清单只列 `data/assets.json` 引用的素材和字体（大小与文件数以本站清单为准）。完整资源包有三种拿法，内容相同：
+站点发布资源清单 `/resource-manifest.json`（每个文件的路径、大小与 SHA-256）和清单所列的全部文件。清单收录本机 `public/assets/`、`public/fonts/` 下的全部美术、音频与字体文件，包括本地提取素材（大小与文件数以本站清单为准）。部署机器上的素材以合并后的完整资源包为准（维护者主检出根目录的 `网页卫戍资源包baseline.zip`）：所有历史资源包的并集，同名文件取高清版本。完整资源包有三种拿法，内容相同：
 
 1. **直接下载**：本站的 `/stronghold-resources.zip`（资源管理窗口里的「下载资源包 ZIP」）。部署时构建把资源包切成 24 MiB 的分块放进静态资源，Worker 把分块按顺序拼成一个文件返回：每次下载只算一次 Worker 请求（分块本身是免费的静态资源），支持断点续传和 Range，迅雷 / IDM / aria2 等工具可以多线程下载。文件名带资源版本，和站点当前的素材一致。
-2. **自己生成**：取与站点相同版本的本仓库，运行 `npm ci`、`npm run assets`（从 GitHub 下载素材与字体，中断后再次运行会续传），再运行 `npm run resources:pack`，ZIP 写在 `.cache/` 下。国内下载 GitHub 慢时先设置代理，例如 PowerShell 中 `$env:HTTPS_PROXY = 'http://127.0.0.1:7890'; $env:NODE_USE_ENV_PROXY = '1'`（后者让 Node.js 使用该代理）。来源仓库会更新，晚些下载的个别文件可能与站点清单不一致，导入时跳过并提示数量。
+2. **自己生成**：取与站点相同版本的本仓库，运行 `npm ci`、`npm run assets`（从 GitHub 下载素材与字体，中断后再次运行会续传），再运行 `npm run resources:pack`，ZIP 写在 `.cache/` 下。国内下载 GitHub 慢时先设置代理，例如 PowerShell 中 `$env:HTTPS_PROXY = 'http://127.0.0.1:7890'; $env:NODE_USE_ENV_PROXY = '1'`（后者让 Node.js 使用该代理）。这样生成的 ZIP 不含本地提取素材；来源仓库也会更新，晚些下载的个别文件可能与站点清单不一致。导入时不一致的跳过并提示数量，缺的文件点「在线下载」补齐。
 3. **朋友转发**：已经有 ZIP 的玩家直接发给朋友，朋友打开网站后在「资源管理」点「导入本地 ZIP」。
 
 玩家第一次进入站点时可以：
