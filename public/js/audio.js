@@ -491,8 +491,10 @@ export class AudioManager {
       if (!this.ctx) return;
       // hidden: the voice stops — no line plays on a page the player does not see (the battle voice goes on: see
       // _encounter)
-      if (this.win?.document?.hidden) { this._silenceVoice(0); this.ctx.suspend().catch(() => {}); }
-      else if (this.ctx.state !== 'running') {
+      if (this.win?.document?.hidden) {
+        this._silenceVoice(0);
+        this.ctx.suspend().catch(() => {});
+      } else if (this.ctx.state !== 'running') {
         // back on the page: resume, and keep a gesture ready in case the browser wants one first (iOS after a call)
         this._armUnlock();
         this.ctx.resume().then(() => { if (this.ctx?.state === 'running') this._dropUnlock(); }, () => {});
@@ -981,7 +983,9 @@ export class AudioManager {
           if (u) this.unit(u.def, 'skill', e[1], u.skillIndex ?? undefined);
           // 作战中: an own operator (not a summon, an enemy or a teammate's) starting a skill, once the battle's
           // 行动开始 is said (or its opening is over)
-          if (u && u.side !== 'enemy' && unitSoundClass(u) === 'char' && this._own(u) && !this._opening(now)) this.voice(u.def, 'combat');
+          if (u && u.side !== 'enemy' && unitSoundClass(u) === 'char' && this._own(u) && !this._opening(now)) {
+            this.voice(u.def, 'combat');
+          }
         } else if (kind === 'die') {
           const u = this.units.get(e[1]);
           if (!u) continue;
