@@ -49,6 +49,7 @@ import { installLoadoutSync } from './ui/loadoutSync.js';
 import { account, loadAccount } from './account.js';
 import { HistoryScreen } from './screens/history.js';
 import { ReplayScreen } from './screens/replay.js';
+import { startBuildGuard } from './ui/buildGuard.js';
 
 const RESTORE_GRACE_MS = 1500;
 const JOIN_DELAY_MS = 350;
@@ -222,7 +223,13 @@ function wireNet() {
   });
   net.on('m.ticker', (msg) => {
     if (typeof msg.text !== 'string') return;
-    store.set((s) => ({ ticker: [...s.ticker.slice(-(TICKER_KEEP - 1)), { id: ++seq, text: msg.text, at: Date.now() }] }));
+    // type, player + the round it came in: a BOSS_HIT line is dropped once its boss round is over and superseded by the
+    // same player's next one (ui/ticker.js tickerLineLive / tickerSupersedes)
+    const type = typeof msg.type === 'string' ? msg.type : null;
+    const playerId = typeof msg.playerId === 'string' ? msg.playerId : null;
+    // its broadcast priority: the strip plays the highest first (ui/ticker.js enqueueTickerLines)
+    const priority = Number.isFinite(msg.priority) ? msg.priority : 0;
+    store.set((s) => ({ ticker: [...s.ticker.slice(-(TICKER_KEEP - 1)), { id: ++seq, text: msg.text, at: Date.now(), type, playerId, round: s.match?.public?.round ?? null, priority }] }));
   });
   net.on('m.emote', (msg) => {
     store.set((s) => ({ emotes: [...s.emotes.slice(-(EMOTE_KEEP - 1)), { seq: ++seq, playerId: msg.playerId, id: msg.id, at: Date.now() }] }));
@@ -369,6 +376,18 @@ async function boot() {
     setTimeout(() => splash.remove(), 300);
   }
   globalThis.__SP__ = { store, net, data, audio, version: 1 };
+  // A page keeps the modules it imported at load time for its whole lifetime, so a deploy cannot reach an open tab
+  // (ui/buildGuard.js): watch `/healthz.build`. Outside a match the page reloads itself; during a match the guard says
+  // so instead (the connection banner offers 刷新页面) and reloads once the match — settlement screen included — is over,
+  // so a running game is never thrown away.
+  try {
+    startBuildGuard({
+      inMatch: () => selectRoute(store.get()) === 'game',
+      onStale: ({ waiting }) => { if (waiting) store.patch('ui', { buildStale: true }); },
+    });
+  } catch (err) {
+    console.warn('[app] build guard failed to start', err);
+  }
 }
 
 boot().catch((err) => {

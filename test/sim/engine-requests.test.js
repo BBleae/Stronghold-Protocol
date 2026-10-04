@@ -369,7 +369,7 @@ test('skill end: onEnd runs with the skill mods and range still applied, then th
 // ---------------------------------------------------------------------------------------------------------------
 // 9) redeploy { free, tile, keepSp }
 
-test('redeploy: { tile } lands on another tile (home unchanged, later redeploys at home); { keepSp } restores SP before deploy fires', () => {
+test('redeploy: { tile } lands on another tile (home unchanged; knocked out there, it comes back there); { keepSp } restores SP before deploy fires', () => {
   let atDeploy = null;
   const h = makeBattle({
     defs: { chess: { t_gd: guard({ skill: { spCost: 10, initSp: 2 } }), t_x: guard({ id: 't_x' }) } },
@@ -391,7 +391,9 @@ test('redeploy: { tile } lands on another tile (home unchanged, later redeploys 
   assert.equal(h.b.unitAt(12, 8), u);
   approx(atDeploy, sp, 1e-9, 'SP restored before the deploy hook');
   approx(u.hp, u.s.maxHp);
-  // plain redeploy: initSp; knocked out later → the auto-redeploy goes home
+  // plain redeploy: initSp; knocked out there later → the auto-redeploy comes back on that tile (PRTS 卫戍协议/帮助
+  // "…原地留下一个“倒地干员”…满足再部署条件时…自动部署至该位置"; player report F5 after 0.1.0); a retreat too (every 退场:
+  // GitHub #60)
   h.b.retreat(u);
   h.b.redeploy(u, { tile: [12, 8] });
   approx(u.skill.sp, 2, 1e-9, 'without keepSp: initial SP');
@@ -399,7 +401,11 @@ test('redeploy: { tile } lands on another tile (home unchanged, later redeploys 
   p.dp = 50;
   h.b.dealDamage(null, u, { amount: 1e9, type: 'true' });
   assert.ok(h.runUntil(() => u.alive, u.base.respawnTime + 1));
-  assert.deepEqual([u.tileR, u.tileC], [10, 4], 'auto-redeploy on the home tile');
+  assert.deepEqual([u.tileR, u.tileC], [12, 8], 'auto-redeploy on the tile it lay on');
+  h.b.retreat(u);
+  assert.deepEqual(h.b.snapshot().down?.map((d) => d.slice(4)), [[12, 8]], 'a retreated operator lies where it stood');
+  assert.equal(h.b.redeploy(u), true);
+  assert.deepEqual([u.tileR, u.tileC], [12, 8], 'and comes back there, not on its home tile (GitHub #60)');
   // paid redeploy on a tile
   h.b.retreat(u);
   const dp = p.dp;

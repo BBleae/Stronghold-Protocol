@@ -125,7 +125,7 @@ test('缇缇 T2 勇气的报偿: Sargon/Minos ops above 50 % HP get +20 ASPD', (
 });
 
 // ------------------------------------------------------------------------------------------------------------------
-test('烛煌 S3: hits every enemy in the skill range, BAT −1.3 s, burn bursts refill ammo; T1 熔点引爆 350 % + heal; T2 downed → revive', () => {
+test('烛煌 S3: its target and the enemies within the 1.7 splash, BAT −1.3 s, burn bursts refill ammo; T1 熔点引爆 350 % + heal; T2 downed → revive', () => {
   const h = makeBattle({
     defs: { enemies: { enemy_dummy: dummy() } },
     units: [{ chessId: 'chess_char_5_03_a', row: 10, col: 3 }],
@@ -142,7 +142,7 @@ test('烛煌 S3: hits every enemy in the skill range, BAT −1.3 s, burn bursts 
   approx(u.s.interval, u.base.bat + bb.base_attack_time, 1e-6, 'BAT 1.6 − 1.3 s');
   h.run(1);
   const hitIds = new Set(h.hooksOf('damaged').filter((c) => c.source === u && c.dmg.isSkill && c.dmg.isAttack).map((c) => c.target.id));
-  assert.equal(hitIds.size, 3, 'group attack');
+  assert.equal(hitIds.size, 3, 'group attack: the three stand within 1.7 of each other (PRTS 备注 "攻击溅射半径1.7")');
   // a burn burst anywhere: +ammo, 熔点引爆 elemental damage and heal
   const e = h.b.enemies[0];
   u.hp = 100;
@@ -232,6 +232,52 @@ test('乌尔比安 S3: anchor 135 % ATK + stun on the first enemy ahead, moves t
   assert.deepEqual([u.tileR, u.tileC], [9, 3], 'back home');
   assert.equal(marker.alive, false);
   clean(h);
+});
+
+test('乌尔比安 S3 while he blocks (e.g. after a 突袭 landing): the anchor lands on his own tile — no 【移动】, no marker (PRTS 备注; GitHub #33)', () => {
+  // PRTS 乌尔比安 S3 备注: target = his own tile (only while blocking) > the nearest tile of the skill range with an enemy >
+  // its farthest tile; the 从不混淆的方向 only when the 【移动】 changes his tile
+  const setup = (near) => {
+    const h = makeBattle({
+      defs: { enemies: { enemy_dummy: dummy(), enemy_fly: dummy('enemy_fly', { motion: 'FLY' }) } },
+      units: [{ chessId: 'chess_char_5_05_a', row: 9, col: 3 }],
+      enemies: [{ key: near, pos: [9, 3] }, { key: 'enemy_dummy', pos: [9, 7] }], hooks: ['damaged'], captureNoisy: true, autoFinish: false, timeLimit: 120,
+    });
+    const u = h.unit('chess_char_5_05_a');
+    h.step();
+    const [e0, far] = h.b.enemies;
+    const blocked = e0.blockedBy === u;
+    u.skill.gainSp(1000);
+    assert.ok(h.runUntil(() => u.skill.active, 2), near);
+    return { h, u, e0, far, blocked, anchor: fxOf(h, 'anchor')[0] };
+  };
+  { // blocking the enemy on his tile: the anchor on his own tile, he stays
+    const { h, u, e0, far, blocked, anchor } = setup('enemy_dummy');
+    assert.ok(blocked, 'he blocks the enemy on his tile');
+    assert.deepEqual([anchor[2], anchor[3]], [3, 9], 'the anchor on his own tile');
+    assert.equal(tagged(h, 'anchor', e0).length, 1, 'the blocked enemy is hit');
+    assert.ok(e0.s.flags.stun);
+    assert.equal(tagged(h, 'anchor', far).length, 0, '4 tiles ahead, out of the 1.8 radius');
+    assert.deepEqual([u.tileR, u.tileC], [9, 3], 'no 【移动】');
+    assert.ok(!h.b.allyUnits.some((x) => x.kind === 'token'), 'no 从不混淆的方向');
+    assert.ok(h.runUntil(() => !u.skill.active, 30));
+    assert.deepEqual([u.tileR, u.tileC], [9, 3]);
+    clean(h);
+  }
+  { // not blocking, a flyer over his tile: his own tile is no candidate (only while blocking) — the anchor flies to the
+    // enemy 4 tiles ahead and he moves there, as in 0.1.1
+    const { h, u, e0, far, blocked, anchor } = setup('enemy_fly');
+    assert.ok(!blocked, 'a flyer is not blocked');
+    assert.deepEqual([anchor[2], anchor[3]], [7, 9], 'the anchor on the enemy ahead');
+    assert.equal(tagged(h, 'anchor', far).length, 1);
+    assert.equal(tagged(h, 'anchor', e0).length, 0, 'the flyer over his tile is out of the 1.8 radius');
+    assert.deepEqual([u.tileR, u.tileC], [9, 7], 'moved onto the anchor tile');
+    const marker = h.b.allyUnits.find((x) => x.kind === 'token' && x.alive);
+    assert.ok(marker && marker.tileR === 9 && marker.tileC === 3, 'the marker on his tile');
+    assert.ok(h.runUntil(() => !u.skill.active, 30));
+    assert.deepEqual([u.tileR, u.tileC], [9, 3], 'back home');
+    clean(h);
+  }
 });
 
 test('乌尔比安 T1 本性的坚守 heals per hit taken; T2 血脉的哺养 +HP/ATK per kill (abyssal allies half); elite healing ×1.2', () => {
@@ -364,7 +410,7 @@ test('史尔特尔 S3 黄昏: full heal, max HP +5000, ATK +210 %, range +2, 3 t
 });
 
 // ------------------------------------------------------------------------------------------------------------------
-test('号角 S3: ATK +25 %, BAT −1.2 s, then overload ATK +50 % with HP loss; T1 Defenders ATK +20 %; T2 血战', () => {
+test('号角 S3: cast with an enemy in range (DEFAULT, DESIGN §21.29); ATK +25 %, BAT −1.2 s, then overload ATK +50 % with HP loss; T1 Defenders ATK +20 %; T2 血战', () => {
   const h = makeBattle({
     defs: { enemies: { enemy_dummy: dummy() }, chess: { t_tank: ally('t_tank', { profession: 'TANK', stats: { atk: 100 } }) } },
     units: [{ chessId: 'chess_char_5_08_a', row: 9, col: 3 }, { chessId: 't_tank', row: 12, col: 3 }],
@@ -376,10 +422,12 @@ test('号角 S3: ATK +25 %, BAT −1.2 s, then overload ATK +50 % with HP loss; 
   approx(h.unit('t_tank').s.atk, 100 * (1 + t0.atk), 1e-6, '军事要塞 on another Defender');
   approx(u.s.atk, u.base.atk * (1 + t0.atk), 1e-6, '… and on herself');
   u.skill.gainSp(1000);
-  h.run(1);
-  assert.equal(u.skill.activations, 0, '重装 TAKE_DAMAGE: not before a hit');
-  h.b.dealDamage(h.enemies()[0], u, { amount: 10, type: 'phys' });
+  // cast at her next attack with the enemy in range, no hit needed: DEFAULT — the owner's deliberate deviation from the
+  // 重装 TAKE_DAMAGE row (DESIGN §21.29)
+  assert.equal(u.skill.rule, 'DEFAULT');
   assert.ok(h.runUntil(() => u.skill.active, 5));
+  assert.equal(h.hooksOf('skillStart').find((c) => c.unit === u).reason, 'DEFAULT');
+  assert.equal(u.stats.taken, 0, 'nothing hit her');
   const start = h.b.time;
   const total = u.def.skill.duration, ov = bb['horn_s_3[overload_start].damage_duration'];
   approx(u.s.atk, u.base.atk * (1 + t0.atk + bb.atk));

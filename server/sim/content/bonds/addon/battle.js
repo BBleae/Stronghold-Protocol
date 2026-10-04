@@ -16,20 +16,35 @@
 //                      two players of a pair field compete for it, the strongest wins (battle.applyStrongest, 同名效果取最高:
 //                      PRTS 作战机制 "同名buff的默认叠加策略buff只能表现出一个"; 巴哈姆特 12316 first-hand: "共享型buff會跟對面搶
 //                      如果對面層數比你高就不需要再特別激活直接吃他的奧術buff"). v2.5 kept one per player, so two players'
-//                      instances multiplied (×5.4 × ×5.6 on a leader at ~250 layers, DESIGN §20.10)
+//                      instances multiplied (×5.4 × ×5.6 on a leader at ~250 layers, DESIGN §20.10). PRTS 盟约记录's own
+//                      note "※同一单位仅可对同一目标同时施加1个该盟约法术伤害提升效果" (one instance per unit and target)
+//                      fits it under the engine default (a newer same-named buff waits until the earlier ends, PRTS
+//                      常见同名状态); strongest vs earliest is [ASSUMED]. Known deviation [ASSUMED]: an earlier revision
+//                      (oldid 386936) forbade a unit re-applying while its own instance lasts; an equal hit here
+//                      refreshes it to a fresh 3 s (slightly stronger). Re-measured after the 0.1.0 report
+//                      "奥术盟约不生效": it works on the real and the browser path (test/sim/feedback1b-arcane.test.js);
+//                      标准 never activates it (modeDataDict inactiveBondIdList)
 //   坚守 steadShip     all operators max HP +(base + per·L); tier 2: 40 % of a non-member operator's damage is borne by
 //                      the members on the field (split evenly, sourceless true damage — already mitigated), members’ thorns
-//                      (base + per·L arts, sourceless but credited to the member hit, ≤ 1 per cd_duration per member)
+//                      (base + per·L arts, sourceless but credited to the member hit, ≤ 1 per cd_duration per member;
+//                      无来源 damage uses the chance and hits nobody, a 流失 never does — PRTS 备注 / 作战机制)
 //                      + 脆弱 ×damage_scale for weak[limit] s
 //   助力 deputShip     all operators DEF +(base + per·L), redeploy time ×(1 + respawn_time)
 //   突袭 raidShip      member idle ≥ no_attack_duration s (or skill ready) with no enemy in range → "保留技力立即再部署"
-//                      next to the most advanced ground enemy: a real redeployment (retreat + free redeploy on the
-//                      landing tile, full HP, `deploy` fires — 部署时 traits such as 史尔特尔, 突袭手雷, 卡西米尔, 叙拉古)
-//                      with its SP / charges kept (engine redeploy tile + keepSp); ATK/HP +(base + per·L)
-//                      until it leaves the field; later redeploys use its board tile again;
+//                      next to the most advanced ground enemy it can reach: on a free tile its position may be deployed
+//                      on from which its range covers that enemy (GitHub issue #51 [ASSUMED]: the first of the 8 most
+//                      advanced that has such a tile; none → it stays and the next poll looks again, never a jump that
+//                      hits nothing); grid.canStand: never the 深水区 (player report #3 after 0.1.0, members dropped
+//                      into 战场#08's pool after an enemy wading in it); Battle.isReservedTile: never a tile a knocked-out
+//                      operator lies on (player report F5, members landed on a fallen teammate). A real redeployment
+//                      (retreat + free redeploy on the landing tile, full HP, `deploy` fires — 部署时 traits such as
+//                      史尔特尔, 突袭手雷, 卡西米尔, 叙拉古) with its SP / charges kept (engine redeploy tile + keepSp);
+//                      ATK/HP +(base + per·L) until it leaves the field; knocked out after a jump it lies where it fell
+//                      and comes back there (the engine's rest tile, Battle._layBody — PRTS 卫戍协议/帮助 "原地留下一个
+//                      “倒地干员”…自动部署至该位置"; its own home when it fell on another board piece's home);
 //                      L ≥ power_bond_stack_cnt: every operator ASPD +power_attack_speed
-//   不屈 indomShip     ground operator knocked out → p = min(1, base + per·L) immediate free redeploy; tier 2: every
-//                      operator on the field +sp SP
+//   不屈 indomShip     ground operator knocked out → p = min(1, base + per·L) immediate free redeploy where it lies
+//                      (the engine's rest tile); tier 2: every operator on the field +sp SP
 //   协防 emptyShip     all operators phys/arts taken ×(1 − damage_resistance); members dealt ×damage_scale_normal
 //                      (elite ×damage_scale_extra)
 //   独行 soloShip      the member(s) ATK +atk, HP +max_hp, +sp SP on every deploy
@@ -39,11 +54,13 @@
 // Hooks registered only when a bond needs them. Priorities: `hit` −20 (坚守 redirect, after other modifiers had their
 // say), `death` 10 (不屈, the bond slot of the revive/redeploy convention); everything else 0.
 
-import { absoluteRangeKeys, canTargetEnemy } from '../../../targeting.js';
-import { localOrder, localBefore } from '../../../dir.js';
+import { canTargetEnemy, extendedGrid } from '../../../targeting.js';
+import { normDir, rotateOffset, localOrder, localBefore } from '../../../dir.js';
+import { bodyKeys } from '../../../body.js';
+import { isHpLoss } from '../../../damage.js';
 import {
   num, bondRecord, buffParams, bondTier, bondLayers, isMember, isElite, isGroundOp, onField, playerOps, passiveBuff,
-  fxOn, N4, N8, bodyInKeys, directMods,
+  fxOn, N4, N8, directMods, COLS,
 } from '../../support/index.js';
 
 export const ID = Object.freeze({
@@ -61,6 +78,7 @@ const STEAD_CD = 'bond:steadShip:cd';
 const AURA_POLL = 0.25;
 const RAID_POLL = 0.25;
 const RAID_SEARCH = 2; // landing tiles within this Chebyshev distance of the target enemy
+const RAID_TARGETS = 8; // candidate enemies a poll tries per member, the most advanced first (raidTargets)
 
 /** 奥术 vulnerability mods for a multiplier (battle.applyStrongest). */
 const arcaneMods = (v) => ({ artsTakenMul: v });
@@ -221,29 +239,59 @@ function updateAura(battle, st) {
 
 // =====================================================================================================================
 // 突袭 relocation
+//
+// Either trigger (技能就绪, or no attack for no_attack_duration s) jumps only to a landing tile from which the member's
+// attack range covers the enemy it jumps to: the first candidate (raidTargets order, the RAID_TARGETS most advanced)
+// that has one; when none has, the member stays where it is and the next poll looks again (its idle time keeps
+// counting, so it jumps as soon as one can be reached). The official text only says "再部署至一名地面敌人周围" —
+// "never a useless landing" is [ASSUMED] after GitHub issue #51 (up to 0.1.1 the idle trigger landed where nothing was
+// in range, hopped between such tiles every 10 s and ignored a second enemy it could have reached; DESIGN §22.2).
 
-function raidTile(battle, u, e) {
-  const er = Math.round(e.y), ec = Math.round(e.x);
-  const ranged = u.def?.position === 'RANGED';
-  const grid = u.rangeGrid || [[0, 0]];
-  const ext = num(u.s.rangeExtend);
-  let best = null, bs = null;
-  for (let dr = -RAID_SEARCH; dr <= RAID_SEARCH; dr++) {
-    for (let dc = -RAID_SEARCH; dc <= RAID_SEARCH; dc++) {
-      const r = er + dr, c = ec + dc;
-      if (!battle.grid.inRect(r, c) || battle.isReservedTile(r, c)) continue;
-      if (!battle.grid.canStand(r, c, { ranged })) continue;
-      const covers = bodyInKeys(e, absoluteRangeKeys(grid, r, c, u.dir, ext)) ? 0 : 1;
-      const d = Math.max(Math.abs(dr), Math.abs(dc)) + 0.01 * (Math.abs(dr) + Math.abs(dc));
-      // last tie-break: the offset in the unit's facing-RIGHT frame (sim/dir.js localOrder; for a RIGHT-facing unit the
-      // plain tile-key order), so the landing tile turns with its direction
-      const s0 = covers, s1 = d, s2 = localOrder(dr, dc, u.dir);
-      if (!bs || s0 < bs[0] || (s0 === bs[0] && (s1 < bs[1] - 1e-9 || (Math.abs(s1 - bs[1]) <= 1e-9 && localBefore(s2, bs[2]))))) { best = [r, c, covers === 0]; bs = [s0, s1, s2]; }
-    }
-  }
-  return best; // [row, col, targetInRange]
+/**
+ * The member's attack range as offsets from its tile: its own grid + rangeExtend (targeting.js extendedGrid, the
+ * relative form of absoluteRangeKeys) turned by its direction — flat [dRow, dCol, dRow, dCol, …].
+ */
+function raidReach(u) {
+  const d = normDir(u.dir);
+  const out = [];
+  for (const [dr, dc] of extendedGrid(u.rangeGrid || [[0, 0]], num(u.s.rangeExtend))) out.push(...rotateOffset(dr, dc, d));
+  return out;
 }
 
+/**
+ * Landing tile [row, col] of a jump to enemy `e`, or null: a tile from which the member's range (`reach`, raidReach)
+ * covers the enemy's body (a huge enemy: any tile it occupies — body.js), within RAID_SEARCH tiles (Chebyshev) of the
+ * enemy, inside the field rect, that the member's position may be deployed on (grid.canStand: never the 深水区 —
+ * player report #3 after 0.1.0) and that is free (Battle.isReservedTile: no living unit, no knocked-out operator's
+ * body — player report F5 —, no waiting piece's tile). The nearest first (Chebyshev, then 0.01·Manhattan); last
+ * tie-break the offset in the member's facing-RIGHT frame (sim/dir.js localOrder; for a RIGHT-facing unit the plain
+ * tile-key order), so the landing tile turns with its direction. Only the tiles a range offset leads back to from a
+ * body tile are looked at, so a search that finds nothing stays cheap.
+ */
+function raidTile(battle, u, e, reach) {
+  const er = Math.round(e.y), ec = Math.round(e.x);
+  const ranged = u.def?.position === 'RANGED';
+  let best = null, bd = Infinity, bo = null;
+  for (const k of bodyKeys(e)) {
+    const br = Math.floor(k / COLS), bc = k - br * COLS;
+    for (let i = 0; i < reach.length; i += 2) {
+      const r = br - reach[i], c = bc - reach[i + 1], dr = r - er, dc = c - ec;
+      if (Math.abs(dr) > RAID_SEARCH || Math.abs(dc) > RAID_SEARCH) continue;
+      if (!battle.grid.inRect(r, c) || !battle.grid.canStand(r, c, { ranged }) || battle.isReservedTile(r, c)) continue;
+      const d = Math.max(Math.abs(dr), Math.abs(dc)) + 0.01 * (Math.abs(dr) + Math.abs(dc));
+      const o = localOrder(dr, dc, u.dir);
+      if (d < bd - 1e-9 || (Math.abs(d - bd) <= 1e-9 && localBefore(o, bo))) { best = [r, c]; bd = d; bo = o; }
+    }
+  }
+  return best;
+}
+
+/**
+ * Jump candidates of player `pid`, in priority order: the ground enemies an operator may target (not flying,
+ * canTargetEnemy) — those of the player's own field (`ownerId`), the others only when it has none —, the most advanced
+ * first (least remaining path distance, then the earliest spawned) [ASSUMED, research 02 §3.18]. The same list for
+ * every member of the player (canTargetEnemy reads the enemy, not the attacker).
+ */
 function raidTargets(battle, u, pid) {
   const own = [], other = [];
   for (const e of battle.enemies) {
@@ -259,6 +307,7 @@ function raidTargets(battle, u, pid) {
 function raidPoll(battle, st) {
   const bb = st.bb[ID.raid];
   const idle = num(bb.no_attack_duration, 10);
+  let targets = null; // the player's candidates (raidTargets), shared by its members until a jump changes the field
   for (const u of st.members[ID.raid]) {
     if (!onField(u) || !u.canAct) continue;
     const since = Math.max(u.lastAttackAt ?? -Infinity, u.deployedAt ?? -Infinity, u.mem[KEY.raid] ?? -Infinity);
@@ -266,19 +315,22 @@ function raidPoll(battle, st) {
     const idleOk = battle.time - since >= idle - 1e-9;
     if (!(ready || idleOk)) continue;
     if (battle.enemiesInKeys(u.rangeKeys || [], u, u.profile).length) continue;
-    const targets = raidTargets(battle, u, st.pid);
-    for (let i = 0; i < targets.length && i < 8; i++) {
-      const tile = raidTile(battle, u, targets[i]);
+    const list = (targets ??= raidTargets(battle, u, st.pid));
+    if (!list.length) continue;
+    // either trigger: raidTile only offers tiles with the target in range (without that a ready skill that finds no
+    // target would redeploy — firing every 部署时 effect — at every poll; the idle trigger, which lacked it up to
+    // 0.1.1, hopped every 10 s: issue #51)
+    const reach = raidReach(u);
+    for (let i = 0; i < list.length && i < RAID_TARGETS; i++) {
+      const tile = raidTile(battle, u, list[i], reach);
       if (!tile) continue;
-      // the "skill ready" path has no idle gate: only jump where the target is in range, else a ready skill that never
-      // finds a target would redeploy (and fire every 部署时 effect) every poll
-      if (!idleOk && !tile[2]) continue;
+      targets = null; // the retreat / redeploy handlers (部署时 effects) may change the enemies: the next member re-sorts
       const res = raidRedeploy(battle, u, tile[0], tile[1]);
       if (!res) continue;
-      u.mem[KEY.raid] = battle.time;
+      u.mem[KEY.raid] = battle.time; // with deployedAt: the idle time starts again from the landing
       if (res === 'raid') {
         battle.addBuff(u, { key: KEY.raid, mods: st.raidMods });
-        fxOn(battle, 'blink', u, KEY.raid, 'relocate', { target: targets[i].id });
+        fxOn(battle, 'blink', u, KEY.raid, 'relocate', { target: list[i].id });
       }
       break;
     }
@@ -287,8 +339,9 @@ function raidPoll(battle, st) {
 
 /**
  * "保留技力立即再部署": retreat the unit and redeploy it for free on (r, c) with its SP / charges kept (engine redeploy
- * `tile` + `keepSp`: restored before the `deploy` handlers run; the board tile stays the home of later redeploys).
- * Should the landing fail, the unit goes straight back to its home tile (never stranded off the field).
+ * `tile` + `keepSp`: restored before the `deploy` handlers run; the board tile stays its home). Should the landing fail
+ * (raidTile skips taken, reserved and body tiles, so only content refusing it), the unit goes straight back to its home
+ * tile (never stranded off the field).
  * Returns 'raid' | 'home' | false.
  */
 function raidRedeploy(battle, u, r, c) {
@@ -440,7 +493,9 @@ export function install(battle) {
           }
           return;
         }
-        if (dmg.steadShare || dmg.steadThorn || c.type === 'element' || !st.members[ID.stead].has(t)) return;
+        // a 流失 never uses a thorn chance (PRTS 作战机制 "生命流失不会触发反伤"); 无来源 damage does, hitting nobody (备注
+        // "可被无来源伤害消耗反伤机会")
+        if (dmg.steadShare || dmg.steadThorn || c.type === 'element' || isHpLoss(dmg) || !st.members[ID.stead].has(t)) return;
         const bb = st.bb[ID.stead];
         const last = t.mem[STEAD_CD] ?? -Infinity;
         if (battle.time - last < num(bb.cd_duration) - 1e-9) return;
