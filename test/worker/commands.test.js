@@ -10,7 +10,7 @@ import { RoomRuntime } from '../../worker/room-runtime.js';
 class Socket extends EventEmitter {
   readyState = 1; bufferedAmount = 0; frames = [];
   send(data) { this.frames.push(JSON.parse(data)); }
-  close() { this.readyState = 3; this.emit('close'); }
+  close(code, reason) { this.closed = { code, reason }; this.readyState = 3; this.emit('close'); }
   replies() { return this.frames.filter((f) => f.t === 'ok' || f.t === 'error'); }
 }
 function connect(rt, accountId, ticket, token) {
@@ -33,9 +33,11 @@ test('padded commands from a stranger leave the room snapshot as it was', (t) =>
   const { rt } = coopRoom(t);
   const stranger = connect(rt, 'mallory');
   const before = JSON.stringify(rt.snapshot()).length;
-  // A player's full burst: a stranger's socket has a spectator's message limit (burst 10, its hello took one).
+  // A player's full burst. A stranger's socket has a spectator's message limit (burst 10, its hello took one) and is
+  // closed past 10 refused frames.
   for (let i = 0; i < 39; i++) send(rt, stranger, 'g.refresh', { pad: 'x'.repeat(60000) });
-  assert.deepEqual(stranger.replies().map((f) => f.code), [...Array(9).fill('NOT_IN_ROOM'), ...Array(30).fill('RATE')]);
+  assert.deepEqual(stranger.replies().map((f) => f.code), [...Array(9).fill('NOT_IN_ROOM'), ...Array(11).fill('RATE')]);
+  assert.deepEqual(stranger.closed, { code: 1008, reason: 'rate limit' });
   assert.ok(JSON.stringify(rt.snapshot()).length - before < 200);
 });
 
