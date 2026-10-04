@@ -25,9 +25,10 @@ export async function clearStaleApplication(env,accountId) {
 // lapsed, a restore interrupted the match) is released by whoever reads it next, so it never blocks the account.
 
 /**
- * The account's seat as its room confirms it, or null. GET answers { activeSeat, status, reserved }; POST (resume)
- * also hands out a ticket to connect with: { code, generation, ticket, join, reserved }. `reserved`: the seat is a
- * reservation the account has not used yet (no room.create).
+ * The account's seat as its room confirms it, or null. GET reads it: { activeSeat, status, reserved }, and the
+ * reservation's ticket when `reserved`. POST (resume) hands out a ticket to connect with, a takeover ticket for a seat
+ * (stored by the room for 30 s): { code, generation, ticket, join, reserved }. `reserved`: the seat is a reservation
+ * the account has not used yet (no room.create).
  */
 export async function seatOf(env, accountId, method = 'GET') {
   const account = accountOf(env, accountId);

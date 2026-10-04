@@ -73,8 +73,8 @@ async function route(request, env) {
     const session = await authenticate(request, env);
     if (!session) return error(401, 'LOGIN_REQUIRED');
     // A create that failed after its reservation (e.g. at the first connect) goes on with that reservation.
-    const seat = await seatOf(env, session.accountId, 'POST');
-    if (seat?.reserved) return json({ code: seat.code, ticket: seat.ticket, generation: seat.generation });
+    const seat = await seatOf(env, session.accountId);
+    if (seat?.reserved) return json({ code: seat.activeSeat.roomId, ticket: seat.ticket, generation: seat.activeSeat.roomGeneration });
     if (seat) return error(409, 'ALREADY_SEATED');
     for (let i = 0; i < 12; i++) {
       const code = Array.from({ length: 4 }, () => CODE_ALPHABET[randomInt(CODE_ALPHABET.length)]).join('');
@@ -619,7 +619,8 @@ export class RoomDurableObject {
         return json({ code: rt.code, generation: rt.generation, ticket,
           join: rt.applications.list(accountId).some((x) => x.status === 'approved'), reserved });
       }
-      return json({ activeSeat: { roomId: rt.code, roomGeneration: rt.generation }, status: rt.status(), reserved });
+      return json({ activeSeat: { roomId: rt.code, roomGeneration: rt.generation }, status: rt.status(), reserved,
+        ...(reserved ? { ticket: rt.reservation.ticket } : {}) });
     }
     if (url.pathname === '/_status' && request.method === 'GET') {
       const status = rt.status();

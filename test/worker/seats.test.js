@@ -19,8 +19,10 @@ test('room creation goes on with an unused reservation and is never blocked by a
   const host = await world.player('a', again.body);
   assert.equal((await host.request('room.create', { mode: 'coop', difficulty: 'FUNNY' })).t, 'ok');
   assert.equal((await host.wait('room.state')).seats[0].playerId, host.welcome.playerId);
-  // A seat in a live room still blocks a second room.
+  // A seat in a live room still blocks a second room. The check only reads the seat: no takeover ticket is minted.
+  const tickets = (await world.room(again.body.code, 'snapshot')).resumeTickets;
   assert.deepEqual(await world.api('a', '/api/rooms', { method: 'POST' }), { status: 409, body: { error: 'ALREADY_SEATED' } });
+  assert.deepEqual((await world.room(again.body.code, 'snapshot')).resumeTickets, tickets);
 
   // b: left its room; the pointer it still holds is released by the next create.
   const left = (await world.api('b', '/api/rooms', { method: 'POST' })).body;
