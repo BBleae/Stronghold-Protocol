@@ -102,36 +102,40 @@ export class ResourceStore {
 
   /**
    * Scan the cache: keep the entries of the current manifest, delete every other one, and record the result.
-   * The oldest resource cache stays the cache; any later one (version-keyed caches of earlier releases) hands over
-   * the files the first lacks and is deleted. So an earlier installation is adopted in place, never copied whole.
+   * Earlier releases kept one cache per site version. The fullest resource cache stays the cache; the others hand
+   * over the files it lacks and are deleted. So an earlier installation is adopted in place, never copied whole.
    */
   async reconcile() {
     const manifest = this.manifest;
     const files = new Map(manifest.files.map(file => [file.url, file]));
-    const [name = CACHE_PREFIX, ...others] = await this.#cacheNames();
-    const cache = await this.caches.open(name);
+    const names = await this.#cacheNames();
+    if (!names.length) names.push(CACHE_PREFIX);
+    const existing = await Promise.all(names.map(async name => {
+      const cache = await this.caches.open(name);
+      return { name, cache, requests: await cache.keys() };
+    }));
+    const [home, ...others] = existing.sort((a, b) => b.requests.length - a.requests.length);
     const status = cacheStatus(manifest, 0, 0, new Set());
-    const requests = await cache.keys();
     // In batches: thousands of entries, each read is a round trip to the storage process.
-    for (let i = 0; i < requests.length; i += 32) {
-      await Promise.all(requests.slice(i, i + 32).map(async request => {
+    for (let i = 0; i < home.requests.length; i += 32) {
+      await Promise.all(home.requests.slice(i, i + 32).map(async request => {
         const file = files.get(new URL(request.url).pathname);
-        if (file && matchesResource(await cache.match(request), file)) addFile(status, file);
-        else await cache.delete(request);
+        if (file && matchesResource(await home.cache.match(request), file)) addFile(status, file);
+        else await home.cache.delete(request);
       }));
     }
-    for (const otherName of others) {
-      const other = await this.caches.open(otherName);
-      for (const file of manifest.files) {
-        if (status.present.has(file.url)) continue;
-        const response = await other.match(file.url);
+    for (const other of others) {
+      for (const request of other.requests) {
+        const file = files.get(new URL(request.url).pathname);
+        if (!file || status.present.has(file.url)) continue;
+        const response = await other.cache.match(request);
         if (!matchesResource(response, file)) continue;
-        await cache.put(file.url, response);
+        await home.cache.put(file.url, response);
         addFile(status, file);
       }
-      await this.caches.delete(otherName);
+      await this.caches.delete(other.name);
     }
-    this.cacheName = name;
+    this.cacheName = home.name;
     await this.save(status);
     return status;
   }

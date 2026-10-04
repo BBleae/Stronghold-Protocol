@@ -25,6 +25,7 @@ class MemoryCache {
   constructor(log) { this.log = log; }
   async match(key) { this.log.push('match'); return this.values.get(absolute(key))?.clone(); }
   async put(key, response) {
+    this.log.push(`put ${new URL(absolute(key)).pathname}`);
     const body = await response.arrayBuffer();
     this.values.set(absolute(key), new Response(body, { status: response.status, headers: response.headers }));
   }
@@ -131,30 +132,49 @@ test('a new site version re-downloads only the files it changed; one cache, noth
   assert.deepEqual(JSON.parse(status), { version: 'b'.repeat(64), count: 3, bytes: 9 });
 });
 
+/** Store an entry the way the version-keyed caches of earlier releases did (Accept-Ranges included). */
+const legacyPut = async (caches, name, url, text) => (await caches.open(name)).put(url, new Response(text, { headers: {
+  'Content-Type': 'audio/mpeg', 'Content-Length': String(bytes(text).length), 'Accept-Ranges': 'bytes', 'X-Resource-SHA256': sha(text) } }));
+const copies = caches => caches.log.filter(op => op.startsWith('put '));
+
 test('the version-keyed caches of earlier releases are adopted in place, merged and deleted, without downloads', async () => {
   const caches = new MemoryCaches();
-  const old = manifest([entry('/assets/a.mp3', 'abc'), entry('/assets/b.mp3', 'old'), entry('/assets/gone.mp3', 'x')], 'c'.repeat(64));
-  // Entries as the earlier releases wrote them (Accept-Ranges included).
-  const legacyPut = async (name, url, text) => (await caches.open(name)).put(url, new Response(text, { headers: {
-    'Content-Type': 'audio/mpeg', 'Content-Length': String(bytes(text).length), 'Accept-Ranges': 'bytes', 'X-Resource-SHA256': sha(text) } }));
-  await legacyPut(`stronghold-resources-v1-${old.version}`, '/assets/a.mp3', 'abc');
-  await legacyPut(`stronghold-resources-v1-${old.version}`, '/assets/b.mp3', 'old');
-  await legacyPut(`stronghold-resources-v1-${old.version}`, '/assets/gone.mp3', 'x');
-  await legacyPut(`stronghold-resources-v1-${'d'.repeat(64)}`, '/assets/b.mp3', 'new');
-  await legacyPut(`stronghold-resources-v1-${'d'.repeat(64)}`, '/assets/c.mp3', 'add');
+  const old = `stronghold-resources-v1-${'c'.repeat(64)}`;
+  await legacyPut(caches, old, '/assets/a.mp3', 'abc');
+  await legacyPut(caches, old, '/assets/b.mp3', 'old');
+  await legacyPut(caches, old, '/assets/gone.mp3', 'x');
+  await legacyPut(caches, `stronghold-resources-v1-${'d'.repeat(64)}`, '/assets/b.mp3', 'new');
+  await legacyPut(caches, `stronghold-resources-v1-${'d'.repeat(64)}`, '/assets/c.mp3', 'add');
   await caches.open('application-unrelated');
   const server = site([['/assets/a.mp3', 'abc'], ['/assets/b.mp3', 'new'], ['/assets/c.mp3', 'add']], 'e'.repeat(64));
   const store = await ResourceStore.load({ caches, fetcher: server.fetcher });
+  caches.log.length = 0;
   const status = await store.check();
   assert.equal(status.complete, true);
-  assert.deepEqual(await caches.keys(), [`stronghold-resources-v1-${old.version}`, 'application-unrelated'], 'the oldest cache stays, the other is gone');
-  const { '/resource-cache-status.json': _, ...files } = await caches.contents(`stronghold-resources-v1-${old.version}`);
+  assert.deepEqual(await caches.keys(), [old, 'application-unrelated'], 'the fullest cache stays, the other is gone');
+  const { '/resource-cache-status.json': _, ...files } = await caches.contents(old);
   assert.deepEqual(files, { '/assets/a.mp3': 'abc', '/assets/b.mp3': 'new', '/assets/c.mp3': 'add' });
+  assert.deepEqual(copies(caches), ['put /assets/b.mp3', 'put /assets/c.mp3', 'put /resource-cache-status.json'], 'only what it lacked');
   assert.deepEqual(server.requests, ['/resource-manifest.json'], 'nothing is downloaded again');
   // New files go to the adopted cache too.
   server.deploy([['/assets/a.mp3', 'abc'], ['/assets/b.mp3', 'new'], ['/assets/c.mp3', 'add'], ['/assets/d.mp3', 'more']], 'f'.repeat(64));
   await store.download({ retryDelays: NO_WAIT });
-  assert.deepEqual(await caches.keys(), [`stronghold-resources-v1-${old.version}`, 'application-unrelated']);
+  assert.deepEqual(await caches.keys(), [old, 'application-unrelated']);
+});
+
+test('a complete later installation stays in place: it is not copied into an older partial cache', async () => {
+  const caches = new MemoryCaches();
+  const partial = `stronghold-resources-v1-${'c'.repeat(64)}`;
+  const complete = `stronghold-resources-v1-${'d'.repeat(64)}`;
+  const files = [['/assets/a.mp3', 'abc'], ['/assets/b.mp3', 'def'], ['/assets/c.mp3', 'ghi']];
+  await legacyPut(caches, partial, '/assets/a.mp3', 'abc');
+  for (const [url, text] of files) await legacyPut(caches, complete, url, text);
+  const server = site(files);
+  const store = await ResourceStore.load({ caches, fetcher: server.fetcher });
+  caches.log.length = 0;
+  assert.equal((await store.check()).complete, true);
+  assert.deepEqual(await caches.keys(), [complete]);
+  assert.deepEqual(copies(caches), ['put /resource-cache-status.json'], 'no file copied');
 });
 
 test('checking an unchanged installation reads one status entry instead of scanning the cache', async () => {
