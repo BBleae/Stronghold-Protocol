@@ -319,6 +319,17 @@ function withTimeout(p, ms) {
   return Promise.race([p, new Promise((resolve) => setTimeout(resolve, ms))]);
 }
 
+/**
+ * The texture of a resource file: invalid until its image loads. The site hosts no resource files, so a player who has
+ * not imported them gets a 404 and the texture stays invalid (its users keep their placeholder) — instead of Pixi's
+ * unhandled rejection, which the page would show as an unexpected error.
+ */
+function fileTexture(P, url) {
+  const texture = P.Texture.from(url);
+  texture.baseTexture.resource.load().catch(() => {});
+  return texture;
+}
+
 /** Wrap whatever the caller passed as `assets` into the store API of public/js/assets.js. */
 function resolveAssets(a) {
   if (a && typeof a === 'object' && typeof a.ready === 'function' && typeof a.spineEntry === 'function') return a;
@@ -644,16 +655,14 @@ export async function createFieldView(host, options = {}) {
     const shadowUrl = !shadowAsked && assets.ui ? assets.ui('battle/sprite_shadow') : null;
     if (!shadowUrl) return;
     shadowAsked = true;
-    try {
-      const t = P.Texture.from(shadowUrl);
-      const use = () => {
-        if (destroyed) return;
-        ctx.shadowTex = t;
-        for (const v of views.values()) if (v.shadow && !v.destroyed) v.shadow.texture = t;
-        for (const v of penViews.values()) if (v.shadow && !v.destroyed) v.shadow.texture = t;
-      };
-      if (t.baseTexture.valid) use(); else t.baseTexture.once('loaded', use);
-    } catch { /* optional */ }
+    const t = fileTexture(P, shadowUrl);
+    const use = () => {
+      if (destroyed) return;
+      ctx.shadowTex = t;
+      for (const v of views.values()) if (v.shadow && !v.destroyed) v.shadow.texture = t;
+      for (const v of penViews.values()) if (v.shadow && !v.destroyed) v.shadow.texture = t;
+    };
+    if (t.baseTexture.valid) use(); else t.baseTexture.once('loaded', use);
   }
   loadShadow();
   ensureDamageFonts();
@@ -1514,9 +1523,7 @@ export async function createFieldView(host, options = {}) {
         if (cur && now - cur.t < 0.8) { cur.n += n; break; }
         layerPops.set(k, { t: now, n });
         const url = assets.bondIcon ? assets.bondIcon(bondId) : null;
-        let tex = null;
-        if (url) { try { tex = P.Texture.from(url); } catch { tex = null; } }
-        fx.pop(tex, `+${n}`, 0xffffff, layerPops.size);
+        fx.pop(url ? fileTexture(P, url) : null, `+${n}`, 0xffffff, layerPops.size);
         break;
       }
       case 'bounty': {
