@@ -68,6 +68,19 @@ Wrangler 执行构建、上传本地静态文件，保留 `ROOMS`（房间）和
 
 账号模式的进行中对局通过原版本规则及完整有序日志恢复；构建会保留旧规则引擎。无法恢复的对局按中断结束并释放席位（见 [持久状态说明](persistence-fields.md)）：在 Cloudflare 上回滚到更早的部署会中断所有在新规则版本上进行的对局（玩家看到「服务器版本已回退」），修复问题应提交回退改动重新部署（前滚）。首次从匿名版本迁移时仍须先结束旧局，不能为旧内存对局补造历史。恢复成本随对局长度增长，长时间对局、AI 计算、回放体积和 DO 请求 / 存储写入仍受 Cloudflare 配额限制，具体边界见 [持久化与备份说明](ACCOUNTS-HISTORY.md)。PITR 不能代替独立备份。
 
+## 运行日志
+
+`wrangler.jsonc` 开启 Workers Logs（`observability`），每次部署都会带上该设置；只在控制台打开会被下一次部署关掉。URL 的查询字符串不记录（`/ws` 带房间票据，OAuth 回调带授权码）。Worker 自己写一行一个 JSON 对象，`event` 说明发生了什么，其余字段给出房间代码、对局编号、规则版本等上下文，从不记录 Cookie、会话或票据：
+
+| event | 含义 |
+| --- | --- |
+| `request_failed` / `request_unavailable` | 请求以 500 INTERNAL（程序错误）/ 503 UNAVAILABLE（DO 过载或重启）结束；带方法和路径。客户端错误（4xx）不记录 |
+| `room_event_failed` / `room_load_failed` | 房间 DO 处理事件 / 唤醒加载时出错，实例回到最后一次提交 |
+| `match_restored` / `match_restore_failed` | 进行中对局恢复成功 / 无法恢复而按中断结束（带规则版本、事件数、尝试次数和原因） |
+| `archive_publish_failed` | 对局归档发布失败；30 秒后重试，之后每次加倍，最多每小时一次，其他对局的归档照常发布 |
+| `listing_publish_failed` | 在线大厅列表更新失败，按同样的退避重试 |
+| `room_runtime` | 规则代码（大厅、连接、对局）的警告和错误；恢复时重放出的行带 `restoring: true` |
+
 ## 验证
 
 ```powershell

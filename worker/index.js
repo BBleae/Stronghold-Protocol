@@ -5,7 +5,7 @@ import { normalizeIp, limitKeyOf, TokenBucket } from '../server/net.js';
 import { RoomRuntime, validCode } from './room-runtime.js';
 import { prepareMatchVersion, retainedMatchVersions } from './match-versions.js';
 import { RULES_VERSION } from '../shared/rules-version.js';
-import { logInfo, logError, errorFields } from './log.js';
+import { logInfo, logWarn, logError, errorFields } from './log.js';
 import { PACK_PATH, servePack } from './pack.js';
 import { handleAuth, authenticate, accountOf, directoryOf } from './accounts/auth.js';
 import { handleAccountRoutes, seatOf } from './accounts/routes.js';
@@ -13,6 +13,7 @@ import { handleLobbyRoutes, roomApplications } from './rooms/routes.js';
 import { handleHistoryRoutes } from './archive/routes.js';
 import { publishArchive,prepareArchive } from './archive/outbox.js';
 import { handleBackupRoutes } from './storage/backup.js';
+import { errorResponse } from './http.js';
 
 // the deployed commit (tools/build-worker.mjs buildId; esbuild defines it, unbundled tests see 'local')
 const BUILD = typeof __SP_BUILD__ === 'string' ? __SP_BUILD__ : 'local';
@@ -29,88 +30,98 @@ async function admit(env, ip, kind) {
 }
 
 export default {
+  // The one place a request's unexpected error ends: logged with its route, answered with a status (worker/http.js).
   async fetch(request, env) {
-    const url = new URL(request.url);
-    const path = url.pathname;
-    const backup=await handleBackupRoutes(request,env);if(backup)return backup;
-    if(env.ADMISSION && (path==='/api/auth/github/start' || path==='/api/rooms' && request.method==='GET' || /\/applications$/.test(path))) {
-      const limited=await admit(env,edgeIp(request),path.startsWith('/api/auth/')?'auth':request.method==='GET'?'status':'application');
-      if(limited)return limited;
+    try {
+      return await route(request, env);
+    } catch (error) {
+      const url = new URL(request.url);
+      return errorResponse(error, { method: request.method, path: url.pathname, room: url.searchParams.get('room') ?? undefined });
     }
-    const auth = await handleAuth(request, env);
-    if (auth) return auth;
-    const accountResponse = await handleAccountRoutes(request, env);
-    if (accountResponse) return accountResponse;
-    const lobbyResponse = await handleLobbyRoutes(request, env);
-    if (lobbyResponse) return lobbyResponse;
-    const historyResponse=await handleHistoryRoutes(request,env);
-    if(historyResponse) return historyResponse;
-    if (path === '/healthz') return request.method === 'GET'
-      ? json({ ok: true, runtime: 'cloudflare', version: APP_VERSION, build: BUILD }) : error(405, 'BAD_MSG');
-    // Internal endpoints are only invoked on a DO stub; the public entry point never forwards them.
-    if (path.startsWith('/_')) return error(404, 'ROOM_NOT_FOUND');
-    if (path === '/api/rooms') {
-      if (request.method !== 'POST') return error(405, 'BAD_MSG');
-      if (!sameOrigin(request)) return error(403, 'BAD_MSG', 'origin mismatch');
-      const session = env.ACCOUNTS ? await authenticate(request, env) : null;
-      if (env.ACCOUNTS && !session) return error(401, 'LOGIN_REQUIRED');
-      if (session && request.headers.get('Origin') !== url.origin) return error(403, 'BAD_MSG');
-      if (session) {
-        // A create that failed after its reservation (e.g. at the first connect) goes on with that reservation.
-        const seat = await seatOf(env, session.accountId, 'POST');
-        if (seat?.reserved) return json({ code: seat.code, ticket: seat.ticket, generation: seat.generation });
-        if (seat) return error(409, 'ALREADY_SEATED');
-      }
-      const limited = await admit(env, edgeIp(request), 'reserve');
-      if (limited) return limited;
-      for (let i = 0; i < 12; i++) {
-        const code = Array.from({ length: 4 }, () => CODE_ALPHABET[randomInt(CODE_ALPHABET.length)]).join('');
-        const response = await roomStub(env, code).fetch(new Request(`https://room.internal/_reserve?room=${code}`, {
-          method: 'POST', headers: session ? {'X-Account-ID':session.accountId} : {} }));
-        if (response.status !== 409) {
-          if (response.ok && session) {
-            const route = await response.clone().json();
-            const claim = await accountOf(env, session.accountId).claimSeat({ claimId: crypto.randomUUID(),
-              seat: { roomId: route.code, roomGeneration: route.generation, matchId: null, seatId: null } });
-            if (!claim.ok) return error(409, 'ALREADY_SEATED');
-          }
-          return response;
-        }
-      }
-      return error(503, 'INTERNAL', 'room capacity unavailable');
-    }
-    const statusMatch = /^\/api\/rooms\/([A-Za-z]{4})$/.exec(path);
-    if (statusMatch) {
-      if (request.method !== 'GET') return error(405, 'BAD_MSG');
-      const code = statusMatch[1].toUpperCase();
-      if (!validCode(code)) return error(404, 'ROOM_NOT_FOUND');
-      const limited = await admit(env, edgeIp(request), 'status');
-      if (limited) return limited;
-      return roomStub(env, code).fetch(new Request('https://room.internal/_status'));
-    }
-    if (path === '/ws') {
-      if (request.method !== 'GET') return error(405, 'BAD_MSG');
-      if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') return error(426, 'BAD_MSG', 'WebSocket required');
-      const code = (url.searchParams.get('room') || '').toUpperCase();
-      if (!validCode(code)) return error(400, 'BAD_MSG', 'invalid room code');
-      if (!sameOrigin(request)) return error(403, 'BAD_MSG', 'origin mismatch');
-      const ip = edgeIp(request);
-      const session = env.ACCOUNTS ? await authenticate(request,env) : null;
-      if (env.ACCOUNTS && !session) return error(401,'LOGIN_REQUIRED');
-      const limited = await admit(env, ip, 'connect');
-      if (limited) return limited;
-      const dest = new URL('https://room.internal/_ws');
-      dest.searchParams.set('room', code);
-      const ticket = url.searchParams.get('ticket');
-      if (ticket && /^[0-9a-f]{32}$/.test(ticket)) dest.searchParams.set('ticket', ticket);
-      return roomStub(env, code).fetch(new Request(dest, { headers: { Upgrade: 'websocket', 'X-Room-IP': ip,
-        ...(session ? {'X-Account-ID':session.accountId,'X-Session-ID':session.sessionId} : {}) } }));
-    }
-    if (path === PACK_PATH) return servePack(request, env);
-    if (path.startsWith('/api/')) return error(404, 'ROOM_NOT_FOUND');
-    return env.ASSETS ? env.ASSETS.fetch(request) : error(404, 'ROOM_NOT_FOUND');
   },
 };
+
+async function route(request, env) {
+  const url = new URL(request.url);
+  const path = url.pathname;
+  const backup=await handleBackupRoutes(request,env);if(backup)return backup;
+  if(env.ADMISSION && (path==='/api/auth/github/start' || path==='/api/rooms' && request.method==='GET' || /\/applications$/.test(path))) {
+    const limited=await admit(env,edgeIp(request),path.startsWith('/api/auth/')?'auth':request.method==='GET'?'status':'application');
+    if(limited)return limited;
+  }
+  const auth = await handleAuth(request, env);
+  if (auth) return auth;
+  const accountResponse = await handleAccountRoutes(request, env);
+  if (accountResponse) return accountResponse;
+  const lobbyResponse = await handleLobbyRoutes(request, env);
+  if (lobbyResponse) return lobbyResponse;
+  const historyResponse=await handleHistoryRoutes(request,env);
+  if(historyResponse) return historyResponse;
+  if (path === '/healthz') return request.method === 'GET'
+    ? json({ ok: true, runtime: 'cloudflare', version: APP_VERSION, build: BUILD }) : error(405, 'BAD_MSG');
+  // Internal endpoints are only invoked on a DO stub; the public entry point never forwards them.
+  if (path.startsWith('/_')) return error(404, 'ROOM_NOT_FOUND');
+  if (path === '/api/rooms') {
+    if (request.method !== 'POST') return error(405, 'BAD_MSG');
+    if (!sameOrigin(request)) return error(403, 'BAD_MSG', 'origin mismatch');
+    const session = env.ACCOUNTS ? await authenticate(request, env) : null;
+    if (env.ACCOUNTS && !session) return error(401, 'LOGIN_REQUIRED');
+    if (session && request.headers.get('Origin') !== url.origin) return error(403, 'BAD_MSG');
+    if (session) {
+      // A create that failed after its reservation (e.g. at the first connect) goes on with that reservation.
+      const seat = await seatOf(env, session.accountId, 'POST');
+      if (seat?.reserved) return json({ code: seat.code, ticket: seat.ticket, generation: seat.generation });
+      if (seat) return error(409, 'ALREADY_SEATED');
+    }
+    const limited = await admit(env, edgeIp(request), 'reserve');
+    if (limited) return limited;
+    for (let i = 0; i < 12; i++) {
+      const code = Array.from({ length: 4 }, () => CODE_ALPHABET[randomInt(CODE_ALPHABET.length)]).join('');
+      const response = await roomStub(env, code).fetch(new Request(`https://room.internal/_reserve?room=${code}`, {
+        method: 'POST', headers: session ? {'X-Account-ID':session.accountId} : {} }));
+      if (response.status !== 409) {
+        if (response.ok && session) {
+          const route = await response.clone().json();
+          const claim = await accountOf(env, session.accountId).claimSeat({ claimId: crypto.randomUUID(),
+            seat: { roomId: route.code, roomGeneration: route.generation, matchId: null, seatId: null } });
+          if (!claim.ok) return error(409, 'ALREADY_SEATED');
+        }
+        return response;
+      }
+    }
+    return error(503, 'INTERNAL', 'room capacity unavailable');
+  }
+  const statusMatch = /^\/api\/rooms\/([A-Za-z]{4})$/.exec(path);
+  if (statusMatch) {
+    if (request.method !== 'GET') return error(405, 'BAD_MSG');
+    const code = statusMatch[1].toUpperCase();
+    if (!validCode(code)) return error(404, 'ROOM_NOT_FOUND');
+    const limited = await admit(env, edgeIp(request), 'status');
+    if (limited) return limited;
+    return roomStub(env, code).fetch(new Request('https://room.internal/_status'));
+  }
+  if (path === '/ws') {
+    if (request.method !== 'GET') return error(405, 'BAD_MSG');
+    if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') return error(426, 'BAD_MSG', 'WebSocket required');
+    const code = (url.searchParams.get('room') || '').toUpperCase();
+    if (!validCode(code)) return error(400, 'BAD_MSG', 'invalid room code');
+    if (!sameOrigin(request)) return error(403, 'BAD_MSG', 'origin mismatch');
+    const ip = edgeIp(request);
+    const session = env.ACCOUNTS ? await authenticate(request,env) : null;
+    if (env.ACCOUNTS && !session) return error(401,'LOGIN_REQUIRED');
+    const limited = await admit(env, ip, 'connect');
+    if (limited) return limited;
+    const dest = new URL('https://room.internal/_ws');
+    dest.searchParams.set('room', code);
+    const ticket = url.searchParams.get('ticket');
+    if (ticket && /^[0-9a-f]{32}$/.test(ticket)) dest.searchParams.set('ticket', ticket);
+    return roomStub(env, code).fetch(new Request(dest, { headers: { Upgrade: 'websocket', 'X-Room-IP': ip,
+      ...(session ? {'X-Account-ID':session.accountId,'X-Session-ID':session.sessionId} : {}) } }));
+  }
+  if (path === PACK_PATH) return servePack(request, env);
+  if (path.startsWith('/api/')) return error(404, 'ROOM_NOT_FOUND');
+  return env.ASSETS ? env.ASSETS.fetch(request) : error(404, 'ROOM_NOT_FOUND');
+}
 
 // One tiny, automatically-expiring limiter per edge-provided IP (/64 for IPv6), shared across rooms.
 export class AdmissionDurableObject {
@@ -162,9 +173,13 @@ const SNAPSHOT_PART = 16_000;
 const MATCH_EVENTS_TABLE = 'CREATE TABLE IF NOT EXISTS match_events (match_id TEXT NOT NULL, seq INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(match_id,seq))';
 // Finished matches waiting to be published to their MatchArchive: facts and manifest, and the encoded replay chunks.
 const OUTBOX_TABLES = [
-  'CREATE TABLE IF NOT EXISTS archive_outbox (match_id TEXT PRIMARY KEY, entry TEXT NOT NULL)',
+  'CREATE TABLE IF NOT EXISTS archive_outbox (match_id TEXT PRIMARY KEY, entry TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, retry_at INTEGER NOT NULL DEFAULT 0)',
   'CREATE TABLE IF NOT EXISTS archive_chunks (match_id TEXT NOT NULL, idx INTEGER NOT NULL, text TEXT NOT NULL, PRIMARY KEY(match_id, idx))',
 ];
+// A failed background job is retried after 30 s, then twice as long each time, at most an hour later.
+const backoff = (failures) => Math.min(3600_000, 30_000 * 2 ** (failures - 1));
+// A visible lobby listing is refreshed this often (the directory hides a listing a minute after its last refresh).
+const LEASE_REFRESH_MS = 20_000;
 // Match timers keep the room in memory while someone is connected or the next one is due within this long.
 const AWAKE_MS = 60_000;
 // A save compares the snapshot with liveness timestamps rounded to this: pings alone write at most this often.
@@ -190,8 +205,19 @@ export class RoomDurableObject {
     // The in-memory match timer (arm).
     this.timer = null;
     this.timerAt = null;
+    // Background jobs (publish): an archive being published; the lobby listing's job (in flight, failures in a row,
+    // not before, what was published, when to refresh it).
+    this.archiving = false;
+    this.listing = { busy: false, failures: 0, retryAt: 0, fingerprint: null, refreshAt: 0 };
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('{"t":"ping","c":0}', '{"t":"pong","c":0}'));
-    this.ready = ctx.blockConcurrencyWhile(() => this.load());
+    this.ready = ctx.blockConcurrencyWhile(async () => {
+      try {
+        await this.load();
+      } catch (error) {
+        logError('room_load_failed', { room: this.runtime?.code, object: ctx.id.toString(), error: errorFields(error) });
+        throw error;
+      }
+    });
   }
 
   // Wake: the persisted room, the sockets that survived hibernation, then its running match.
@@ -313,15 +339,21 @@ export class RoomDurableObject {
 
   // One event, one critical section: due match timers run first, then the event, then the timers it made due at
   // once, then expiries, then the commit.
+  // An error resets the object to its last commit (blockConcurrencyWhile); it is logged with the room first.
   event(handle) {
     return this.ctx.blockConcurrencyWhile(async () => {
-      this.refreshAutoResponses();
-      this.runtime.pump();
-      const result = await handle();
-      this.runtime.pump();
-      this.runtime.sweep();
-      await this.commit();
-      return result;
+      try {
+        this.refreshAutoResponses();
+        this.runtime.pump();
+        const result = await handle();
+        this.runtime.pump();
+        this.runtime.sweep();
+        await this.commit();
+        return result;
+      } catch (error) {
+        logError('room_event_failed', { room: this.runtime.code, error: errorFields(error) });
+        throw error;
+      }
     });
   }
 
@@ -422,7 +454,7 @@ export class RoomDurableObject {
     const connected = rt.connected();
     const awake = due != null && (connected || due - now < AWAKE_MS);
     this.arm(awake ? due : null);
-    const at = Math.min(rt.nextAlarm() ?? Infinity, awake || due == null ? Infinity : due, this.outboxSize ? now + 30_000 : Infinity);
+    const at = Math.min(rt.nextAlarm() ?? Infinity, awake || due == null ? Infinity : due, this.publishDue());
     if (at === Infinity || at === this.alarmAt) return;
     const armed = this.alarmAt != null && this.alarmAt > now;
     if (armed && this.alarmAt < at && (awake || connected)) return;
@@ -442,42 +474,89 @@ export class RoomDurableObject {
     }, Math.max(0, at - Date.now()));
   }
 
-  // Background side effects of committed state: the oldest finished match's archive, the public lobby listing.
-  // (Seat pointers need none: a pointer this room no longer confirms is released by its next reader, seatOf.)
+  // Background side effects of committed state: the archives of finished matches, the public lobby listing. A failure
+  // is logged and retried after a backoff (the alarm wakes the room for it), never at every event. Seat pointers need
+  // no job: a pointer this room no longer confirms is released by its next reader (seatOf).
   publish() {
+    this.archiveNext();
+    this.publishListing();
+  }
+
+  // The oldest due archive is published. A failed one waits for its own backoff, stored with it: it neither blocks the
+  // archives of later matches nor is retried at every event.
+  archiveNext() {
+    if (!this.env.MATCH_ARCHIVES || !this.outboxSize || this.archiving) return;
+    const sql = this.ctx.storage.sql;
+    const row = sql.exec('SELECT match_id, entry, attempts FROM archive_outbox WHERE retry_at<=? ORDER BY retry_at, rowid LIMIT 1', Date.now()).toArray()[0];
+    if (!row) return;
+    this.archiving = true;
+    const { facts, personal, manifest } = JSON.parse(row.entry);
+    const chunks = sql.exec('SELECT idx, text FROM archive_chunks WHERE match_id=? ORDER BY idx', row.match_id).toArray()
+      .map(({ idx, text }) => ({ index: idx, text }));
+    const published = publishArchive(this.env, { facts, personal, encodedReplay: { manifest, chunks } });
+    this.ctx.waitUntil(published.then(
+      () => this.event(() => {
+        this.ctx.storage.transactionSync(() => {
+          sql.exec('DELETE FROM archive_chunks WHERE match_id=?', row.match_id);
+          sql.exec('DELETE FROM archive_outbox WHERE match_id=?', row.match_id);
+        });
+        this.outboxSize -= 1;
+        this.archiving = false;
+      }),
+      (error) => this.event(() => {
+        const attempts = row.attempts + 1;
+        const retryAt = Date.now() + backoff(attempts);
+        sql.exec('UPDATE archive_outbox SET attempts=?, retry_at=? WHERE match_id=?', attempts, retryAt, row.match_id);
+        this.archiving = false;
+        logError('archive_publish_failed', { room: this.runtime.code, matchId: row.match_id, attempts, retryAt, error: errorFields(error) });
+      })));
+  }
+
+  // The public lobby (SiteDirectory) lists rooms by lease: the room publishes its listing when it changes, and
+  // refreshes one the directory shows every LEASE_REFRESH_MS (the directory hides it a minute after its last refresh).
+  publishListing() {
     const rt = this.runtime;
-    if (this.env.MATCH_ARCHIVES && this.outboxSize && !this.archiving) {
-      this.archiving = true;
-      const sql = this.ctx.storage.sql;
-      const row = sql.exec('SELECT match_id, entry FROM archive_outbox ORDER BY rowid LIMIT 1').one();
-      const { facts, personal, manifest } = JSON.parse(row.entry);
-      const chunks = sql.exec('SELECT idx, text FROM archive_chunks WHERE match_id=? ORDER BY idx', row.match_id).toArray()
-        .map(({ idx, text }) => ({ index: idx, text }));
-      this.ctx.waitUntil(publishArchive(this.env, { facts, personal, encodedReplay: { manifest, chunks } })
-        .then(() => this.event(() => {
-          this.ctx.storage.transactionSync(() => {
-            sql.exec('DELETE FROM archive_chunks WHERE match_id=?', row.match_id);
-            sql.exec('DELETE FROM archive_outbox WHERE match_id=?', row.match_id);
-          });
-          this.outboxSize -= 1;
-          this.archiving = false;
-        }))
-        .catch(() => { this.archiving = false; }));
-    }
-    if(this.env.SITES) {
-      const room=rt.lobby.getRoom(rt.code), now=Date.now();
-      if(room) {
-        const listing={roomId:rt.code,generation:rt.generation,public:rt.publicRoom && room.mode==='coop',
-          connectedHumans:room.activeHumans().filter(s=>s.connected).length,occupied:room.seats.filter(Boolean).length,
-          capacity:4,inMatch:!!room.match,spectatorCount:rt.spectators.count,hostName:room.seatOf(room.hostId)?.name || '博士',difficulty:room.difficulty};
-        const fingerprint=JSON.stringify(listing);
-        if(fingerprint!==this.lastListing || now-(this.lastPublished || 0)>=20000) {
-          this.lastListing=fingerprint;this.lastPublished=now;
-          this.ctx.waitUntil(directoryOf(this.env).publishRoom({...listing,updatedAt:now,expiresAt:now+60000})
-            .catch(()=>{this.lastPublished=0;}));
-        }
-      }
-    }
+    const room = rt.lobby.getRoom(rt.code);
+    const job = this.listing;
+    const now = Date.now();
+    if (!this.env.SITES || !room || job.busy || now < job.retryAt) return;
+    const listing = {
+      roomId: rt.code,
+      generation: rt.generation,
+      public: rt.publicRoom && room.mode === 'coop',
+      connectedHumans: room.activeHumans().filter((s) => s.connected).length,
+      occupied: room.seats.filter(Boolean).length,
+      capacity: 4,
+      inMatch: !!room.match,
+      spectatorCount: rt.spectators.count,
+      hostName: room.seatOf(room.hostId)?.name || '博士',
+      difficulty: room.difficulty,
+    };
+    const fingerprint = JSON.stringify(listing);
+    if (fingerprint === job.fingerprint && now < job.refreshAt) return;
+    job.busy = true;
+    const published = directoryOf(this.env).publishRoom({ ...listing, updatedAt: now, expiresAt: now + 60_000 });
+    this.ctx.waitUntil(published.then(
+      ({ visible }) => this.event(() => {
+        const refreshAt = visible ? Date.now() + LEASE_REFRESH_MS : Infinity;
+        this.listing = { busy: false, failures: 0, retryAt: 0, fingerprint, refreshAt };
+      }),
+      (error) => this.event(() => {
+        job.busy = false;
+        job.failures += 1;
+        job.retryAt = Date.now() + backoff(job.failures);
+        logWarn('listing_publish_failed', { room: rt.code, attempts: job.failures, error: errorFields(error) });
+      })));
+  }
+
+  // When the next background job is due (Infinity: none): an archive's retry, the listing's retry or lease refresh.
+  publishDue() {
+    const archive = !this.env.MATCH_ARCHIVES || !this.outboxSize || this.archiving ? Infinity
+      : this.ctx.storage.sql.exec('SELECT MIN(retry_at) AS at FROM archive_outbox').one().at;
+    const job = this.listing;
+    const listing = !this.env.SITES || job.busy || !this.runtime.lobby.getRoom(this.runtime.code) ? Infinity
+      : job.failures ? job.retryAt : job.refreshAt;
+    return Math.min(archive, listing);
   }
 
   async fetch(request) {

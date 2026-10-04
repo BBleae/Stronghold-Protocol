@@ -37,3 +37,27 @@ test('a running match writes on change only and sleeps once its player has gone'
   assert.equal(resumed.welcome.resumed, true);
   assert.equal((await resumed.wait('m.public')).phase, 'BAND_DRAFT');
 });
+
+test('a room the public lobby shows wakes to refresh its listing; made private, it leaves the lobby at once', { timeout: 120000 }, async (t) => {
+  const world = await createWorld(t);
+  await world.seed('a');
+  const route = (await world.api('a', '/api/rooms', { method: 'POST' })).body;
+  const host = await world.player('a', route);
+  await host.request('room.create', { mode: 'coop', difficulty: 'FUNNY' });
+  let listed = [];
+  for (let i = 0; i < 100 && !listed.length; i++) {
+    listed = (await world.api('a', '/api/rooms')).body.items;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.deepEqual(listed.map((room) => room.roomId), [route.code]);
+  // The directory hides a listing a minute after its last refresh.
+  const alarm = await world.room(route.code, 'alarm');
+  assert.ok(alarm - Date.now() <= 20_000, `refresh within 20 s (${alarm - Date.now()} ms)`);
+
+  assert.equal((await world.api('a', `/api/rooms/${route.code}/visibility`, { method: 'POST', body: { public: false } })).status, 200);
+  for (let i = 0; i < 100 && listed.length; i++) {
+    listed = (await world.api('a', '/api/rooms')).body.items;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.deepEqual(listed, []);
+});

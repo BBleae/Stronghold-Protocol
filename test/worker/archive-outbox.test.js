@@ -48,3 +48,38 @@ test('archives a legacy snapshot held move to their own rows, publish, and leave
   for (let i = 0; i < 100 && await world.room('WXYZ', 'snapshot'); i++) await new Promise((resolve) => setTimeout(resolve, 50));
   assert.equal(await world.room('WXYZ', 'snapshot'), null);
 });
+
+test('an archive that fails is logged and retried after its backoff, without holding up later archives', { timeout: 120000 }, async (t) => {
+  const world = await createWorld(t);
+  const { accountId } = await world.seed('a');
+  const failing = entry(accountId, 'stuck:1');
+  const healthy = entry(accountId, 'stuck:2');
+  // The account already holds another record under the first match id: publishing it ends in HISTORY_CONFLICT.
+  await world.account(accountId, 'applyMatch', { ...failing.personal[0], victory: false });
+  const snapshot = { version: 1, code: 'WXYZ', reservation: null, generation: 'stuck', resumeTickets: [], publicRoom: false,
+    applications: [], archiveOutbox: [failing, healthy], interruptedUntil: 0, running: false, sessions: [], deadlines: [], room: null };
+  await world.room('WXYZ', 'put', { key: 'snapshot-0', value: JSON.stringify(snapshot) });
+  await world.room('WXYZ', 'put', { key: 'snapshot-meta', value: { parts: 1 } });
+  await world.restart();
+
+  const failures = async () => (await world.room('WXYZ', 'logs')).filter((line) => line.event === 'archive_publish_failed');
+  let outbox = [];
+  for (let i = 0; i < 100; i++) {
+    outbox = await world.room('WXYZ', 'sql', { query: 'SELECT match_id, attempts, retry_at FROM archive_outbox' });
+    if (outbox.length === 1 && outbox[0].attempts === 1) break;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  // The later match was published; the failing one waits for its retry, logged once with its context.
+  assert.deepEqual(outbox.map((row) => [row.match_id, row.attempts]), [['stuck:1', 1]]);
+  assert.ok((await world.api('a', '/api/me/matches')).body.items.some((item) => item.matchId === 'stuck:2'));
+  const [line, ...more] = await failures();
+  assert.deepEqual(more, []);
+  assert.deepEqual({ level: line.level, room: line.room, matchId: line.matchId, attempts: line.attempts, code: line.error.code },
+    { level: 'error', room: 'WXYZ', matchId: 'stuck:1', attempts: 1, code: 'HISTORY_CONFLICT' });
+  const retryAt = outbox[0].retry_at;
+  assert.ok(retryAt - Date.now() > 20_000 && retryAt - Date.now() <= 30_000, 'first retry after 30 s');
+  // Events in the meantime (here: status requests) do not retry it; the alarm is set for the retry.
+  for (let i = 0; i < 3; i++) assert.equal((await world.api('a', '/api/rooms/WXYZ')).status, 404);
+  assert.equal((await failures()).length, 1);
+  assert.equal(await world.room('WXYZ', 'alarm'), retryAt);
+});

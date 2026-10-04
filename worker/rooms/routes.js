@@ -1,30 +1,28 @@
 import { authenticate, accountOf, directoryOf, json, requireOrigin } from '../accounts/auth.js';
 import { AccountError } from '../../shared/account-protocol.js';
 import { clearStaleApplication, seatOf } from '../accounts/routes.js';
-export async function handleLobbyRoutes(request,env) {
-  const url=new URL(request.url);
-  if(url.pathname==='/api/rooms' && request.method==='GET') {
-    if(!env.SITES) return json({items:[],nextCursor:null});
-    try {return json(await directoryOf(env).listRooms({cursor:url.searchParams.get('cursor') || '',limit:Number(url.searchParams.get('limit') || 20)}));}
-    catch(e) {return json({error:e.code || 'LOBBY_UNAVAILABLE'},e.status || 503);}
+import { errorResponse, readJson } from '../http.js';
+export async function handleLobbyRoutes(request, env) {
+  const url = new URL(request.url);
+  if (url.pathname === '/api/rooms' && request.method === 'GET') {
+    if (!env.SITES) return json({ items: [], nextCursor: null });
+    const cursor = url.searchParams.get('cursor') || '';
+    return json(await directoryOf(env).listRooms({ cursor, limit: Number(url.searchParams.get('limit') || 20) }));
   }
-  const match=/^\/api\/rooms\/([A-Z]{4})\/(applications|visibility)$/.exec(url.pathname);
-  if(!match) return null;
-  try {
-    if(!['GET','POST'].includes(request.method)) return json({error:'METHOD'},405);
-    if(request.method==='POST') requireOrigin(request);
-    const session=await authenticate(request,env);
-    if(!session || !env.ACCOUNTS) return json({error:'LOGIN_REQUIRED'},401);
-    const body=request.method==='POST' ? await request.text() : null;
-    if(body && body.length>2048) return json({error:'BAD_MSG'},413);
-    if(body && JSON.parse(body).action==='apply') {
-      if (await seatOf(env, session.accountId)) return json({ error: 'ALREADY_SEATED' }, 409);
-      await clearStaleApplication(env,session.accountId);
-    }
-    const response=await env.ROOMS.get(env.ROOMS.idFromName(match[1])).fetch(new Request('https://room.internal/_'+match[2], {
-      method:request.method,headers:{'X-Account-ID':session.accountId,'Content-Type':'application/json'},body}));
-    return response;
-  } catch(e) {return json({error:e.code || 'LOBBY_UNAVAILABLE'},e.status || 503);}
+  const match = /^\/api\/rooms\/([A-Z]{4})\/(applications|visibility)$/.exec(url.pathname);
+  if (!match) return null;
+  if (!['GET', 'POST'].includes(request.method)) return json({ error: 'METHOD' }, 405);
+  if (request.method === 'POST') requireOrigin(request);
+  const session = await authenticate(request, env);
+  if (!session || !env.ACCOUNTS) return json({ error: 'LOGIN_REQUIRED' }, 401);
+  const body = request.method === 'POST' ? await readJson(request, 2048) : null;
+  if (body?.action === 'apply') {
+    if (await seatOf(env, session.accountId)) return json({ error: 'ALREADY_SEATED' }, 409);
+    await clearStaleApplication(env, session.accountId);
+  }
+  const room = env.ROOMS.get(env.ROOMS.idFromName(match[1]));
+  return room.fetch(new Request('https://room.internal/_' + match[2], { method: request.method,
+    headers: { 'X-Account-ID': session.accountId, 'Content-Type': 'application/json' }, body: body && JSON.stringify(body) }));
 }
 export async function roomApplications(rt,request,env) {
   const accountId=request.headers.get('X-Account-ID'), room=rt.lobby.getRoom(rt.code);
@@ -85,5 +83,8 @@ export async function roomApplications(rt,request,env) {
     }
     const rejected=queue.decide(accountId,item.id,'rejected',{hostId:host,inMatch:!!room.match});
     await applicant.clearApplication(rt.code);return json(rejected);
-  } catch(e) {return json({error:e.code || 'APPLICATION_FAILED'},e.status || 503);}
+  } catch (error) {
+    // Inside the room's critical section: an error thrown from here would reset the room, so it becomes the answer.
+    return errorResponse(error, { room: rt.code, path });
+  }
 }

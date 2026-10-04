@@ -46,7 +46,7 @@ async function history(world, actor) {
 test('a match that cannot be restored ends as interrupted and frees every seat', { timeout: 120000 }, async (t) => {
   const world = await createWorld(t);
   const accounts = {};
-  for (const actor of ['a', 'b', 'c', 'd', 'e']) accounts[actor] = (await world.seed(actor)).accountId;
+  for (const actor of ['a', 'b', 'c', 'd', 'e', 'f']) accounts[actor] = (await world.seed(actor)).accountId;
 
   // a + b: co-op on a rules version this deployment does not know (a Cloudflare rollback).
   const rollback = await coopMatch(world, 'a', 'b');
@@ -59,12 +59,16 @@ test('a match that cannot be restored ends as interrupted and frees every seat',
   await world.room(broken.code, 'sql', { query: 'DELETE FROM match_events WHERE seq=(SELECT MAX(seq) FROM match_events)' });
   // e: nothing wrong.
   const healthy = await soloMatch(world, 'e');
+  // f: the replay reaches another state than the one saved (the engine's own check).
+  const diverged = await soloMatch(world, 'f');
+  await world.room(diverged.code, 'put', { key: 'test-rewrite', value: { view: { round: 99 } } });
 
   await world.restart();
 
   // Players who reconnect resume their session and are told why the match ended.
   for (const [actor, code, token, reason] of [['a', rollback.code, rollback.tokens.a, 'rollback'], ['b', rollback.code, rollback.tokens.b, 'rollback'],
-    ['c', unfinished.code, unfinished.token, 'restart'], ['d', broken.code, broken.token, 'restart']]) {
+    ['c', unfinished.code, unfinished.token, 'restart'], ['d', broken.code, broken.token, 'restart'],
+    ['f', diverged.code, diverged.token, 'restart']]) {
     const player = await world.player(actor, { code, token });
     assert.equal(player.welcome.resumed, true);
     assert.equal((await player.wait('room.closed')).reason, reason, actor);
@@ -72,7 +76,7 @@ test('a match that cannot be restored ends as interrupted and frees every seat',
   }
 
   // Nobody keeps a seat: the account pointers clear and every player can create a room again.
-  for (const actor of ['a', 'b', 'c', 'd']) {
+  for (const actor of ['a', 'b', 'c', 'd', 'f']) {
     assert.deepEqual((await world.api(actor, '/api/me/active-match')).body, { activeSeat: null }, actor);
     assert.equal(await world.account(accounts[actor], 'getActiveSeat'), null, actor);
   }
@@ -95,9 +99,14 @@ test('a match that cannot be restored ends as interrupted and frees every seat',
   assert.equal((await logged(world, unfinished.code, 'match_restore_failed'))[0].error.message, 'RESTORE_UNFINISHED');
   assert.equal((await logged(world, unfinished.code, 'match_restore_failed'))[0].attempts, 2);
   assert.equal((await logged(world, broken.code, 'match_restore_failed'))[0].error.message, 'INCOMPLETE_MATCH_LOG');
+  assert.equal((await logged(world, diverged.code, 'match_restore_failed'))[0].error.message, 'CHECKPOINT_STATE_DIVERGED');
+  // The upstream lobby's own error line is a structured line of the room too, marked as the restore's.
+  const [lobbyLine] = await logged(world, diverged.code, 'room_runtime');
+  assert.deepEqual({ level: lobbyLine.level, message: lobbyLine.message, restoring: lobbyLine.restoring, error: lobbyLine.error.message },
+    { level: 'error', message: `[lobby] ${diverged.code} match failed to start`, restoring: true, error: 'CHECKPOINT_STATE_DIVERGED' });
 
   // Storage keeps neither the checkpoint, its log nor the attempt counter.
-  for (const { code } of [rollback, unfinished, broken]) {
+  for (const { code } of [rollback, unfinished, broken, diverged]) {
     assert.equal((await world.room(code, 'snapshot')).matchCheckpoint, undefined);
     assert.deepEqual(await world.room(code, 'sql', { query: 'SELECT COUNT(*) AS rows FROM match_events' }), [{ rows: 0 }]);
     assert.equal(await world.room(code, 'get', { key: 'restore-attempts' }), null);

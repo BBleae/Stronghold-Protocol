@@ -8,6 +8,7 @@ import { RecordedMatch, exportMatch, restoreMatch } from '../server/match/checkp
 import { ApplicationQueue } from './rooms/applications.js';
 import { retainedMatchVersions } from './match-versions.js';
 import { Spectators } from './rooms/spectators.js';
+import { logWarn, logError, errorFields } from './log.js';
 
 export const ROOM_LIMITS = Object.freeze({ sockets: 16, socketsPerIp: 8, sessions: 32, messageBytes: 65_536,
   reservationMs: 120_000, idleSocketMs: 90_000 });
@@ -79,8 +80,18 @@ export class RoomRuntime {
     this.reservation = snapshot?.reservation || null;
     this.interruptedUntil = snapshot?.interruptedUntil || 0;
     this.socketMeta = new Map();
+    // The upstream Lobby, Network and Match log through this: their warnings and errors become structured lines of
+    // this room (info and debug are per-match chatter, dropped). Lines a restore's replay repeats say so.
+    this.restoring = false;
+    const context = (message) => ({ room: this.code, message: String(message), ...(this.restoring ? { restoring: true } : {}) });
+    const log = {
+      info() {},
+      debug() {},
+      warn: (message) => logWarn('room_runtime', context(message)),
+      error: (message, detail) => logError('room_runtime', { ...context(message), ...(detail ? { error: errorFields(detail) } : {}) }),
+    };
     this.registry = new SessionRegistry({ now, maxSessions: ROOM_LIMITS.sessions });
-    this.lobby = new AlarmLobby({ registry: this.registry, now, options: { maxRooms: 1 },
+    this.lobby = new AlarmLobby({ registry: this.registry, now, log, options: { maxRooms: 1 },
       ...(accounts ? {MatchClass:RecordedMatch} : {}) });
     this.lobby.genCode = () => this.code;
     this.spectators=new Spectators(this);
@@ -159,7 +170,7 @@ export class RoomRuntime {
       onDisconnect: (s) => {if(s.spectating){this.spectators.views.delete(s.playerId);this.spectators.presence();}else this.lobby.onDisconnect(s);},
       onExpire: (s) => {if(s.spectating)this.spectators.leave(s);else this.lobby.onExpire(s);},
     };
-    this.network = new RoomNetwork({ registry: this.registry, handler, now,
+    this.network = new RoomNetwork({ registry: this.registry, handler, now, log,
       options: { autoTimers: false, trustProxy: false, maxConnections: ROOM_LIMITS.sockets,
         maxConnectionsPerAddr: ROOM_LIMITS.socketsPerIp, maxSessions: ROOM_LIMITS.sessions } });
     this.network.roomRuntime = this;
@@ -215,10 +226,12 @@ export class RoomRuntime {
     };
     room.matchCount -= 1; // startMatch counts it again
     let result;
+    this.restoring = true;
     try {
       result = this.lobby.startMatch(room, room.matchKey);
     } finally {
       this.lobby.MatchClass = MatchClass;
+      this.restoring = false;
     }
     if (result.error) {
       room.matchCount += 1;
@@ -404,7 +417,6 @@ export class RoomRuntime {
   nextAlarm() {
     const deadlines = [...this.lobby.deadlines.values()];
     for(const item of this.applications.list()) if(['approved','pending'].includes(item.status)) deadlines.push(item.expiresAt);
-    if(this.accounts && this.lobby.getRoom(this.code)?.activeHumans().some(s=>s.connected)) deadlines.push(this.now()+20000);
     if (this.reservation) deadlines.push(Math.max(this.now() + 30_000, this.reservation.expiresAt));
     if (this.interruptedUntil > this.now()) deadlines.push(this.interruptedUntil);
     for (const c of this.network.conns.values()) deadlines.push(c.session
