@@ -25,7 +25,8 @@
 //                            level's blink route, fly at the lowest-ATK operator (3×3 stun + DoT); 15 hits shoot it
 //                            down (瘫痪: stun 10 s, ground unit, damage ×1.3). Either way a new 初始模式 copy with its HP
 //                            replaces it at home. Every damage it takes costs 胄 as much (PART_TRANSFER, 无来源, 等量) —
-//                            grounded per both texts, during the dive per the PRTS talent [ASSUMED].
+//                            grounded per both texts, during the dive per the PRTS talent [ASSUMED]. The shell, 剑 and
+//                            锤 are 失衡免疫 + 静态刚体 (PRTS 天赋): no push or pull moves them.
 //   boss_2/9 假想敌：铳      unblockable; highest-DEF target in range; erosion; ASPD ramp (+80 × 5) on the same target
 //                            (floor 20); 最终之罚 charge at the highest-DEF ground unit (disabled by the h07_02 override).
 //                            boss_9: damage ×0.2 while springs live, 盲信之誓 links (100 phys/s on the lines), 末日布道 dash.
@@ -52,16 +53,25 @@
 // The huge leaders (SELF_BOUND: 胄 ×2, 管 ×2, 昆图斯, 阿利斯泰尔, 萨米的意志 — the 巨型单位 with a data `hitArea`) are
 // 自缚 + 无法被阻挡 (PRTS 天赋): a persistent noMove + unblockable buff from spawn, so they never walk their route.
 // Every leader (tag boss) ignores 侵蚀 gauge damage ("最终攻势中，敌方领袖不会受到侵蚀损伤").
+// An airborne (起飞) operator is no selection of a ground leader or part (对地规避: canTargetAlly, the damage pipeline,
+// the area selectors); still reach it (`ignoreSelect`): the 刺胄之弹 / 剑 / 锤 blasts (flying units, 无来源 DoT; 掷剑 /
+// 掷锤 pick their operator "（无视无法选择）"), the 盲信之誓 chains ("无视无法选择"), the 法术护盾 counter on its attacker
+// (a direct pick) and the ticks of a debuff already on it (【自然涌动】: a tick selects nobody).
+// Every area effect of a leader or part — pulses, strikes around an echo, blasts, charges and tramples, crosses, columns,
+// whole-field skills — selects with enemies.js areaAllies / areaAlliesInTiles / fieldAllies (targeting.js
+// areaSelectable): no 隐匿 operator that does not block the unit, no untargetable or sleeping one, no 起飞 one for a
+// ground unit; 迷彩 is not checked (splash-type, 中点判定 / 格子判定 or "无视迷彩" on PRTS; the rest [ASSUMED], DESIGN
+// §22.12). Only 【盲信之誓】 ("无视无法选择、迷彩") takes everyone on its lines.
 // LP effects ('lpLoss' hook + result.lpLoss) must be applied by the match (see the report of this module's owner).
 // fx kinds: 'beam' 'shell' 'explode' 'telegraph' 'charge' 'link' 'dash' 'column' 'tide' 'rockfall' 'tentacle' 'equip'
 //   'sword' 'vest' 'blink' 'summon' 'grow' 'phase' 'lpLoss' (x, y + extra {id, r, tiles, kind, tx, ty …}).
 
 import { MOVE_SCALE } from '../constants.js';
-import { canTargetAlly, aggroCmp } from '../targeting.js';
+import { aggroCmp, areaSelectable } from '../targeting.js';
 import { compileRoute } from '../ai.js';
 import { normalizeRoute } from '../simdata.js';
 import {
-  ensureInstalled, abOf, attach, T, elem, hurt, alliesInTiles, targetsNear, allTargets, byPriority,
+  ensureInstalled, abOf, attach, T, elem, hurt, targetsNear, allTargets, byPriority, areaAllies, areaAlliesInTiles, fieldAllies,
   remainingRoute, stayRoute, stepToward, setHits, hitCount, lpLoss, blinkForward, canCast, absorbArts, nthOf,
 } from './enemies.js';
 
@@ -239,7 +249,7 @@ export function registerMeta() {}
 function onSpawn(b, e) {
   const kit = BOSS_KITS[e.defId];
   if (typeof kit !== 'function') return;
-  if (SELF_BOUND.includes(e.defId)) b.addBuff(e, { key: 'boss:selfBound', persist: true, flags: { noMove: true, unblockable: true } });
+  if (SELF_BOUND.includes(e.defId)) b.addBuff(e, { key: 'boss:selfBound', persist: true, flags: { noMove: true, selfBound: true, unblockable: true } });
   const tpl = templateOf(b);
   const ab = abOf(b, e);
   let list = [];
@@ -319,13 +329,19 @@ export function fairOrder(b, e, list, P) {
   return out.concat(rest);
 }
 
-/** Stun + phys DoT on the 3×3 around (r, c). */
-function stunBlast(b, src, r, c, stun, dot, dur, kind) {
+/**
+ * Stun + phys DoT on the 3×3 around (r, c), credited to `src` (胄). The blast is a flying unit's — `by`: 刺胄之弹 /
+ * 斩胄之剑 / 破胄之锤 (PRTS 行动方式 飞行) — and its damage 无来源, so 对地规避 does not stop it: `ignoreSelect` (an airborne
+ * 起飞 ally in the 3×3 is stunned and hurt like the others, although the credited 胄 walks). It is still that unit's area
+ * selection (PRTS: "令自身周围8格内的所有我方单位…" / "…无视迷彩，可对空", no 无视无法选择): areaAlliesInTiles of `by` — no
+ * 隐匿 ally that does not block it (掷剑 / 掷锤's "无视无法选择" is their pick of the operator they fly at, not the blast).
+ */
+function stunBlast(b, src, by, r, c, stun, dot, dur, kind) {
   b.fx('explode', { x: c, y: r, r: 1.5, kind, tiles: 'box' });
-  for (const u of alliesInTiles(b, r, c, 'box', 1)) {
-    if (stun > 0) b.applyStatus(u, 'stun', { duration: stun, source: src });
+  for (const u of areaAlliesInTiles(b, by, r, c, 'box', 1)) {
+    if (stun > 0) b.applyStatus(u, 'stun', { duration: stun, source: src, ignoreSelect: true });
     if (dot > 0 && dur > 0) b.addBuff(u, { key: `boss:${kind}Dot`, duration: dur, refresh: 'replace', interval: 1, visible: true,
-      onTick: ({ battle, unit }) => battle.dealDamage(src, unit, { amount: dot, type: 'phys', canDodge: false, tags: ['enemyAbility', kind] }) });
+      onTick: ({ battle, unit }) => battle.dealDamage(src, unit, { amount: dot, type: 'phys', canDodge: false, ignoreSelect: true, tags: ['enemyAbility', kind] }) });
   }
 }
 /** Distance from point p to segment a–b. */
@@ -418,13 +434,16 @@ function fireShell(b, boss, target) {
 function kitShell(ab, e) {
   const stun = T(ab, 'killed.duration') ?? 0, dot = T(ab, 'killed.value') ?? 0;
   return [{
-    spawn(b, e2) { setHits(e2, e2.def.maxHp); hitCount(b, e2, true); }, // 需要数次攻击击倒
+    spawn(b, e2) {
+      setHits(e2, e2.def.maxHp); hitCount(b, e2, true);                       // 需要数次攻击击倒
+      b.addBuff(e2, { key: 'boss:shellGuard', persist: true, flags: { noDisplace: true } }); // 失衡免疫 (PRTS 天赋; also 静态刚体)
+    },
     tick(b, e2, a, dt) {
       const s = e2.mem.ab.shell;
       if (!s || a.done) return;
       if (!stepToward(e2, s.tc, s.tr, e2.s.moveSpeed * MOVE_SCALE * dt)) return;
       a.done = true;                                            // arrival: 3×3 long stun + phys DoT
-      stunBlast(b, s.boss && s.boss.alive ? s.boss : e2, s.tr, s.tc, stun, dot, stun, 'helmShell');
+      stunBlast(b, s.boss && s.boss.alive ? s.boss : e2, e2, s.tr, s.tc, stun, dot, stun, 'helmShell');
       b.kill(e2, null);
     },
   }];
@@ -479,10 +498,14 @@ function kitBlade(ab, e, b, tpl) {
     {
       spawn(b2, e2) {
         hover(b2, true);
-        b2.addBuff(e2, { key: 'boss:anchor', persist: true, flags: { noMove: true, unblockable: true } }); // 自缚 (moved by hand) · 不可阻挡
+        // 自缚 (moved by hand) · 不可阻挡 · 失衡免疫 (PRTS 天赋 "{{特殊机制|静态刚体}}，不可阻挡、失衡免疫…" — data `staticBody` too)
+        b2.addBuff(e2, { key: 'boss:anchor', persist: true, flags: { noMove: true, selfBound: true, unblockable: true, noDisplace: true } });
         if (BLADE_ATK_SCALE[e2.defId]) e2.profile.atkScale = BLADE_ATK_SCALE[e2.defId];
       },
-      before(c, b2, e2) { const l = targetsNear(b2, e2, e2.base.rangeRadius || 1.6, { ranged: false }); if (l.length) c.targets = l; }, // 范围物理伤害
+      // 范围物理伤害 — "普通攻击对攻击范围内的所有我方单位造成…物理普通伤害": a normal attack on every operator it can target
+      // (canTargetAlly: no 隐匿 or 迷彩 one — it is never blocked —, PRTS 选择器: a normal attack does not ignore 迷彩; until
+      // 0.1.2 it took them all, `ranged: false`)
+      before(c, b2, e2) { const l = targetsNear(b2, e2, e2.base.rangeRadius || 1.6); if (l.length) c.targets = l; },
       taken(c, b2, e2) {
         if (c.amount > 0) { // 受到伤害时令假想敌：胄受到等量的无来源生命流失 (【瘫痪】; 出击模式 [ASSUMED], see PART_TRANSFER)
           const L = leader(b2);
@@ -496,7 +519,7 @@ function kitBlade(ab, e, b, tpl) {
         const t = P.target;
         if (!stepToward(e2, t.c, t.r, e2.s.moveSpeed * MOVE_SCALE * dt)) return;
         // arrival: 3×3 stun + DoT (无来源: credited to 胄, as the shell's), then the 初始模式 copy takes over
-        stunBlast(b2, leader(b2) || e2, t.r, t.c, bb.stun ?? 0, bb.dot_damage ?? 0, bb.dot_duration ?? 0, 'bladeDive');
+        stunBlast(b2, leader(b2) || e2, e2, t.r, t.c, bb.stun ?? 0, bb.dot_damage ?? 0, bb.dot_duration ?? 0, 'bladeDive');
         replace(b2, e2);
       },
     },
@@ -552,7 +575,8 @@ function kitGun(ab, e, b) {
         const nx = e2.x, ny = e2.y;
         const arrived = stepToward(e2, t.x, t.y, sp);
         if (!b2.grid.groundPassable(Math.round(e2.y), Math.round(e2.x))) { e2.x = nx; e2.y = ny; }
-        for (const u of b2.alliesInRadius(e2.x, e2.y, CHARGE_RADIUS)) if (!ch.hit.has(u)) { ch.hit.add(u); hurt(b2, e2, u, e2.s.atk * (T(ab, '3.atk_scale') ?? 1), 'phys'); }
+        // "对进入自身0.35半径范围内的我方单位（包括飞行单位）造成一次…": an area selection (areaAllies)
+        for (const u of areaAllies(b2, e2, e2.x, e2.y, CHARGE_RADIUS)) if (!ch.hit.has(u)) { ch.hit.add(u); hurt(b2, e2, u, e2.s.atk * (T(ab, '3.atk_scale') ?? 1), 'phys'); }
         if (arrived || b2.time >= ch.until || (e2.x === nx && e2.y === ny)) {
           P.charge = null;
           b2.removeBuff(e2, 'boss:charge');
@@ -582,11 +606,11 @@ function kitGun(ab, e, b) {
     });
     if (s3) list.push({
       iv: s3.bb.interval ?? 1,
-      tick(b2, e2) { // 【盲信之誓】 links: phys per second on operators standing on a line
+      tick(b2, e2) { // 【盲信之誓】 links: phys per second on operators standing on a line ("无视无法选择、迷彩": 起飞 too)
         for (const sp of b2.enemies) {
           if (!sp.alive || !isSpring(sp)) continue;
           b2.fx('link', { x: e2.x, y: e2.y, from: e2.id, to: sp.id, kind: 'faithLink', dur: s3.bb.interval ?? 1 });
-          for (const u of b2.allies()) if (segDist(u.x, u.y, e2.x, e2.y, sp.x, sp.y) <= LINK_WIDTH) hurt(b2, e2, u, s3.bb.value ?? 0, 'phys');
+          for (const u of b2.allies()) if (segDist(u.x, u.y, e2.x, e2.y, sp.x, sp.y) <= LINK_WIDTH) hurt(b2, e2, u, s3.bb.value ?? 0, 'phys', { ignoreSelect: true, tags: ['faithLink'] });
         }
       },
     });
@@ -631,8 +655,10 @@ function kitSpring(ab, e) {
             if (P.barrier <= 1e-6) { P.barrier = 0; drop(b); }
           } else if (ty === 'phys') {
             c.dmg.mul *= scale;
-            const s = c.source;
-            if (s && s.side === 'ally' && s.alive) { hurt(b, e2, s, e2.s.atk * (T(ab, '1.atk_scale') ?? 0), 'phys'); elem(b, e2, s, 'erosion', e2.s.atk * (T(ab, '1.ep_damage_ratio') ?? 0)); }
+            // the counter "对来源造成…无来源物理附加伤害" picks its attacker directly — no selection, so an airborne 起飞
+            // attacker takes it too (PRTS 异常效果 无法选择: "'直接选中'的能力…不受这些仅在选择时生效的异常效果制约")
+            const s = c.source, o = { ignoreSelect: true, tags: ['springCounter'] };
+            if (s && s.side === 'ally' && s.alive) { hurt(b, e2, s, e2.s.atk * (T(ab, '1.atk_scale') ?? 0), 'phys', o); elem(b, e2, s, 'erosion', e2.s.atk * (T(ab, '1.ep_damage_ratio') ?? 0), o); }
           }
         } else if (kind === 'element') {                 // 元素护盾: phys/arts heavily reduced
           if (ty === 'phys' || ty === 'arts') c.dmg.mul *= scale;
@@ -660,7 +686,7 @@ function kitSpring(ab, e) {
         if (!d) return;
         const g = d.gun && d.gun.alive ? d.gun : gun(b);
         const arrived = !g || stepToward(e2, g.x, g.y, e2.s.moveSpeed * d.mul * MOVE_SCALE * dt) || Math.hypot(g.x - e2.x, g.y - e2.y) < 1;
-        for (const u of b.alliesInRadius(e2.x, e2.y, 0.5)) if (!d.hit.has(u)) { d.hit.add(u); hurt(b, e2, u, e2.s.atk, 'phys'); }
+        for (const u of areaAllies(b, e2, e2.x, e2.y, 0.5)) if (!d.hit.has(u)) { d.hit.add(u); hurt(b, e2, u, e2.s.atk, 'phys'); }
         if (arrived || b.time >= d.until) { e2.mem.ab.dash = null; b.removeBuff(e2, 'boss:dash'); if (e2.route) e2.route.pts = null; }
       },
     },
@@ -682,7 +708,7 @@ function kitSpring(ab, e) {
             b.fx('beam', { x: e2.x, y: e2.y, from: e2.id, to: t.id, kind: 'springBullet' });
             elem(b, e2, t, 'erosion', e2.s.atk * ratio * Math.pow(SPRING_BOUNCE_FALLOFF, k));
             const prev = t;
-            t = b.alliesInRadius(prev.x, prev.y, SPRING_BOUNCE_RANGE).filter((u) => !hit.has(u)).sort((p, q) => Math.hypot(p.x - prev.x, p.y - prev.y) - Math.hypot(q.x - prev.x, q.y - prev.y) || aggroCmp(p, q))[0];
+            t = areaAllies(b, e2, prev.x, prev.y, SPRING_BOUNCE_RANGE).filter((u) => !hit.has(u)).sort((p, q) => Math.hypot(p.x - prev.x, p.y - prev.y) - Math.hypot(q.x - prev.x, q.y - prev.y) || aggroCmp(p, q))[0];
           }
         } else { // 十连击
           b.fx('beam', { x: e2.x, y: e2.y, from: e2.id, to: t0.id, kind: 'springCombo' });
@@ -709,13 +735,14 @@ export function setEchoForm(b, echo, form) {
   b.fx('phase', { x: echo.x, y: echo.y, id: echo.id, kind: `echo_${form}` });
 }
 
-/** An echo takes a strike/hit: pulse around it and count towards the form switch. */
+/** An echo takes a strike/hit: pulse around it (PRTS “余音” "受到伤害时对半径1.6范围内的我方单位造成…": an area selection of the
+ *  echo — no unblocking 隐匿 operator) and count towards the form switch. */
 export function echoHit(b, echo) {
   const ab = echo.mem.ab;
   if (!ab || !echo.alive) return;
   const atk = echo.s.atk;
   b.fx('explode', { x: echo.x, y: echo.y, r: ECHO_PULSE_RADIUS, kind: 'echoPulse' });
-  for (const u of b.alliesInRadius(echo.x, echo.y, ECHO_PULSE_RADIUS)) {
+  for (const u of areaAllies(b, echo, echo.x, echo.y, ECHO_PULSE_RADIUS)) {
     hurt(b, echo, u, atk * (T(ab, '3.atk_scale') ?? 0), 'arts');
     elem(b, echo, u, 'apoptosis', atk * (T(ab, '3.ep_damage_ratio') ?? 0));
   }
@@ -738,7 +765,7 @@ function kitEcho(ab, e) {
         const r = gold ? ECHO_ENSEMBLE_RADIUS.gold : ECHO_ENSEMBLE_RADIUS.dark;
         const ratio = gold ? T(ab, '4.ep_damage_ratio_passion') ?? 0 : T(ab, '4.ep_damage_ratio_depassion') ?? 0;
         b.fx('explode', { x: e2.x, y: e2.y, r, kind: gold ? 'ensembleGold' : 'ensembleDark' });
-        for (const u of b.alliesInRadius(e2.x, e2.y, r)) { hurt(b, e2, u, e2.s.atk, 'arts'); elem(b, e2, u, 'apoptosis', e2.s.atk * ratio); }
+        for (const u of areaAllies(b, e2, e2.x, e2.y, r)) { hurt(b, e2, u, e2.s.atk, 'arts'); elem(b, e2, u, 'apoptosis', e2.s.atk * ratio); }
       },
     },
   ];
@@ -787,7 +814,7 @@ function kitPipe(ab, e, b, tpl) {
         for (const echo of echoesOf(b2, 'dark')) for (let k = 0; k < 3; k++) b2.after(k * PIPE_STRIKE_GAP, () => {
           if (!e2.alive || !echo.alive) return;
           b2.fx('explode', { x: echo.x, y: echo.y, r, kind: 'pipeStrike' });
-          for (const u of b2.alliesInRadius(echo.x, echo.y, r)) { hurt(b2, e2, u, e2.s.atk, 'arts'); elem(b2, e2, u, 'apoptosis', e2.s.atk * ep); }
+          for (const u of areaAllies(b2, e2, echo.x, echo.y, r)) { hurt(b2, e2, u, e2.s.atk, 'arts'); elem(b2, e2, u, 'apoptosis', e2.s.atk * ep); }
           echoHit(b2, echo);
         }, { owner: e2 });
       },
@@ -806,7 +833,7 @@ function kitString(ab, e, b, tpl) {
         const r = s.bb.range_radius ?? 0, ep = s.bb.ep_damage_ratio ?? 0;
         for (const echo of echoesOf(b2, 'gold')) {
           b2.fx('explode', { x: echo.x, y: echo.y, r, kind: 'stringStrike' });
-          for (const u of b2.alliesInRadius(echo.x, echo.y, r)) { hurt(b2, e2, u, e2.s.atk, 'arts'); elem(b2, e2, u, 'apoptosis', e2.s.atk * ep); }
+          for (const u of areaAllies(b2, e2, echo.x, echo.y, r)) { hurt(b2, e2, u, e2.s.atk, 'arts'); elem(b2, e2, u, 'apoptosis', e2.s.atk * ep); }
           setEchoForm(b2, echo, 'dark');
         }
       },
@@ -855,9 +882,9 @@ function kitQuintus(ab, e, b, tpl) {
 }
 
 const QUINTUS = {
-  Tidewater(b, e, s) { // 【大潮】 every operator: arts + neural
+  Tidewater(b, e, s) { // 【大潮】 "对场上所有我方单位…": every operator it can select (fieldAllies): arts + neural
     b.fx('tide', { x: e.x, y: e.y, id: e.id });
-    for (const u of b.allies()) { hurt(b, e, u, e.s.atk * (s.bb.atk_scale ?? 0), 'arts'); elem(b, e, u, 'neural', e.s.atk * (s.bb.ep_damage_ratio ?? 0)); }
+    for (const u of fieldAllies(b, e)) { hurt(b, e, u, e.s.atk * (s.bb.atk_scale ?? 0), 'arts'); elem(b, e, u, 'neural', e.s.atk * (s.bb.ep_damage_ratio ?? 0)); }
   },
   Rockfall(b, e, s, P) { // 【崩坍】 delayed strikes on the N highest-DEF units
     const n = ROCKFALL_TARGETS[Math.min(P.stage, ROCKFALL_TARGETS.length - 1)];
@@ -879,7 +906,7 @@ const QUINTUS = {
     P.tent++;
     for (const [r, c] of spots) {
       b.fx('tentacle', { x: c, y: r, r: TENTACLE_RADIUS, dur: TENTACLE_STUN });
-      for (const u of b.alliesInRadius(c, r, TENTACLE_RADIUS)) b.applyStatus(u, 'stun', { duration: TENTACLE_STUN, source: e });
+      for (const u of areaAllies(b, e, c, r, TENTACLE_RADIUS)) b.applyStatus(u, 'stun', { duration: TENTACLE_STUN, source: e });
     }
   },
   Doom(b, e, s) { // 【物种爆发】
@@ -907,10 +934,14 @@ function lucienCore(ab, e) {
       dealt(c, b, e2) { elem(b, e2, c.target, 'neural', e2.s.atk * epr); },
     },
     s && {
-      cd: s.cd, icd: s.icd, cond: (b) => b.alliesInRadius(e.x, e.y, LUCIEN_AOE_RADIUS).length > 0,
+      // cast with a target in the radius (PRTS 技能 "需要目标"; 不祥幻影 "仅在半径2范围内存在我方单位时触发"): the trigger
+      // selection (targetsNear — PRTS 选择器 "所有触发选择器通常不无视迷彩"): an airborne (起飞) operator evades a ground
+      // leader (对地规避 — counting her spent the skill on nobody, §21.22), nor does an unblocking 隐匿 or 迷彩 one count
+      cd: s.cd, icd: s.icd, cond: (b) => targetsNear(b, e, LUCIEN_AOE_RADIUS).length > 0,
       fire(b, e2) {
+        // "该技能伤害无视迷彩": an area selection (areaAllies) — a 迷彩 operator is hit, an unblocking 隐匿 one not
         b.fx('explode', { x: e2.x, y: e2.y, r: LUCIEN_AOE_RADIUS, kind: 'crimsonAoe' });
-        for (const u of b.alliesInRadius(e2.x, e2.y, LUCIEN_AOE_RADIUS)) { hurt(b, e2, u, e2.s.atk * (s.bb.atk_scale ?? 0), 'phys'); elem(b, e2, u, 'neural', e2.s.atk * (s.bb.ep_damage_ratio ?? 0)); }
+        for (const u of areaAllies(b, e2, e2.x, e2.y, LUCIEN_AOE_RADIUS)) { hurt(b, e2, u, e2.s.atk * (s.bb.atk_scale ?? 0), 'phys'); elem(b, e2, u, 'neural', e2.s.atk * (s.bb.ep_damage_ratio ?? 0)); }
       },
     },
   ];
@@ -949,7 +980,7 @@ function kitLion(ab, e, b) {
     const r0 = t.tileR, c0 = t.tileC;
     const tiles = [[r0, c0], [r0 + 1, c0], [r0 - 1, c0], [r0, c0 + 1], [r0, c0 - 1]];
     b2.fx('telegraph', { x: c0, y: r0, r: 1, kind: 'royalDecree', tiles: 'plus', id: e2.id });
-    for (const u of alliesInTiles(b2, r0, c0, 'plus', 1)) hurt(b2, e2, u, e2.s.atk * ((sk && sk.bb.atk_scale) || 0), 'phys');
+    for (const u of areaAlliesInTiles(b2, e2, r0, c0, 'plus', 1)) hurt(b2, e2, u, e2.s.atk * ((sk && sk.bb.atk_scale) || 0), 'phys');
     const taken = equipment(b2);
     const free = tiles.filter(([r, c]) => b2.grid.inRect(r, c) && b2.grid.isLow(r, c) && b2.grid.groundPassable(r, c) && !b2.unitAt(r, c)
       && !taken.some((q) => Math.round(q.y) === r && Math.round(q.x) === c));
@@ -1005,9 +1036,9 @@ function kitLion(ab, e, b) {
     },
     su && {
       cd: su.cd, icd: su.icd,
-      fire(b2, e2) { // 【斥退】
+      fire(b2, e2) { // 【斥退】 "对场上所有我方单位…": every operator it can select (fieldAllies)
         b2.fx('telegraph', { x: e2.x, y: e2.y, r: 99, kind: 'repel', id: e2.id });
-        for (const u of b2.allies()) hurt(b2, e2, u, e2.s.atk * (su.bb.atk_scale ?? 0), 'arts');
+        for (const u of fieldAllies(b2, e2)) hurt(b2, e2, u, e2.s.atk * (su.bb.atk_scale ?? 0), 'arts');
         lpLoss(b2, Math.abs(su.bb.value ?? 0), 'repel', e2);
       },
     },
@@ -1043,8 +1074,8 @@ function kitDeer(ab, e) {
         P.acc = 0;
         const cols = [];
         for (const t of cands) { if (!cols.includes(t.tileC)) cols.push(t.tileC); if (cols.length >= (P.low ? atkN : 1)) break; }
-        for (const c of cols) { // 【冰凌】 its normal attack: the whole column
-          const hit = b.allies().filter((u) => u.tileC === c);
+        for (const c of cols) { // 【冰凌】 its normal attack: the whole column (an area selection: no unblocking 隐匿 operator)
+          const hit = b.allies().filter((u) => u.tileC === c && areaSelectable(e2, u));
           b.fx('column', { x: c, y: e2.y, c, id: e2.id });
           for (const u of hit) b.dealDamage(e2, u, { amount: e2.s.atk, type: 'phys', isAttack: true });
         }
@@ -1061,7 +1092,7 @@ function kitDeer(ab, e) {
           b.fx('beam', { x: e2.x, y: e2.y, from: e2.id, to: t.id, kind: 'naturalSurge', dur });
           b.applyStatus(t, 'stun', { duration: dur, source: e2 });
           b.addBuff(t, { key: 'boss:surge', duration: dur, interval: 1, visible: true,
-            onTick: ({ battle, unit }) => battle.dealDamage(e2, unit, { amount: e2.s.atk * (lasso.bb.atk_scale ?? 0), type: 'arts', canDodge: false, tags: ['enemyAbility'] }) });
+            onTick: ({ battle, unit }) => battle.dealDamage(e2, unit, { amount: e2.s.atk * (lasso.bb.atk_scale ?? 0), type: 'arts', canDodge: false, ignoreSelect: true, tags: ['enemyAbility'] }) });
         }
       },
     },
@@ -1069,7 +1100,7 @@ function kitDeer(ab, e) {
       cd: doom.cd, icd: doom.icd,
       fire(b, e2) {
         b.fx('telegraph', { x: e2.x, y: e2.y, r: 99, kind: 'samiDoom', id: e2.id });
-        for (const u of b.allies()) hurt(b, e2, u, e2.s.atk * (doom.bb.atk_scale ?? 0), 'arts');
+        for (const u of fieldAllies(b, e2)) hurt(b, e2, u, e2.s.atk * (doom.bb.atk_scale ?? 0), 'arts');
         lpLoss(b, Math.abs(doom.bb.value ?? 0), 'samiDoom', e2);
       },
     },

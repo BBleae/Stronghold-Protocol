@@ -8,7 +8,7 @@
 //   2. Dependencies: `npm ci` (falls back to `npm install`) when node_modules is missing or incomplete.
 //   3. Client libraries in public/vendor (tools/vendor.mjs) when any is missing.
 //   4. Game data (data/*.json, committed) present and parseable.
-//   5. Art/audio (tools/fetch-assets.mjs, ~250 MB into public/assets, resumable, mirror fallback) when public/assets
+//   5. Art/audio (tools/fetch-assets.mjs, ~270 MB into public/assets, resumable, mirror fallback) when public/assets
 //      is missing or data/assets.json lists files that are not on disk. A failure is a warning: the game still runs
 //      with fallback visuals and the next run resumes.
 //   6. Optional: official board/UI art from a locally installed Arknights client (Windows native install, CrossOver
@@ -189,11 +189,25 @@ export function checkAssets() {
   return { ok: present && missing.length === 0 && urls.length > 0, present, manifest: true, total: urls.length, missing: missing.length, sample: missing.slice(0, 5), bytes: Number(m.stats?.bytes) || 0 };
 }
 
-/** Local-client art (optional): manifest entry count and whether the 3D board atlas is on disk. */
+/**
+ * What the game draws instead when the local-client art is absent (DESIGN §13, docs/DEPLOY.md §6). The battle emotes and
+ * the 玩法说明 pages are not in the list: step 5 downloads them from the public mirror with the other assets (GitHub
+ * issue #42). Shown by setup and doctor.
+ */
+export const LOCAL_ART_FALLBACK = '3D 棋盘改用 2D，部分官方界面图标和灼热/炽焰源石虫模型用替代样式';
+/** Where a machine without the client gets the local art (docs/DEPLOY.md §6「本地客户端素材」); shown by doctor (setup's row,
+ * printed on every start by scripts/launch.mjs, only points to that section). */
+export const LOCAL_ART_COPY_HINT = '没有客户端的服务器可以从同一版本的整合包复制 public/assets/local 和 data/local-assets.json';
+
+/**
+ * Local-client art (optional): manifest entry count, whether the 3D board atlas is on disk and whether the extraction
+ * has the enemy models only the client has (`spine/enemy/*` groups, extract.py ENEMY_SPINES — added after 0.1.0).
+ */
 export function checkLocal() {
   const m = readJson(LOCAL_MANIFEST);
   const count = m && m.groups ? Object.values(m.groups).reduce((n, g) => n + Object.keys(g || {}).length, 0) : 0;
-  return { manifest: !!m, count, board3d: exists(LOCAL_BOARD_ATLAS), tiles: exists(LOCAL_BOARD_TILES), dirPresent: exists(path.join(ROOT, 'public', 'assets', 'local')) };
+  const enemySpines = !!(m && m.groups && Object.keys(m.groups).some((g) => g.startsWith('spine/enemy/')));
+  return { manifest: !!m, count, board3d: exists(LOCAL_BOARD_ATLAS), tiles: exists(LOCAL_BOARD_TILES), enemySpines, dirPresent: exists(path.join(ROOT, 'public', 'assets', 'local')) };
 }
 
 /**
@@ -396,7 +410,7 @@ async function main() {
   let assets = checkAssets();
   if (!opts.assets) add(assets.ok ? 'ok' : 'skip', '美术/音频 public/assets', assets.ok ? `${assets.total} 个文件` : '已跳过（--no-assets）');
   else if (!assets.ok && deps.ok && !opts.check) {
-    const what = !assets.present ? `首次下载约 ${assets.bytes ? mb(assets.bytes) : '250 MB'}，可随时中断，重新运行会续传`
+    const what = !assets.present ? `首次下载约 ${assets.bytes ? mb(assets.bytes) : '270 MB'}，可随时中断，重新运行会续传`
       : `补全缺失的 ${assets.missing} 个文件`;
     log(`\n${c.cyan('▶')} 下载美术与音频素材（${what}）…`);
     const r = run(process.execPath, [path.join(ROOT, 'tools', 'fetch-assets.mjs')]);
@@ -418,12 +432,13 @@ async function main() {
     const already = local.manifest && local.dirPresent;
     if (!client) {
       if (already && local.board3d && !local.tiles && !opts.check) cropBoardTiles(log);
-      add(already ? 'ok' : 'skip', '本地客户端美术（可选）', already ? `已提取 ${local.count} 项` : (opts.game ? `找不到 ${opts.game}` : '未检测到本机明日方舟客户端（不影响游戏）'));
+      add(already ? 'ok' : 'skip', '本地客户端美术（可选）', already ? `已提取 ${local.count} 项`
+        : `${opts.game ? `找不到 ${opts.game}` : '未检测到本机明日方舟客户端'}：${LOCAL_ART_FALLBACK}（见 docs/DEPLOY.md 第 6 节）`);
     } else if (!client.autochess) {
       add(already ? 'ok' : 'warn', '本地客户端美术（可选）', `${client.kind} 客户端缺少卫戍协议资源（请在游戏内下载全部资源）：${client.path}`);
     } else if (already && opts.local !== 'force') {
       if (local.board3d && !local.tiles && !opts.check) cropBoardTiles(log);
-      add('ok', '本地客户端美术（可选）', `已提取 ${local.count} 项${local.board3d ? '，3D 棋盘可用' : ''}（重新提取：--local）`);
+      add('ok', '本地客户端美术（可选）', `已提取 ${local.count} 项${local.board3d ? '，3D 棋盘可用' : ''}${local.enemySpines ? '' : '，缺少新版的灼热/炽焰源石虫模型'}（重新提取：--local）`);
     } else if (opts.check) {
       add('skip', '本地客户端美术（可选）', `检测到 ${client.kind} 客户端，可运行 node tools/setup.mjs --local 提取`);
     } else {
@@ -434,7 +449,7 @@ async function main() {
         let go = opts.local === 'force' || opts.yes;
         if (go || !state.localDeclined) {
           log(`\n${c.cyan('▶')} 检测到本机明日方舟客户端（${client.kind}）：\n  ${c.dim(client.path)}`);
-          log('  可以从中提取官方棋盘贴图、UI 图标、表情等（仅本机使用；通常 1–5 分钟，Python 依赖约 40 MB，装在项目内的 .venv-extract）。');
+          log('  可以从中提取官方 3D 棋盘贴图、界面图标等（仅本机使用；通常 1–5 分钟，Python 依赖约 40 MB，装在项目内的 .venv-extract）。');
         }
         let unattended = false;
         if (!go && !state.localDeclined) {
@@ -453,7 +468,7 @@ async function main() {
             if (r.ok) cropBoardTiles(log);
             const after = checkLocal();
             if (r.ok && after.manifest) { add('ok', '本地客户端美术（可选）', `提取 ${after.count} 项${after.board3d ? '，3D 棋盘可用' : ''}`); saveState({ localDeclined: false, localExtractedFrom: client.path }); }
-            else add('warn', '本地客户端美术（可选）', `提取未成功（退出码 ${r.code}），游戏不受影响；可稍后重试 node tools/setup.mjs --local`);
+            else add('warn', '本地客户端美术（可选）', `提取未成功（退出码 ${r.code}）：游戏照常运行，${LOCAL_ART_FALLBACK}；可稍后重试 node tools/setup.mjs --local`);
           }
         }
       }

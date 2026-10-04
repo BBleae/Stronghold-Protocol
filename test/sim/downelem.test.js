@@ -1,6 +1,6 @@
 // test/sim/downelem.test.js — user playtest #4 items 8 and 9, sim side (server/sim/Battle.js snapshot / fieldMeta,
-// damage.js elementView): b.snap `down` lists the knocked-out operators waiting to redeploy on their own tile (the
-// client keeps them on the field knocked down with a redeploy countdown) and `elem` the element gauge each unit shows
+// damage.js elementView): b.snap `down` lists the knocked-out operators waiting to redeploy on the tile they lie on (the
+// client keeps them there knocked down with a redeploy countdown) and `elem` the element gauge each unit shows
 // (PRTS 元素: the fullest gauge, its 爆发冷却) — entries, states, and what is left out. User playtest #5 item 2: an
 // operator entering a battle knocked out (联防 carryState `down`, constants.js FORCED_EXIT) is down the same way.
 
@@ -16,7 +16,7 @@ const op = (id, stats = {}) => chessRec({ id, profession: 'WARRIOR', stats: { at
 const TOKEN = { name: '测试召唤物', stats: { maxHp: 100, atk: 0, def: 0, res: 0, blockCnt: 0, cost: 0, respawnTime: 0 } };
 const downOf = (h, id) => (h.snapshot().down || []).find((d) => d[0] === id) || null;
 
-test('a knocked-out operator is `down` until it redeploys: its timer, then waiting for its tile / the DP; then back', () => {
+test('a knocked-out operator is `down` until it redeploys: its timer, then waiting for the DP (no ally takes its tile); then back', () => {
   const h = makeBattle({
     defs: { chess: { t_a: op('t_a'), t_b: op('t_b') } }, units: [{ chessId: 't_a', row: 9, col: 5 }, { chessId: 't_b', row: 10, col: 5 }],
     content: 'none', autoFinish: false, timeLimit: 120, flags: { dpInit: 0, dpPerSec: 1, dpMax: 99 },
@@ -31,40 +31,44 @@ test('a knocked-out operator is `down` until it redeploys: its timer, then waiti
   approx(d[1], Math.round((t0 + 6) * 100) / 100, 0.011);
   approx(d[2], 6, 0.011);
   assert.equal(d[3], DOWN_STATE.COUNTING);
+  assert.deepEqual(d.slice(4), [9, 5], 'the tile it lies on (player report F5 after 0.1.0)');
   assert.ok(h.b.fieldMeta().units.some((u) => u.id === a.id), 'a client joining now gets its UnitInfo');
   h.run(6.5);
   assert.equal(downOf(h, a.id)[3], DOWN_STATE.WAIT_DP, 'timer done, 6.5 DP < cost 12');
-  const tok = h.b.spawnToken('p1', 'token_test', 9, 5, { def: TOKEN });
-  assert.ok(tok && tok.alive, 'a summon stands on its tile');
-  assert.equal(downOf(h, a.id)[3], DOWN_STATE.WAIT_TILE);
-  h.run(7);
-  assert.ok(!a.alive, 'no redeploy while its tile is taken');
-  assert.equal(downOf(h, a.id)[3], DOWN_STATE.WAIT_TILE);
-  h.b.retreat(tok, { reason: 'expired', permanent: true });
-  h.step();
-  assert.ok(a.alive && a.deployed, 'redeployed once the tile is free (DP 13.5 ≥ 12)');
+  // "倒地干员所在地块视为可部署，但所有我方单位在此处的部署行为将被阻止" (PRTS 卫戍协议/帮助): WAIT_TILE (its tile taken)
+  // is a safeguard only — no summon (or any ally) is deployed on the tile it lies on
+  assert.equal(h.b.spawnToken('p1', 'token_test', 9, 5, { def: TOKEN }), null, 'no summon on its tile');
+  assert.equal(h.b.isReservedTile(9, 5), true);
+  h.run(5);
+  assert.ok(!a.alive, 'no redeploy while the DP is short (11.5 < 12)');
+  assert.equal(downOf(h, a.id)[3], DOWN_STATE.WAIT_DP);
+  h.run(1);
+  assert.ok(a.alive && a.deployed, 'redeployed on its tile once the DP is there (12.5 ≥ 12)');
+  assert.deepEqual([a.tileR, a.tileC], [9, 5]);
   assert.equal(downOf(h, a.id), null);
   assert.equal(h.snapshot().down, undefined);
   assert.ok(h.eventsOf('deploy').some((e) => e[1] === a.id));
 });
 
-test('summons, devices, enemies and withdrawn / removed operators are never `down`', () => {
+test('summons, devices, enemies, operators removed for good and the 突袭 retreat are never `down`; an operator forced out is (GitHub #60)', () => {
   const h = makeBattle({
-    defs: { chess: { t_a: op('t_a'), t_b: op('t_b'), t_c: op('t_c') }, enemies: { enemy_dummy: enemyRec({ key: 'enemy_dummy', hp: 100, speed: 0 }) } },
-    units: [{ chessId: 't_a', row: 9, col: 5 }, { chessId: 't_b', row: 10, col: 5 }, { chessId: 't_c', row: 11, col: 5 }],
+    defs: { chess: { t_a: op('t_a'), t_b: op('t_b'), t_c: op('t_c'), t_d: op('t_d') }, enemies: { enemy_dummy: enemyRec({ key: 'enemy_dummy', hp: 100, speed: 0 }) } },
+    units: [{ chessId: 't_a', row: 9, col: 5 }, { chessId: 't_b', row: 10, col: 5 }, { chessId: 't_c', row: 11, col: 5 }, { chessId: 't_d', row: 9, col: 6 }],
     enemies: [{ key: 'enemy_dummy', pos: [11, 8] }], content: 'none', autoFinish: false, timeLimit: 120,
   });
   h.step();
   const tok = h.b.spawnToken('p1', 'token_test', 12, 5, { def: TOKEN });
   h.b.kill(tok);
-  h.b.retreat(h.unit('t_a'), { reason: 'retreat' });
   h.b.retreat(h.unit('t_b'), { reason: 'expired', permanent: true });
+  h.b.retreat(h.unit('t_d'), { reason: 'raid' });      // 突袭: redeployed at once on its landing tile (here: nowhere)
   h.b.kill(h.enemy('enemy_dummy'));
   assert.equal(h.snapshot().down, undefined);
+  // PRTS 卫戍协议/帮助 "干员退场后…原地留下一个“倒地干员”…": a forced exit (史尔特尔's 余烬 …) lies down like a knock-out
+  h.b.retreat(h.unit('t_a'), { reason: 'retreat' });
   h.b.kill(h.unit('t_c'));
-  assert.deepEqual(h.snapshot().down.map((d) => d[0]), [h.unit('t_c').id], 'only the knocked-out operator');
+  assert.deepEqual(h.snapshot().down.map((d) => d[0]), [h.unit('t_a').id, h.unit('t_c').id], 'the forced-out and the knocked-out operator');
   const ids = new Set(h.b.fieldMeta().units.map((u) => u.id));
-  assert.ok(ids.has(h.unit('t_c').id) && !ids.has(h.unit('t_a').id) && !ids.has(tok.id));
+  assert.ok(ids.has(h.unit('t_c').id) && ids.has(h.unit('t_a').id) && !ids.has(h.unit('t_b').id) && !ids.has(h.unit('t_d').id) && !ids.has(tok.id));
 });
 
 test('carryState.down (联防): deployed with everyone, forced out at once — down on its tile without the knock-out hooks — then back after its timer', () => {

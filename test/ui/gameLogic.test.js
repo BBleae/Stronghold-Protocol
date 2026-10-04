@@ -209,6 +209,18 @@ describe('placement mirror (canPlace)', () => {
     assert.equal(canPlace(ctx, m.uid, null).ok, false);
     assert.equal(canPlace(ctx, m.uid, { area: 'temp', idx: 0 }).ok, false, 'no temp target');
   });
+  test('a 钩索师 / 推击手 (chess.json placement all: "可以放置于远程位") may also use the high ground; a plain melee keeps the refusal', () => {
+    const glad = piece('chess_char_4_12_a'); // 歌蕾蒂娅 (钩索师)
+    const forcer = piece('chess_char_3_07_b'); // 见行者 (推击手), elite
+    const m = piece(MELEE);
+    const ctx = ctxFor(privWith({ hand: [glad, forcer, m] }));
+    for (const p of [glad, forcer]) {
+      for (const [row, col] of [[10, 4], [11, 4], [12, 4], [9, 3]]) assert.equal(canPlace(ctx, p.uid, { area: 'board', row, col }).ok, true, `${p.id} on ${row},${col}`);
+      const lit = boardTargets(ctx, p.uid).legal.map(([a, b]) => tileKey(a, b));
+      assert.equal(lit.length, STAGE.deployTiles.normal.melee.length + STAGE.deployTiles.normal.rangedOnly.length, `${p.id}: every deploy tile lit`);
+    }
+    assert.deepEqual(canPlace(ctx, m.uid, { area: 'board', row: 10, col: 4 }), { ok: false, code: 'BAD_TILE', reason: '近战单位只能部署在地面' });
+  });
   test('not editable ⇒ nothing is legal', () => {
     const m = piece(MELEE);
     assert.equal(canPlace(ctxFor(privWith({ hand: [m] }), false), m.uid, { area: 'board', row: 9, col: 3 }).code, 'WRONG_PHASE');
@@ -218,6 +230,9 @@ describe('placement mirror (canPlace)', () => {
     const board = [];
     const tiles = [[9, 3], [9, 4], [9, 5], [9, 7], [9, 8], [9, 9], [10, 5], [10, 7]];
     for (const [row, col] of tiles) board.push({ ...piece(MELEE), row, col });
+    // the 狼群's owner: 伺夜 facing UP on (9,4) — her range (rows 9–12 × cols 3–5) covers the tiles tried below
+    // ("只能部署在召唤者攻击范围内", player report #9 after 0.1.0)
+    board[1] = { ...piece('chess_char_3_19_a'), row: 9, col: 4, dir: 'UP' };
     const extra = piece(MELEE);
     const ctx = ctxFor(privWith({ board, hand: [extra] }));
     const full = canPlace(ctx, extra.uid, { area: 'board', row: 11, col: 5 });
@@ -226,7 +241,7 @@ describe('placement mirror (canPlace)', () => {
     const onBoard = board[0];
     assert.equal(canPlace(ctx, onBoard.uid, { area: 'board', row: 11, col: 5 }).ok, true, 'moving on the board never hits the cap');
     // tokens don't use deploy slots
-    const tok = { uid: ++uid, kind: 'token', id: 'token_10028_vigil_wolf', count: 1, ownerUid: board[0].uid };
+    const tok = { uid: ++uid, kind: 'token', id: 'token_10028_vigil_wolf', count: 1, ownerUid: board[1].uid };
     const ctx2 = ctxFor(privWith({ board, hand: [tok] }));
     assert.equal(canPlace(ctx2, tok.uid, { area: 'board', row: 11, col: 5 }).ok, true);
     assert.equal(canPlace(ctx2, tok.uid, { area: 'board', row: 10, col: 4 }).ok, false, 'MELEE token not on high ground');
@@ -235,7 +250,7 @@ describe('placement mirror (canPlace)', () => {
     const ctx3 = ctxFor(privWith({ board, hand: [orphan] }));
     assert.equal(canPlace(ctx3, orphan.uid, { area: 'board', row: 11, col: 5 }).code, 'BAD_TARGET', 'summoner must be deployed');
     // a hand chess swapping with a board token takes a deploy slot (cap applies)
-    const bTok = { uid: ++uid, kind: 'token', id: 'token_10028_vigil_wolf', count: 1, ownerUid: board[0].uid, row: 11, col: 5 };
+    const bTok = { uid: ++uid, kind: 'token', id: 'token_10028_vigil_wolf', count: 1, ownerUid: board[1].uid, row: 11, col: 5 };
     const ctx4 = ctxFor(privWith({ board: [...board, bTok], hand: [extra] }));
     assert.equal(canPlace(ctx4, extra.uid, { area: 'board', row: 11, col: 5 }).code, 'BOARD_FULL');
   });
