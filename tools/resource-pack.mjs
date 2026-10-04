@@ -4,9 +4,58 @@ import { createHash } from 'node:crypto';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Zip, ZipPassThrough } from 'fflate';
-import { resourceType, validateManifest } from '../public/js/resources/common.js';
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+
+// The Workers Static Assets file limit.
+const MAX_FILE_BYTES = 25 * 1024 * 1024;
+
+/** Content-Type per resource file extension; other files under public/assets and public/fonts are not resources. */
+export const RESOURCE_TYPES = Object.freeze({
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif', svg: 'image/svg+xml',
+  mp3: 'audio/mpeg', ogg: 'audio/ogg', wav: 'audio/wav', m4a: 'audio/mp4', mp4: 'video/mp4',
+  woff: 'font/woff', woff2: 'font/woff2', ttf: 'font/ttf', otf: 'font/otf', css: 'text/css; charset=utf-8',
+  atlas: 'text/plain; charset=utf-8', obj: 'text/plain; charset=utf-8', json: 'application/json', skel: 'application/octet-stream',
+});
+
+export function resourceType(url) {
+  return RESOURCE_TYPES[url.split('.').pop().toLowerCase()];
+}
+
+function validateResourceUrl(url) {
+  if (typeof url !== 'string' || !/^\/(assets|fonts)\//.test(url) || /[?#\\\x00-\x1f]/.test(url)) throw new Error(`Invalid resource path: ${url}`);
+  let decoded;
+  try {
+    decoded = decodeURIComponent(url);
+  } catch {
+    throw new Error(`Invalid resource path encoding: ${url}`);
+  }
+  const segments = decoded.split('/').slice(1);
+  if (/[?#\\\x00-\x1f]/.test(decoded) || segments.some(part => !part || part === '.' || part === '..') || !resourceType(decoded)) {
+    throw new Error(`Invalid resource path or type: ${url}`);
+  }
+}
+
+/**
+ * Check a manifest: resource paths only (no traversal, no programs), unique URLs, sizes within the static asset limit,
+ * SHA-256 hashes, Content-Types matching the extensions, and the total. The page and the pack trust what passes.
+ */
+export function validateManifest(manifest) {
+  if (manifest?.format !== 1 || !/^[a-f0-9]{64}$/.test(manifest.version) || !Array.isArray(manifest.files)) throw new Error('Invalid resource manifest');
+  const urls = new Set();
+  let total = 0;
+  for (const file of manifest.files) {
+    validateResourceUrl(file.url);
+    if (urls.has(file.url)) throw new Error(`Duplicate resource URL: ${file.url}`);
+    urls.add(file.url);
+    if (!Number.isSafeInteger(file.size) || file.size < 0 || file.size > MAX_FILE_BYTES) throw new Error(`Invalid resource size: ${file.url}`);
+    if (!/^[a-f0-9]{64}$/.test(file.sha256)) throw new Error(`Invalid resource hash: ${file.url}`);
+    if (file.type !== resourceType(decodeURIComponent(file.url))) throw new Error(`Invalid resource type: ${file.url}`);
+    total += file.size;
+  }
+  if (manifest.totalBytes !== total) throw new Error('Invalid resource manifest total size');
+  return manifest;
+}
 
 /** root is the repository root; output defaults to public/resource-manifest.json; false means no write. */
 export async function buildResourceManifest({ root = repository, output = join(root, 'public/resource-manifest.json') } = {}) {
@@ -41,7 +90,8 @@ export async function buildResourceManifest({ root = repository, output = join(r
 /** Stored ZIP entries keep already-compressed assets fast and streamable. ZIP is never a deployment asset. */
 export async function writeResourcePack({ root = repository, manifest, output } = {}) {
   manifest = validateManifest(manifest ?? await buildResourceManifest({ root }));
-  const path = resolve(output ?? join(root, '.cache', `stronghold-resources-${manifest.version}.zip`));
+  // Same name as tools/build-worker.mjs writePackParts uses, so `npm run resources:pack` makes the ZIP a build reuses.
+  const path = resolve(output ?? join(root, '.cache', `stronghold-resources-${manifest.version.slice(0, 12)}.zip`));
   const publicRoot = resolve(root, 'public');
   const withinPublic = relative(publicRoot, path);
   if (!withinPublic || (!withinPublic.startsWith('..' + sep) && withinPublic !== '..' && !isAbsolute(withinPublic))) throw new Error('Resource ZIP must remain outside the public deployment directory');

@@ -1,68 +1,108 @@
-import { validateManifest } from './common.js';
-import { ResourceStore } from './store.js';
-import { exportResourceZip, importResourceZip } from './zip.js';
+// Local resource cache: boot integration, the resource manager dialog and its launcher.
 import { render } from '../../vendor/preact.module.js';
 import { html } from '../ui/components.js';
 import { toast } from '../ui/toasts.js';
+import { ResourceStore } from './store.js';
+import { importResourceZip } from './zip.js';
 import { ResourceDialog, ResourceLauncher } from './view.js';
 
+// The player's choice: 'install' (keep every resource file locally) or 'ondemand'. Unset until the first visit's
+// dialog closes; a returning player's boot never waits for the resource layer.
 const MODE_KEY = 'stronghold-resource-mode';
-let contextPromise, openDialog;
+let workerPromise, storePromise, openDialog;
+
 const mib = n => `${(n / 1048576).toFixed(1)} MiB`;
+
 function preference(value) {
-  try { if (value) localStorage.setItem(MODE_KEY, value); return localStorage.getItem(MODE_KEY); } catch { return null; }
+  if (value) localStorage.setItem(MODE_KEY, value);
+  return localStorage.getItem(MODE_KEY);
 }
-function loadStyle() {
-  if (document.getElementById('resource-manager-style')) return;
-  const link = document.createElement('link');
-  link.id = 'resource-manager-style'; link.rel = 'stylesheet'; link.href = '/css/resources.css';
-  document.head.append(link);
+
+/** Cache Storage and service workers need a secure context and site data; some in-app browsers have neither. */
+function supported() {
+  if (!globalThis.isSecureContext || !('serviceWorker' in navigator) || !('caches' in globalThis)) return false;
+  try {
+    localStorage.getItem(MODE_KEY);
+    return true;
+  } catch {
+    return false; // site data blocked: storage access throws
+  }
 }
+
+/** Rejects where the browser cannot run the (module) service worker: then nothing would serve stored files. */
+function registerWorker() {
+  return workerPromise ??= navigator.serviceWorker.register('/resource-sw.js', { type: 'module', scope: '/' });
+}
+
+function loadStore() {
+  return storePromise ??= ResourceStore.load().catch(error => {
+    storePromise = undefined; // the next caller tries again
+    throw error;
+  });
+}
+
 function readableError(error) {
-  if (error?.name === 'AbortError') return '已暂停。已完成的文件会保留，可继续下载或重新导入。';
-  if (error?.name === 'QuotaExceededError' || /quota|disk|storage.*full/i.test(error?.message ?? '')) return '浏览器空间不足。请释放设备空间或清理旧资源，然后重试；也可选择按需加载。';
-  return `未完成：${error?.message ?? '网络或存储暂不可用'}。已完成的文件会保留，可重试或按需加载。`;
+  if (error.name === 'AbortError') return '已暂停。已完成的文件会保留，可继续下载或重新导入。';
+  if (error.name === 'QuotaExceededError') return '浏览器存储空间不足。请释放设备空间后重试，或选择按需加载。';
+  const reason = error.name === 'TypeError' ? `网络连接失败（${error.message}）` : error.message;
+  return `未完成：${reason}。已完成的文件会保留，可重试或按需加载。`;
 }
 
-async function workerReady() {
-  const registration = await navigator.serviceWorker.register('/resource-sw.js', { type: 'module', scope: '/' });
-  await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => { clean(); reject(new Error('资源缓存服务启动超时，请重试')); }, 15000);
-    const clean = () => { clearTimeout(timer); navigator.serviceWorker.removeEventListener('controllerchange', changed); };
-    const changed = () => { if (navigator.serviceWorker.controller) { clean(); resolve(); } };
-    navigator.serviceWorker.addEventListener('controllerchange', changed);
-    changed();
-  });
-  // Ask the controlling worker for the live site manifest after a deployment change.
-  const channel = new MessageChannel();
-  await new Promise(resolve => {
-    const finish = () => { clearTimeout(timer); channel.port1.close(); resolve(); };
-    const timer = setTimeout(finish, 5000);
-    channel.port1.onmessage = finish;
-    navigator.serviceWorker.controller.postMessage({ type: 'resources:refresh' }, [channel.port2]);
-  });
-  return registration;
+/**
+ * Call before the game boots. A returning player never waits: the local cache is checked in the background while the
+ * service worker already answers from it. A first visit shows the resource dialog: download, import or skip.
+ */
+export async function prepareResources() {
+  if (!supported()) return;
+  if (preference()) {
+    registerWorker().catch(error => console.error('[resources] service worker registration failed', error));
+    checkInstallation().catch(error => console.error('[resources] local resource check failed', error));
+    return;
+  }
+  const store = await openStore();
+  if (store) await showManager(store, true);
+  else preference('ondemand'); // reported by openStore(); the launcher can try again later
 }
 
-async function getContext() {
-  return contextPromise ??= (async () => {
-    try {
-      const response = await fetch('/resource-manifest.json', { cache: 'no-store', signal: AbortSignal.timeout(10000) });
-      if (!response.ok || !response.headers.get('Content-Type')?.includes('json')) return null;
-      const manifest = validateManifest(await response.json());
-      if (!globalThis.isSecureContext || !globalThis.caches || !navigator.serviceWorker || !globalThis.crypto?.subtle) {
-        return { manifest, unavailable: '此浏览器或连接不支持本地资源缓存。可继续按需加载；缓存功能需要 HTTPS 或 localhost。' };
-      }
-      return { manifest, store: new ResourceStore(manifest) };
-    } catch { return null; } // Node installs without a generated manifest preserve their normal startup.
-  })();
+/** Drop what a new site version changed; remind a player who installs resources of the files still missing. */
+async function checkInstallation() {
+  const status = await (await loadStore()).check();
+  if (preference() === 'install' && !status.complete) {
+    const missing = `${status.total - status.count} 个文件（${mib(status.totalBytes - status.bytes)}）`;
+    toast(`本地资源缺少 ${missing}，可在「资源管理」继续下载。`, 'info', { ttl: 8000 });
+  }
 }
 
-function showManager(context, firstTime = false) {
-  if (openDialog) return openDialog;
-  loadStyle();
-  openDialog = new Promise(resolve => {
+/** The launcher of the resource dialog (hidden during matches). */
+export function installResourceManager() {
+  if (!supported() || document.getElementById('resource-manager-host')) return;
+  const host = document.createElement('div');
+  host.id = 'resource-manager-host';
+  document.body.append(host);
+  render(html`<${ResourceLauncher} onOpen=${openManager} />`, host);
+}
+
+async function openManager() {
+  const store = await openStore();
+  if (store) await showManager(store);
+}
+
+/** The store for the dialog, or null (reported) when the service worker or the manifest is unavailable. */
+async function openStore() {
+  try {
+    await registerWorker();
+    return await loadStore();
+  } catch (error) {
+    console.error('[resources] resource cache unavailable', error);
+    toast(`本地资源缓存不可用：${error.message}。游戏资源将按需加载。`, 'warn', { ttl: 6000 });
+    return null;
+  }
+}
+
+function showManager(store, firstTime = false) {
+  openDialog ??= new Promise(resolve => {
     const lastFocus = document.activeElement;
+    // index.html's slow-boot hint stays away while the first visit's dialog replaces the boot screen
     const preparingBefore = window.__spResourcesPreparing;
     window.__spResourcesPreparing = true;
     const boot = document.getElementById('boot');
@@ -74,122 +114,98 @@ function showManager(context, firstTime = false) {
     const background = ['app', 'resource-manager-host'].map(id => document.getElementById(id)).filter(Boolean)
       .map(element => ({ element, inert: element.inert }));
     for (const { element } of background) element.inert = true;
-    let controller, operation, closing = false, closed = false;
-    const state = { status: null, busy: true, phase: 'checking', message: context.startupError ?? '', error: !!context.startupError };
+
+    let controller = null;
+    let operation = null;
+    let closing = false;
+    let closed = false;
+    const state = { status: null, busy: true, phase: 'checking', message: '', error: false };
+
     function update(patch) {
       Object.assign(state, patch);
       if (closed) return;
-      render(html`<${ResourceDialog} state=${state} firstTime=${firstTime} available=${!!context.store}
-        totalBytes=${context.manifest.totalBytes} onClose=${close}
-        onDownload=${() => run(options => context.store.download(options), 'download')}
-        onImport=${file => run(options => importResourceZip(file, context.store, options), 'import', status => status?.skipped && !status.complete
-          ? `已导入 ${status.imported} 个文件；${status.skipped} 个与本站版本不一致已跳过，点「在线下载」补齐剩下的 ${status.total - status.count} 个。`
-          : undefined)}
-        onExport=${exportZip} onClear=${() => run(async () => { await context.store.clear(); return context.store.status(); }, 'clear')}
+      render(html`<${ResourceDialog} state=${state} firstTime=${firstTime} totalBytes=${store.manifest.totalBytes} onClose=${close}
+        onDownload=${download} onImport=${importZip} onClear=${clear}
         onCancel=${() => { controller?.abort(); update({ message: '正在暂停…' }); }} />`, host);
     }
-    function progress(status) { update({ status }); }
+
     async function refresh() {
-      if (context.store) progress(await context.store.status());
-      else update({ message: context.unavailable });
+      try {
+        update({ status: await store.check(), busy: false });
+      } catch (error) {
+        console.error('[resources] local resource check failed', error);
+        update({ message: readableError(error), error: true, busy: false });
+      }
     }
-    async function run(action, phase, doneText) {
-      if (operation || closing || !context.store) return;
-      if (phase === 'download' && state.status?.complete) return;
+
+    async function run(phase, action, done) {
+      if (operation || closing) return;
       controller = new AbortController();
       update({ busy: true, phase, message: '正在准备，请稍候…', error: false });
       operation = (async () => {
         try {
-          await workerReady();
-          if (controller.signal.aborted) return;
-          const status = await action({ signal: controller.signal, onProgress: progress });
-          preference('install');
-          if (status) progress(status);
-          const text = typeof doneText === 'function' ? doneText(status) : doneText;
-          const message = text ?? (status?.complete ? '全部资源已保存，可进入游戏。' : '操作已完成。');
+          const status = await action(controller.signal);
+          const message = done(status);
           update({ message });
-          if (!closing) toast(message, 'success');
+          toast(message, 'success');
+          // Ask the browser not to evict a complete installation under storage pressure.
+          if (status?.complete) void navigator.storage.persist();
         } catch (error) {
+          const paused = error.name === 'AbortError';
+          if (!paused) console.error(`[resources] ${phase} failed`, error);
           const message = readableError(error);
-          update({ message, error: error?.name !== 'AbortError' });
-          if (!closing) toast(message, error?.name === 'AbortError' ? 'info' : 'error');
-        } finally {
-          await refresh().catch(error => { update({ message: readableError(error), error: true }); });
-          operation = undefined;
-          update({ busy: false });
+          update({ message, error: !paused });
+          toast(message, paused ? 'info' : 'error');
         }
+        await refresh();
+        operation = null;
       })();
       await operation;
     }
+
+    function download() {
+      if (state.status?.complete) return;
+      preference('install');
+      return run('download', signal => store.download({ signal, onProgress: status => update({ status }) }),
+        () => '全部资源已保存，可进入游戏。');
+    }
+
+    function importZip(file) {
+      preference('install');
+      return run('import', signal => importResourceZip(file, store, { signal, onProgress: status => update({ status }) }), status => {
+        if (status.complete) return '全部资源已保存，可进入游戏。';
+        const rest = `点「在线下载」补齐剩下的 ${status.total - status.count} 个`;
+        return status.skipped
+          ? `已导入 ${status.imported} 个文件；${status.skipped} 个与本站版本不一致已跳过，${rest}。`
+          : `已导入 ${status.imported} 个文件，${rest}。`;
+      });
+    }
+
+    function clear() {
+      preference('ondemand');
+      return run('clear', async () => { await store.clear(); }, () => '本地资源已清理。');
+    }
+
     async function close() {
       if (closing) return;
       closing = true;
       controller?.abort();
-      if (operation) await operation;
-      preference(state.status?.complete ? 'install' : 'ondemand');
+      await operation;
+      // A first visit that ends without installing plays on demand.
+      if (!preference()) preference(state.status?.complete ? 'install' : 'ondemand');
       closed = true;
-      render(null, host); host.remove();
+      render(null, host);
+      host.remove();
       for (const { element, inert } of background) element.inert = inert;
       window.__spResourcesPreparing = preparingBefore;
       if (boot) boot.style.display = bootDisplay;
       if (lastFocus?.isConnected) lastFocus.focus();
-      openDialog = undefined; resolve();
+      openDialog = undefined;
+      resolve();
     }
-    async function exportZip() {
-      if (operation || !state.status?.complete) return;
-      const name = `stronghold-resources-${context.manifest.version.slice(0, 12)}.zip`;
-      let writable = null;
-      if (typeof window.showSaveFilePicker === 'function') {
-        try {
-          const handle = await window.showSaveFilePicker({ suggestedName: name, types: [{ description: 'ZIP', accept: { 'application/zip': ['.zip'] } }] });
-          writable = await handle.createWritable();
-        } catch (error) { if (error?.name === 'AbortError') return; }
-      }
-      // The picker can resolve after the match starts and closes the manager.
-      if (closing) { await writable?.abort(); return; }
-      await run(async options => {
-        const blob = await exportResourceZip(context.store, { ...options, writable });
-        if (!writable) saveBlob(blob, name);
-        return context.store.status();
-      }, 'export', `已导出 ${name}（${mib(context.manifest.totalBytes)}），发给朋友后在这里「导入本地 ZIP」即可。`);
-    }
+
     update({});
-    refresh().catch(error => { update({ message: readableError(error), error: true }); }).finally(() => update({ busy: false }));
+    void refresh();
   });
   return openDialog;
-}
-
-function saveBlob(blob, name) {
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url; link.download = name; link.hidden = true;
-  document.body.append(link); link.click(); link.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 60000);
-}
-
-/** Call before the game boots. No manifest (ordinary Node mode) means immediate continuation. */
-export async function prepareResources() {
-  const context = await getContext();
-  if (!context) return;
-  // Register even when skipped so an existing partial installation remains usable.
-  if (context.store) {
-    try {
-      await workerReady();
-      const status = await context.store.status();
-      if (status.complete) return;
-    } catch (error) { context.startupError = readableError(error); }
-  }
-  if (preference() === 'ondemand') return;
-  await showManager(context, true);
-}
-
-/** Safe to call after boot; the shared launcher follows the app's route. */
-export async function installResourceManager() {
-  const context = await getContext();
-  if (!context || document.getElementById('resource-manager-host')) return;
-  loadStyle();
-  const host = document.createElement('div');
-  host.id = 'resource-manager-host';
-  document.body.append(host);
-  render(html`<${ResourceLauncher} onOpen=${() => { void showManager(context); }} />`, host);
 }
