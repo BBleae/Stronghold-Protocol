@@ -18,7 +18,8 @@ export async function runBackup({mode,origin,directory,apply=false,fetchFn=fetch
       let cursor='';do{const page=await request('catalog?kind='+kind+'&cursor='+encodeURIComponent(cursor));catalog[kind].push(...page.items);cursor=page.nextCursor;}while(cursor);
     }
     for(const [index,id] of catalog.archives.entries()) {
-      const backup=await request('archive?id='+encodeURIComponent(id));
+      // BACKUP_TOO_LARGE: the archive would not fit an import request; the export stops instead of looking complete
+      const backup=await request('archive?id='+encodeURIComponent(id)).catch((error)=>{throw new Error(`${error.message}: archive ${id}`);});
       await fs.writeFile(path.join(dir,index+'.json'),JSON.stringify(backup)+'\n',{flag:'wx'});
     }
     await fs.writeFile(path.join(dir,'catalog.json'),JSON.stringify(catalog,null,2)+'\n',{flag:'wx'});

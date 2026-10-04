@@ -9,6 +9,10 @@ import { logError } from '../log.js';
 import { normalizeName } from '../../server/net.js';
 import { PBKDF2_ITERATIONS } from '../accounts/passwords.js';
 
+// The largest import request ({ backup, dryRun }). An archive that would not fit is refused when it is exported, so a
+// backup that cannot be restored never looks complete.
+const IMPORT_BYTES = 32 * 1024 * 1024;
+
 export async function sealBackup(facts,chunks) {
   const body={formatVersion:1,facts,chunks};return {...body,hash:await hash(JSON.stringify(body))};
 }
@@ -97,10 +101,12 @@ export async function handleBackupRoutes(request, env) {
   if (request.method === 'GET' && url.pathname === '/api/admin/backup/archive') {
     const id = requireId(url.searchParams.get('id'));
     const archive = await archiveOf(env, id).exportArchive();
-    return json(await sealBackup(archive.facts, archive.chunks));
+    const backup = await sealBackup(archive.facts, archive.chunks);
+    if (new TextEncoder().encode(JSON.stringify({ backup, dryRun: false })).length > IMPORT_BYTES) throw new AccountError('BACKUP_TOO_LARGE', 413);
+    return json(backup);
   }
   if (!isWrite) return json({ error: 'METHOD' }, 405);
-  const input = await readJson(request, 32 * 1024 * 1024, 'INVALID_BACKUP'), dryRun = input.dryRun !== false;
+  const input = await readJson(request, IMPORT_BYTES, 'INVALID_BACKUP'), dryRun = input.dryRun !== false;
   if (url.pathname === '/api/admin/backup/profile') {
     // The directory restores the identity (and ends the account's sessions), then the account its profile.
     const account = parseAccount(input.profile);

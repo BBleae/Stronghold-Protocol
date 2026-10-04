@@ -1,5 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { hash } from '../../worker/accounts/auth.js';
 import { sealBackup,validateBackup,handleBackupRoutes } from '../../worker/storage/backup.js';
 import { createAccountHarness } from './helpers/account-harness.js';
@@ -11,6 +14,23 @@ test('backup validates independent content and refuses unknown versions and play
   const changed=structuredClone(backup);changed.chunks[0].text+=' ';await assert.rejects(validateBackup(changed,['v1']),/BACKUP_HASH/);
   const response=await handleBackupRoutes(new Request('https://game.example/api/admin/backup/catalog',{headers:{cookie:'__Host-sp_session='+'a'.repeat(64)}}),{});
   assert.equal(response.status,403);
+});
+test('an archive too large for an import request is refused at export, naming it', async () => {
+  const token = 'e'.repeat(32);
+  const text = 'x'.repeat(32 * 1024 * 1024);
+  const stub = (object) => ({ idFromName: (name) => name, get: () => object });
+  const env = { ARCHIVE_EXPORT_TOKEN: token, SITES: stub({}),
+    MATCH_ARCHIVES: stub({ exportArchive: async () => ({ facts: { matchId: 'big' }, chunks: [{ index: 0, text }] }) }) };
+  const exported = handleBackupRoutes(new Request('https://game.example/api/admin/backup/archive?id=big',
+    { headers: { Authorization: 'Bearer ' + token } }), env);
+  await assert.rejects(exported, (error) => error.code === 'BACKUP_TOO_LARGE' && error.status === 413);
+  const { runBackup } = await import('../../tools/archive-backup.mjs');
+  const fetchFn = async (url) => Response.json(String(url).includes('catalog') ? { items: ['big'], nextCursor: '' } : { error: 'BACKUP_TOO_LARGE' },
+    { status: String(url).includes('catalog') ? 200 : 413 });
+  const dir = await mkdtemp(path.join(tmpdir(), 'sp-backup-'));
+  await assert.rejects(runBackup({ mode: 'export', origin: 'https://game.example', directory: dir, fetchFn, token }),
+    /BACKUP_TOO_LARGE: archive big/);
+  await rm(dir, { recursive: true, force: true });
 });
 test('export, default dry-run and restore rebuild history without exporting sessions', {timeout:60000},async t=>{
   const create=()=>createAccountHarness(`
