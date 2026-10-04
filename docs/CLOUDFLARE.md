@@ -4,19 +4,20 @@
 
 当前唯一公开入口：[stronghold.lunar.ag](https://stronghold.lunar.ag)。`workers.dev` 和版本预览入口均关闭；目前未启用密码或 Cloudflare Access。
 
-适用场景：4–20 位朋友，分为多个最多 4 人的游戏房间。网页与游戏代码由 **Workers Static Assets** 提供；每个房间使用独立的 **SQLite Durable Object + WebSocket**，复用原有房间、经济、回合和战斗协议。玩家浏览器计算正常战斗，AI / 掉线玩家由服务端处理。**站点不提供游戏素材**（美术、音频、字体）：玩家把资源 ZIP 导入浏览器本地，没有导入时游戏使用占位图、没有声音（见下文「资源包」）。
+适用场景：4–20 位朋友，分为多个最多 4 人的游戏房间。网页、游戏代码和素材（美术、音频、字体）由 **Workers Static Assets** 提供；每个房间使用独立的 **SQLite Durable Object + WebSocket**，复用原有房间、经济、回合和战斗协议。玩家浏览器计算正常战斗，AI / 掉线玩家由服务端处理。玩家可以在「资源管理」在线下载全部素材、下载完整资源包 ZIP 或导入本地 ZIP，也可以按需加载（见下文「资源包」）。
 
 ## 为什么这样分配
 
-- 静态资源只有网页、游戏代码、游戏数据、资源清单和各规则版本的回放引擎，不计入 Worker JS 包体，也不经过房间对象。游戏素材受版权保护，本站不分发：资源 ZIP 由玩家用本仓库的脚本从素材来源下载生成，或由朋友转发，只在浏览器本地读取。
+- 静态资源包括网页、游戏代码、游戏数据、资源清单所列的素材与字体、资源包分块和各规则版本的回放引擎，不计入 Worker JS 包体，也不经过房间对象。素材拆成数千个小文件，均小于 Static Assets 单文件 25 MiB 的限制，总数远低于 Paid 套餐 100,000 个文件的限制（构建会检查）。
+- 当前版本不需要 R2。完整 ZIP 超过 25 MiB，不能作为单文件放进 Static Assets；下文的整包下载通过分块存储并由 Worker 拼接提供。后续若资源频繁更新且需要独立生命周期，可把完整包或素材迁往 R2 并配置自定义域名 / 缓存。
 - 一个房间一个 DO 保证房间事件顺序，避免多个 Worker 实例各自保有不同状态，也无需 WebRTC 的 NAT 穿透、信令与 TURN。等待房间使用 WebSocket Hibernation；无人连接的对局休眠到下一个计时器，详见 [规则版本与容量边界](ACCOUNTS-HISTORY.md#规则版本与容量边界)。
-- 亚太 `locationHint` 是尽力提示，不能保证落在指定地区。大陆用户的实际连通性和延迟取决于网络线路（素材在本地，不受影响）；请朋友实测自定义域名的可达性。
+- 亚太 `locationHint` 是尽力提示，不能保证落在指定地区。大陆用户的实际连通性和延迟取决于网络线路，提前下载或导入资源只能减少素材加载等待；请朋友实测自定义域名的可达性。
 
 参考：[Static Assets 限额](https://developers.cloudflare.com/workers/static-assets/platform/limits/)、[DO WebSocket](https://developers.cloudflare.com/durable-objects/best-practices/websockets/)、[DO 定价](https://developers.cloudflare.com/durable-objects/platform/pricing/)。静态资源和房间计算是不同的计费项；当前按已有 Workers Paid 套餐部署。
 
 ## 构建和部署
 
-需要 Node.js 22+、npm 和现有 Cloudflare 账号。仓库不含受版权保护的游戏素材，但构建要用本机的完整素材生成资源清单（玩家导入的 ZIP 按它逐个校验）：沿用原有 `npm run setup` 准备素材，或使用已有完整本地项目。`npm run build:worker` 会检查 `data/assets.json` 引用的素材，缺失时自动运行 `tools/fetch-assets.mjs` 下载；下载失败或素材目录为空时构建失败。`SP_SKIP_ASSETS=1` 可跳过自动下载，但不会跳过空素材检查。
+需要 Node.js 22+、npm 和现有 Cloudflare 账号。仓库不含受版权保护的游戏素材，构建从本机的完整素材生成资源清单、发布清单所列文件并打包资源 ZIP：沿用原有 `npm run setup` 准备素材，或使用已有完整本地项目。`npm run build:worker` 会检查 `data/assets.json` 引用的素材，缺失时自动运行 `tools/fetch-assets.mjs` 下载；下载失败或素材目录为空时构建失败。`SP_SKIP_ASSETS=1` 可跳过自动下载，但不会跳过空素材检查。
 
 ```powershell
 npm ci
@@ -42,18 +43,25 @@ npm run deploy:worker
 
 Wrangler 执行构建、上传本地静态文件，保留 `ROOMS`（房间），并通过追加迁移增加 `SITES`（身份/目录）、`ACCOUNTS`（个人索引）、`MATCH_ARCHIVES`（历史/回放）SQLite DO。按网络（IPv4 地址 / IPv6 /64）和账号的请求限流使用 Cloudflare 的 rate limiting 绑定（`wrangler.jsonc` 的 `ratelimits`，每分钟计数，不写存储）：每个 `/api` 请求和房间连接先按网络计数，再接触任何 DO（包括登录查询）；注册、登录和修改密码另按网络计数（`REGISTER_LIMIT`、`LOGIN_LIMIT`），登录和修改密码再按「用户名 + 网络」计数（`USERNAME_LIMIT`，别人的尝试不会用掉玩家自己的次数）；原来的 `ADMISSION` 限流 DO 由迁移 `v3-ratelimits` 删除（它只存短期计数）。限流绑定的 `namespace_id` 在同一 Cloudflare 账号内必须唯一。账号的两种登录方式（用户名密码，以及配置有效时的 GitHub）、管理员重置密码的凭据 `ACCOUNT_ADMIN_TOKEN` 与 `npm run accounts:reset-password`、迁移、独立备份见 [账号与历史指南](ACCOUNTS-HISTORY.md)。
 
-构建只发布 `dist/client/` 以及 `dist/worker/index.mjs`。前端保持 `/data/`、`/shared/`、`/sim/` 的既有路径；Node 文件系统数据读取由构建时 JSON 导入替换。游戏素材（`public/assets/`、`public/fonts/`）、`public/dev/`、ZIP、日志、source map 和服务端私有数据读取模块都不会发布。不要手动把整个仓库上传为静态站点。
+构建只发布 `dist/client/` 以及 `dist/worker/index.mjs`。前端保持 `/data/`、`/shared/`、`/sim/` 的既有路径；Node 文件系统数据读取由构建时 JSON 导入替换。`public/assets/`、`public/fonts/` 只发布资源清单列出的文件（本机客户端提取的 `public/assets/local/` 等不在清单内的文件不发布）；`public/dev/`、ZIP、日志、source map 和服务端私有数据读取模块不会发布。不要手动把整个仓库上传为静态站点。
 
 ## 资源包
 
-站点只发布资源清单 `/resource-manifest.json`（每个文件的路径、大小与 SHA-256），不发布文件本身。清单只列 `data/assets.json` 引用的素材和字体，它们都能从公开来源下载；来源仓库会更新，晚些下载的个别文件可能与站点清单不一致，导入时跳过并提示数量。资源 ZIP 由玩家自备：
+站点发布资源清单 `/resource-manifest.json`（每个文件的路径、大小与 SHA-256）和清单所列的全部文件。清单只列 `data/assets.json` 引用的素材和字体（大小与文件数以本站清单为准）。完整资源包有三种拿法，内容相同：
 
-1. **自己生成**：取与站点相同版本的本仓库，运行 `npm ci`、`npm run assets`（从 GitHub 下载素材与字体，中断后再次运行会续传），再运行 `npm run resources:pack`，ZIP 写在 `.cache/` 下。国内下载 GitHub 慢时先设置代理，例如 PowerShell 中 `$env:HTTPS_PROXY = 'http://127.0.0.1:7890'; $env:NODE_USE_ENV_PROXY = '1'`（后者让 Node.js 使用该代理）。
-2. **朋友转发**：已经有 ZIP 的玩家直接发给朋友。
+1. **直接下载**：本站的 `/stronghold-resources.zip`（资源管理窗口里的「下载资源包 ZIP」）。部署时构建把资源包切成 24 MiB 的分块放进静态资源，Worker 把分块按顺序拼成一个文件返回：每次下载只算一次 Worker 请求（分块本身是免费的静态资源），支持断点续传和 Range，迅雷 / IDM / aria2 等工具可以多线程下载。文件名带资源版本，和站点当前的素材一致。
+2. **自己生成**：取与站点相同版本的本仓库，运行 `npm ci`、`npm run assets`（从 GitHub 下载素材与字体，中断后再次运行会续传），再运行 `npm run resources:pack`，ZIP 写在 `.cache/` 下。国内下载 GitHub 慢时先设置代理，例如 PowerShell 中 `$env:HTTPS_PROXY = 'http://127.0.0.1:7890'; $env:NODE_USE_ENV_PROXY = '1'`（后者让 Node.js 使用该代理）。来源仓库会更新，晚些下载的个别文件可能与站点清单不一致，导入时跳过并提示数量。
+3. **朋友转发**：已经有 ZIP 的玩家直接发给朋友，朋友打开网站后在「资源管理」点「导入本地 ZIP」。
 
-玩家第一次进入站点时，资源窗口提供两个选择：**导入本地 ZIP**，或**暂时跳过**（使用占位图）。之后随时可在标题页、大厅或房间顶部的「资源管理」导入或清理。导入时文件只在浏览器本地读取，**不会上传**：只取出清单内的文件，逐个校验大小与 SHA-256，其余条目直接跳过。其他版本的资源包也能导入：与本站清单一致的文件照常导入，不一致的跳过并提示数量，缺少的文件需要换一个与本站版本一致的 ZIP 补齐。
+玩家第一次进入站点时可以：
 
-缓存使用 Cache Storage 和 Service Worker；同一浏览器多个标签页的检查、导入与清理依次进行。站点更新后，内容变化的文件从缓存删除，哈希相同的文件继续使用。缓存按站点来源隔离，换域名需重新导入；隐私模式、空间不足或浏览器清理会导致缓存丢失。资源包只包含素材与字体，网站代码、API、联机仍需联网；这不是完整的离线游戏。
+1. **在线下载 / 继续下载**：同时下载 6 个文件，逐文件校验大小与 SHA-256，已经完成的文件不重复下载；失败的文件稍后重试，下载中站点更新时按新清单继续。音频走无扩展名的 `/media/` 路径（Worker 映射到 `/assets/audio/`），避免被下载工具拦截。
+2. **导入本地 ZIP**：文件只在浏览器本地读取，**不会上传**：只取出清单内的文件，逐个校验大小与 SHA-256，其余条目直接跳过。其他版本的资源包也能导入：与本站清单一致的文件照常导入，不一致的跳过并提示数量，剩下的点「在线下载」补齐；一个都对不上时拒绝导入。
+3. **暂时跳过，按需加载**：直接进入游戏，素材在用到时从站点加载。
+
+之后随时可在标题页、大厅或房间顶部的「资源管理」下载、导入或清理。选择保存全部资源的玩家，站点更新后缺少的文件会在进入时提示，可在「资源管理」继续下载。
+
+缓存使用 Cache Storage 和 Service Worker：缓存里有的文件直接从本地返回，没有的从站点加载；同一浏览器多个标签页的检查、下载、导入与清理依次进行。站点更新后，内容变化的文件从缓存删除，哈希相同的文件继续使用。缓存按站点来源隔离，换域名需重新下载或导入；隐私模式、空间不足或浏览器清理会导致缓存丢失。资源包只包含素材与字体，网站代码、API、联机仍需联网；这不是完整的离线游戏。
 
 ## 对局与更新限制
 
@@ -99,4 +107,4 @@ $env:SP_SPECTATORS_E2E = '1'
 node --test test/ui/spectators.e2e.test.js
 ```
 
-浏览器测试使用系统 Chrome，可用 `CHROME_PATH` 指定路径。后端集成测试使用生产打包方式与 Miniflare / workerd。部署后应检查 `/healthz` 与资源清单，并实测注册登录、两个玩家加入同一房间、准备、开局与断线重连。
+浏览器测试使用系统 Chrome，可用 `CHROME_PATH` 指定路径。后端集成测试使用生产打包方式与 Miniflare / workerd。部署后应检查 `/healthz`、资源清单、素材与 `/stronghold-resources.zip` 的响应，并实测注册登录、两个玩家加入同一房间、准备、开局与断线重连。

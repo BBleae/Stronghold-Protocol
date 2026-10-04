@@ -7,7 +7,7 @@ import { Zip, ZipPassThrough } from 'fflate';
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
-// The import holds one whole file in memory (public/js/resources/zip.js).
+// The Workers Static Assets file limit; the import also holds one whole file in memory (public/js/resources/zip.js).
 const MAX_FILE_BYTES = 25 * 1024 * 1024;
 
 /** Content-Type per resource file extension; other files under public/assets and public/fonts are not resources. */
@@ -68,10 +68,10 @@ async function referencedAssets(root) {
 }
 
 /**
- * The resources a player can import: every file data/assets.json references (anyone can fetch them with
- * `npm run assets`) and the fonts. Files only this machine has — the local client extraction (public/assets/local,
- * listed in data/local-assets.json) and leftovers no manifest references — are not resources: a player's own ZIP
- * could never complete them.
+ * The resources the site publishes and a player downloads or imports: every file data/assets.json references (anyone
+ * can fetch them with `npm run assets`) and the fonts. Files only this machine has — the local client extraction
+ * (public/assets/local, listed in data/local-assets.json) and leftovers no manifest references — are not resources:
+ * a player's own ZIP could never complete them.
  * root is the repository root; output defaults to public/resource-manifest.json; false means no write.
  */
 export async function buildResourceManifest({ root = repository, output = join(root, 'public/resource-manifest.json') } = {}) {
@@ -107,7 +107,7 @@ export async function buildResourceManifest({ root = repository, output = join(r
 /** Stored ZIP entries keep already-compressed assets fast and streamable. ZIP is never a deployment asset. */
 export async function writeResourcePack({ root = repository, manifest, output } = {}) {
   manifest = validateManifest(manifest ?? await buildResourceManifest({ root }));
-  // The name carries the resource version the ZIP was made for.
+  // Same name as tools/build-worker.mjs writePackParts uses, so `npm run resources:pack` makes the ZIP a build reuses.
   const path = resolve(output ?? join(root, '.cache', `stronghold-resources-${manifest.version.slice(0, 12)}.zip`));
   const publicRoot = resolve(root, 'public');
   const withinPublic = relative(publicRoot, path);

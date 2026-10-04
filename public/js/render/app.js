@@ -333,9 +333,9 @@ function withTimeout(p, ms) {
 }
 
 /**
- * The texture of a resource file: invalid until its image loads. The site hosts no resource files, so a player who has
- * not imported them gets a 404 and the texture stays invalid (its users keep their placeholder) — instead of Pixi's
- * unhandled rejection, which the page would show as an unexpected error.
+ * The texture of a resource file: invalid until its image loads. A file that fails to load (a host without the game's
+ * art, a network error) leaves the texture invalid (its users keep their placeholder) — instead of Pixi's unhandled
+ * rejection, which the page would show as an unexpected error.
  */
 function fileTexture(P, url) {
   const texture = P.Texture.from(url);

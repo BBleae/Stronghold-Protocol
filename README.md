@@ -62,7 +62,7 @@ English summary: [below](#english).
 
 ### Cloudflare Workers 部署
 
-本 fork 可以部署到 Cloudflare Workers：网页与游戏代码由 Workers Static Assets 提供，每个房间一个 Durable Object 的 WebSocket 联机。站点不提供游戏素材（美术、音频、字体）：玩家在「资源管理」把资源 ZIP 导入浏览器本地，未导入时使用占位图、没有声音。Cloudflare 模式新增账号（用户名密码登录；配置 GitHub OAuth App 后也可用 GitHub 登录，玩家显示为「博士代号#编号」）、跨设备续局、需审批的在线大厅、公开对局观战、历史回放和个人统计，配置、管理员重置密码与备份见 [账号与历史指南](docs/ACCOUNTS-HISTORY.md)。原来的 Node.js 启动方式继续可用。构建、部署、资源包制作与运行限制见 [Cloudflare 部署指南](docs/CLOUDFLARE.md)。
+本 fork 可以部署到 Cloudflare Workers：网页、游戏代码和素材由 Workers Static Assets 提供，每个房间一个 Durable Object 的 WebSocket 联机。玩家可在「资源管理」在线下载全部素材（断点续传）、下载完整资源包 ZIP 或导入本地 ZIP，也可以按需加载。Cloudflare 模式新增账号（用户名密码登录；配置 GitHub OAuth App 后也可用 GitHub 登录，玩家显示为「博士代号#编号」）、跨设备续局、需审批的在线大厅、公开对局观战、历史回放和个人统计，配置、管理员重置密码与备份见 [账号与历史指南](docs/ACCOUNTS-HISTORY.md)。原来的 Node.js 启动方式继续可用。构建、部署、资源包分发与运行限制见 [Cloudflare 部署指南](docs/CLOUDFLARE.md)。
 
 ### 方式一：整合包（推荐）
 

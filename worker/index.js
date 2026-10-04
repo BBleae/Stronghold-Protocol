@@ -15,6 +15,9 @@ import { publishArchive,prepareArchive } from './archive/outbox.js';
 import { handleBackupRoutes } from './storage/backup.js';
 import { errorResponse, edgeIp, networkKey, accountKey, within, tooMany } from './http.js';
 import { CLOSE, refuseSocket } from './close-codes.js';
+import { PACK_PATH, servePack } from './pack.js';
+import { serveMedia } from './media.js';
+import { MEDIA_PREFIX } from '../shared/media.js';
 
 // the deployed commit (tools/build-worker.mjs buildId; esbuild defines it, unbundled tests see 'local')
 const BUILD = typeof __SP_BUILD__ === 'string' ? __SP_BUILD__ : 'local';
@@ -52,6 +55,9 @@ function apiLimit(env, method, path) {
 async function route(request, env) {
   const url = new URL(request.url);
   const path = url.pathname;
+  // Resource files: the complete resource ZIP and the extension-less audio alias, both read from the static assets.
+  if (path === PACK_PATH) return servePack(request, env);
+  if (path.startsWith(MEDIA_PREFIX)) return serveMedia(request, env);
   // Administrator routes: authorized by their own tokens, never by a player session.
   const backup = await handleBackupRoutes(request, env);
   if (backup) return backup;

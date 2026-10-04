@@ -130,4 +130,4 @@ $env:SP_ACCOUNTS_E2E = '1'
 node --test test/ui/password-accounts.e2e.test.js test/ui/account-flows.e2e.test.js test/ui/account-history.e2e.test.js test/ui/preferences.e2e.test.js test/ui/github-account.e2e.test.js
 ```
 
-浏览器测试使用系统 Chrome（或 `CHROME_PATH`），覆盖注册、登录、退出、修改代号与密码、大厅审批、真实 WebSocket、两设备接管、对局历史/统计及独立回放。测试账号注入只在测试包装器存在，生产没有测试登录入口。站点不提供素材，这些测试在没有素材的环境中运行（占位图）；发布前仍须用导入的资源包检查真实素材和字体。
+浏览器测试使用系统 Chrome（或 `CHROME_PATH`），覆盖注册、登录、退出、修改代号与密码、大厅审批、真实 WebSocket、两设备接管、对局历史/统计及独立回放。测试账号注入只在测试包装器存在，生产没有测试登录入口。这些测试不依赖素材（多数测试站点不发布素材，显示占位图）；发布前仍须在站点上检查真实素材、字体和资源包下载。
