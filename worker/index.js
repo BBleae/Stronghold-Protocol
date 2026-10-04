@@ -522,13 +522,27 @@ export class RoomDurableObject {
 
   // The public lobby (SiteDirectory) lists rooms by lease: the room publishes its listing when it changes, and
   // refreshes one the directory shows every LEASE_REFRESH_MS (the directory hides it a minute after its last refresh).
+  // A room that is gone (its last player left, or it emptied) withdraws a listing it published at once: otherwise the
+  // lobby keeps showing it until the lease lapses, and every application to it fails with ROOM_NOT_FOUND.
   publishListing() {
     const rt = this.runtime;
     const room = rt.lobby.getRoom(rt.code);
     const job = this.listing;
     const now = Date.now();
-    if (!room || job.busy || now < job.retryAt) return;
-    const listing = {
+    if (job.busy || now < job.retryAt) return;
+    if (!room && job.fingerprint === null) return; // nothing published: nothing to withdraw
+    const listing = !room ? {
+      roomId: rt.code,
+      generation: rt.generation,
+      public: false,
+      connectedHumans: 0,
+      occupied: 0,
+      capacity: 4,
+      inMatch: false,
+      spectatorCount: 0,
+      hostName: '',
+      difficulty: null,
+    } : {
       roomId: rt.code,
       generation: rt.generation,
       public: rt.publicRoom && room.mode === 'coop',
@@ -593,7 +607,8 @@ export class RoomDurableObject {
     const room = this.runtime.lobby.getRoom(this.runtime.code);
     // A match that may sleep (no in-memory timer) is never woken for its listing, since a wake costs a full restore:
     // its lease lapses (the lobby stops showing a match nobody is playing), and the next wake publishes it again.
-    const listing = job.busy || !room || (room.match && !this.timer) ? Infinity
+    // A withdrawal that failed is retried; a withdrawn listing is never refreshed.
+    const listing = job.busy || (!room && !job.failures) || (room?.match && !this.timer) ? Infinity
       : job.failures ? job.retryAt : job.refreshAt;
     const logins = this.logins.busy ? Infinity : Math.max(this.logins.retryAt, this.runtime.nextLoginCheck());
     return Math.min(archive, listing, logins);
