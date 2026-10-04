@@ -39,3 +39,23 @@ test('refused upgrades close with a code: login invalid 4003, room gone 4004, to
   const own = await world.player('a', { code: route.code, token: host.welcome.token });
   assert.equal(own.welcome.resumed, true);
 });
+
+test('a spectator whose match ended is told so before its socket closes with 4004', { timeout: 120000 }, async (t) => {
+  const world = await createWorld(t);
+  await world.seed('a');
+  await world.seed('b');
+  const route = (await world.api('a', '/api/rooms', { method: 'POST' })).body;
+  const host = await world.player('a', route);
+  await host.request('room.create', { mode: 'coop', difficulty: 'FUNNY' });
+  assert.equal((await host.request('room.start')).t, 'ok');
+  const viewer = await world.player('b', { code: route.code });
+  assert.equal((await viewer.request('room.spectate')).t, 'ok');
+  assert.equal((await viewer.wait('room.state')).spectating, true);
+
+  // The only player leaves: the match ends (abandoned, no result), the spectator's watch with it. What the room sent
+  // in that event arrives before the close.
+  assert.equal((await host.request('g.leave')).t, 'ok');
+  assert.deepEqual(await viewer.waitClosed(), { code: 4004, reason: 'match ended' });
+  assert.equal(viewer.frames.at(-1).t, 'room.closed');
+  assert.equal(viewer.frames.at(-1).reason, 'ended');
+});

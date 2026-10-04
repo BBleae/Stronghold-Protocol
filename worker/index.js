@@ -153,9 +153,10 @@ export class AdmissionDurableObject {
   async alarm() { await this.ctx.storage.deleteAll(); }
 }
 
-// Adapt the Workers WebSocket surface to the existing Network's small EventEmitter-like contract.
+// Adapt the Workers WebSocket surface to the existing Network's small EventEmitter-like contract. A buffered socket
+// (account rooms) holds an event's output until the event committed (flush): its frames, then a close the event made.
 class SocketAdapter {
-  constructor(socket, buffered=false) { this.socket = socket; this.handlers = new Map(); this.closed = false; this.buffered=buffered; this.pending=[]; }
+  constructor(socket, buffered=false) { this.socket = socket; this.handlers = new Map(); this.closed = false; this.buffered=buffered; this.pending=[]; this.closing = null; }
   get readyState() { return this.closed ? 3 : this.socket.readyState; }
   get bufferedAmount() { return this.socket.bufferedAmount || 0; }
   on(type, fn) {
@@ -164,11 +165,21 @@ class SocketAdapter {
   }
   emit(type, ...args) { for (const fn of this.handlers.get(type) || []) fn(...args); }
   send(data, callback) { if(this.buffered) this.pending.push(data); else this.socket.send(data); callback?.(); }
-  flush() {if(!this.closed) for(const data of this.pending) this.socket.send(data); this.pending=[];}
+  flush() {
+    for (const data of this.pending) this.socket.send(data);
+    this.pending = [];
+    if (this.closing) this.socket.close(this.closing.code, this.closing.reason);
+    this.closing = null;
+  }
   close(code, reason) {
     if (this.closed) return;
     this.closed = true;
-    try { this.socket.close(code, reason); } finally { this.emit('close'); }
+    try {
+      if (this.buffered) this.closing = { code, reason };
+      else this.socket.close(code, reason);
+    } finally {
+      this.emit('close');
+    }
   }
   terminate() { this.close(CLOSE.POLICY, 'connection terminated'); }
 }
@@ -367,10 +378,16 @@ export class RoomDurableObject {
   // uncommitted state), start background publishing, and schedule the next wake.
   async commit() {
     const rt = this.runtime;
+    // A socket the event closed leaves the room, but still gets what the event sent it before its close.
+    const closed = [];
     for (const [ws, adapter] of this.sockets) {
       const attachment = rt.attachment(adapter);
-      if (attachment) ws.serializeAttachment(attachment);
-      else this.sockets.delete(ws);
+      if (attachment) {
+        ws.serializeAttachment(attachment);
+      } else {
+        this.sockets.delete(ws);
+        closed.push(adapter);
+      }
     }
     const archives = rt.archiveOutbox.slice();
     if (rt.isEmpty() && !this.outboxSize) {
@@ -379,7 +396,7 @@ export class RoomDurableObject {
       await this.save(archives);
       rt.archiveOutbox.splice(0, archives.length);
     }
-    for (const adapter of this.sockets.values()) adapter.flush();
+    for (const adapter of [...this.sockets.values(), ...closed]) adapter.flush();
     this.startJobs();
     await this.schedule();
   }
@@ -449,14 +466,15 @@ export class RoomDurableObject {
     if (clearAttempts) this.storedAttempts = 0;
   }
 
-  // Wake-ups. Match timers run from memory while someone is connected or the next one is close (no storage write, no
-  // restore); otherwise the room may hibernate or be evicted, and a storage alarm wakes it at the next deadline. While
+  // Wake-ups. Timed steps (match timers, a spectator count update) run from memory while someone is connected or the
+  // next one is close (no storage write, no restore); otherwise the room may hibernate or be evicted, and a storage
+  // alarm wakes it at the next deadline. While
   // the room stays in memory, the alarm is written only when it must fire earlier than the armed one (an early alarm
   // just re-arms); a room that may sleep gets its exact deadline, since waking a sleeping match costs a restore.
   async schedule() {
     const rt = this.runtime;
     const now = Date.now();
-    const due = rt.matchDue();
+    const due = rt.timerDue();
     const connected = rt.connected();
     const awake = due != null && (connected || due - now < AWAKE_MS);
     this.arm(awake ? due : null);
@@ -468,7 +486,7 @@ export class RoomDurableObject {
     this.alarmAt = at;
   }
 
-  // The in-memory match timer: one, at the next match deadline.
+  // The in-memory timer: one, at the room's next timed step.
   arm(at) {
     if (at === this.timerAt) return;
     clearTimeout(this.timer);

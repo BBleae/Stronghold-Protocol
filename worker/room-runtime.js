@@ -2,7 +2,7 @@
 import { Buffer } from 'node:buffer';
 import { randomBytes } from 'node:crypto';
 import { Lobby, Room, CODE_ALPHABET } from '../server/lobby.js';
-import { Network, Session, SessionRegistry, sendSession, normalizeIp, limitKeyOf } from '../server/net.js';
+import { Network, Session, SessionRegistry, encode, sendSession, normalizeIp, limitKeyOf } from '../server/net.js';
 import { ERR, MAX_SEATS } from '../shared/constants.js';
 import { RecordedMatch, exportMatch, restoreMatch } from '../server/match/checkpoint.js';
 import { ApplicationQueue } from './rooms/applications.js';
@@ -49,10 +49,17 @@ class AlarmLobby extends Lobby {
     if (this.roomOf(session)?.match) super.resync(session, coalesce);
     else this.runResync(session);
   }
+  // A match ended: its archive, the room back in its lobby, then its spectators stop watching, with the result the
+  // players got (none for a match nobody finished).
   onMatchEnd(room, ctx, summary) {
-    this.onArchive?.(room,ctx,summary);
+    this.onArchive?.(room, ctx, summary);
     super.onMatchEnd(room, ctx, summary);
-    this.onSpectatorEnd?.();
+    let frames = null;
+    if (room.replay && summary) {
+      const { errors, ...shared } = summary; // the error count is the server's business
+      frames = [room.replay.publicFrame, encode({ t: 'm.result', ...shared })].filter(Boolean);
+    }
+    this.onSpectatorEnd?.(frames);
     this.onChange?.();
   }
   expireGrace() {
@@ -96,12 +103,17 @@ export class RoomRuntime {
     this.lobby = new AlarmLobby({ registry: this.registry, now, log, options: { maxRooms: 1 },
       ...(accounts ? {MatchClass:RecordedMatch} : {}) });
     this.lobby.genCode = () => this.code;
-    this.spectators=new Spectators(this);
-    this.lobby.onSpectatorEnd=()=>this.spectators.pump();
-    this.lobby.broadcastState=()=>this.spectators.presence();
-    this.lobby.sendState=(room,session)=>this.spectators.state(session);
-    const broadcast=this.lobby.broadcastRoom.bind(this.lobby);
-    this.lobby.broadcastRoom=(room,msg)=>{const result=broadcast(room,msg);this.spectators.broadcast(msg);return result;};
+    // Spectators (worker/rooms/spectators.js) see the room's state and the match's broadcasts.
+    this.spectators = new Spectators(this);
+    this.lobby.onSpectatorEnd = (frames) => this.spectators.end(frames);
+    this.lobby.broadcastState = () => this.spectators.broadcastState();
+    this.lobby.sendState = (room, session) => this.spectators.state(session);
+    const broadcast = this.lobby.broadcastRoom.bind(this.lobby);
+    this.lobby.broadcastRoom = (room, msg) => {
+      const result = broadcast(room, msg);
+      this.spectators.forward(msg);
+      return result;
+    };
     this.lobby.onChange = onChange;
     this.lobby.onArchive = (room, ctx, summary) => {
       const match = ctx.match;
@@ -135,7 +147,8 @@ export class RoomRuntime {
           meta.connectionEpoch = s.connectionEpoch;
         }
         if (this.socketMeta.get(s.ws)?.canCreate && this.reservation) s.canCreate = true;
-        if(s.spectating)this.spectators.hello(s);else this.lobby.onHello(s, info);
+        if (s.spectating) this.spectators.hello(s, info);
+        else this.lobby.onHello(s, info);
         if (this.interruptedUntil > this.now()) sendSession(s, { t: 'room.closed', reason: 'restart' });
       },
       onMessage: (s, msg) => {
@@ -169,8 +182,8 @@ export class RoomRuntime {
         return result;
       },
       routeGame: (s, msg) => s.spectating?this.spectators.command(s,msg):this.lobby.routeGame(s, msg),
-      onDisconnect: (s) => {if(s.spectating){this.spectators.views.delete(s.playerId);this.spectators.presence();}else this.lobby.onDisconnect(s);},
-      onExpire: (s) => {if(s.spectating)this.spectators.leave(s);else this.lobby.onExpire(s);},
+      onDisconnect: (s) => (s.spectating ? this.spectators.disconnect(s) : this.lobby.onDisconnect(s)),
+      onExpire: (s) => (s.spectating ? this.spectators.leave(s) : this.lobby.onExpire(s)),
     };
     this.network = new RoomNetwork({ registry: this.registry, handler, now, log,
       options: { autoTimers: false, trustProxy: false, maxConnections: ROOM_LIMITS.sockets,
@@ -479,10 +492,11 @@ export class RoomRuntime {
     }
   }
 
-  /** When the running match's next timer is due (null: none, or no recorded match). */
-  matchDue() {
+  /** When the room's next timed step is due (null: none): the running match's next timer, a spectator count update. */
+  timerDue() {
     const match = this.lobby.getRoom(this.code)?.match;
-    return match?.recording ? match.sched.nextAt() : null;
+    const due = [match?.recording ? match.sched.nextAt() : null, this.spectators.presenceDue()].filter((at) => at != null);
+    return due.length ? Math.min(...due) : null;
   }
 
   /** Someone (a member or a spectator) is connected. */
