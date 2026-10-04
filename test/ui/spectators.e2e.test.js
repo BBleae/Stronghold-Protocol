@@ -157,12 +157,20 @@ test(
     await viewer.waitForFunction(() => __SP__.store.get().match.public?.phase === 'PREP', { timeout: 30000 });
     await viewer.waitForFunction(() => !!__SP__.store.get().match.field?.fieldId);
     assert.equal(await viewer.evaluate(() => !!document.querySelector('[data-testid="ready"]')), false);
+    // a spectator of either kind reads 观战中 (the spectator seats' strip), never 你已被淘汰, and has no emote wheel
+    await viewer.waitForSelector('.gm__dead--spectator');
+    assert.doesNotMatch(await viewer.$eval('.gm__dead', (el) => el.textContent), /淘汰/);
+    assert.equal(await viewer.evaluate(() => !!document.querySelector('.ewheel')), false);
     await viewer.screenshot({ path: path.join(out, 'prep.png') });
     await click(second, '退出观战');
     await host.waitForFunction(() => __SP__.store.get().room?.spectatorCount === 1);
     await call(host, 'g.ready', { ready: true });
     await viewer.waitForFunction(() => __SP__.store.get().match.battle?.watch === true, { timeout: 30000 });
     assert.equal(await viewer.evaluate(() => __SP__.store.get().match.battle.authoritative), false);
+    // the watched battle reads "👁 name", never 你已被淘汰, with no 返回战场
+    await viewer.waitForSelector('.chud__observe');
+    assert.doesNotMatch(await viewer.$eval('.chud', (el) => el.textContent), /淘汰/);
+    assert.equal(await viewer.evaluate(() => !!document.querySelector('.chud__back')), false);
     await viewer.screenshot({ path: path.join(out, 'combat.png') });
     const playerId = await host.evaluate(() => __SP__.net.playerId);
     await h.restart();

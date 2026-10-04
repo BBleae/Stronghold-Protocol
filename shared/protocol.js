@@ -226,6 +226,8 @@ export function unitStatsEntry(u, s = null) {
     ...statView(cur),
     base: statView(base),
     ...(range ? { range } : {}),
+    // the enemy card greys a SILENCE-format line (折射) from this; absent flags ⇒ not silenced
+    silenced: !!(cur.flags && cur.flags.silence),
   };
 }
 
@@ -247,15 +249,24 @@ export const C2S = {
   ping: { c: (v) => typeof v === 'number' && Number.isFinite(v) },
   'room.create': { mode: (v) => v === 'solo' || v === 'coop', difficulty: (v) => DIFFICULTIES.includes(v) },
   'room.join': { code: (v) => isStr(v, ROOM_CODE_LEN + 2) && /^[A-Za-z0-9]+$/.test(v) },
-  'room.spectate': {},
   'room.leave': {},
   'room.ready': { ready: isBool },
   'room.setDifficulty': { difficulty: (v) => DIFFICULTIES.includes(v) },
   'room.addBot': {},
   'room.removeBot': { seat: (v) => isInt(v, 0, MAX_SEATS - 1) },
+  // the host removes another human before the match (server/lobby.js kick; community report #17); playerId = the one the
+  // host confirmed — a seat that changed hands meanwhile is refused
+  'room.kick': { seat: (v) => isInt(v, 0, MAX_SEATS - 1), playerId: isId },
   'room.start': {},
   // operator loadout (DESIGN §16): stored per session/seat; accepted until the match leaves INFO_CHECK
   'room.loadout': { entries: isLoadoutEntries },
+  // spectator seats (remake feature, community report #26; MAX_SPECTATORS): take one of a co-op room's spectator seats —
+  // in its lobby or while its match runs — never a player seat; the host frees one by playerId (the spectator gets
+  // room.closed { reason: 'kicked' }). room.leave / g.leave leave a spectator seat like a player seat. The room Worker
+  // (account mode) needs no `code` — the socket is in its room already — and seats nobody: a public match's spectators
+  // (worker/rooms/spectators.js); the Node server's lobby answers ROOM_NOT_FOUND without one.
+  'room.spectate': { code: (v) => isStr(v, ROOM_CODE_LEN + 2) && /^[A-Za-z0-9]+$/.test(v), $optional: ['code'] },
+  'room.removeSpectator': { playerId: isId },
 
   // match
   'g.infoReady': {},

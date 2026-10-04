@@ -105,6 +105,29 @@ export function selectRoute(s) {
 }
 
 /**
+ * Whether the player holds one of the room's spectator seats (room.state `spectators`; community report #26, a remake
+ * feature): it is no player of the room or its match, watches like an eliminated player and may not act.
+ * @param {any} room room.state payload
+ * @param {string|null|undefined} playerId
+ * @returns {boolean}
+ */
+export function isSpectating(room, playerId) {
+  return playerId != null && Array.isArray(room?.spectators) && room.spectators.some((s) => s && s.playerId === playerId);
+}
+
+/**
+ * Whether the player is a spectator of the room, of either kind: in one of its spectator seats (isSpectating — the Node
+ * server) or watching its public match (room.state `spectating` — the room Worker, worker/rooms/spectators.js; no seat
+ * at all). Either watches like an eliminated player and may not act; each kind follows the match its own way.
+ * @param {any} room room.state payload
+ * @param {string|null|undefined} playerId
+ * @returns {boolean}
+ */
+export function isSpectator(room, playerId) {
+  return !!room?.spectating || isSpectating(room, playerId);
+}
+
+/**
  * The notice after a `welcome` that starts a brand-new server session (the server restarted, or this session expired
  * on it: a new playerId) while a room or a match was on screen — everything shown is gone. Null when nothing is lost
  * (the first welcome, a resumed session, only the title / lobby on screen).

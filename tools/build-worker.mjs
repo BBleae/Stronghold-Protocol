@@ -246,9 +246,10 @@ export async function bundleWorker({ root = ROOT, outfile = path.join(root, 'dis
         source = source.replace(eventDefault, 'referenceEvents:$1=!0');
         const exports = source.match(/export\{([^}]+)\};\s*$/);
         if (!exports) throw new Error('Unsupported retained recovery exports: ' + args.path);
+        // minified names may contain `$` (export{YM as create,$M as restore})
         const pairs = exports[1].split(',').map((s) => {
-          const m = s.trim().match(/^(\w+) as (\w+)$/);
-          if (!m) throw new Error('Unsupported recovery export');
+          const m = s.trim().match(/^([\w$]+) as ([\w$]+)$/);
+          if (!m) throw new Error(`Unsupported recovery export "${s.trim()}": ${args.path}`);
           return `${m[2]}:${m[1]}`;
         });
         const body = source.slice(0, exports.index) + `return {${pairs.join(',')}};`;

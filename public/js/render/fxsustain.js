@@ -25,6 +25,11 @@ const MAX_SKILL = 600, MAX_STATUS = 900;
 /** Real s a 'skill' record survives its caster's snapshot SKILL flag being off (units.js reconciles after 0.3 s). */
 const FLAG_GRACE = 0.45;
 const MAX_SUSTAINS = 160;
+/**
+ * render/fx.js SHOT_HEIGHT (GitHub #61; not imported: fx.js imports this module): a held link or channelled beam leaves
+ * a unit at LAUNCH (its hands) and meets one at AIM (its chest), shares of the drawn model's height on screen.
+ */
+const LAUNCH = 0.45, AIM = 0.5;
 
 /** A unit-state look ('aura'): `until` 'auto' = status → duration → skill (Sustains._policy). */
 const AURA = (o) => Object.freeze({ look: 'aura', until: 'auto', ...o });
@@ -393,14 +398,14 @@ export class Sustains {
     const caster = this._view(src);
     const held = live(caster) && (until === 'life' || skillOn(caster));
     if (!held) {
-      for (const [a, b] of pairs) { const va = this._view(a), vb = this._view(b); if (va && vb && va !== vb) this.fx._beam(va, vb, tint, 0.45, 0.3); }
+      for (const [a, b] of pairs) { const va = this._view(a), vb = this._view(b); if (va && vb && va !== vb) this.fx._beam(va, vb, tint, 0.45, 0.3, !!ex.chain); }
       return;
     }
     const key = `link:${src}`;
     let S = this.map.get(key);
     if (!S || S.end) S = this._add({ key, kind: 'link', look: 'link', until, src, anchor: src, view: caster, tint, max: until === 'life' ? Infinity : MAX_SKILL, chain: !!ex.chain });
     S.pairs = pairs;
-    for (const [a, b] of pairs) { const va = this._view(a), vb = this._view(b); if (va && vb) this.fx._beam(va, vb, tint, 0.3, 0.6); }
+    for (const [a, b] of pairs) { const va = this._view(a), vb = this._view(b); if (va && vb) this.fx._beam(va, vb, tint, 0.3, 0.6, !!ex.chain); }
   }
 
   /**
@@ -783,8 +788,9 @@ export class Sustains {
     for (const [ia, ib] of S.pairs || []) {
       const va = this._view(ia), vb = this._view(ib);
       if (!va || !vb) continue;
-      fx._chest(va, p); const px = p.x, py = p.y, s = p.s;
-      fx._chest(vb, q);
+      // like fx.js' beams: from the first unit's hands (a chain link: the previous target's chest) to the other's chest
+      fx._bodyPt(va, S.chain ? AIM : LAUNCH, p); const px = p.x, py = p.y, s = p.s;
+      fx._bodyPt(vb, AIM, q);
       const segs = beam ? 7 : 2;
       for (let pass = 0; pass < 3; pass++) {
         const wd = pass === 0 ? s * (beam ? 0.16 : 0.1) : pass === 1 ? s * (beam ? 0.065 : 0.04) : s * 0.018;

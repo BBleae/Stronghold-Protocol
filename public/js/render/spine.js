@@ -18,7 +18,8 @@
 //   setUpcoming(lead, horizon)            game s to this unit's next attack in the look-ahead (Infinity: none), and
 //                                         how far the look-ahead reaches
 //   setRate(rate)                         game seconds per real second (blend times are given in real seconds)
-//   setSkill(on)                          the skill's begin clip, played out, then its stance / idle; end on stop
+//   setSkill(on)                          the skill's begin clip, played out, then its own idle clip or its stance
+//                                         between attacks (see the skill rules below); its end clip on stop
 //   deploy()                              'Start' once, then base
 //   die()                                 die clip once (callers fade out afterwards); a skeleton without one holds its
 //                                         idle clip's first frame (GitHub issue #25: the attack loop went on)
@@ -45,11 +46,19 @@
 //   - blends are given in real seconds (MIX: the battle runs at 2×) and never start before the strike frame;
 //   - a target below the operator (more below than beside) takes the `_Down` clips (Attack_Down, Skill_Down_Begin, …);
 //   - a skill's begin clip always plays out (attacks wait), an instant skill (on and off at once) still plays its
-//     skill clip once, and the end clip plays out too;
+//     skill clip once, and the end clip plays out too — except a skill that ends while the unit plays its deploy clip
+//     (乌尔比安's 【返回】 is a 【移动】 redeploy): that clip plays out, then the plain idle;
 //   - during a skill an attack swings the skill clip that has the strike frame: its loop, or — a stance skill whose
 //     loop has none (星熊: Skill_Begin strikes at the same frame as her Attack, Skill holds the shield) — its begin
-//     clip, the stance held between attacks; a skill mode (begin / loop / end) stays in its loop for the whole skill
-//     and a skill clip without a strike frame (Texas' Skill, a sustained skill animation) is held, never swung.
+//     clip; a skill clip without a strike frame (Texas' Skill, a sustained skill animation) is held, never swung;
+//   - between attacks a skill with an idle clip of its own (anims skill.idle, not its loop: 折桠's Skill_2_Idle beside
+//     the Skill_2_Loop jump attack, 史尔特尔's Skill_3_Idle; community report #23) stands in that idle (_ownIdle), and
+//     its end clip plays only when the skill ends. Any other skill holds its stance — its loop: a skill mode (begin /
+//     loop / end), a loop without a strike frame — while its attacks go on; SPELL_GAP attack intervals after the last
+//     one the spell is over (_spellOver): its end clip, then the plain idle while the skill runs on (_rest; an attack
+//     may cut that end clip), and the next attack goes straight back into the stance. The skill's real end plays its
+//     end clip unless the unit already stands in the plain idle (owner's decision 2026-10-05, merging 0.1.3: 星熊, 宴,
+//     塞雷娅 … end a spell of attacks as 0.1.3 does).
 
 const clampN = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
 
@@ -58,6 +67,12 @@ export const ATTACK_STRETCH = 0.8;
 
 /** Blend times in REAL seconds (× the battle rate in game seconds). */
 export const MIX = Object.freeze({ swingIn: 0.1, swingOut: 0.18, strike: 0.08, loopOut: 0.15, skill: 0.12, base: 0.12 });
+
+/**
+ * Attack intervals without an attack after which a skill without an idle clip of its own ends its spell of attacks
+ * (_spellOver; 0.1.3's attack mode length).
+ */
+export const SPELL_GAP = 1.4;
 
 /**
  * Playback speed of an attack clip (pure): a one-shot clip at its natural speed, sped up when the attack interval is
@@ -131,6 +146,7 @@ export class SpineActor {
     this.endRoles = null;
     this.skillOn = false;
     this.skillOnAt = -1;
+    this.skillRest = false;       // the skill runs on in the plain idle: its spell of attacks is over (_rest)
     this.attackUntil = 0;
     this.upcoming = Infinity;     // game s to this unit's next attack in the look-ahead (setUpcoming)
     this.horizon = 0;             // how far ahead the look-ahead reaches (game s)
@@ -224,9 +240,25 @@ export class SpineActor {
 
   _idleName() {
     const sk = this.roles.skill;
-    if (this.skillOn && sk && this.has(sk.idle)) return sk.idle;
-    if (this.skillOn && this._skillPose()) return this._down(sk.loop, this.down);
+    if (this.skillOn && this._ownIdle()) return sk.idle;
+    if (this.skillOn && !this.skillRest && this._skillPose()) return this._down(sk.loop, this.down);
+    if (this.skillOn && this._loopIsIdle()) return sk.idle;
     return this.has(this.roles.idle) ? this.roles.idle : (this.has('Idle') ? 'Idle' : [...this.names][0]);
+  }
+
+  /** The skill has an idle clip of its own (anims skill.idle, not its loop: 折桠's Skill_2_Idle) to stand in. */
+  _ownIdle() {
+    const sk = this.roles.skill;
+    return !!sk && sk.idle !== sk.loop && this.has(sk.idle);
+  }
+
+  /**
+   * The skill's loop is its idle clip (蕾缪安 S2 / S3, 缇缇 S2, 信仰搅拌机 S3): after a spell of attacks it rests in that
+   * loop, not the plain idle, as 0.1.3 does (_rest).
+   */
+  _loopIsIdle() {
+    const sk = this.roles.skill;
+    return !!sk && sk.idle === sk.loop && this.has(sk.idle);
   }
 
   /** Whether a clip has a strike frame (an OnAttack event: manifest `hits`). */
@@ -245,9 +277,10 @@ export class SpineActor {
   }
 
   /**
-   * During a skill its loop is the base clip: a skill mode (begin / loop / end: the original stays in the loop for the
-   * whole skill) or a loop without a strike frame (a stance or a sustained skill animation). A lone skill clip with a
-   * strike (`Skill_2`, `Attack`) is a swing like `Attack`: idle between swings.
+   * During a skill its loop is the base clip — the stance, held while its attacks go on (_spellOver) unless the skill
+   * has an idle clip of its own (_ownIdle): a skill mode (begin / loop / end) or a loop without a strike frame (a stance
+   * or a sustained skill animation). A lone skill clip with a strike (`Skill_2`, `Attack`) is a swing like `Attack`:
+   * idle between swings.
    */
   _skillPose() {
     const sk = this.roles.skill;
@@ -426,6 +459,7 @@ export class SpineActor {
     if (!once) this.interval = iv;
     this.down = !!down;
     this.mode = 'attack';
+    this.skillRest = false;   // a skill resting after a spell of attacks (_rest): straight back into its stance / loop
     // a one-shot swing is over with its clip (its queued base clip takes over; update() plays the base then at the
     // latest), a loop at its cycle — this is the safety net for both
     this.attackUntil = this.clock + lead + (set.loop ? iv + 0.5 : Math.max(0, dur - hit) / Math.max(0.05, ts));
@@ -443,9 +477,15 @@ export class SpineActor {
     if (!once) this.interval = clampN(Number.isFinite(interval) && interval > 0 ? interval : this.interval, 0.08, 8);
     this.down = !!down;
     this.lastAtkClock = this.clock;
+    const rested = this.skillRest;
+    this.skillRest = false;     // the spell of attacks goes on: the skill's stance again (_rest)
     if (this._busy()) return;   // a skill / form change clip plays out
     const set = this._swingSet(this.down, once);
-    if (!set) return;
+    if (!set) {
+      // nothing to swing (a skill loop without a strike frame: 宴's Skill_Loop): straight back into the stance
+      if (rested && this.mode === 'base') this._play(this._baseName(), true, { mix: this._m(MIX.skill) });
+      return;
+    }
     const dur = this.dur(set.clip), hit = this._hitTime(set.clip, dur), ts = this._attackTs(set, dur, once ? dur : this.interval);
     this.mode = 'attack';
     // a safety net: the loop ends at its cycle, a one-shot with its clip (update)
@@ -550,18 +590,27 @@ export class SpineActor {
     if (on === this.skillOn || this.dead) return;
     this.skillOn = on;
     if (on) this.skillOnAt = this.clock;
+    const rested = this.skillRest;
+    this.skillRest = false;
     const sk = this.roles.skill;
     if (!sk || this.mode === 'stun' || this.mode === 'die' || this.mode === 'change') return;
+    // a skill that ends as the unit (re)deploys — 乌尔比安's 【返回】 is a 【移动】 (sim Battle.moveRedeploy) right before
+    // his S3's 'skill' off event — lets the deploy clip play out (then the plain idle) instead of cutting it with the End
+    if (!on && this.mode === 'deploy') return;
     if (on) {
       if (this.has(sk.begin)) {
         const b = this._down(sk.begin, this.down);
         this.mode = 'skillBegin';
         this._play(b, false, { mix: this._m(MIX.skill), restart: true });
         this.skillBeginUntil = this.clock + this.dur(b);
+        // nothing queued behind it: update() then plays the base of that moment (_baseName) — the skill's own idle
+        // clip (community report #23: no jump attack without an attack) or its stance
       } else if (this.mode === 'base') this._play(this._baseName(), true);
       return;
     }
-    if (this.mode === 'skillBegin') return; // the begin clip plays out, then the end (update)
+    // the begin clip plays out, then the end (update); a unit back in the plain idle after its last spell of attacks
+    // (_rest) played the end clip then: no second one (a skill whose loop is its idle rests in that loop: it ends again)
+    if (this.mode === 'skillBegin' || (rested && !this._loopIsIdle())) return;
     if (this.clock - this.skillOnAt < 0.05 && this.has(sk.loop) && !this._skillIsBuffOnly()) {
       // an instant skill (on and off at once): the original still plays its skill clip once
       const c = this._down(sk.loop, this.down);
@@ -584,6 +633,28 @@ export class SpineActor {
       this.mode = 'base';
       this._play(this._baseName(), true, { mix: this._m(MIX.skill) });
     }
+  }
+
+  /**
+   * The spell of attacks of a running skill without an idle clip of its own is over: it holds its stance and its last
+   * attack (one since the skill began) is SPELL_GAP attack intervals ago.
+   */
+  _spellOver() {
+    return this.skillOn && !this.skillRest && this.lastAtkClock != null && this.lastAtkClock >= this.skillOnAt
+      && this.clock - this.lastAtkClock > SPELL_GAP * this.interval && !this._ownIdle() && this._skillPose();
+  }
+
+  /**
+   * After a spell of attacks (_spellOver): the skill's end clip, then the plain idle while the skill runs on — the end
+   * clip in mode 'base', so the next attack's swing may cut it (attack / windUp go back into the stance).
+   */
+  _rest() {
+    this.skillRest = true;
+    const sk = this.roles.skill, base = this._baseName();
+    if (this.has(sk.end)) {
+      this._play(this._down(sk.end, this.down), false, { mix: this._m(MIX.skill), restart: true });
+      this._queue(base, true, 1, this._m(MIX.skill));
+    } else this._play(base, true, { mix: this._m(MIX.loopOut) });
   }
 
   /**
@@ -696,6 +767,9 @@ export class SpineActor {
         }
         break;
       }
+      case 'base':
+        if (this._spellOver()) this._rest();
+        break;
       case 'skillBegin':
         if (this.clock >= this.skillBeginUntil) {
           if (!this.skillOn) this._skillOff(); // an instant skill: begin, then end

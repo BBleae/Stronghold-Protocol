@@ -600,7 +600,12 @@ async function ready(c, { key = false } = {}) {
   if (!(await c.isEditable())) return;
   const s = await c.st();
   if (!s.canReady) { c.note(`temp not empty (${s.temp}) — ready blocked`); return; }
-  if (key) { await c.page.mouse.click(c.w / 2, c.h * 0.3); await c.page.keyboard.press('Space'); } else await c.click('.readybtn');
+  if (key) {
+    await c.page.mouse.click(c.w / 2, c.h * 0.3);
+    await c.page.keyboard.press('Space');
+    // Space asks about funds left like the button (Client.click accepts it for .readybtn)
+    await c.confirmFundsLeft();
+  } else await c.click('.readybtn');
   await c.waitFor((x) => x.ready || x.phase !== 'PREP', 'ready', 8000);
 }
 
