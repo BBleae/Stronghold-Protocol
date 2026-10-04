@@ -34,7 +34,7 @@ import { ConnectionBanner } from './ui/connBanner.js';
 import { ToastHost, toast, toastError, describeError } from './ui/toasts.js';
 import { net, identity, NetError } from './net.js';
 import { store, useStore, emptyMatch, selectRoute, sessionResetNotice } from './store.js';
-import { data } from './data.js';
+import { data, getChess } from './data.js';
 import { GAME_FILES } from './ui/gameComponents.js';
 import { TitleScreen, sanitizeName } from './screens/title.js';
 import { LobbyScreen, rememberRoom, parseRoomParam } from './screens/lobby.js';
@@ -344,13 +344,8 @@ async function boot() {
   wireNet();
   installLoadoutSync({ net });
   net.attachBrowserHooks();
-  // Audio: unlock on first gesture, BGM follows the route / match phase (js/audio.js).
-  installAudio({ getManifest: () => data.get('assets'), subscribe: store.subscribe, getState: store.get, selectRoute, settings: settingsStore.get(),
-    // 作战中's voice type: the equipped skill's SP cost (battle units carry their chess id and skill index)
-    getSkill: (chessId, index) => {
-      const c = data.lookup('chess', chessId);
-      return (Number.isInteger(index) ? c?.skills?.find((k) => k.index === index) : null) ?? c?.skill ?? null;
-    } });
+  // Audio: unlock on first gesture, BGM and the battle voice follow the route / match (js/audio.js).
+  installAudio({ getManifest: () => data.get('assets'), getChess, subscribe: store.subscribe, getState: store.get, selectRoute, settings: settingsStore.get() });
   data.load('assets').catch(() => {});
   // Warm the data cache in the background (missing files are tolerated).
   data.loadAll('config').catch(() => {});

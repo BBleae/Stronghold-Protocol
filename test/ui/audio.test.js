@@ -1,5 +1,5 @@
-// Audio manager (public/js/audio.js): BGM selection, manifest resolution, SFX limiter, and the manager's
-// never-throw behaviour with a fake Web Audio implementation.
+// Audio manager (public/js/audio.js): BGM selection, manifest resolution, SFX limiter, the manager's never-throw
+// behaviour with a fake Web Audio implementation, and which operator voice line plays when.
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
@@ -7,8 +7,10 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bgmKeyFor, resolveBgm, SfxLimiter, AudioManager, normalAttackSfx, voiceUrl, voiceLangsIn, endVoiceRole,
-  voiceRulesOf, voiceMayStart, skillVoiceType, BATTLE_VOICE } from '../../public/js/audio.js';
+  voiceRulesOf, voiceMayStart, voiceBattleKey } from '../../public/js/audio.js';
 import { mediaUrl } from '../../public/js/media.js';
+import { createStore, initialState, emptyMatch } from '../../public/js/store.js';
+import { voiceLeader } from '../../public/js/ui/gameLogic.js';
 import { PHASE } from '../../shared/constants.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -97,7 +99,8 @@ function fakeWindow() {
     constructor() { this.currentTime = 0; this.state = 'running'; this.destination = new Node(); }
     createGain() { return new Gain(); }
     createBufferSource() { return new Src(); }
-    decodeAudioData(ab, ok) { ok({ duration: 1.5 }); }
+    // an empty file does not decode (old WebKit's error callback gets no error)
+    decodeAudioData(ab, ok, fail) { if (ab.byteLength) ok({ duration: 1.5 }); else fail(null); }
     resume() { return Promise.resolve(); }
     suspend() { return Promise.resolve(); }
   }
@@ -166,26 +169,57 @@ describe('AudioManager', () => {
       globalThis.fetch = origFetch;
     }
   });
-  test('fetch failures are swallowed', async () => {
+  test('a file that cannot be fetched or decoded plays nothing and is logged once', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const warn = t.mock.method(console, 'warn', () => {});
     const fw = fakeWindow();
     const origFetch = globalThis.fetch;
-    globalThis.fetch = async () => { throw new Error('offline'); };
-    const origWarn = console.warn;
-    let warns = 0;
-    console.warn = () => { warns++; };
-    try {
-      const a = new AudioManager({ win: fw.win, getManifest: () => manifest });
-      a.install();
-      fw.fire('keydown');
-      a.playBgm('lobby');
-      a.sfx('buy');
-      a.sfx('buy');
-      await new Promise((r) => setTimeout(r, 20));
-      assert.ok(warns >= 1);
-    } finally {
-      globalThis.fetch = origFetch;
-      console.warn = origWarn;
-    }
+    const buy = manifest.audio.sfx.ui.buy;
+    globalThis.fetch = async (u) => {
+      if (u === mediaUrl(buy) || u === buy) throw new Error('offline');
+      return { ok: true, arrayBuffer: async () => new ArrayBuffer(0) };
+    };
+    t.after(() => { globalThis.fetch = origFetch; });
+    const a = new AudioManager({ win: fw.win, getManifest: () => manifest });
+    a.install();
+    fw.fire('keydown');
+    a.sfx('buy');
+    a.sfx('buy');
+    a.sfx('refresh');
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(fw.made.started, 0);
+    const logged = warn.mock.calls.map((c) => String(c.arguments[0]));
+    assert.deepEqual(logged, [`[audio] ${buy} unavailable`, `[audio] ${manifest.audio.sfx.ui.refresh} unavailable`]);
+  });
+  test('a BGM track that failed to load plays at a later phase change, once a short backoff has passed', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    t.mock.method(console, 'warn', () => {});
+    const fw = fakeWindow();
+    const origFetch = globalThis.fetch;
+    const loop = manifest.audio.bgm.prep.loop;
+    let down = true;
+    let asks = 0;
+    globalThis.fetch = async (u) => {
+      if (u === mediaUrl(loop)) asks += 1;
+      return down ? { ok: false, status: 503 } : { ok: true, arrayBuffer: async () => new ArrayBuffer(8) };
+    };
+    t.after(() => { globalThis.fetch = origFetch; });
+    const flush = () => new Promise((resolve) => setImmediate(resolve));
+    const a = new AudioManager({ win: fw.win, getManifest: () => manifest });
+    a.install();
+    fw.fire('pointerdown');
+    a.playBgm('prep');
+    await flush();
+    down = false;
+    a.playBgm('combat'); // the same loop, within the backoff
+    await flush();
+    assert.equal(asks, 1);
+    assert.equal(fw.made.started, 0, 'no BGM');
+    t.mock.timers.tick(10000);
+    a.playBgm('prep');
+    await flush();
+    assert.equal(asks, 2, 'fetched again');
+    assert.ok(fw.made.started > 0, 'the BGM plays');
   });
   test('音频先走无扩展名的 /media/ 路由；只有它 404 才回退到带扩展名的原地址', async () => {
     const raw = manifest.audio.bgm.prep.loop;
@@ -376,310 +410,579 @@ describe('impact sounds (user playtest #4 item 6)', () => {
   });
 });
 
+
 describe('operator voice', () => {
-  const OP = 'char_9_test';
   const LEADER = 'char_8_lead';
-  const line = (lang, n, op = OP) => `/assets/voice/${lang}/${op}/cn_${n}.mp3`;
-  const lines = (op) => ({ select: [line('cn', '021', op), line('cn', '022', op)], deploy: [line('cn', '023', op)],
-    combat: [line('cn', '025', op), line('cn', '026', op)], start: line('cn', '020', op), win3: line('cn', '030', op),
-    win: line('cn', '031', op), fail: line('cn', '032', op) });
-  const vm = { audio: { voice: { cn: { [OP]: lines(OP), [LEADER]: lines(LEADER) }, jp: { [OP]: { select: [line('jp', '021')] } } } } };
+  const OP = 'char_9_op';
+  const OP2 = 'char_7_op';
+  const ROLE_OF = { '020': 'start', '021': 'select', '022': 'select', '023': 'deploy', '025': 'combat', '030': 'win3', '031': 'win', '032': 'fail' };
+  const line = (op, n, lang = 'cn') => `/assets/voice/${lang}/${op}/cn_${n}.mp3`;
+  const lines = (op) => ({
+    select: [line(op, '021')], deploy: [line(op, '023')], combat: [line(op, '025')],
+    start: line(op, '020'), win3: line(op, '030'), win: line(op, '031'), fail: line(op, '032'),
+  });
+  // three operators' lines, with the shipped rules (data/assets.json audio.voiceRules)
+  const vm = { audio: { voiceRules: manifest.audio.voiceRules, voice: { cn: { [LEADER]: lines(LEADER), [OP]: lines(OP), [OP2]: lines(OP2) } } } };
 
   test('voiceUrl picks a line of the role (arrays at random); voiceLangsIn lists the languages the manifest has', () => {
-    assert.equal(voiceUrl(vm, 'cn', OP, 'start'), line('cn', '020'));
-    assert.equal(voiceUrl(vm, 'cn', OP, 'select', () => 0), line('cn', '021'));
-    assert.equal(voiceUrl(vm, 'cn', OP, 'select', () => 0.99), line('cn', '022'));
-    assert.equal(voiceUrl(vm, 'jp', OP, 'start'), null);
+    const m = { audio: { voice: { cn: { [OP]: { select: [line(OP, '021'), line(OP, '022')], start: line(OP, '020') } }, jp: { [OP]: { select: [line(OP, '021', 'jp')] } } } } };
+    assert.equal(voiceUrl(m, 'cn', OP, 'start'), line(OP, '020'));
+    assert.equal(voiceUrl(m, 'cn', OP, 'select', () => 0), line(OP, '021'));
+    assert.equal(voiceUrl(m, 'cn', OP, 'select', () => 0.99), line(OP, '022'));
+    assert.equal(voiceUrl(m, 'jp', OP, 'start'), null);
     assert.equal(voiceUrl(null, 'cn', OP, 'select'), null);
-    assert.deepEqual(voiceLangsIn(vm).map(([k]) => k), ['cn', 'jp']);
+    assert.deepEqual(voiceLangsIn(m).map(([k]) => k), ['cn', 'jp']);
     assert.deepEqual(voiceLangsIn({ audio: { voice: { jp: { [OP]: {} } } } }).map(([k]) => k), ['jp']);
   });
 
-  test('the official rules: data/assets.json carries audio_data battleVoice; the built-in copy matches it', () => {
-    const fromManifest = voiceRulesOf(manifest);
-    assert.deepEqual(voiceRulesOf(null), voiceRulesOf({ audio: { voiceRules: BATTLE_VOICE } }));
-    if (manifest.audio.voiceRules) assert.deepEqual(fromManifest, voiceRulesOf(null), 'BATTLE_VOICE is the shipped table');
-    const r = voiceRulesOf(null);
-    assert.deepEqual(r.types.SKILL_PASSIVE_IMP, { priority: 60, overlap: false, cooldown: 10 });
-    assert.deepEqual(r.types.FOCUS_CHAR, { priority: 10, overlap: true, cooldown: 0 });
+  test('the rules are data/assets.json audio.voiceRules (the official battleVoice) plus the end lines', () => {
+    const r = voiceRulesOf(manifest);
     assert.equal(r.encounterDelay, 3);
-    assert.equal(skillVoiceType(14, r), 'SKILL_PASSIVE_IMP');
-    assert.equal(skillVoiceType(9, r), 'SKILL_PASSIVE_NOR');
-    assert.equal(skillVoiceType(undefined, r), 'SKILL_PASSIVE_NOR');
+    assert.equal(r.crossfade, 0.1);
+    assert.deepEqual(r.types.ENCOUNTER_ENEMY, { priority: 90, overlap: false, cooldown: 0 }, '行动开始');
+    assert.deepEqual(r.types.SKILL_PASSIVE_IMP, { priority: 60, overlap: false, cooldown: 10 }, '作战中');
+    assert.deepEqual(r.types.PLACE_CHAR, { priority: 20, overlap: true, cooldown: 0 }, '部署');
+    assert.deepEqual(r.types.FOCUS_CHAR, { priority: 10, overlap: true, cooldown: 0 }, '选中干员');
+    assert.deepEqual(r.types.RESULT, { priority: 100, overlap: true, cooldown: 0 }, 'the end lines');
+    assert.equal(voiceRulesOf({ audio: { voice: vm.audio.voice } }), null, 'a manifest without rules has none');
   });
 
   test('voiceMayStart: cooldown per type; a higher priority cuts in, the same only when it overlaps, a lower never', () => {
-    const { types } = voiceRulesOf(null);
-    assert.equal(voiceMayStart(types.SKILL_PASSIVE_NOR, null, 1000, 5000), false, 'within 10 s of the last one');
-    assert.equal(voiceMayStart(types.SKILL_PASSIVE_NOR, null, 1000, 11001), true);
-    assert.equal(voiceMayStart(types.SKILL_PASSIVE_NOR, { priority: 50 }, undefined, 0), false, 'no overlap at the same priority');
-    assert.equal(voiceMayStart(types.SKILL_PASSIVE_IMP, { priority: 50 }, undefined, 0), true, 'important over normal');
-    assert.equal(voiceMayStart(types.FOCUS_CHAR, { priority: 50 }, undefined, 0), false, 'a tap never cuts a skill line');
+    const { types } = voiceRulesOf(manifest);
+    assert.equal(voiceMayStart(types.SKILL_PASSIVE_IMP, null, 1000, 5000), false, 'within 10 s of the last 作战中');
+    assert.equal(voiceMayStart(types.SKILL_PASSIVE_IMP, null, 1000, 11001), true);
+    assert.equal(voiceMayStart(types.SKILL_PASSIVE_IMP, { priority: 60 }, undefined, 0), false, 'one 作战中 never cuts another');
+    assert.equal(voiceMayStart(types.SKILL_PASSIVE_IMP, { priority: 90 }, undefined, 0), false, 'nor 行动开始');
+    assert.equal(voiceMayStart(types.FOCUS_CHAR, { priority: 60 }, undefined, 0), false, 'a tap never cuts a 作战中');
     assert.equal(voiceMayStart(types.FOCUS_CHAR, { priority: 10 }, undefined, 0), true, 'taps replace each other');
     assert.equal(voiceMayStart(types.PLACE_CHAR, { priority: 10 }, undefined, 0), true, '部署 over 选中');
+    assert.equal(voiceMayStart(types.RESULT, { priority: 90 }, undefined, 0), true, 'the end line over anything');
   });
 
-  test('endVoiceRole: the match is one operation', () => {
-    assert.equal(endVoiceRole({ victory: true, lpLost: 0 }), 'win3');
-    assert.equal(endVoiceRole({ victory: true, lpLost: 3 }), 'win');
-    assert.equal(endVoiceRole({ victory: false, lpLost: 0 }), 'fail');
+  test('endVoiceRole: 行动失败 when lost, 3星结束行动 only without own LP lost over the match', () => {
+    const players = [{ playerId: 'me', stats: { lpLost: 0 } }, { playerId: 'mate', stats: { lpLost: 5 } }];
+    assert.equal(endVoiceRole({ victory: false, players }, 'me'), 'fail');
+    assert.equal(endVoiceRole({ victory: true, players }, 'me'), 'win3');
+    assert.equal(endVoiceRole({ victory: true, players }, 'mate'), 'win');
   });
 
-  async function voiceRig(m = vm, getSkill = () => null, playerId = null) {
-    const fw = fakeWindow();
-    const urls = [];
+  test('voiceBattleKey: the own battles that open with 行动开始 (not 联防, not once eliminated, not a spectator)', () => {
+    const s = (phase, players = [{ playerId: 'me', alive: true }], me = 'me') => ({ me: { playerId: me }, match: { public: { phase, round: 3, players } } });
+    assert.equal(voiceBattleKey(s(PHASE.COMBAT)), 'COMBAT:3');
+    assert.equal(voiceBattleKey(s(PHASE.FINAL_ASSAULT)), 'FINAL_ASSAULT:3');
+    assert.equal(voiceBattleKey(s(PHASE.HIDDEN_CORE)), 'HIDDEN_CORE:3');
+    assert.equal(voiceBattleKey(s(PHASE.UNITE)), null, '联防 goes on with the round\'s battle');
+    assert.equal(voiceBattleKey(s(PHASE.PREP)), null);
+    assert.equal(voiceBattleKey(s(PHASE.COMBAT, [{ playerId: 'me', alive: false }])), null, 'eliminated');
+    assert.equal(voiceBattleKey(s(PHASE.COMBAT, [{ playerId: 'p1', alive: true }], 'watcher')), null, 'a spectator');
+    assert.equal(voiceBattleKey({ me: { playerId: 'me' }, match: { public: null } }), null);
+  });
+
+  // ---- one client, on a virtual clock -----------------------------------------------------------------------
+
+  // aux: 盟约·辅助干员, the pool's operator without voice lines
+  const CHESS = { lead: { charId: LEADER, rarity: 6 }, op: { charId: OP, rarity: 5 }, op2: { charId: OP2, rarity: 4 },
+    aux: { charId: 'char_616_pithst', rarity: 4 } };
+  const getChess = (id) => CHESS[id] ?? null;
+
+  /**
+   * A player's client on a virtual clock (mock timers; performance.now follows the mocked Date): the store fed as
+   * main.js feeds it from m.public / m.private / m.result and followed as installAudio follows it, battle events as
+   * game.js forwards them, the page's visibility, and the voice lines that actually start (a fake Web Audio graph;
+   * every line lasts 2 s). The board's rarest operator, LEADER, is the squad leader.
+   */
+  function voiceRig(t, { m = vm } = {}) {
+    t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+    const perf = Object.getOwnPropertyDescriptor(globalThis, 'performance');
+    Object.defineProperty(globalThis, 'performance', { value: { now: () => Date.now() }, configurable: true, writable: true });
     const origFetch = globalThis.fetch;
-    const perf = globalThis.performance;
-    let now = 1000;
-    globalThis.performance = { now: () => now };
-    globalThis.fetch = async (u) => { urls.push(u); return { ok: true, arrayBuffer: async () => new ArrayBuffer(8) }; };
-    const a = new AudioManager({ win: fw.win, getManifest: () => m, getSkill, getPlayerId: () => playerId });
+    const fetched = [];
+    const net = { respond: (url) => ({ ok: true, arrayBuffer: async () => ({ url }) }) };
+    globalThis.fetch = async (url) => { fetched.push(url); return net.respond(url); };
+    t.after(() => { globalThis.fetch = origFetch; Object.defineProperty(globalThis, 'performance', perf); });
+
+    const started = [];
+    const winOn = new Map();
+    const docOn = new Map();
+    class Param { constructor() { this.value = 1; } setValueAtTime(v) { this.value = v; } linearRampToValueAtTime(v) { this.value = v; } setTargetAtTime(v) { this.value = v; } cancelScheduledValues() {} }
+    class Node { connect() {} disconnect() {} }
+    class Gain extends Node { constructor() { super(); this.gain = new Param(); } }
+    class Src extends Node {
+      start() {
+        started.push({ url: this.buffer.url, at: Date.now() });
+        this.end = setTimeout(() => this.onended?.(), this.buffer.duration * 1000);
+      }
+      stop() {
+        clearTimeout(this.end);
+        this.end = setTimeout(() => this.onended?.(), 0);
+      }
+    }
+    class Ctx {
+      constructor() { this.state = 'running'; this.currentTime = 0; this.destination = new Node(); this.onState = []; }
+      addEventListener(type, fn) { if (type === 'statechange') this.onState.push(fn); }
+      setState(state) { this.state = state; for (const fn of this.onState) fn(); }
+      createGain() { return new Gain(); }
+      createBufferSource() { return new Src(); }
+      decodeAudioData(ab, ok) { ok({ duration: 2, url: ab.url }); }
+      resume() { this.setState('running'); return Promise.resolve(); }
+      suspend() { this.setState('suspended'); return Promise.resolve(); }
+    }
+    const doc = { hidden: false, addEventListener: (type, fn) => docOn.set(type, fn) };
+    const win = { AudioContext: Ctx, document: doc, addEventListener: (type, fn) => winOn.set(type, fn), removeEventListener: (type) => winOn.delete(type) };
+
+    const store = createStore(initialState);
+    store.set({ me: { playerId: 'me', name: '博士', token: null } });
+    const a = new AudioManager({ win, getManifest: () => m, getPlayerId: () => store.get().me.playerId,
+      getLeader: () => voiceLeader(store.get().match.private, getChess) });
     a.install();
-    fw.fire('pointerdown');
-    const settle = (ms = 5) => new Promise((r) => setTimeout(r, ms));
-    return { a, urls, settle, advance: (ms) => { now += ms; }, restore: () => { globalThis.fetch = origFetch; globalThis.performance = perf; } };
+    winOn.get('pointerdown')();
+    store.subscribe((s, prev) => a.followMatch(s, prev));
+    const board = (...ids) => store.patch('match', { private: { board: ids.map((id, i) => ({ uid: i + 1, kind: 'chess', id, row: 10, col: i })) } });
+    // the battle field as game.js tracks it on entering: own operators, a teammate's, an enemy, an own summon
+    const units = () => a.setFieldUnits([
+      { id: 1, side: 'ally', kind: 'chess', spine: LEADER, defId: 'lead', ownerId: 'me' },
+      { id: 2, side: 'ally', kind: 'chess', spine: OP, defId: 'op', ownerId: 'me' },
+      { id: 3, side: 'ally', kind: 'chess', spine: OP2, defId: 'op2', ownerId: 'me' },
+      { id: 4, side: 'ally', kind: 'chess', spine: OP, defId: 'op', ownerId: 'mate' },
+      { id: 5, side: 'enemy', kind: 'enemy', spine: OP2 },
+      { id: 6, side: 'ally', kind: 'token', spine: OP2, defId: 'token_x', ownerId: 'me' },
+    ]);
+    board('lead', 'op', 'op2');
+    units();
+    const flush = () => new Promise((resolve) => setImmediate(resolve));
+    return {
+      a, store, net, fetched, board, units,
+      /** m.public of a phase (the own player alive unless said otherwise). */
+      phase: (phase, round, alive = true) => store.patch('match', { public: { phase, round, players: [{ playerId: 'me', alive }] } }),
+      result: (result) => store.patch('match', { result }),
+      enemy: (id = 50) => a.handleBattleEvents([['spawn', { id, side: 'enemy', kind: 'enemy', spine: 'enemy_x' }]]),
+      skill: (unitId) => a.handleBattleEvents([['skill', unitId, true]]),
+      hide: () => { doc.hidden = true; docOn.get('visibilitychange')(); },
+      show: () => { doc.hidden = false; docOn.get('visibilitychange')(); },
+      /** Run the virtual clock to `ms`: timers fire in order, loads settle in between. */
+      async at(ms) {
+        await flush();
+        while (Date.now() < ms) {
+          t.mock.timers.tick(Math.min(10, ms - Date.now()));
+          await flush();
+        }
+      },
+      /** The voice lines started so far: [role, charId, ms]. */
+      played: () => started.map(({ url, at }) => {
+        const [, op, n] = /\/voice\/\w+\/([^/]+)\/cn_(\d+)\.mp3$/.exec(url);
+        return [ROLE_OF[n], op, at];
+      }),
+    };
   }
 
-  test('作战中: one shared 10 s cooldown (start to start), never over another 作战中; taps yield to them', async () => {
-    const { a, urls, settle, advance, restore } = await voiceRig(vm, (chessId) => ({ spCost: chessId === 'big' ? 20 : 5 }));
-    try {
-      a.setFieldUnits([{ id: 1, side: 'ally', kind: 'chess', spine: OP, defId: 'small' }, { id: 2, side: 'ally', kind: 'chess', spine: OP, defId: 'small' },
-        { id: 3, side: 'ally', kind: 'chess', spine: LEADER, defId: 'big' }, { id: 4, side: 'enemy', kind: 'enemy', spine: OP }]);
-      a.handleBattleEvents([['skill', 4, true], ['skill', 1, true], ['skill', 2, true]]);
-      await settle();
-      assert.equal(urls.filter((u) => u.includes('/voice/')).length, 1, 'one 作战中; the enemy says nothing');
-      assert.equal(a.voice(OP, 'select'), false, 'a tap does not cut a skill line');
-      a.handleBattleEvents([['skill', 3, true]]);
-      await settle();
-      assert.equal(urls.length, 1, 'an important skill does not cut a normal one either');
-      a.stopVoice(); // the line ends
-      advance(9999);
-      a.handleBattleEvents([['skill', 3, true], ['skill', 1, true]]);
-      assert.equal(a.voiceWant, null, 'both types wait 10 s from the start of the last 作战中');
-      advance(2);
-      a.handleBattleEvents([['skill', 3, true]]);
-      assert.equal(a.voiceWant?.type, 'SKILL_PASSIVE_IMP', 'after 10 s');
-    } finally { restore(); }
+  /** Answer `url` only once the returned function is called (a slow load); other files at once. */
+  const holdFile = (r, url) => {
+    const ok = r.net.respond;
+    let release = null;
+    r.net.respond = (u) => (u === url ? new Promise((resolve) => { release = () => resolve(ok(u)); }) : ok(u));
+    return () => release();
+  };
+
+  test('行动开始 at the first enemy, 3 s into the battle at the earliest; 作战中 waits for it, then one per 10 s', async (t) => {
+    const r = voiceRig(t);
+    r.phase(PHASE.COMBAT, 1);
+    await r.at(1000);
+    r.enemy();
+    await r.at(2000);
+    r.skill(2); // operators cast from the first second: held until 行动开始
+    await r.at(3500);
+    r.skill(2); // 行动开始 is playing
+    await r.at(5500);
+    r.skill(2);
+    await r.at(6000);
+    r.skill(3); // one 作战中 never cuts another
+    await r.at(8000);
+    r.skill(3); // within 10 s of the last 作战中
+    await r.at(15600);
+    r.skill(3);
+    await r.at(16000);
+    assert.equal(r.a.voice(OP, 'select'), false, 'a tap never cuts a 作战中');
+    await r.at(18000);
+    assert.equal(r.a.voice(OP, 'select'), true);
+    await r.at(18100);
+    assert.deepEqual(r.played(), [['start', LEADER, 3000], ['combat', OP, 5500], ['combat', OP2, 15600], ['select', OP, 18000]]);
   });
 
-  test('a re-mounted battle screen does not arm a second 行动开始; the next battle does', async () => {
-    const { a, settle, advance, restore } = await voiceRig();
-    try {
-      a.battleStart(LEADER, 'COMBAT:3');
-      advance(3000);
-      a.handleBattleEvents([['spawn', { id: 7, side: 'enemy', kind: 'enemy', spine: 'enemy_x' }]]);
-      await settle();
-      a.stopVoice();
-      a.battleEnd(); // screen unmount preserves the identity of the current battle
-      a.battleStart(LEADER, 'COMBAT:3');
-      advance(3000);
-      a.handleBattleEvents([['spawn', { id: 8, side: 'enemy', kind: 'enemy', spine: 'enemy_x' }]]);
-      await settle();
-      assert.deepEqual(a.voiceLog.map((l) => l.role), ['start'], 'the same battle: once');
-      a.battleOver();
-      a.battleStart(LEADER, 'COMBAT:4');
-      advance(3000);
-      a.handleBattleEvents([['spawn', { id: 9, side: 'enemy', kind: 'enemy', spine: 'enemy_x' }]]);
-      await settle();
-      assert.deepEqual(a.voiceLog.map((l) => l.role), ['start', 'start'], 'the next battle');
-    } finally { restore(); }
+  test('only own operators speak: a teammate\'s operator (a shared or watched field), an enemy or a summon says nothing', async (t) => {
+    const r = voiceRig(t);
+    r.phase(PHASE.COMBAT, 1);
+    await r.at(16000); // no enemy: the opening is over, 作战中 is free
+    r.skill(4);
+    r.skill(5);
+    r.skill(6);
+    await r.at(16500);
+    r.skill(2);
+    await r.at(17000);
+    assert.deepEqual(r.played(), [['combat', OP, 16500]]);
   });
 
-  test('no line starts while the page is hidden (suspended context)', async () => {
-    const { a, restore } = await voiceRig();
-    try {
-      a.ctx.state = 'suspended';
-      assert.equal(a.voice(OP, 'deploy'), false);
-      a.ctx.state = 'running';
-      assert.equal(a.voice(OP, 'deploy'), true);
-    } finally { restore(); }
+  test('a battle that faces no enemy says no 行动开始; 作战中 waits for it 15 s at most', async (t) => {
+    const r = voiceRig(t);
+    r.phase(PHASE.COMBAT, 1);
+    await r.at(1000);
+    r.skill(2);
+    await r.at(14900);
+    r.skill(2);
+    await r.at(15000);
+    r.skill(2);
+    await r.at(15100);
+    assert.deepEqual(r.played(), [['combat', OP, 15000]]);
   });
 
-  test('行动开始 every battle, at its first enemy and not before 3 s, before any 作战中; the end line on the result', async () => {
-    const { a, urls, settle, advance, restore } = await voiceRig();
-    try {
-      a.battleStart(LEADER);
-      a.setFieldUnits([{ id: 1, side: 'ally', kind: 'chess', spine: OP, defId: 'c' }]);
-      advance(1000);
-      a.handleBattleEvents([['spawn', { id: 7, side: 'enemy', kind: 'enemy', spine: 'enemy_x' }]]);
-      await settle();
-      assert.equal(urls.length, 0, 'waits until 3 s after the start');
-      advance(2000);
-      a.handleBattleEvents([['skill', 1, true]]);
-      await settle();
-      assert.equal(urls.length, 0, 'no 作战中 before the battle\'s 行动开始 (operators cast from 3 s on)');
-      await settle(2050);
-      assert.deepEqual(urls, [line('cn', '020', LEADER)], '行动开始');
-      a.stopVoice();
-      // the next battle: its own leader, its own 行动开始
-      a.battleStart(OP);
-      a.handleBattleEvents([['spawn', { id: 8, side: 'enemy', kind: 'enemy', spine: 'enemy_x' }]]);
-      advance(3000);
-      await settle(3050);
-      assert.equal(urls.at(-1), line('cn', '020', OP), 'every battle');
-      assert.deepEqual(a.voiceLog.map((l) => l.role), ['start', 'start']);
-      a.stopVoice();
-      a.matchEnd({ victory: true, lpLost: 2 });
-      await settle();
-      assert.equal(urls.at(-1), line('cn', '031', OP), 'the latest leader: 非3星结束行动');
-    } finally { restore(); }
+  test('a squad leader without voice lines says no 行动开始; 作战中 waits only until it was due', async (t) => {
+    const r = voiceRig(t);
+    r.board('aux');
+    r.phase(PHASE.COMBAT, 1);
+    await r.at(1000);
+    r.enemy();
+    await r.at(3500);
+    r.skill(2);
+    await r.at(4000);
+    assert.deepEqual(r.played(), [['combat', OP, 3500]]);
   });
 
-  test('a match that ends before its 行动开始 is due says no 行动开始; the end line plays once', async () => {
-    const { a, settle, advance, restore } = await voiceRig();
-    try {
-      a.battleStart(LEADER);
-      advance(1000);
-      a.handleBattleEvents([['spawn', { id: 7, side: 'enemy', kind: 'enemy', spine: 'enemy_x' }]]);
-      a.matchEnd({ victory: false });
-      a.matchEnd({ victory: false });
-      await settle(2100);
-      assert.deepEqual(a.voiceLog.map((l) => l.role), ['fail'], 'no late 行动开始, one end line');
-      // the next battle cancels the previous one's pending 行动开始 as well
-      a.battleStart(LEADER);
-      a.handleBattleEvents([['spawn', { id: 8, side: 'enemy', kind: 'enemy', spine: 'enemy_x' }]]);
-      a.battleStart(null);
-      await settle(3100);
-      assert.deepEqual(a.voiceLog.map((l) => l.role), ['fail']);
-    } finally { restore(); }
+  test('a tab hidden before the first enemy keeps the battle\'s 行动开始, and 作战中 still waits for it', async (t) => {
+    const r = voiceRig(t);
+    r.phase(PHASE.COMBAT, 1);
+    await r.at(500);
+    r.hide();
+    await r.at(800);
+    r.show();
+    await r.at(1000);
+    r.enemy();
+    await r.at(2000);
+    r.skill(2);
+    await r.at(5500);
+    r.skill(2);
+    await r.at(6000);
+    assert.deepEqual(r.played(), [['start', LEADER, 3000], ['combat', OP, 5500]]);
   });
 
-  test('a line that fails to load does not start its type\'s cooldown', async () => {
-    const { a, settle, restore } = await voiceRig();
-    const ok = globalThis.fetch;
-    try {
-      a.setFieldUnits([{ id: 1, side: 'ally', kind: 'chess', spine: OP, defId: 'c' }]);
-      globalThis.fetch = async () => ({ ok: false, status: 404 });
-      a.handleBattleEvents([['skill', 1, true]]);
-      await settle();
-      assert.equal(a.voiceLast.size, 0);
-      globalThis.fetch = ok;
-      a.handleBattleEvents([['skill', 1, true]]);
-      assert.ok(a.voiceWant, 'the next 作战中 is not held by a cooldown');
-    } finally { restore(); }
+  test('行动开始 that comes due on a hidden page is said on return, within the battle\'s opening', async (t) => {
+    const r = voiceRig(t);
+    r.phase(PHASE.COMBAT, 1);
+    await r.at(1000);
+    r.enemy();
+    await r.at(2500);
+    r.hide();
+    await r.at(4000);
+    r.show();
+    await r.at(4100);
+    assert.deepEqual(r.played(), [['start', LEADER, 4000]]);
   });
 
-  test('a battle without an enemy releases 作战中 after 15 s; nobody on the board ⇒ no 行动开始 and no wait', async () => {
-    const { a, settle, advance, restore } = await voiceRig();
-    try {
-      a.setFieldUnits([{ id: 1, side: 'ally', kind: 'chess', spine: OP, defId: 'c' }]);
-      a.battleStart(LEADER);
-      a.handleBattleEvents([['skill', 1, true]]);
-      assert.equal(a.voiceWant, null, 'held');
-      advance(15001);
-      a.handleBattleEvents([['skill', 1, true]]);
-      assert.ok(a.voiceWant, 'released');
-      a.stopVoice(); await settle();
-      a.battleStart(null);
-      assert.equal(a.encounter, null);
-      assert.equal(a.holdSkillsUntil, 0);
-    } finally { restore(); }
+  test('a page hidden for the whole opening says no late 行动开始; 作战中 then plays', async (t) => {
+    const r = voiceRig(t);
+    r.phase(PHASE.COMBAT, 1);
+    await r.at(500);
+    r.hide();
+    await r.at(1000);
+    r.enemy(); // a server-run battle streams its events to a hidden page
+    await r.at(16000);
+    r.show();
+    await r.at(16500);
+    r.skill(2);
+    await r.at(17000);
+    assert.deepEqual(r.played(), [['combat', OP, 16500]]);
   });
 
-  test('only own operators speak: a teammate\'s operator on a shared or watched field says nothing', async () => {
-    const { a, urls, settle, restore } = await voiceRig(vm, () => null, 'me');
-    try {
-      a.setFieldUnits([{ id: 1, side: 'ally', kind: 'chess', spine: OP, defId: 'c', ownerId: 'mate' },
-        { id: 2, side: 'ally', kind: 'chess', spine: LEADER, defId: 'c', ownerId: 'me' }]);
-      a.handleBattleEvents([['skill', 1, true]]);
-      await settle();
-      assert.equal(urls.length, 0, 'the teammate\'s operator');
-      a.handleBattleEvents([['skill', 2, true]]);
-      await settle();
-      assert.ok(urls.every((u) => u.includes(`/${LEADER}/`)) && urls.length === 1, 'the own operator');
-    } finally { restore(); }
+  test('a solo pause holds the battle\'s opening: 行动开始 and the wait of 作战中 go on after it', async (t) => {
+    const r = voiceRig(t);
+    const pause = (paused) => r.store.patch('match', { public: { ...r.store.get().match.public, paused } });
+    r.phase(PHASE.COMBAT, 1);
+    await r.at(500);
+    pause(true);
+    await r.at(30500);
+    pause(false);
+    await r.at(31000);
+    r.enemy();
+    await r.at(31500);
+    r.skill(2);
+    await r.at(34000);
+    assert.deepEqual(r.played(), [['start', LEADER, 33000]]);
   });
 
-  test('pending encounter cannot speak after battle end, a new battle, or match end', async (t) => {
-    const { a, restore } = await voiceRig();
-    try {
-      t.mock.timers.enable({ apis: ['setTimeout'] });
-      const spoken = [];
-      a.voice = (leader, role) => { spoken.push([leader, role]); return true; };
-      for (const finish of [() => a.battleEnd(), () => a.battleStart(OP), () => a.matchEnd({ victory: true })]) {
-        a.battleStart(LEADER);
-        a._encounter();
-        finish();
-        t.mock.timers.tick(4000);
-        assert.equal(spoken.filter(([, role]) => role === 'start').length, 0);
-      }
-    } finally { t.mock.timers.reset(); restore(); }
+  test('a re-mounted battle screen (its field entered again, spawns replayed) neither repeats nor loses 行动开始', async (t) => {
+    const r = voiceRig(t);
+    r.phase(PHASE.COMBAT, 1);
+    await r.at(1000);
+    r.units(); // re-mounted before the first enemy
+    r.phase(PHASE.COMBAT, 1); // m.public sent again (a resync)
+    await r.at(1500);
+    r.enemy(50);
+    await r.at(2000);
+    r.skill(2);
+    await r.at(6000);
+    r.units(); // re-mounted after 行动开始: the battle's early spawns are replayed
+    r.enemy(50);
+    await r.at(10000);
+    assert.deepEqual(r.played(), [['start', LEADER, 3000]]);
   });
 
-  test('failed voice loads do not consume cooldown; successful playback does', async () => {
-    const { a, restore } = await voiceRig();
-    try {
-      a._buffer = async () => null;
-      assert.equal(a.voice(OP, 'combat', 'SKILL_PASSIVE_NOR'), true);
-      await Promise.resolve();
-      assert.equal(a.voiceLast.has('SKILL_PASSIVE'), false);
-      a._buffer = async () => { throw new Error('decode failed'); };
-      assert.equal(a.voice(OP, 'combat', 'SKILL_PASSIVE_NOR'), true);
-      await Promise.resolve();
-      assert.equal(a.voiceLast.has('SKILL_PASSIVE'), false);
-      a._buffer = async () => ({ duration: 0 });
-      assert.equal(a.voice(OP, 'combat', 'SKILL_PASSIVE_NOR'), true);
-      await Promise.resolve();
-      assert.equal(a.voiceLast.has('SKILL_PASSIVE'), true);
-      a.stopVoice();
-      assert.equal(a.voice(OP, 'combat', 'SKILL_PASSIVE_NOR'), false);
-    } finally { restore(); }
+  test('a match cleared from the screen keeps its battle: 行动开始 is said once across a reconnect past the restore grace', async (t) => {
+    const r = voiceRig(t);
+    r.phase(PHASE.COMBAT, 1);
+    await r.at(1000);
+    r.enemy();
+    await r.at(2000);
+    r.store.set({ match: emptyMatch() }); // no m.public within the restore grace: back to the room
+    await r.at(4000);
+    r.board('lead', 'op', 'op2');
+    r.phase(PHASE.COMBAT, 1); // the match is pushed again
+    await r.at(4500);
+    r.units();
+    r.enemy(); // the battle's spawns seen again
+    await r.at(6000);
+    r.store.set({ match: emptyMatch() });
+    r.phase(PHASE.COMBAT, 1);
+    await r.at(6500);
+    r.enemy();
+    await r.at(10000);
+    assert.deepEqual(r.played(), [['start', LEADER, 4500]], 'not in the room, once after the return');
   });
 
-  test('match result voice is requested once and resets for the next match', async () => {
-    const { a, restore } = await voiceRig();
-    try {
-      let calls = 0;
-      a.voice = () => { calls++; return true; };
-      a.battleStart(LEADER);
-      a.matchEnd({ victory: true });
-      a.matchEnd({ victory: true });
-      assert.equal(calls, 1);
-      a.battleStart(OP);
-      a.matchEnd({ victory: false });
-      assert.equal(calls, 2);
-    } finally { restore(); }
+  test('a battle left for the lobby is over for the next match, even one whose first battle has the same round', async (t) => {
+    const r = voiceRig(t);
+    r.phase(PHASE.COMBAT, 1);
+    await r.at(1000);
+    r.enemy();
+    await r.at(4000);
+    r.store.set({ room: null, match: emptyMatch() }); // 放弃模拟
+    await r.at(10000);
+    r.phase(PHASE.INFO_CHECK, 0); // the next match
+    r.board('lead');
+    r.phase(PHASE.COMBAT, 1);
+    await r.at(11000);
+    r.enemy();
+    await r.at(14000);
+    assert.deepEqual(r.played(), [['start', LEADER, 3000], ['start', LEADER, 13000]]);
   });
 
-  test('slow loading starts shared cooldown at playback; ending or hiding cancels pending audio', async () => {
-    const { a, advance, restore } = await voiceRig();
-    try {
-      let resolve;
-      a._buffer = () => new Promise(r => { resolve = r; });
-      a.voice(OP, 'combat', 'SKILL_PASSIVE_NOR');
-      advance(5000);
-      resolve({ duration: 0 }); await Promise.resolve();
-      a.stopVoice();
-      advance(9999);
-      assert.equal(a.voice(OP, 'combat', 'SKILL_PASSIVE_IMP'), false);
-      advance(2);
-      assert.equal(a.voice(OP, 'combat', 'SKILL_PASSIVE_IMP'), true);
-      a.battleEnd();
-      resolve({ duration: 0 }); await Promise.resolve();
-      assert.equal(a.voiceNow, null);
-      assert.equal(a.voice(OP, 'combat', 'SKILL_PASSIVE_IMP'), true);
-      a.win.document.hidden = true;
-      a._onVis();
-      resolve({ duration: 0 }); await Promise.resolve();
-      assert.equal(a.voiceNow, null);
-      a.win.document.hidden = false;
-      assert.equal(a.voice(OP, 'combat', 'SKILL_PASSIVE_IMP'), true);
-      a.battleEnd();
-      resolve(null); await Promise.resolve();
-    } finally { restore(); }
+  test('leaving a battle drops its pending 行动开始 (none on the settle or result screen); every battle has its own', async (t) => {
+    const r = voiceRig(t);
+    r.phase(PHASE.COMBAT, 1);
+    await r.at(1000);
+    r.enemy();
+    await r.at(2000);
+    r.phase(PHASE.SETTLE, 1); // over before its 行动开始 was due
+    await r.at(10000);
+    r.board('op', 'op2'); // the next prep changed the board: OP is the rarest now
+    r.phase(PHASE.COMBAT, 2);
+    await r.at(10500);
+    r.enemy(51);
+    await r.at(20000);
+    r.phase(PHASE.FINAL_ASSAULT, 3);
+    await r.at(20100);
+    r.enemy(52);
+    await r.at(24000);
+    assert.deepEqual(r.played(), [['start', OP, 13000], ['start', OP, 23000]]);
   });
 
-  test('language: off is silent; a language the site lacks falls back to the one it has', async () => {
-    const { a, urls, settle, restore } = await voiceRig({ audio: { voice: { jp: vm.audio.voice.jp } } });
-    try {
-      a.setVolumes({ voiceLang: 'off' });
-      assert.equal(a.voice(OP, 'select'), false);
-      a.setVolumes({ voiceLang: 'cn' });
-      assert.equal(a.voice(OP, 'select'), true);
-      await settle();
-      assert.deepEqual(urls, [line('jp', '021')]);
-      a.setVolumes({ voice: 0 });
-      assert.equal(a.voice(OP, 'select'), false, 'volume 0');
-    } finally { restore(); }
+  test('the squad leader is the one on the board when 行动开始 is said (m.private after m.public, as after a reload)', async (t) => {
+    const r = voiceRig(t);
+    r.store.patch('match', { private: null });
+    r.phase(PHASE.COMBAT, 1);
+    await r.at(1000);
+    r.enemy();
+    await r.at(2000);
+    r.board('op', 'op2');
+    await r.at(4000);
+    assert.deepEqual(r.played(), [['start', OP, 3000]]);
+  });
+
+  test('a 作战中 still loading when its battle ends never plays', async (t) => {
+    const r = voiceRig(t);
+    const release = holdFile(r, line(OP, '025'));
+    r.phase(PHASE.COMBAT, 1);
+    await r.at(1000);
+    r.enemy();
+    await r.at(5500);
+    r.skill(2);
+    await r.at(5600);
+    r.phase(PHASE.SETTLE, 1);
+    release();
+    await r.at(8000);
+    assert.deepEqual(r.played(), [['start', LEADER, 3000]]);
+    assert.deepEqual(r.a.voiceLog.map((l) => l.role), ['start'], 'voiceLog lists the lines that started, not the ones requested');
+  });
+
+  test('the 作战中 cooldown runs from the start of the line that played (a slow load starts it late)', async (t) => {
+    const r = voiceRig(t);
+    const release = holdFile(r, line(OP, '025'));
+    r.phase(PHASE.COMBAT, 1);
+    await r.at(16000); // no enemy: the opening is over
+    r.skill(2);
+    await r.at(18000);
+    release();
+    await r.at(27900);
+    r.skill(3);
+    await r.at(28000);
+    r.skill(3);
+    await r.at(28100);
+    assert.deepEqual(r.played(), [['combat', OP, 18000], ['combat', OP2, 28000]]);
+  });
+
+  test('the end line: once per match when m.result arrives, said by the leader who opened the latest battle', async (t) => {
+    const r = voiceRig(t);
+    r.phase(PHASE.COMBAT, 14);
+    await r.at(1000);
+    r.enemy();
+    await r.at(6000);
+    // the lost battle's settlement eliminates the player, and its board is cleared, before the result
+    r.phase(PHASE.SETTLE, 14, false);
+    r.board();
+    r.phase(PHASE.RESULT, 14, false);
+    r.result({ victory: false, players: [{ playerId: 'me', stats: { lpLost: 30 } }] });
+    await r.at(7000);
+    // a reconnect that went past the restore grace: the match is cleared, then the result comes again
+    r.store.set({ match: emptyMatch() });
+    r.phase(PHASE.RESULT, 14, false);
+    r.result({ victory: false, players: [] });
+    await r.at(10000);
+    // the next match
+    r.store.set({ match: emptyMatch() });
+    r.board('op');
+    r.phase(PHASE.COMBAT, 1);
+    await r.at(11000);
+    r.enemy();
+    await r.at(20000);
+    r.phase(PHASE.RESULT, 15);
+    r.result({ victory: true, players: [{ playerId: 'me', stats: { lpLost: 0 } }] });
+    await r.at(21000);
+    assert.deepEqual(r.played(), [['start', LEADER, 3000], ['fail', LEADER, 6000], ['start', OP, 13000], ['win3', OP, 20000]]);
+  });
+
+  test('an end line still loading when the player goes back to the room never plays there', async (t) => {
+    const r = voiceRig(t);
+    const release = holdFile(r, line(LEADER, '032'));
+    r.phase(PHASE.COMBAT, 1);
+    await r.at(1000);
+    r.enemy();
+    await r.at(6000);
+    r.phase(PHASE.RESULT, 1);
+    r.result({ victory: false, players: [] });
+    await r.at(6500);
+    r.store.set({ match: emptyMatch() }); // 返回房间
+    release();
+    await r.at(8000);
+    assert.deepEqual(r.played(), [['start', LEADER, 3000]]);
+  });
+
+  test('a line that fails to load plays nothing, is logged and starts no cooldown', async (t) => {
+    const r = voiceRig(t);
+    const warn = t.mock.method(console, 'warn', () => {});
+    const ok = r.net.respond;
+    r.net.respond = (url) => (url === line(OP, '025') ? { ok: false, status: 503 } : ok(url));
+    r.phase(PHASE.COMBAT, 1);
+    await r.at(1000);
+    r.enemy();
+    await r.at(5500);
+    r.skill(2);
+    await r.at(6000);
+    r.skill(3); // no cooldown from the line that never played
+    await r.at(6100);
+    assert.deepEqual(r.played(), [['start', LEADER, 3000], ['combat', OP2, 6000]]);
+    assert.ok(warn.mock.calls.some((c) => String(c.arguments[0]).includes(line(OP, '025'))), 'the failure is logged');
+  });
+
+  test('a 行动开始 that failed to load plays in the next battle: a failed file is fetched again after a short backoff', async (t) => {
+    const r = voiceRig(t);
+    t.mock.method(console, 'warn', () => {});
+    let down = true;
+    const ok = r.net.respond;
+    r.net.respond = (url) => (down && url === line(LEADER, '020') ? { ok: false, status: 503 } : ok(url));
+    r.phase(PHASE.COMBAT, 1);
+    await r.at(1000);
+    r.enemy();
+    await r.at(6000);
+    r.phase(PHASE.SETTLE, 1);
+    down = false;
+    await r.at(30000);
+    r.phase(PHASE.COMBAT, 2);
+    await r.at(31000);
+    r.enemy(51);
+    await r.at(34000);
+    assert.deepEqual(r.played(), [['start', LEADER, 33000]]);
+  });
+
+  test('while a failure is remembered the file is not fetched on every use', async (t) => {
+    const r = voiceRig(t);
+    t.mock.method(console, 'warn', () => {});
+    let down = true;
+    const ok = r.net.respond;
+    r.net.respond = (url) => (down ? { ok: false, status: 404 } : ok(url));
+    for (let ms = 0; ms < 10000; ms += 500) {
+      await r.at(ms);
+      r.a.voice(OP, 'select');
+    }
+    down = false;
+    await r.at(10000);
+    r.a.voice(OP, 'select');
+    await r.at(10100);
+    assert.equal(r.fetched.filter((u) => u === line(OP, '021')).length, 2, 'once, then once more after 10 s');
+    assert.deepEqual(r.played(), [['select', OP, 10000]]);
+  });
+
+  test('voice turned off, to 0 or muted: the line still loading never plays; lines play again once it is back on', async (t) => {
+    const r = voiceRig(t);
+    const silences = [['deploy', { voiceLang: 'off' }, { voiceLang: 'cn' }], ['select', { voice: 0 }, { voice: 0.8 }],
+      ['combat', { muted: true }, { muted: false }]];
+    for (const [i, [role, silent, back]] of silences.entries()) {
+      const release = holdFile(r, lines(OP)[role][0]);
+      await r.at(i * 1000);
+      assert.equal(r.a.voice(OP, role), true);
+      r.a.setVolumes(silent);
+      assert.equal(r.a.voice(OP2, role), false, 'nothing is requested meanwhile');
+      release();
+      await r.at(i * 1000 + 500);
+      r.a.setVolumes(back);
+    }
+    assert.deepEqual(r.played(), []);
+    await r.at(3000);
+    r.a.voice(OP2, 'deploy');
+    await r.at(3100);
+    assert.deepEqual(r.played(), [['deploy', OP2, 3000]]);
+  });
+
+  test('a hidden page says nothing: the line playing stops, and none starts until the page shows again', async (t) => {
+    const r = voiceRig(t);
+    r.a.voice(OP, 'deploy');
+    await r.at(500);
+    r.hide();
+    assert.equal(r.a.voice(OP2, 'deploy'), false);
+    await r.at(1000);
+    r.show();
+    assert.equal(r.a.voice(OP, 'select'), true, 'the 部署 line was stopped: a 选中 line may start');
+    await r.at(1100);
+    assert.deepEqual(r.played(), [['deploy', OP, 0], ['select', OP, 1000]]);
+  });
+
+  test('a line still loading when the page is hidden never plays, not even once the page shows again', async (t) => {
+    const r = voiceRig(t);
+    const release = holdFile(r, line(OP, '023'));
+    r.a.voice(OP, 'deploy');
+    await r.at(500);
+    r.hide();
+    await r.at(1000);
+    r.show();
+    release();
+    await r.at(1500);
+    assert.deepEqual(r.played(), []);
+  });
+
+  test('a saved language the site lacks falls back to the one it has; 关闭 says nothing', async (t) => {
+    const jpOnly = { audio: { voiceRules: manifest.audio.voiceRules, voice: { jp: { [OP]: { select: [line(OP, '021', 'jp')] } } } } };
+    const r = voiceRig(t, { m: jpOnly });
+    assert.equal(r.a.voice(OP, 'select'), true, '中文 saved, only 日文 on the site');
+    await r.at(100);
+    r.a.setVolumes({ voiceLang: 'off' });
+    assert.equal(r.a.voice(OP, 'select'), false);
+    assert.deepEqual(r.fetched, [line(OP, '021', 'jp')]);
+    assert.deepEqual(r.played(), [['select', OP, 0]]);
   });
 });

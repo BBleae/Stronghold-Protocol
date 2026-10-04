@@ -83,15 +83,12 @@ export function ResultScreen() {
     if (top && r.players.length > 1) best[k] = top.id;
   }
   // once m.result is here: the server sends m.public (phase RESULT, which mounts this screen) before m.result, so the
-  // first render has no result yet and would always read as a defeat
+  // first render has no result yet and would always read as a defeat (the end line follows m.result: js/audio.js)
   const settled = useRef(false);
   useEffect(() => {
     if (!res || settled.current) return;
     settled.current = true;
     audio.sfx(r.victory ? 'settlementSucceed' : 'settlementFail');
-    // the match was one operation: the squad leader's 3星结束行动 (no LP lost) / 非3星结束行动 / 行动失败
-    const me = r.players.find((p) => p.playerId === myId);
-    audio.matchEnd({ victory: r.victory, lpLost: Number(me?.stats?.lpLost) || 0 });
   }, [res]);
   const back = () => store.set({ match: emptyMatch() });
   const boss = r.bossId ? gd.boss(r.bossId) : null;
