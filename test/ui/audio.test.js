@@ -97,7 +97,8 @@ function fakeWindow() {
     constructor() { this.currentTime = 0; this.state = 'running'; this.destination = new Node(); }
     createGain() { return new Gain(); }
     createBufferSource() { return new Src(); }
-    decodeAudioData(ab, ok) { ok({ duration: 1.5 }); }
+    // an empty file does not decode (old WebKit's error callback gets no error)
+    decodeAudioData(ab, ok, fail) { if (ab.byteLength) ok({ duration: 1.5 }); else fail(null); }
     resume() { return Promise.resolve(); }
     suspend() { return Promise.resolve(); }
   }
@@ -166,26 +167,57 @@ describe('AudioManager', () => {
       globalThis.fetch = origFetch;
     }
   });
-  test('fetch failures are swallowed', async () => {
+  test('a file that cannot be fetched or decoded plays nothing and is logged once', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const warn = t.mock.method(console, 'warn', () => {});
     const fw = fakeWindow();
     const origFetch = globalThis.fetch;
-    globalThis.fetch = async () => { throw new Error('offline'); };
-    const origWarn = console.warn;
-    let warns = 0;
-    console.warn = () => { warns++; };
-    try {
-      const a = new AudioManager({ win: fw.win, getManifest: () => manifest });
-      a.install();
-      fw.fire('keydown');
-      a.playBgm('lobby');
-      a.sfx('buy');
-      a.sfx('buy');
-      await new Promise((r) => setTimeout(r, 20));
-      assert.ok(warns >= 1);
-    } finally {
-      globalThis.fetch = origFetch;
-      console.warn = origWarn;
-    }
+    const buy = manifest.audio.sfx.ui.buy;
+    globalThis.fetch = async (u) => {
+      if (u === mediaUrl(buy) || u === buy) throw new Error('offline');
+      return { ok: true, arrayBuffer: async () => new ArrayBuffer(0) };
+    };
+    t.after(() => { globalThis.fetch = origFetch; });
+    const a = new AudioManager({ win: fw.win, getManifest: () => manifest });
+    a.install();
+    fw.fire('keydown');
+    a.sfx('buy');
+    a.sfx('buy');
+    a.sfx('refresh');
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(fw.made.started, 0);
+    const logged = warn.mock.calls.map((c) => String(c.arguments[0]));
+    assert.deepEqual(logged, [`[audio] ${buy} unavailable`, `[audio] ${manifest.audio.sfx.ui.refresh} unavailable`]);
+  });
+  test('a BGM track that failed to load plays at a later phase change, once a short backoff has passed', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    t.mock.method(console, 'warn', () => {});
+    const fw = fakeWindow();
+    const origFetch = globalThis.fetch;
+    const loop = manifest.audio.bgm.prep.loop;
+    let down = true;
+    let asks = 0;
+    globalThis.fetch = async (u) => {
+      if (u === mediaUrl(loop)) asks += 1;
+      return down ? { ok: false, status: 503 } : { ok: true, arrayBuffer: async () => new ArrayBuffer(8) };
+    };
+    t.after(() => { globalThis.fetch = origFetch; });
+    const flush = () => new Promise((resolve) => setImmediate(resolve));
+    const a = new AudioManager({ win: fw.win, getManifest: () => manifest });
+    a.install();
+    fw.fire('pointerdown');
+    a.playBgm('prep');
+    await flush();
+    down = false;
+    a.playBgm('combat'); // the same loop, within the backoff
+    await flush();
+    assert.equal(asks, 1);
+    assert.equal(fw.made.started, 0, 'no BGM');
+    t.mock.timers.tick(10000);
+    a.playBgm('prep');
+    await flush();
+    assert.equal(asks, 2, 'fetched again');
+    assert.ok(fw.made.started > 0, 'the BGM plays');
   });
   test('音频先走无扩展名的 /media/ 路由；只有它 404 才回退到带扩展名的原地址', async () => {
     const raw = manifest.audio.bgm.prep.loop;

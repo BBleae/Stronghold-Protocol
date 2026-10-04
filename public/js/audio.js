@@ -25,7 +25,8 @@
 // - Deaths/deployments follow the official per-class defaults (unitSoundClass): only operators play the
 //   operator-knocked-down sound; summons use the token sounds; a summon used up by its own effect (fx `consumed`,
 //   香槟炸弹) plays its impact sound instead of a death sound.
-// - Buffers are fetched once and cached (LRU); failed fetch/decode ⇒ silent (logged once as a warning).
+// - Buffers are fetched once and cached (LRU). A failed fetch/decode is logged once, plays nothing and is remembered
+//   for RETRY_MS (a missing file is not requested on every use); the next request after that fetches it again.
 // - Operator voice (audio.voice.<lang>.<charId>, tools/assets/voice.mjs) on its own channel and volume, one line at a
 //   time, by the official battle voice rules (audio_data.json `battleVoice` → data/assets.json audio.voiceRules,
 //   BATTLE_VOICE when absent): every line has a voice type with a priority, a cooldown and whether a line of the same
@@ -62,6 +63,8 @@ const IMPACT_TYPES = new Set(['phys', 'arts', 'true']);
 const IMPACT_WINDOW_MS = 2500;
 /** Official operator sound files of a skill mode: `…_d` / `…_h` / `…_s` (+ digits) — the normal attack's end in `_n`. */
 const SKILL_MODE_FILE = /_(d|h|s)\d*\.mp3$/i;
+/** A failed fetch / decode is remembered this long; the next request after that fetches the file again. */
+const RETRY_MS = 10000;
 /**
  * The official battle voice rules (audio_data.json battleVoice, 2026-10): data/assets.json audio.voiceRules overrides.
  * RESULT (the end-of-operation lines, played on the result screen — not a battle voice type) is ours.
@@ -520,7 +523,10 @@ export class AudioManager {
     } catch { /* ignore */ }
   }
 
-  /** Fetch + decode (cached, LRU). Resolves null on failure. */
+  /**
+   * Fetch + decode (cached, LRU). Resolves null on failure: a failure is logged and remembered for RETRY_MS (a missing
+   * file is not fetched again on every use), then the next request fetches the file again.
+   */
   _buffer(url) {
     if (!this.ctx || typeof url !== 'string' || !url) return Promise.resolve(null);
     const hit = this.buffers.get(url);
@@ -541,14 +547,14 @@ export class AudioManager {
         }
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const ab = await res.arrayBuffer();
-        return await new Promise((resolve) => {
-          try {
-            const r = this.ctx.decodeAudioData(ab, resolve, () => resolve(null));
-            if (r && typeof r.then === 'function') r.then(resolve, () => resolve(null));
-          } catch { resolve(null); }
+        // callback form for old WebKit (its error callback gets no error), promise form everywhere else
+        return await new Promise((resolve, reject) => {
+          const r = this.ctx.decodeAudioData(ab, resolve, (err) => reject(err ?? new Error('decode failed')));
+          if (r && typeof r.then === 'function') r.then(resolve, reject);
         });
       } catch (err) {
         this._warn(url, err);
+        setTimeout(() => { if (this.buffers.get(url) === p) this.buffers.delete(url); }, RETRY_MS);
         return null;
       }
     })();
