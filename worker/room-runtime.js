@@ -11,8 +11,9 @@ import { Spectators } from './rooms/spectators.js';
 import { logWarn, logError, errorFields } from './log.js';
 import { CLOSE } from './close-codes.js';
 
+// loginCheckMs: how often an open socket's login is checked again with the directory (a logout is noticed this late).
 export const ROOM_LIMITS = Object.freeze({ sockets: 16, socketsPerIp: 8, sessions: 32, messageBytes: 65_536,
-  reservationMs: 120_000, idleSocketMs: 90_000 });
+  reservationMs: 120_000, idleSocketMs: 90_000, loginCheckMs: 60_000 });
 export const validCode = (s) => typeof s === 'string' && s.length === 4 && [...s].every((c) => CODE_ALPHABET.includes(c));
 
 class RoomNetwork extends Network {
@@ -343,7 +344,8 @@ export class RoomRuntime {
     }
     return null;
   }
-  connect(ws, { ip = '0.0.0.0', ticket, attachment, accountId, sessionId, avatarUrl, takeover = false } = {}) {
+  // `sessionId` / `sessionExpiresAt`: the login the Worker validated at the upgrade (checkLogins checks it again).
+  connect(ws, { ip = '0.0.0.0', ticket, attachment, accountId, sessionId, sessionExpiresAt = null, avatarUrl, takeover = false } = {}) {
     if (!attachment && this.admission(ip,accountId)) { ws.close(CLOSE.TRY_LATER, 'connection limit'); return; }
     const normalized = normalizeIp(ip) || '0.0.0.0';
     const resume=this.resumeTickets.get(ticket);
@@ -355,6 +357,9 @@ export class RoomRuntime {
       avatarUrl: attachment?.avatarUrl ?? avatarUrl,
       joinTicket:attachment?.joinTicket || ticket,
       sessionId:attachment?.sessionId || sessionId, connectionEpoch:attachment?.connectionEpoch,
+      // Sockets saved before logins were kept with them have neither: their first check is due at once.
+      sessionExpiresAt: attachment ? attachment.sessionExpiresAt ?? null : sessionExpiresAt,
+      sessionCheckedAt: attachment ? attachment.sessionCheckedAt ?? 0 : this.now(),
       canCreate: !!attachment?.canCreate || !!(ticket && this.reservation && ticket === this.reservation.ticket &&
         (!this.accounts || this.reservation.accountId===accountId)) });
     this.network.handleConnection(ws, { socket: { remoteAddress: normalized }, headers: {} });
@@ -388,6 +393,11 @@ export class RoomRuntime {
     const conn = this.network.conns.get(ws);
     if (!conn) return;
     if (conn.closing || ws.readyState !== 1) return;
+    const expiresAt = this.socketMeta.get(ws)?.sessionExpiresAt;
+    if (expiresAt != null && expiresAt <= this.now()) {
+      conn.close(CLOSE.LOGIN_INVALID, 'login expired');
+      return;
+    }
     if (this.accounts && conn.session && (conn.session.ws !== ws ||
         this.socketMeta.get(ws)?.connectionEpoch !== conn.session.connectionEpoch)) return;
     const binary = typeof message !== 'string';
@@ -434,6 +444,41 @@ export class RoomRuntime {
     for (const s of this.registry.all()) if (!s.connected) deadlines.push(s.disconnectedAt + this.registry.windowOf(s) + 1);
     return deadlines.length ? Math.max(this.now() + 100, Math.min(...deadlines)) : null;
   }
+  /** The sessions of open sockets whose login is due to be checked again (ROOM_LIMITS.loginCheckMs after the last). */
+  loginsDue(now = this.now()) {
+    const due = new Set();
+    for (const meta of this.socketMeta.values()) {
+      if (meta.sessionId && meta.sessionCheckedAt + ROOM_LIMITS.loginCheckMs <= now) due.add(meta.sessionId);
+    }
+    return [...due];
+  }
+
+  /** When the next login check is due (Infinity: no socket has a login). */
+  nextLoginCheck() {
+    let at = Infinity;
+    for (const meta of this.socketMeta.values()) if (meta.sessionId) at = Math.min(at, meta.sessionCheckedAt + ROOM_LIMITS.loginCheckMs);
+    return at;
+  }
+
+  /**
+   * The directory's answer for the sessions checked (`sessions`: session id -> its record, null when it is gone): a
+   * socket whose login was revoked (logout), expired or belongs to another account closes with 4003; the others are
+   * checked again ROOM_LIMITS.loginCheckMs later.
+   */
+  checkLogins(sessions) {
+    const now = this.now();
+    for (const [ws, meta] of this.socketMeta) {
+      if (!sessions.has(meta.sessionId)) continue;
+      const session = sessions.get(meta.sessionId);
+      if (session && session.accountId === meta.accountId && session.expiresAt > now) {
+        meta.sessionCheckedAt = now;
+        meta.sessionExpiresAt = session.expiresAt;
+      } else {
+        this.network.conns.get(ws)?.close(CLOSE.LOGIN_INVALID, 'login required');
+      }
+    }
+  }
+
   /** When the running match's next timer is due (null: none, or no recorded match). */
   matchDue() {
     const match = this.lobby.getRoom(this.code)?.match;

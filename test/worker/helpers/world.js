@@ -1,9 +1,10 @@
 // The production Worker (tools/build-worker.mjs bundleWorker) with every Durable Object, in workerd (Miniflare).
 //
 // The fixture entry adds what tests need and production lacks: seeded GitHub accounts with session cookies (actor
-// 'a' → cookie 'aaaa…'), WebSocket upgrades on behalf of an actor, and hooks on a room's Durable Object (storage
-// access, a snapshot rewrite applied at its next wake, the structured log lines it wrote). Storage persists across
-// restart(), which replaces the runtime like a deployment does.
+// 'a' → cookie 'aaaa…'), WebSocket upgrades on behalf of an actor, hooks on a room's Durable Object (storage
+// access, a snapshot rewrite applied at its next wake, the structured log lines it wrote, its login checks made due)
+// and on the directory (session lookups counted, a logout). Storage persists across restart(), which replaces the
+// runtime like a deployment does; evict() puts one room to sleep with its sockets open, as the platform does.
 
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -16,6 +17,15 @@ const fixture = (bundle) => `
 import worker, { SiteDirectory, AccountDurableObject, RoomDurableObject as ProductionRoom, AdmissionDurableObject, MatchArchive }
   from ${JSON.stringify(bundle.replaceAll('\\', '/'))};
 import { hash } from './worker/accounts/auth.js';
+
+// The directory, with its session lookups counted.
+export class TestObject extends SiteDirectory {
+  getSession(key) {
+    this.lookups = (this.lookups ?? 0) + 1;
+    return super.getSession(key);
+  }
+  lookupCount() { return this.lookups ?? 0; }
+}
 
 // Structured log lines of this isolate (worker/log.js logs one object per call).
 const logs = [];
@@ -76,11 +86,16 @@ export class RoomDurableObject extends ProductionRoom {
       case '/__test/snapshot': await this.ready; return Response.json((await this.readSnapshot()) ?? null);
       case '/__test/alarm': await this.ready; return Response.json(await storage.getAlarm());
       case '/__test/writes': await this.ready; return Response.json(writes.get(this.runtime.code) ?? { transactions: 0, alarms: 0 });
+      case '/__test/logins-due':
+        // As if the last login check of every open socket were a minute old.
+        await this.ready;
+        await this.event(() => { for (const meta of this.runtime.socketMeta.values()) meta.sessionCheckedAt = 0; });
+        return Response.json(null);
       default: return new Response('unknown hook', { status: 404 });
     }
   }
 }
-export { SiteDirectory as TestObject, AccountDurableObject, AdmissionDurableObject, MatchArchive };
+export { AccountDurableObject, AdmissionDurableObject, MatchArchive };
 
 export default {
   async fetch(request, env) {
@@ -100,6 +115,11 @@ export default {
     }
     if (input.account) {
       return Response.json(await env.ACCOUNTS.get(env.ACCOUNTS.idFromName(input.account))[input.call](...(input.args || [])));
+    }
+    if (input.directory) {
+      const site = env.SITES.get(env.SITES.idFromName('directory'));
+      if (input.directory === 'logout') await site.revokeSession(await hash(actor.repeat(64)));
+      return Response.json({ lookups: await site.lookupCount() });
     }
     if (input.seed) {
       const site = env.SITES.get(env.SITES.idFromName('directory'));
@@ -140,6 +160,12 @@ export async function createWorld(t) {
     room: async (code, hook, body) => (await h.fetch({ room: code, hook, body })).json(),
     /** An RPC method of an account's Durable Object. */
     account: async (accountId, call, ...args) => (await h.fetch({ account: accountId, call, args })).json(),
+    /** How many session lookups the directory has served. */
+    lookups: async () => (await (await h.fetch({ directory: 'count' })).json()).lookups,
+    /** `actor` logs out: the directory revokes its session. */
+    logout: async (actor) => h.fetch({ directory: 'logout', actor }),
+    /** The room's Durable Object is evicted; its WebSockets hibernate and stay open. */
+    evict: (code) => h.evict('RoomDurableObject', code),
     /** Upgrade /ws as `actor`: { status, ws, frames, wait(type, predicate?), send(msg), closed } (ws null when refused). */
     async socket(actor, { code, ticket } = {}) {
       const query = new URLSearchParams({ room: code, actor, ...(ticket ? { ticket } : {}) });

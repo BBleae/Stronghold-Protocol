@@ -116,8 +116,15 @@ async function route(request, env) {
     dest.searchParams.set('room', code);
     const ticket = url.searchParams.get('ticket');
     if (ticket && /^[0-9a-f]{32}$/.test(ticket)) dest.searchParams.set('ticket', ticket);
-    return roomStub(env, code).fetch(new Request(dest, { headers: { Upgrade: 'websocket', 'X-Room-IP': ip,
-      ...(session ? {'X-Account-ID':session.accountId,'X-Session-ID':session.sessionId} : {}) } }));
+    const headers = { Upgrade: 'websocket', 'X-Room-IP': ip };
+    if (session) {
+      // The room keeps the login with the socket (and checks it again on its own schedule) and shows the account's
+      // avatar: both are read here, so the room's critical section never waits on another object for them.
+      const profile = await accountOf(env, session.accountId).getProfile();
+      Object.assign(headers, { 'X-Account-ID': session.accountId, 'X-Session-ID': session.sessionId,
+        'X-Session-Expires': String(session.expiresAt), 'X-Avatar-URL': profile?.avatarUrl ?? '' });
+    }
+    return roomStub(env, code).fetch(new Request(dest, { headers }));
   }
   if (path === PACK_PATH) return servePack(request, env);
   if (path.startsWith('/api/')) return error(404, 'ROOM_NOT_FOUND');
@@ -206,10 +213,11 @@ export class RoomDurableObject {
     // The in-memory match timer (arm).
     this.timer = null;
     this.timerAt = null;
-    // Background jobs (publish): an archive being published; the lobby listing's job (in flight, failures in a row,
-    // not before, what was published, when to refresh it).
+    // Background jobs (startJobs): an archive being published; the lobby listing's job (in flight, failures in a row,
+    // not before, what was published, when to refresh it); the login check's job.
     this.archiving = false;
     this.listing = { busy: false, failures: 0, retryAt: 0, fingerprint: null, refreshAt: 0 };
+    this.logins = { busy: false, failures: 0, retryAt: 0 };
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('{"t":"ping","c":0}', '{"t":"pong","c":0}'));
     this.ready = ctx.blockConcurrencyWhile(async () => {
       try {
@@ -233,10 +241,7 @@ export class RoomDurableObject {
       if (snapshot?.running && !snapshot.matchCheckpoint) { try { ws.close(1012, 'active match interrupted by server restart'); } catch {} continue; }
       const attachment = ws.deserializeAttachment();
       if (!attachment) { try { ws.close(CLOSE.LOST, 'missing session'); } catch {} continue; }
-      if(this.env.ACCOUNTS) {
-        const session=attachment.sessionId && await directoryOf(this.env).getSession(attachment.sessionId);
-        if(!session || session.accountId!==attachment.accountId) {try{ws.close(4003,'login required');}catch{}continue;}
-      }
+      // Its login is checked again in the background when due (checkLogins), not before the wake can go on.
       const adapter = new SocketAdapter(ws,!!this.env.ACCOUNTS);
       this.sockets.set(ws, adapter);
       this.runtime.connect(adapter, { ip: attachment.ip, attachment });
@@ -375,7 +380,7 @@ export class RoomDurableObject {
       rt.archiveOutbox.splice(0, archives.length);
     }
     for (const adapter of this.sockets.values()) adapter.flush();
-    this.publish();
+    this.startJobs();
     await this.schedule();
   }
 
@@ -455,7 +460,7 @@ export class RoomDurableObject {
     const connected = rt.connected();
     const awake = due != null && (connected || due - now < AWAKE_MS);
     this.arm(awake ? due : null);
-    const at = Math.min(rt.nextAlarm() ?? Infinity, awake || due == null ? Infinity : due, this.publishDue());
+    const at = Math.min(rt.nextAlarm() ?? Infinity, awake || due == null ? Infinity : due, this.jobsDue());
     if (at === Infinity || at === this.alarmAt) return;
     const armed = this.alarmAt != null && this.alarmAt > now;
     if (armed && this.alarmAt < at && (awake || connected)) return;
@@ -475,12 +480,13 @@ export class RoomDurableObject {
     }, Math.max(0, at - Date.now()));
   }
 
-  // Background side effects of committed state: the archives of finished matches, the public lobby listing. A failure
-  // is logged and retried after a backoff (the alarm wakes the room for it), never at every event. Seat pointers need
-  // no job: a pointer this room no longer confirms is released by its next reader (seatOf).
-  publish() {
+  // Background jobs, started after a commit: the archives of finished matches, the public lobby listing, the logins of
+  // open sockets. A failure is logged and retried after a backoff (the alarm wakes the room for it), never at every
+  // event. Seat pointers need no job: a pointer this room no longer confirms is released by its next reader (seatOf).
+  startJobs() {
     this.archiveNext();
     this.publishListing();
+    this.checkLogins();
   }
 
   // The oldest due archive is published. A failed one waits for its own backoff, stored with it: it neither blocks the
@@ -550,14 +556,40 @@ export class RoomDurableObject {
       })));
   }
 
-  // When the next background job is due (Infinity: none): an archive's retry, the listing's retry or lease refresh.
-  publishDue() {
+  // Open sockets keep the login they were opened with (its session and expiry). Each is checked again with the directory
+  // ROOM_LIMITS.loginCheckMs after the last check, in the background: a logout (which revokes the session) closes its
+  // sockets with 4003 within that time, and no message ever waits for the directory. A failed check closes nothing.
+  checkLogins() {
+    const job = this.logins;
+    if (!this.env.SITES || job.busy || Date.now() < job.retryAt) return;
+    const due = this.runtime.loginsDue();
+    if (!due.length) return;
+    job.busy = true;
+    const directory = directoryOf(this.env);
+    const checked = Promise.all(due.map((sessionId) => directory.getSession(sessionId)));
+    this.ctx.waitUntil(checked.then(
+      (sessions) => this.event(() => {
+        this.runtime.checkLogins(new Map(due.map((sessionId, i) => [sessionId, sessions[i]])));
+        this.logins = { busy: false, failures: 0, retryAt: 0 };
+      }),
+      (error) => this.event(() => {
+        job.busy = false;
+        job.failures += 1;
+        job.retryAt = Date.now() + backoff(job.failures);
+        logWarn('login_check_failed', { room: this.runtime.code, sessions: due.length, attempts: job.failures, error: errorFields(error) });
+      })));
+  }
+
+  // When the next background job is due (Infinity: none): an archive's retry, the listing's retry or lease refresh,
+  // the next login check.
+  jobsDue() {
     const archive = !this.env.MATCH_ARCHIVES || !this.outboxSize || this.archiving ? Infinity
       : this.ctx.storage.sql.exec('SELECT MIN(retry_at) AS at FROM archive_outbox').one().at;
     const job = this.listing;
     const listing = !this.env.SITES || job.busy || !this.runtime.lobby.getRoom(this.runtime.code) ? Infinity
       : job.failures ? job.retryAt : job.refreshAt;
-    return Math.min(archive, listing);
+    const logins = !this.env.SITES || this.logins.busy ? Infinity : Math.max(this.logins.retryAt, this.runtime.nextLoginCheck());
+    return Math.min(archive, listing, logins);
   }
 
   async fetch(request) {
@@ -598,25 +630,22 @@ export class RoomDurableObject {
     const ip = request.headers.get('X-Room-IP') || '0.0.0.0';
     const limit = rt.admission(ip, accountId);
     if (limit) return refuseSocket(CLOSE.TRY_LATER, `connection limit (${limit})`);
-    const profile = this.env.ACCOUNTS && request.headers.get('X-Account-ID')
-      ? await accountOf(this.env,request.headers.get('X-Account-ID')).getProfile() : null;
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
     this.ctx.acceptWebSocket(server);
     const adapter = new SocketAdapter(server,!!this.env.ACCOUNTS);
     this.sockets.set(server, adapter);
-    rt.connect(adapter, { ip, ticket: url.searchParams.get('ticket'), accountId: request.headers.get('X-Account-ID'),
-      sessionId:request.headers.get('X-Session-ID'), avatarUrl:profile?.avatarUrl ?? null });
+    const expires = request.headers.get('X-Session-Expires');
+    rt.connect(adapter, { ip, ticket: url.searchParams.get('ticket'), accountId,
+      sessionId: request.headers.get('X-Session-ID'), sessionExpiresAt: expires ? Number(expires) : null,
+      avatarUrl: request.headers.get('X-Avatar-URL') || null });
     return new Response(null, { status: 101, webSocket: client });
   }
 
+  // A message never waits on another object: the socket's login is checked locally (its expiry) and again in the
+  // background (checkLogins).
   async webSocketMessage(ws, message) {
     await this.ready;
-    if (this.env.ACCOUNTS) {
-      const adapter=this.sockets.get(ws), meta=adapter && this.runtime.socketMeta.get(adapter);
-      const session=meta?.sessionId && await directoryOf(this.env).getSession(meta.sessionId);
-      if (!session || session.accountId!==meta.accountId || session.expiresAt<=Date.now()) { adapter?.close(4003,'login required'); return; }
-    }
     return this.event(() => {
       const adapter = this.sockets.get(ws);
       if (adapter) this.runtime.message(adapter, message);

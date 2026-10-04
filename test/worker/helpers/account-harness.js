@@ -24,6 +24,8 @@ export async function createAccountHarness(source, {durableObjects={},bindings={
       fetch: (body) => mf.dispatchFetch('https://test.example/', { method: 'POST', body: JSON.stringify(body) }),
       request:(url,init)=>mf.dispatchFetch(url,init),
       url:()=>mf.ready,
+      // Evict a Durable Object of the worker as the platform does (its accepted WebSockets hibernate and stay open).
+      evict:(className,name)=>mf.unsafeEvictDurableObject('account-tests',className,{name,webSockets:'hibernate'}),
       async restart() {
         // Keep the browser origin stable so live clients can exercise automatic reconnection.
         options.port = Number(new URL(await mf.ready).port);
