@@ -474,9 +474,41 @@ test('an invalid login stops reconnecting and asks to log in again (close 4003, 
     assert.equal(snap.status, 'closed', refusal);
     assert.deepEqual(snap.lastError, { code: 'LOGIN_REQUIRED', text: '登录已失效，请重新登录' });
     const sockets = h.ws.sockets.length;
+    h.net.retryNow(); // the browser's 'online' event
     await h.timers.advance(10 * 60_000);
     assert.equal(h.ws.sockets.length, sockets, 'no reconnect attempts');
     assert.equal(h.net.room.code, 'ABCD', 'the seat is kept for after a new login');
+    await assert.rejects(h.net.request('room.ready', { ready: true }),
+      { code: 'LOGIN_REQUIRED', message: '登录已失效，请重新登录' }, 'room requests fail at once, saying why');
+    assert.deepEqual(h.api.unexpected, []);
+  }
+});
+
+test('leaving while the login is invalid leaves the room and still asks to log in again', async () => {
+  for (const when of ['the room answers the leave with 4003', 'the leave comes after 4003']) {
+    const h = setup();
+    await inRoom(h);
+    let leave;
+    if (when === 'the room answers the leave with 4003') {
+      // idle in a waiting room the login expired: the room checks it with the next message, 离开
+      leave = h.net.request('room.leave');
+      h.ws.last().drop(4003);
+    } else {
+      h.ws.last().drop(4003);
+      leave = h.net.request('room.leave');
+    }
+    await assert.rejects(leave, { code: 'LOGIN_REQUIRED', message: '登录已失效，请重新登录' });
+    const snap = h.net.snapshot();
+    assert.equal(snap.status, 'closed', when);
+    assert.deepEqual(snap.lastError, { code: 'LOGIN_REQUIRED', text: '登录已失效，请重新登录' });
+    assert.equal(bannerVisible({ ...snap, everOnline: true }, true, false), true, 'the banner offers 重新登录');
+    // out of the room by way of the menu, where the tab forgets the room's token (main.js), then lost again
+    assert.deepEqual(statuses(h).slice(-2), ['menu', 'closed'], when);
+    const sockets = h.ws.sockets.length;
+    h.net.retryNow();
+    await h.timers.advance(10 * 60_000);
+    assert.equal(h.ws.sockets.length, sockets, 'no reconnect attempts');
+    assert.deepEqual(closes(h), []);
     assert.deepEqual(h.api.unexpected, []);
   }
 });

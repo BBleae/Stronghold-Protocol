@@ -10,7 +10,8 @@
 //   room      the socket belongs to a room the player is in; Net's reconnects apply (online, reconnecting …). The room
 //             ends with room.closed (pushed by the server or emitted here) and the client returns to the menu.
 //   lost      the login is invalid (the room or the account API said so): status 'closed', lastError LOGIN_REQUIRED,
-//             no socket, no reconnects, no application checks. Logging in again reloads the page, and the reload
+//             no socket, no reconnects, no application checks. Requests that need the room reject LOGIN_REQUIRED at
+//             once; leaving drops the room, not the invalid login. Logging in again reloads the page, and the reload
 //             resumes a seat the login was lost in (restore()). enter() may still try again: another tab may have
 //             logged in since.
 //
@@ -108,19 +109,21 @@ export class RoomNet extends Net {
   }
 
   /**
-   * room.create / room.join enter a room (see enter()). Anything else needs the room: in the menu it rejects
-   * NOT_IN_ROOM at once.
+   * room.create / room.join enter a room (see enter()). Anything else needs the room: it rejects at once in the menu
+   * (NOT_IN_ROOM) and while the login is invalid (LOGIN_REQUIRED).
    */
   request(type, fields = {}, opts = {}) {
     if (type === 'room.create') return this.enter({ kind: 'create', mode: fields.mode, difficulty: fields.difficulty });
     if (type === 'room.join') return this.enter({ kind: 'join', code: fields.code });
     if (this.state === 'menu') return Promise.reject(new NetError('NOT_IN_ROOM'));
-    const reply = super.request(type, fields, opts);
+    const reply = this.state === 'lost'
+      ? Promise.reject(new NetError('LOGIN_REQUIRED'))
+      : super.request(type, fields, opts);
     // A leave ends the room here whatever the answer: the server removed the seat, did not have it, or keeps it until
     // its reconnect grace runs out (继续对局 can still resume it). g.leave only when confirmed: quitMatch follows a
     // refused g.leave (no running match) with room.leave.
-    if (type === 'room.leave') return reply.finally(() => this._toMenu());
-    if (type === 'g.leave') return reply.then((ok) => { this._toMenu(); return ok; });
+    if (type === 'room.leave') return reply.finally(() => this._leaveRoom());
+    if (type === 'g.leave') return reply.then((ok) => { this._leaveRoom(); return ok; });
     return reply;
   }
 
@@ -376,6 +379,14 @@ export class RoomNet extends Net {
     this.lastError = error;
     this.state = 'lost';
     this._setStatus('closed');
+  }
+
+  // The player left the room: back to the menu, whatever the server answered. An invalid login met on the way stays
+  // invalid: 'lost' again after the menu (passing the menu makes the tab forget the room's token, see main.js).
+  _leaveRoom() {
+    const lost = this.state === 'lost' ? this.lastError : null;
+    this._toMenu();
+    if (lost) this._lose(lost);
   }
 
   // Back to the menu: no socket, no route. Requests still waiting for the room fail with NOT_IN_ROOM.
