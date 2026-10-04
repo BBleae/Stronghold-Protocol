@@ -9,7 +9,7 @@
 //     * there is NO view switcher during normal combat.
 //   Server-run combat (legacy streaming mode): the ‹ 自己 › switcher cycling the live fields of m.public.fields.
 
-import { html, Icon } from './components.js';
+import { html, Icon, PlayerName } from './components.js';
 import { DpCounter } from './hud.js';
 import { GIcon } from './gameComponents.js';
 import { switcherLabel, cycleField } from './gameLogic.js';
@@ -21,7 +21,7 @@ function ProgressList({ list }) {
   if (!Array.isArray(list) || !list.length) return null;
   return html`<div class="chud__progress" role="list" aria-label="队友作战进度">
     ${list.map((p) => html`<span key=${p.playerId} role="listitem" class=${cx('chud__prog', p.done && 'is-done')}>
-      <b>${p.name}</b>
+      <b><${PlayerName} name=${p.name} /></b>
       ${p.done
         ? html`<span class="chud__prog__ok" aria-label="作战结束">✓</span>`
         : html`<span class="num">${p.killed != null && p.total != null ? `${p.killed}/${p.total}` : '•••'}</span>`}

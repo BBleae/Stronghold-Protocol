@@ -944,7 +944,8 @@ describe('data.js', () => {
 
 describe('screen helpers', () => {
   test('title: sanitizeName / isValidName / findUiAsset', async () => {
-    const { sanitizeName, isValidName, findUiAsset } = await mod('screens/title.js');
+    const { findUiAsset } = await mod('screens/title.js');
+    const { sanitizeName, isValidName, normalizeName } = await mod('names.js');
     assert.equal(sanitizeName('  凯尔希  '), '凯尔希');
     assert.equal(sanitizeName('a\u0000b\u200bc\u202ed'), 'abcd');
     assert.equal(sanitizeName('a   b'), 'a b');
@@ -953,10 +954,12 @@ describe('screen helpers', () => {
     const cut = sanitizeName(emoji);
     assert.ok(cut.length <= 12 && !/[\ud800-\udbff]$/.test(cut), 'no dangling surrogate');
     const server = await import(pathToFileURL(path.join(ROOT, 'server/net.js')).href);
-    for (const raw of ['e\u0301', '\ud800x', '\udc00', 'a \u200b b', '\u00a0\u3000A\u3000B', 'a\u2028b', '😀'.repeat(7), ' x '.repeat(9)]) {
+    for (const raw of ['e\u0301', '\ud800x', '\udc00', 'a \u200b b', '\u00a0\u3000A\u3000B', 'a\u2028b', '😀'.repeat(7), ' x '.repeat(9),
+      'x\u00ad\u0308', '\u1100\u200b\u1161']) {
       const c = sanitizeName(raw);
       assert.ok(c.length <= 12, 'protocol limit (UTF-16 units)');
       assert.equal(server.sanitizeName(c) ?? '', c, `server keeps the client-sanitized ${JSON.stringify(raw)} unchanged`);
+      assert.equal(normalizeName(raw), server.normalizeName(raw), `normalized as the server does: ${JSON.stringify(raw)}`);
     }
     assert.equal(sanitizeName(null), '');
     assert.equal(isValidName('   '), false);
@@ -1045,6 +1048,18 @@ describe('screen helpers', () => {
     assert.equal(roomFacts(room, 'g').canStart, false, 'guests cannot start');
     assert.equal(roomFacts(null, 'x').mine, null);
     assert.match(inviteLink('ABCD'), /\?room=ABCD$/);
+  });
+
+  test('components: PlayerName keeps the #NNNN of a display name out of the ellipsis', async () => {
+    const { PlayerName } = await mod('ui/components.js');
+    const { nameParts } = await import(pathToFileURL(path.join(ROOT, 'shared/account-protocol.js')).href);
+    assert.deepEqual(nameParts('十二个字的博士代号测试名#5284'), { nickname: '十二个字的博士代号测试名', tag: '#5284' });
+    for (const name of ['Amiya', 'AI · 华法琳', '博士']) assert.deepEqual(nameParts(name), { nickname: name, tag: '' });
+    assert.equal(PlayerName({ name: 'Amiya' }), 'Amiya', 'a name without a discriminator is plain text');
+    const shown = PlayerName({ name: '晴猫#1145' });
+    assert.equal(shown.props.class, 'pname');
+    assert.deepEqual(shown.props.children.map((part) => [part.props.class, part.props.children]),
+      [['pname__nick', '晴猫'], ['pname__tag', '#1145']]);
   });
 
   test('components: roman / doctorNo / secondsLeft', async () => {

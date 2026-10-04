@@ -34,7 +34,7 @@ test('account preferences restore in a clean browser, survive offline reload, an
     }};
   `,{durableObjects:Object.fromEntries(['SiteDirectory','AccountDurableObject','RoomDurableObject','MatchArchive']
     .map((className,i)=>[['SITES','ACCOUNTS','ROOMS','MATCH_ARCHIVES'][i],{className,useSQLite:true}])),ratelimits:productionLimits,
-    bindings:{AUTH_ORIGIN:'https://game.example',GITHUB_CLIENT_ID:'fixture',GITHUB_CLIENT_SECRET:'fixture'},assets:path.join(ROOT,'dist/client')});
+    assets:path.join(ROOT,'dist/client')});
   t.after(()=>h.dispose());
   const browser=await (await import('puppeteer-core')).default.launch({executablePath:chrome,headless:true,args:['--no-sandbox']});
   t.after(()=>browser.close());

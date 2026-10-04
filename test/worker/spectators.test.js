@@ -16,7 +16,7 @@ class Socket extends EventEmitter {
 // One message as the Durable Object handles it: one event, with the room's timed steps before and after it.
 const send=(rt,ws,t,fields={})=>{rt.pump();rt.message(ws,JSON.stringify({t,rid:ws.frames.length+1,...fields}));rt.pump();};
 function connect(rt,accountId,ticket,token,ip='8.8.8.8'){
-  const ws=new Socket();rt.connect(ws,{accountId,ticket,ip});
+  const ws=new Socket();rt.connect(ws,{accountId,ticket,ip,name:accountId});
   send(rt,ws,'hello',{name:accountId,token});return ws;
 }
 // A socket's close, as an event.
@@ -274,7 +274,7 @@ test('a published old-rules battle restores unchanged and accepts new spectators
 test('room avatars come from authenticated profiles and survive reconnect snapshots',t=>{
   const rt=new RoomRuntime();t.after(()=>rt.lobby.shutdown());
   const avatarUrl='https://avatars.githubusercontent.com/u/123?v=4';
-  const host=new Socket();rt.connect(host,{accountId:'host',ticket:rt.reserve('ABCD','host'),avatarUrl});
+  const host=new Socket();rt.connect(host,{accountId:'host',ticket:rt.reserve('ABCD','host'),avatarUrl,name:'Host'});
   send(rt,host,'hello',{name:'Host',avatarUrl:'https://example.com/spoof.png'});
   send(rt,host,'room.create',{mode:'coop',difficulty:'FUNNY'});
   assert.equal(host.take('room.state').seats[0].avatarUrl,avatarUrl);

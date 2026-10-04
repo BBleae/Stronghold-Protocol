@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createWorld } from './helpers/world.js';
+import { oneLimitWindow } from './helpers/account-harness.js';
 
 // A refused WebSocket upgrade is a socket that closes at once with a code the page can read (worker/close-codes.js):
 // a browser never sees the HTTP status of a refused upgrade.
@@ -116,6 +117,7 @@ test('strangers may only watch a running public match, with few sockets and few 
   const third = await world.socket('b', { code: route.code, ip: '10.0.0.3' });
   assert.deepEqual(await third.waitClosed(), { code: 1013, reason: 'connection limit (spectators-per-account)' });
   // Connections count per account, wherever they come from: 40 a minute.
+  await oneLimitWindow();
   let refused = null;
   for (let i = 0; i < 45 && !refused; i++) {
     const socket = await world.socket('c', { code: 'WXYZ', ip: `10.1.${i}.1` });

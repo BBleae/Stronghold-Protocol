@@ -30,7 +30,7 @@ test('public spectator UI: live board, presence, read-only controls and restart 
       return env.ASSETS.fetch(req);
     }};
   `,{durableObjects:Object.fromEntries(['SiteDirectory','AccountDurableObject','RoomDurableObject','MatchArchive'].map((className,i)=>[['SITES','ACCOUNTS','ROOMS','MATCH_ARCHIVES'][i],{className,useSQLite:true}])),ratelimits:productionLimits,
-    bindings:{AUTH_ORIGIN:'https://game.example',GITHUB_CLIENT_ID:'fixture',GITHUB_CLIENT_SECRET:'fixture'},assets:path.join(ROOT,'dist/client')});
+    assets:path.join(ROOT,'dist/client')});
   t.after(()=>h.dispose());
   const base=String(await h.url()).replace('127.0.0.1','localhost');
   const puppeteer=(await import('puppeteer-core')).default;

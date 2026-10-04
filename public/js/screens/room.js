@@ -10,7 +10,7 @@
 import { useEffect, useRef, useState } from '../../vendor/hooks.module.js';
 import { DIFFICULTIES, DIFFICULTY_NAMES, DIFFICULTY_COLORS, MAX_SEATS } from '../../../shared/constants.js';
 import {
-  html, Button, Icon, MicroLabel, PingPill, AvatarFrame, DifficultyTag, DifficultyIcon, Tooltip, confirmDialog, doctorNo,
+  html, Button, Icon, MicroLabel, PingPill, AvatarFrame, DifficultyTag, DifficultyIcon, Tooltip, confirmDialog, doctorNo, PlayerName,
 } from '../ui/components.js';
 import { toast, toastError } from '../ui/toasts.js';
 import { GuideButton } from '../ui/guide.js';
@@ -142,10 +142,10 @@ function SeatCard({ seat, index, room, facts, myId, busy, onAddBot, onRemoveBot 
       ${seat.isBot ? html`<span class="seat__bot-label"><${Icon} name="robot" />AI 队友</span>` : null}
     </div>
     <div class="seat__who">
-      <span class="seat__name">${seat.name || '博士'}</span>
+      <span class="seat__name" title=${seat.name || '博士'}><${PlayerName} name=${seat.name || '博士'} /></span>
       ${isMe ? html`<span class="seat__you">你</span>` : null}
     </div>
-    <${MicroLabel}>${seat.isBot ? 'AUTONOMOUS UNIT' : `DOCTOR #${doctorNo(seat.playerId)}`}<//>
+    <${MicroLabel}>${seat.isBot ? 'AUTONOMOUS UNIT' : account.enabled ? 'DOCTOR' : `DOCTOR #${doctorNo(seat.playerId)}`}<//>
     <footer class="seat__foot">
       <span class=${`seat__state seat__state--${state}`}>
         ${state === 'ready' ? html`<${Icon} name="check" />已就绪`

@@ -337,15 +337,26 @@ const STRIP_RE = new RegExp('[' + STRIP_RANGES.map(([a, b]) => (a === b ? hexEsc
 const LONE_SURROGATE_RE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g;
 
 /**
- * Normalize a nickname: strip control/invisible characters and lone surrogates, collapse whitespace,
- * trim, cap at NAME_MAX_LEN code points. Returns null when nothing printable remains.
+ * Normalize a name without shortening it: strip control/invisible characters and lone surrogates, collapse
+ * whitespace, trim, then NFC. NFC comes last so that a normalized name normalizes to itself: stripping can bring
+ * together characters that NFC composes (x, soft hyphen, combining diaeresis). Returns '' when nothing printable
+ * remains.
+ * @param {unknown} raw
+ * @returns {string}
+ */
+export function normalizeName(raw) {
+  if (typeof raw !== 'string') return '';
+  return raw.replace(LONE_SURROGATE_RE, '').replace(/\s+/g, ' ').replace(STRIP_RE, '').replace(/ {2,}/g, ' ').trim().normalize('NFC');
+}
+
+/**
+ * Normalize a nickname (normalizeName) and cap it at NAME_MAX_LEN code points. Returns null when nothing printable
+ * remains.
  * @param {unknown} raw
  * @returns {string | null}
  */
 export function sanitizeName(raw) {
-  if (typeof raw !== 'string') return null;
-  let s = raw.normalize('NFC').replace(LONE_SURROGATE_RE, '').replace(/\s+/g, ' ').replace(STRIP_RE, '').replace(/ {2,}/g, ' ').trim();
-  s = [...s].slice(0, NAME_MAX_LEN).join('').trim();
+  const s = [...normalizeName(raw)].slice(0, NAME_MAX_LEN).join('').trim();
   return s.length > 0 ? s : null;
 }
 
@@ -623,6 +634,15 @@ export class Network {
     } else if (validRid(rid)) this.reply(conn, { t: 'ok', rid });
   }
 
+  /**
+   * The session's name for a hello: the name the player typed (null: none usable). A platform that names its
+   * sessions itself (the Workers rooms: the account's display name) overrides this.
+   * @param {Connection} conn @param {any} msg @returns {string | null}
+   */
+  helloName(conn, msg) { // eslint-disable-line no-unused-vars
+    return sanitizeName(msg.name);
+  }
+
   /** @param {Connection} conn @param {any} msg @param {number} now */
   onHelloMsg(conn, msg, now) {
     const rid = msg.rid;
@@ -630,7 +650,7 @@ export class Network {
       this.reply(conn, errorMsg(ERR.BAD_MSG, rid, `version mismatch: server ${PROTOCOL_VERSION}`));
       return;
     }
-    const name = sanitizeName(msg.name);
+    const name = this.helloName(conn, msg);
     if (!name) { this.reply(conn, errorMsg(ERR.BAD_MSG, rid, 'bad field name')); return; }
 
     let session = conn.session;

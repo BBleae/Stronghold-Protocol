@@ -1,10 +1,13 @@
-import { hash,accountOf,directoryOf,json } from '../accounts/auth.js';
+import { hash,accountOf,directoryOf,json,bearerAuthorized } from '../accounts/auth.js';
 import { archiveOf } from '../archive/routes.js';
 import { RULES_VERSION } from '../../shared/rules-version.js';
 import { publishedRulesVersions } from '../match-versions.js';
-import { AccountError,requireId } from '../../shared/account-protocol.js';
+import { AccountError,requireId,USERNAME_PATTERN,validNickname,displayName } from '../../shared/account-protocol.js';
 import {decodeReplayChunk,REPLAY_MAX_BYTES,REPLAY_CHUNK_BYTES} from '../../shared/replay-codec.js';
 import { readJson } from '../http.js';
+import { logError } from '../log.js';
+import { normalizeName } from '../../server/net.js';
+import { PBKDF2_ITERATIONS } from '../accounts/passwords.js';
 
 export async function sealBackup(facts,chunks) {
   const body={formatVersion:1,facts,chunks};return {...body,hash:await hash(JSON.stringify(body))};
@@ -30,28 +33,80 @@ export async function validateBackup(backup,versions=[RULES_VERSION,...published
   if(compressed && decoded!==facts.manifest.decodedBytes)throw new AccountError('BACKUP_INCOMPLETE');
   return {ok:true};
 }
-export async function handleBackupRoutes(request,env) {
-  const url=new URL(request.url);if(!url.pathname.startsWith('/api/admin/backup'))return null;
-  const isWrite=request.method==='POST',secret=isWrite?env.ARCHIVE_IMPORT_TOKEN:env.ARCHIVE_EXPORT_TOKEN;
-  const supplied=request.headers.get('Authorization')?.replace(/^Bearer /,'');
-  // A player session is deliberately irrelevant to administrator authorization.
-  if(!secret || secret.length<32 || !supplied || await hash(supplied)!==await hash(secret))return json({error:'FORBIDDEN'},403);
-  const directory=directoryOf(env);
-  if(request.method==='GET' && url.pathname==='/api/admin/backup/catalog')return json(await directory.backupCatalog({kind:url.searchParams.get('kind') || 'profiles',cursor:url.searchParams.get('cursor') || ''}));
-  if(request.method==='GET' && url.pathname==='/api/admin/backup/archive') {
-    const id=requireId(url.searchParams.get('id'));
-    const archive=await archiveOf(env,id).exportArchive();return json(await sealBackup(archive.facts,archive.chunks));
+// An account in a backup: its profile (worker/accounts/account.js) and, for a password account, its password hash and
+// creation time. Backups made before password accounts hold GitHub profiles only, some of them from before display
+// names ({ accountId, githubId, name, avatarUrl }): those restore as they are and get their display name when read.
+const PROFILE_FIELDS = ['accountId', 'provider', 'githubId', 'githubLogin', 'username', 'nickname', 'nicknameSource', 'discriminator', 'name', 'avatarUrl'];
+const BASE64URL = /^[A-Za-z0-9_-]{1,128}$/;
+
+/**
+ * The account's backup entry: its profile, read from the account (which completes an unfinished one), and a password
+ * account's hash and creation time. A GitHub account whose first login stopped before its profile was stored is its
+ * GitHub identity from the directory, which restores like a profile from before display names.
+ */
+async function exportAccount(env, item) {
+  const profile = await accountOf(env, item.accountId).getProfile();
+  if (item.githubId) return profile ?? item.identity;
+  if (!profile) {
+    logError('backup_profile_missing', { accountId: item.accountId });
+    throw new AccountError('PROFILE_MISSING', 500);
   }
-  if(!isWrite)return json({error:'METHOD'},405);
-  const input=await readJson(request,32*1024*1024,'INVALID_BACKUP'),dryRun=input.dryRun!==false;
-  if(url.pathname==='/api/admin/backup/profile') {
-    const p=input.profile;
-    if(!p || !/^[0-9]{1,20}$/.test(p.githubId) || typeof p.name!=='string' || p.name.length>80)throw new AccountError('INVALID_PROFILE');
-    requireId(p.accountId);
-    const profile={accountId:p.accountId,githubId:p.githubId,name:p.name,avatarUrl:typeof p.avatarUrl==='string' && /^https:\/\/avatars\.githubusercontent\.com\//.test(p.avatarUrl)?p.avatarUrl:null};
-    await directory.restoreProfile(profile,dryRun);
-    if(!dryRun){await directory.revokeAllSessions();await accountOf(env,p.accountId).setProfile(profile);}
-    return json({ok:true,written:dryRun?0:1});
+  return { ...profile, password: item.password, createdAt: item.createdAt };
+}
+
+/** A backup entry checked field by field: { profile, password, createdAt } (INVALID_PROFILE). */
+function parseAccount(entry) {
+  const invalid = () => new AccountError('INVALID_PROFILE');
+  if (!entry || typeof entry !== 'object') throw invalid();
+  const profile = Object.fromEntries(PROFILE_FIELDS.filter((key) => entry[key] !== undefined).map((key) => [key, entry[key]]));
+  const { password = null, createdAt = null } = entry;
+  requireId(profile.accountId);
+  if (profile.provider === 'password') {
+    const hashed = password && password.alg === 'pbkdf2-sha256' && Number.isSafeInteger(password.iterations) && password.iterations > 0
+      && password.iterations <= PBKDF2_ITERATIONS && BASE64URL.test(password.salt) && BASE64URL.test(password.hash);
+    if (!USERNAME_PATTERN.test(profile.username ?? '') || profile.githubId !== undefined || !hashed || !Number.isSafeInteger(createdAt)) throw invalid();
+  } else if ((profile.provider ?? 'github') !== 'github' || !/^[0-9]{1,20}$/.test(profile.githubId ?? '') || password !== null
+    || (profile.githubLogin !== undefined && (typeof profile.githubLogin !== 'string' || profile.githubLogin.length > 80))) {
+    throw invalid();
+  }
+  if (profile.discriminator !== undefined) {
+    const named = /^\d{4}$/.test(profile.discriminator) && validNickname(profile.nickname) && normalizeName(profile.nickname) === profile.nickname
+      && ['github', 'user'].includes(profile.nicknameSource) && profile.name === displayName(profile.nickname, profile.discriminator);
+    if (!named) throw invalid();
+  } else if (profile.provider === 'password' || typeof profile.name !== 'string' || profile.name.length > 80) {
+    throw invalid();
+  }
+  if (profile.avatarUrl != null && !/^https:\/\/avatars\.githubusercontent\.com\//.test(profile.avatarUrl)) throw invalid();
+  profile.avatarUrl ??= null;
+  return { profile, password, createdAt };
+}
+
+export async function handleBackupRoutes(request, env) {
+  const url = new URL(request.url);
+  if (!url.pathname.startsWith('/api/admin/backup')) return null;
+  const isWrite = request.method === 'POST';
+  // A player session is deliberately irrelevant to administrator authorization.
+  if (!(await bearerAuthorized(request, isWrite ? env.ARCHIVE_IMPORT_TOKEN : env.ARCHIVE_EXPORT_TOKEN))) return json({ error: 'FORBIDDEN' }, 403);
+  const directory = directoryOf(env);
+  if (request.method === 'GET' && url.pathname === '/api/admin/backup/catalog') {
+    const kind = url.searchParams.get('kind') || 'profiles';
+    const page = await directory.backupCatalog({ kind, cursor: url.searchParams.get('cursor') || '' });
+    if (kind === 'profiles') page.items = await Promise.all(page.items.map((item) => exportAccount(env, item)));
+    return json(page);
+  }
+  if (request.method === 'GET' && url.pathname === '/api/admin/backup/archive') {
+    const id = requireId(url.searchParams.get('id'));
+    const archive = await archiveOf(env, id).exportArchive();
+    return json(await sealBackup(archive.facts, archive.chunks));
+  }
+  if (!isWrite) return json({ error: 'METHOD' }, 405);
+  const input = await readJson(request, 32 * 1024 * 1024, 'INVALID_BACKUP'), dryRun = input.dryRun !== false;
+  if (url.pathname === '/api/admin/backup/profile') {
+    // The directory restores the identity (and ends the account's sessions), then the account its profile.
+    const account = parseAccount(input.profile);
+    await directory.restoreAccount(account, dryRun);
+    if (!dryRun) await accountOf(env, account.profile.accountId).setProfile(account.profile);
+    return json({ ok: true, written: dryRun ? 0 : 1 });
   }
   if(url.pathname!=='/api/admin/backup/archive')return json({error:'NOT_FOUND'},404);
   await validateBackup(input.backup);

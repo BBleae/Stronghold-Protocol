@@ -3,11 +3,12 @@
 // match it sits at the bottom centre; in a match (html.sp-in-match, set by the match screen) it moves under the top bar
 // so it never covers the combat view switcher or the shop bar. While it shows, html.sp-conn moves the toasts below it
 // (classes instead of CSS :has(), which Firefox ESR / Safari < 15.4 lack).
-// Account mode (room-net.js): the menu has no connection to show; a login that became invalid offers 重新登录.
+// Account mode (room-net.js): the menu has no connection to show; a login that became invalid offers 重新登录, which
+// leads to the title screen's account card.
 
 import { html, Button, Icon, useTicker } from './components.js';
 import { net, CLIENT_ERR_TEXT } from '../net.js';
-import { loginUrl } from '../account.js';
+import { openLogin } from './accountForms.js';
 import { useStore, shallowEqual } from '../store.js';
 import { useDocClass } from './device.js';
 
@@ -45,7 +46,7 @@ export function ConnectionBanner() {
         : conn.status === 'closed' ? '连接已关闭'
           : rejected ? conn.lastError.text : '正在连接服务器';
   const action = conn.status === 'reconnecting' ? { label: '立即重连', run: () => net.retryNow() }
-    : loginLost ? { label: '重新登录', run: () => location.assign(loginUrl()) }
+    : loginLost ? { label: '重新登录', run: openLogin }
       : conn.status === 'closed' ? { label: replaced ? '在此页面继续' : '重新连接', run: () => net.connect() }
         : versionMismatch ? { label: '刷新页面', run: () => location.reload() }
           : rejected ? { label: '重试', run: () => net.reconnectNow() } : null;

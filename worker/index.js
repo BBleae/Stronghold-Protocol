@@ -6,7 +6,9 @@ import { prepareMatchVersion, retainedMatchVersions } from './match-versions.js'
 import { RULES_VERSION } from '../shared/rules-version.js';
 import { logInfo, logWarn, logError, errorFields } from './log.js';
 import { handleAuth, authenticate, accountOf, directoryOf } from './accounts/auth.js';
+import { handleGithub } from './accounts/github.js';
 import { handleAccountRoutes, seatOf } from './accounts/routes.js';
+import { handleAccountAdmin } from './accounts/admin.js';
 import { handleLobbyRoutes, roomApplications } from './rooms/routes.js';
 import { handleHistoryRoutes } from './archive/routes.js';
 import { publishArchive,prepareArchive } from './archive/outbox.js';
@@ -41,20 +43,25 @@ function apiLimit(env, method, path) {
   if (path === '/api/rooms') return method === 'POST' ? env.RESERVE_LIMIT : env.STATUS_LIMIT;
   if (/^\/api\/rooms\/[A-Za-z]{4}$/.test(path)) return env.STATUS_LIMIT;
   if (/^\/api\/rooms\/[A-Za-z]{4}\/applications$/.test(path)) return method === 'GET' ? env.STATUS_LIMIT : env.APPLICATION_LIMIT;
-  // Everything else: the account's pages (/api/me…), history and replays (/api/matches…), visibility, logout, the
-  // OAuth callback.
+  // Everything else: the account's pages (/api/me…), history and replays (/api/matches…), visibility, registration,
+  // login and logout (a credential attempt also counts against its own limits: worker/accounts/auth.js), the OAuth
+  // callback.
   return env.API_LIMIT;
 }
 
 async function route(request, env) {
   const url = new URL(request.url);
   const path = url.pathname;
-  // Administrator routes: authorized by their own token, never by a player session.
+  // Administrator routes: authorized by their own tokens, never by a player session.
   const backup = await handleBackupRoutes(request, env);
   if (backup) return backup;
+  const admin = await handleAccountAdmin(request, env);
+  if (admin) return admin;
   if (path.startsWith('/api/') && !(await within(apiLimit(env, request.method, path), networkKey(request)))) return tooMany();
   const auth = await handleAuth(request, env);
   if (auth) return auth;
+  const github = await handleGithub(request, env);
+  if (github) return github;
   const accountResponse = await handleAccountRoutes(request, env);
   if (accountResponse) return accountResponse;
   const lobbyResponse = await handleLobbyRoutes(request, env);
@@ -115,12 +122,13 @@ async function route(request, env) {
     dest.searchParams.set('room', code);
     const ticket = url.searchParams.get('ticket');
     if (ticket && /^[0-9a-f]{32}$/.test(ticket)) dest.searchParams.set('ticket', ticket);
-    // The room keeps the login with the socket (and checks it again on its own schedule) and shows the account's
-    // avatar: both are read here, so the room's critical section never waits on another object for them.
+    // The room keeps the login with the socket (and checks it again on its own schedule), names the session after the
+    // account and shows its avatar: all are read here, so the room's critical section never waits on another object
+    // for them.
     const profile = await accountOf(env, session.accountId).getProfile();
     return roomStub(env, code).fetch(new Request(dest, { headers: { Upgrade: 'websocket', 'X-Room-IP': ip,
       'X-Account-ID': session.accountId, 'X-Session-ID': session.sessionId, 'X-Session-Expires': String(session.expiresAt),
-      'X-Avatar-URL': profile?.avatarUrl ?? '' } }));
+      'X-Account-Name': encodeURIComponent(profile.name), 'X-Avatar-URL': profile.avatarUrl ?? '' } }));
   }
   if (path.startsWith('/api/')) return error(404, 'ROOM_NOT_FOUND');
   return env.ASSETS ? env.ASSETS.fetch(request) : error(404, 'ROOM_NOT_FOUND');
@@ -639,7 +647,7 @@ export class RoomDurableObject {
     const expires = request.headers.get('X-Session-Expires');
     rt.connect(adapter, { ip, ticket: url.searchParams.get('ticket'), accountId,
       sessionId: request.headers.get('X-Session-ID'), sessionExpiresAt: expires ? Number(expires) : null,
-      avatarUrl: request.headers.get('X-Avatar-URL') || null });
+      name: decodeURIComponent(request.headers.get('X-Account-Name') ?? ''), avatarUrl: request.headers.get('X-Avatar-URL') || null });
     return new Response(null, { status: 101, webSocket: client });
   }
 

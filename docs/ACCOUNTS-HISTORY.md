@@ -1,6 +1,29 @@
-# GitHub 账号、续局、历史与回放
+# 账号（用户名密码 / GitHub）、续局、历史与回放
 
-这些功能用于 Cloudflare 部署。Node 本地模式继续使用原匿名流程。账号以 GitHub 数值 ID 关联，改名不创建新账号；玩家主动点击「继续对局」后接管原席位，旧设备停止写入。浏览主页不会自动接管。
+这些功能用于 Cloudflare 部署。Node 本地模式继续使用原匿名流程。账号用用户名和密码登录，GitHub OAuth App 配置有效时也可用 GitHub 登录（以 GitHub 数值 ID 关联，GitHub 改名不创建新账号）；玩家主动点击「继续对局」后接管原席位，旧设备停止写入。浏览主页不会自动接管。
+
+## 登录方式与博士代号
+
+- **用户名和密码**：始终可用（标题页的账号卡片：登录 / 注册）。用户名为 3–20 位字母、数字或下划线，不区分大小写唯一（保存输入时的大小写），只用于登录，从不展示给其他玩家。密码 8–128 位（任意字符），以 PBKDF2-SHA256 存储：100,000 次迭代（Cloudflare Workers 的上限；本地 workerd/Miniflare 不限制，不要调高）、16 字节随机盐、32 字节密钥，连同参数一起保存；参数变化后，下次登录成功时按新参数重新存储。哈希在 Worker 请求里计算，不在 SiteDirectory DO 里计算。用户名不存在时同样计算一次哈希；用户名不存在与密码错误给出同一个答复「用户名或密码错误」。注册要写两个对象：先在该账号的 Account DO 记下注册，再由 SiteDirectory 登记用户名、密码哈希与编号，最后保存账号资料；中途中断（例如部署时对象重启）的注册在第一次登录时补完。
+- **GitHub**：只有 `GITHUB_CLIENT_ID`、`GITHUB_CLIENT_SECRET`、`AUTH_ORIGIN`（不带路径的 https 源）都已配置、且凭据未被判定无效时，账号卡片才显示「使用 GitHub 登录」。Worker 用一个虚构的授权码向 GitHub 的 token 接口检查凭据，不需要用户：返回 `bad_verification_code` 表示有效，`incorrect_client_credentials` 或 `redirect_uri_mismatch` 表示无效，其他答复或网络错误为未知（照常显示，稍后再查），见 [GitHub 文档](https://docs.github.com/en/apps/oauth-apps/maintaining-oauth-apps/troubleshooting-oauth-app-access-token-request-errors)。结论按配置指纹（client id、secret 与 `AUTH_ORIGIN` 的 SHA-256）保存在 SiteDirectory DO 与各 isolate：有效 24 小时、无效 1 小时、未知 5 分钟，`/api/me` 最多约每个有效期等一次 GitHub。真实登录换取令牌时若 GitHub 给出上述「无效」答复，Worker 会立即检查一次凭据并记录检查结论：授权码是访问者带来的，可能是为其他回调地址签发的，只有检查结论对所有玩家生效（检查认为凭据没问题时，只有这次登录失败，记入运行日志 `github_code_refused`）。更换 secret 或 client id 即是新配置，会重新检查。无效凭据记入运行日志 `github_credentials_invalid`，检查失败记入 `github_check_failed`。
+- **博士代号**：每个账号在所有地方都显示为「代号#NNNN」（如 `晴猫#1145`）。代号为 1–12 个字（按名字规则规范化后，须含可见字符，不能包含 #），可以重名；编号 NNNN 为随机的 0000–9999，同一代号的编号全站唯一，由 SiteDirectory DO 统一分配。判断是否同一代号时，先去掉不可见字符（Unicode 的 Default_Ignorable_Code_Point），再做 NFKC 规范化并转小写，因此形近字、大小写变体和夹带不可见字符的代号共用一组编号，两个账号的「代号#编号」不会看起来相同。一个代号的 10000 个编号都被占用时，提示换一个代号。
+- GitHub 账号的代号取 GitHub 名称（没有或只有不可见字符时取登录名），去掉 #、截到 12 字。之前登录过、还没有编号的 GitHub 账号，下次打开页面或登录时自动分配并保存编号。GitHub 名称变化时，新代号下原编号空闲则保留，否则重新分配；玩家自己修改过代号后，GitHub 名称不再覆盖它。
+- 大厅的账号菜单可「修改代号」（新代号下原编号空闲时保留，否则重新分配，旧的「代号#编号」随即释放）和「修改密码」（仅用户名密码账号；需当前密码，该账号其他设备的登录随即失效，本设备保持登录）。
+- 房间、加入申请、在线大厅、观战和对局记录里的名字都由服务器按账号资料决定：Worker 在建立房间连接时读取账号资料，客户端 hello 里的名字不再使用。名字最长 17 个字（12 字代号 + `#NNNN`），服务器任何地方都不截断；界面上一行放不下时只省略代号的末尾，`#NNNN` 总是完整显示（编号才是区分同名玩家的部分）。Node 模式手动输入的代号仍为最多 12 字。改代号后，房间里的名字从下一次连接起更新（对局进行中不变）。
+- 登录尝试另外限流（Cloudflare rate limiting 绑定，每分钟计数，超过时答复「尝试次数过多，请稍后再试」）：注册每个网络每分钟 3 次；密码校验（登录、修改密码）每个网络每分钟 10 次，其中同一用户名每分钟 5 次。用户名的次数也按网络分别计算：别人的尝试只用掉他自己网络的次数，不能借限流把玩家挡在门外。绑定只能按 10 秒或 60 秒计数，因此没有按小时 / 15 分钟的窗口。
+
+## 管理员重置密码
+
+为忘记密码的玩家设置新密码，需要单独的管理凭据 `ACCOUNT_ADMIN_TOKEN`（至少 32 个字符，与备份用的 `ARCHIVE_EXPORT_TOKEN` / `ARCHIVE_IMPORT_TOKEN` 分开：各自只有需要的权限），用 `npx wrangler secret put ACCOUNT_ADMIN_TOKEN` 配置。未配置时重置接口一律拒绝。
+
+```powershell
+# 在当前终端环境安全设置 SP_ACCOUNT_ADMIN_TOKEN（与 ACCOUNT_ADMIN_TOKEN 相同）后：
+npm run accounts:reset-password -- --origin https://stronghold.lunar.ag --username <用户名>
+# 或由工具生成随机密码，并只显示这一次：
+npm run accounts:reset-password -- --origin https://stronghold.lunar.ag --username <用户名> --generate
+```
+
+工具不回显输入的密码（需输入两次），也不保存或打印凭据。重置后该账号的所有登录立即失效，房间连接最迟约一分钟后断开。每次重置记入运行日志 `account_password_reset`（带账号 ID，不含密码）。
 
 首页展示租约有效且有真人在线的公开同盟大厅，10 秒刷新一次；后台标签页暂停轮询。申请必须由房主批准，邀请码也不能绕过审批。申请有效期 120 秒，批准后为申请者预留席位 120 秒（批准时申请者已在别的房间入座，则申请失效并告知房主）；开始游戏、转私密、房间关闭或过期会使未完成的申请失效。创建房间失败后留下的未使用预留不会阻止再次创建（直接沿用）或申请加入别的房间（申请时放弃该预留）。「继续对局」接管后席位换用新 token，被接管的设备醒来后无法凭旧 token 夺回席位（收到 4001）。
 
@@ -16,22 +39,23 @@
 
 ## 配置与首次发布
 
-1. 先让现有匿名对局结束。旧匿名会话不能自动归属 GitHub 账号，旧版内存对局不能迁移成持久对局。
-2. 创建 GitHub OAuth App，Homepage URL 设为 `https://stronghold.lunar.ag`，Authorization callback URL 为 `https://stronghold.lunar.ag/api/auth/github/callback`。其他部署域名应同时替换这两项和 `AUTH_ORIGIN`，不要混用生产与本地 OAuth App。
-3. 在 Worker 环境设置 `AUTH_ORIGIN=https://stronghold.lunar.ag` 和 `GITHUB_CLIENT_ID`；通过 `npx wrangler secret put GITHUB_CLIENT_SECRET` 配置密钥。可以用 Wrangler Dashboard 配置变量，或在自己的环境配置中加入非秘密 vars。不要把 secret 写入仓库。未配置完整 OAuth 时，浏览大厅可用，登录按钮明确显示未配置，线上不能匿名创建房间。
-4. 保留原 `v1` migration 和 namespace，部署新增的 `v2-accounts` migration；它只增加 `SITES`、`ACCOUNTS`、`MATCH_ARCHIVES` SQLite 类。不要删除/重命名现有类或使用删除存储的迁移。
-5. `npm ci`、`npm test`、`npm run build:worker`，确认资源包齐全后按 [Cloudflare 部署指南](CLOUDFLARE.md) 发布。
-6. 在真实 GitHub 完成登录、取消登录、退出后重新登录，以及两设备同账号接管、两账号申请审批的上线验收。本地测试通过不代表真实 OAuth App 或生产域名已经验证。
+1. 先让现有匿名对局结束。旧匿名会话不能自动归属账号，旧版内存对局不能迁移成持久对局。
+2. （可选，GitHub 登录）创建 GitHub OAuth App，Homepage URL 设为 `https://stronghold.lunar.ag`，Authorization callback URL 为 `https://stronghold.lunar.ag/api/auth/github/callback`。其他部署域名应同时替换这两项和 `AUTH_ORIGIN`，不要混用生产与本地 OAuth App。在该回调地址的设置里关闭「Allow wildcard matching」：开启时 GitHub 也会把授权码发往回调地址的任意子路径和子域名（2026 年 8 月 3 日之前只登记了一个回调地址的应用默认开启），GitHub 建议关闭。
+3. （可选，GitHub 登录）在 Worker 环境设置 `AUTH_ORIGIN=https://stronghold.lunar.ag` 和 `GITHUB_CLIENT_ID`；通过 `npx wrangler secret put GITHUB_CLIENT_SECRET` 配置密钥。可以用 Wrangler Dashboard 配置变量，或在自己的环境配置中加入非秘密 vars。不要把 secret 写入仓库。未配置或凭据无效时，用户名密码登录照常可用，「使用 GitHub 登录」不显示；线上不能匿名创建房间。
+4. 通过 `npx wrangler secret put ACCOUNT_ADMIN_TOKEN` 配置管理员重置密码的凭据（见上文）。
+5. 保留原 `v1` migration 和 namespace，部署新增的 `v2-accounts` migration；它只增加 `SITES`、`ACCOUNTS`、`MATCH_ARCHIVES` SQLite 类。不要删除/重命名现有类或使用删除存储的迁移。用户名、密码哈希与代号编号的新表由 SiteDirectory DO 自行创建，已有账号、会话和存档照常读取。
+6. `npm ci`、`npm test`、`npm run build:worker`，确认资源包齐全后按 [Cloudflare 部署指南](CLOUDFLARE.md) 发布（`wrangler.jsonc` 的 `ratelimits` 含登录限流 1007–1009）。
+7. 上线验收：注册、登录、退出、修改代号与密码、管理员重置密码；配置 GitHub 时，在真实 GitHub 完成登录、取消登录、退出后重新登录；以及两设备同账号接管、两账号申请审批。本地测试通过不代表真实 OAuth App 或生产域名已经验证。
 
-登录使用一次性 state、S256 PKCE，临时事务 10 分钟；会话默认 30 天，服务端仅保存会话 token 哈希。Cookie 为 HttpOnly、Secure、SameSite=Lax；写 API 验证 Origin。GitHub token 只用于读取公开身份，不持久保存，也不申请仓库权限。参考 [GitHub OAuth 授权流程](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps)。
+GitHub 登录使用一次性 state、S256 PKCE，临时事务 10 分钟。会话默认 30 天，服务端仅保存会话 token 哈希与账号 ID（名字等资料每次从账号读取）。Cookie 为 HttpOnly、Secure、SameSite=Lax；写 API 验证 Origin。GitHub token 只用于读取公开身份，不持久保存，也不申请仓库权限。参考 [GitHub OAuth 授权流程](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps)。
 
 ## 持久化与统计口径
 
 | 存储 | 保存内容 |
 | --- | --- |
 | Room DO | 房间、账号席位、连接 epoch、审批、完整有序对局输入/计时日志、待归档 outbox |
-| SiteDirectory DO | GitHub ID 映射、会话哈希、短期公开大厅租约、归档目录 |
-| Account DO | 账号资料、调配与账号偏好、当前席位/申请、每场个人事实；统计由事实计算 |
+| SiteDirectory DO | GitHub ID 映射、用户名与密码哈希、代号编号分配、GitHub 凭据检查结果、会话哈希、短期公开大厅租约、归档目录 |
+| Account DO | 账号资料（登录方式、代号与编号、头像）、调配与账号偏好、当前席位/申请、每场个人事实；统计由事实计算 |
 | MatchArchive DO | 不可变结算、参与者、带 SHA-256 的回放块及原规则版本 |
 
 对局变更提交成功后才发送确认/状态；写失败由实例重建回到已提交状态。结算先持久化 outbox，再分发档案与个人索引；失败记入运行日志（`archive_publish_failed`），按退避重试（30 秒起，最多每小时一次），不阻塞之后对局的归档；同一 matchId 不重复计数。历史可能在结算后短暂延迟显示，刷新即可。回放和结算不随空房间清理删除，只有同局参与者可读。
@@ -74,7 +98,7 @@
 
 DO 持久存储可跨休眠与重启保留，但误删 namespace、破坏性迁移及业务代码错误仍可能损坏数据。SQLite DO 的 PITR 有过去 30 天的恢复窗口，**不是永久独立备份**，各对象恢复点也不构成跨 DO 事务。参考 [SQLite 存储与 PITR](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/)。
 
-配置不同的随机管理凭据 `ARCHIVE_EXPORT_TOKEN`、`ARCHIVE_IMPORT_TOKEN`（各至少 32 字符），分别用 `wrangler secret put` 写入。玩家登录 Cookie 不能调用管理备份 API。备份工具仅写入显式指定的本地目录，不会自动发到第三方；备份不含 session、OAuth 事务、GitHub token 或 secret。
+配置不同的随机管理凭据 `ARCHIVE_EXPORT_TOKEN`、`ARCHIVE_IMPORT_TOKEN`（各至少 32 字符），分别用 `wrangler secret put` 写入。玩家登录 Cookie 不能调用管理备份 API。备份工具仅写入显式指定的本地目录，不会自动发到第三方；备份不含 session、OAuth 事务、GitHub token 或 secret。导出的每个账号是其账号资料（含代号与编号）；用户名密码账号另含用户名、密码哈希（PBKDF2，不含明文）与创建时间，因此备份目录应与凭据同等妥善保管。首次 GitHub 登录中途中断、还没有账号资料的 GitHub 账号，导出其 GitHub 身份，导入后与较早的无编号资料一样在读取时分配编号。
 
 ```powershell
 # 在当前终端环境安全设置 SP_ARCHIVE_EXPORT_TOKEN 后：
@@ -86,7 +110,7 @@ npm run archives:backup -- import --origin https://restore.example --dir C:\Back
 npm run archives:backup -- import --origin https://restore.example --dir C:\Backups\stronghold\2026-10-03 --apply
 ```
 
-每次导出使用空目录，文件不覆盖。工具预检所有对象后，先恢复身份映射、再恢复归档并重建个人历史；冲突和未知规则版本拒绝覆盖。重复导入不会重复统计，可用于失败后续跑。导入身份时撤销目标环境旧会话，所有玩家重新登录。导出历史期间仍可能产生新结算，应在停止新开局、等待 outbox 清空后做最终一次完整导出；PITR 回退后也应复核目录、档案和个人索引并用导入重建索引。
+每次导出使用空目录，文件不覆盖。工具预检所有对象后，先恢复身份映射（GitHub 用户或用户名与密码哈希、代号编号、账号资料）、再恢复归档并重建个人历史；冲突（GitHub 用户、用户名或「代号#编号」已属于目标环境的另一个账号，或该账号已有另一种身份）报 `IDENTITY_CONFLICT`，未知规则版本拒绝覆盖。较早的、只含 GitHub 资料（无编号）的备份照常导入，账号在下次读取时分配编号。重复导入不会重复统计，可用于失败后续跑。导入的账号在目标环境的旧会话随即失效，玩家重新登录；其他账号的会话不受影响。导出历史期间仍可能产生新结算，应在停止新开局、等待 outbox 清空后做最终一次完整导出；PITR 回退后也应复核目录、档案和个人索引并用导入重建索引。
 
 独立导出覆盖账号身份及已归档历史/回放，**不包含正在进行的对局**；活跃局使用 Room 的持久日志和 PITR。备份尚未被自动排程，运维需定期导出并在独立环境演练。单局导入请求上限 32 MiB，超大回放需要分块导入工具的后续扩展，不应声称已经备份成功。
 
@@ -96,8 +120,9 @@ npm run archives:backup -- import --origin https://restore.example --dir C:\Back
 npm test
 npm run build:worker
 $env:SP_ACCOUNTS_E2E = '1'
+node --test test/ui/password-accounts.e2e.test.js
 node --test test/ui/account-history.e2e.test.js
 node --test test/ui/preferences.e2e.test.js
 ```
 
-浏览器测试使用系统 Chrome（或 `CHROME_PATH`），覆盖大厅审批、真实 WebSocket、两设备接管、对局历史/统计及独立回放。测试账号注入只在测试包装器存在，生产没有测试登录入口。没有素材的 checkout 使用渲染回退，发布前仍须检查真实素材和字体。
+浏览器测试使用系统 Chrome（或 `CHROME_PATH`），覆盖注册、登录、退出、修改代号与密码、大厅审批、真实 WebSocket、两设备接管、对局历史/统计及独立回放。测试账号注入只在测试包装器存在，生产没有测试登录入口。没有素材的 checkout 使用渲染回退，发布前仍须检查真实素材和字体。

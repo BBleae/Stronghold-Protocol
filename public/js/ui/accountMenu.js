@@ -1,13 +1,14 @@
-// Account UI (Workers deployment): the lobby's account actions (继续对局, history, statistics, login / logout), the
-// public room list with join applications and spectating, and the host's application list in the room. Entering a
-// room always goes through the room client (room-net.js enter()).
+// Account UI (Workers deployment): the lobby's account actions (继续对局, history, statistics, 修改代号 / 修改密码,
+// login / logout), the public room list with join applications and spectating, and the host's application list in
+// the room. Entering a room always goes through the room client (room-net.js enter()).
 
 import { useEffect, useState } from '../../vendor/hooks.module.js';
 import { html, Button, Panel, MicroLabel, DifficultyTag } from './components.js';
-import { account, accountRequest, loginUrl } from '../account.js';
+import { account, accountRequest } from '../account.js';
 import { net, identity } from '../net.js';
 import { store, useStore } from '../store.js';
 import { toast } from './toasts.js';
+import { openLogin, NicknameDialog, PasswordDialog } from './accountForms.js';
 
 /**
  * An account GET kept fresh: loaded on mount, when the tab becomes visible, on refresh() and every `interval` ms
@@ -66,12 +67,14 @@ export function LogoutButton() {
 /**
  * The lobby's account actions. 继续对局 shows while the account holds a seat, read again whenever the client is back in
  * the menu and after every 继续对局 attempt; a seat that is still a reservation (a create that failed) creates its room
- * with the lobby's `mode` and `difficulty`.
+ * with the lobby's `mode` and `difficulty`. 修改代号 for every account, 修改密码 for a password account (dialogs:
+ * ui/accountForms.js). Signed out: 登录 leads to the title screen's account card.
  */
 export function AccountMenu({ mode, difficulty }) {
   const inMenu = useStore((s) => s.connection.status === 'menu');
   const seat = useAccountPoll('/api/me/active-match', null, account.enabled && !!account.user && inMenu);
   const [busy, setBusy] = useState(false);
+  const [dialog, setDialog] = useState(null);
   if (!account.enabled) return null;
   const active = seat.data ? seat.data.activeSeat : account.activeSeat;
   const resume = async () => {
@@ -83,14 +86,19 @@ export function AccountMenu({ mode, difficulty }) {
       seat.refresh(); // a match that ended meanwhile takes the button away
     }
   };
-  const login = () => location.assign(loginUrl(store.get().ui.pendingJoin));
+  const closeDialog = () => setDialog(null);
   return html`<div class="account-actions">
     ${account.user ? html`
       ${active ? html`<${Button} size="sm" icon="play" loading=${busy} onClick=${() => run(resume)}>继续对局<//>` : null}
       <${Button} variant="secondary" size="sm" icon="book" onClick=${() => store.patch('ui', { accountPage: 'history' })}>对局记录<//>
       <${Button} variant="secondary" size="sm" icon="signal" onClick=${() => store.patch('ui', { accountPage: 'statistics' })}>个人统计<//>
+      <${Button} variant="secondary" size="sm" icon="edit" onClick=${() => setDialog('nickname')}>修改代号<//>
+      ${account.user.provider === 'password'
+        ? html`<${Button} variant="secondary" size="sm" icon="shield" onClick=${() => setDialog('password')}>修改密码<//>` : null}
       <${LogoutButton} />
-    ` : html`<${Button} size="sm" disabled=${!account.loginReady} onClick=${login}>${account.loginReady ? 'GitHub 登录' : '登录尚未配置'}<//>`}
+    ` : html`<${Button} size="sm" onClick=${openLogin}>登录<//>`}
+    ${dialog === 'nickname' ? html`<${NicknameDialog} onClose=${closeDialog} />` : null}
+    ${dialog === 'password' ? html`<${PasswordDialog} onClose=${closeDialog} />` : null}
   </div>`;
 }
 

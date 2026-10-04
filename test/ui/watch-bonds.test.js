@@ -37,12 +37,15 @@ const { BOND_LAYER_CAP } = await import('../../shared/constants.js');
 const { data } = await import('../../public/js/data.js');
 await data.loadAll('bonds', 'chess', 'assets');
 
-/** Every vnode of a preact tree (htm output), depth first; function components are expanded. */
+// The function components whose output the tests look into: the owner tag, and a player's name (components.js).
+const EXPANDED = ['OwnerTag', 'PlayerName'];
+
+/** Every vnode of a preact tree (htm output), depth first; the EXPANDED function components are expanded. */
 function* walk(v) {
   if (Array.isArray(v)) { for (const x of v) yield* walk(x); return; }
   if (!v || typeof v !== 'object') return;
   yield v;
-  if (typeof v.type === 'function' && /^[A-Z]/.test(v.type.name) && ['OwnerTag'].includes(v.type.name)) yield* walk(v.type(v.props));
+  if (typeof v.type === 'function' && EXPANDED.includes(v.type.name)) yield* walk(v.type(v.props));
   yield* walk(v.props?.children);
 }
 const hasClass = (v, c) => typeof v?.props?.class === 'string' && v.props.class.split(/\s+/).includes(c);
@@ -50,7 +53,7 @@ const textOf = (v) => {
   if (v == null || typeof v === 'boolean') return '';
   if (typeof v === 'string' || typeof v === 'number') return String(v);
   if (Array.isArray(v)) return v.map(textOf).join('');
-  if (typeof v.type === 'function' && v.type.name === 'OwnerTag') return textOf(v.type(v.props));
+  if (typeof v.type === 'function' && EXPANDED.includes(v.type.name)) return textOf(v.type(v.props));
   return textOf(v.props?.children);
 };
 

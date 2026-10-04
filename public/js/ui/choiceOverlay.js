@@ -17,7 +17,7 @@
 // no countdown and say so.
 
 import { useEffect, useState } from '../../vendor/hooks.module.js';
-import { html, Icon, TierChip, Countdown, MicroLabel, Button } from './components.js';
+import { html, Icon, TierChip, Countdown, MicroLabel, Button, PlayerName } from './components.js';
 import { Img, RichText, PlayerAvatar, GIcon } from './gameComponents.js';
 import { itemIconUrl, enemyIconUrl, uiUrl } from './assetUrls.js';
 import { richTextPlain } from './richText.js';
@@ -198,7 +198,7 @@ export function ChoiceView({ pub, sp, myId, solo, busyIdx = null, total = null, 
           return html`<div key=${pid} class=${cx('spov__who', cur && 'is-cur', picked && 'is-done', pid === myId && 'is-self')}>
             <span class="spov__idx num">${i + 1}</span>
             <${PlayerAvatar} player=${p || { name: '?' }} size="sm" self=${pid === myId} />
-            <span class="spov__wname">${p?.name || '博士'}</span>
+            <span class="spov__wname"><${PlayerName} name=${p?.name || '博士'} /></span>
             <span class="spov__wstate">${left ? html`<${Icon} name="exit" />` : picked ? html`<${Icon} name="check" />` : cur ? html`<${Icon} name="hourglass" />` : html`<${Icon} name="dots" />`}</span>
           </div>`;
         })}

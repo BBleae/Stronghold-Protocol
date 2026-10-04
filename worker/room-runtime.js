@@ -1,6 +1,6 @@
 // Platform adapter only: the authoritative game rules remain in Lobby / Network / Match. Every room belongs to accounts
-// (GitHub logins): its seats, approvals and running match are tied to them, and its match is recorded (RecordedMatch)
-// so it survives a restart.
+// (password or GitHub logins): its seats, approvals and running match are tied to them, its sessions are named after
+// them, and its match is recorded (RecordedMatch) so it survives a restart.
 import { Buffer } from 'node:buffer';
 import { randomBytes } from 'node:crypto';
 import { Lobby, Room, CODE_ALPHABET } from '../server/lobby.js';
@@ -25,6 +25,11 @@ export const ROOM_LIMITS = Object.freeze({ sockets: 16, socketsPerIp: 8, session
 export const validCode = (s) => typeof s === 'string' && s.length === 4 && [...s].every((c) => CODE_ALPHABET.includes(c));
 
 class RoomNetwork extends Network {
+  // A session is named after its account (the display name the Worker read from the profile at the upgrade, with the
+  // socket): the name a client sends in its hello is ignored.
+  helloName(conn) {
+    return this.roomRuntime.socketMeta.get(conn.ws)?.name || null;
+  }
   onHelloMsg(conn, msg, now) {
     const prefix = `${this.roomRuntime.code}.`;
     const token = typeof msg.token === 'string' && msg.token.startsWith(prefix) ? msg.token.slice(prefix.length) : undefined;
@@ -387,8 +392,9 @@ export class RoomRuntime {
     if (strangers.filter((m) => m.accountId === accountId).length >= ROOM_LIMITS.spectatorsPerAccount) return 'spectators-per-account';
     return null;
   }
-  // `sessionId` / `sessionExpiresAt`: the login the Worker validated at the upgrade (checkLogins checks it again).
-  connect(ws, { ip = '0.0.0.0', ticket, attachment, accountId, sessionId, sessionExpiresAt = null, avatarUrl, takeover = false } = {}) {
+  // `sessionId` / `sessionExpiresAt`: the login the Worker validated at the upgrade (checkLogins checks it again);
+  // `name` / `avatarUrl`: the account's display name and avatar at the upgrade.
+  connect(ws, { ip = '0.0.0.0', ticket, attachment, accountId, sessionId, sessionExpiresAt = null, name, avatarUrl, takeover = false } = {}) {
     if (!attachment && this.admission(ip,accountId)) { ws.close(CLOSE.TRY_LATER, 'connection limit'); return; }
     const normalized = normalizeIp(ip) || '0.0.0.0';
     const resume=this.resumeTickets.get(ticket);
@@ -399,7 +405,7 @@ export class RoomRuntime {
     const observer = attachment ? !!attachment.observer : !this.hasAccount(accountId);
     this.socketMeta.set(ws, { ip: normalized, key: limitKeyOf(normalized),
       accountId: attachment?.accountId || accountId, takeover, observer,
-      avatarUrl: attachment?.avatarUrl ?? avatarUrl,
+      name: attachment ? attachment.name : name, avatarUrl: attachment?.avatarUrl ?? avatarUrl,
       joinTicket:attachment?.joinTicket || ticket,
       sessionId:attachment?.sessionId || sessionId, connectionEpoch:attachment?.connectionEpoch,
       // Sockets saved before logins were kept with them have neither: their first check is due at once.

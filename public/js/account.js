@@ -1,5 +1,5 @@
-// Account API client (Workers deployment): the signed-in GitHub account as /api/me reported it at boot, the one HTTP
-// helper every account request goes through, and the GitHub login URL.
+// Account API client (Workers deployment): the signed-in account as /api/me reported it at boot (or as the account menu
+// changed it since), the one HTTP helper every account request goes through, and where a login leads.
 //
 // Errors are NetErrors (net.js) like the socket's: one code, one text (errorText: the shared ERR_TEXT, then the
 // client's CLIENT_ERR_TEXT, which holds the account codes).
@@ -7,10 +7,11 @@
 import { NetError } from './net.js';
 
 /**
- * /api/me at boot: `enabled` = the server runs accounts, `loginReady` = GitHub login is configured; `activeSeat` and
- * `application` are the account's seat and pending join application at that moment.
+ * /api/me at boot: `enabled` = the server runs accounts (password sign-in is always offered there), `github` = GitHub
+ * sign-in is offered too; `user` = the signed-in account's profile ({ name: 昵称#NNNN, nickname, provider, … }) or
+ * null; `activeSeat` and `application` are the account's seat and pending join application at that moment.
  */
-export const account = { enabled: false, loginReady: false, user: null, activeSeat: null, application: null };
+export const account = { enabled: false, github: false, user: null, activeSeat: null, application: null };
 
 /** An account request gives up after this long (response headers and body together). */
 export const ACCOUNT_REQUEST_TIMEOUT_MS = 10000;
@@ -55,8 +56,8 @@ export async function accountRequest(path, body, fetchFn = globalThis.fetch) {
 export async function loadAccount(fetchFn = globalThis.fetch) {
   const result = await accountRequest('/api/me', undefined, fetchFn);
   Object.assign(account, {
-    enabled: !!(result.capabilities?.accountSystem || result.capabilities?.accounts),
-    loginReady: !!result.capabilities?.accounts,
+    enabled: !!result.capabilities?.password,
+    github: !!result.capabilities?.github,
     user: result.user, activeSeat: result.activeSeat, application: result.application,
   });
   return result;
@@ -65,11 +66,18 @@ export async function loadAccount(fetchFn = globalThis.fetch) {
 const INVITE_CODE = /^[A-Z]{4}$/;
 
 /**
- * GitHub login. A pending invite code travels through the login (the Worker binds the return path to the OAuth
- * state), so the player comes back to `/?room=CODE` and the application goes out.
+ * Where the page starts over after a login: the lobby, or the invite link the player is applying with (/?room=CODE),
+ * so that the application goes out.
  * @param {string|null} [room] pending invite code
  */
-export function loginUrl(room = null) {
+export const returnPath = (room = null) => (INVITE_CODE.test(room ?? '') ? `/?room=${room}` : '/');
+
+/**
+ * GitHub login. A pending invite code travels through the login (the Worker binds the return path to the OAuth
+ * state), so the player comes back to `/?room=CODE`.
+ * @param {string|null} [room] pending invite code
+ */
+export function githubLoginUrl(room = null) {
   const start = '/api/auth/github/start';
-  return INVITE_CODE.test(room ?? '') ? `${start}?return=${encodeURIComponent(`/?room=${room}`)}` : start;
+  return INVITE_CODE.test(room ?? '') ? `${start}?return=${encodeURIComponent(returnPath(room))}` : start;
 }

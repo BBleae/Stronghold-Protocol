@@ -35,6 +35,7 @@
     "launch": "node scripts/launch.mjs",
     "build:worker": "node tools/build-worker.mjs",
     "archives:backup": "node tools/archive-backup.mjs",
+    "accounts:reset-password": "node tools/reset-password.mjs",
     "dev:worker": "wrangler dev",
     "deploy:worker": "node tools/build-replay.mjs --release && wrangler deploy",
     "resources:manifest": "node tools/resource-pack.mjs --manifest-only",
