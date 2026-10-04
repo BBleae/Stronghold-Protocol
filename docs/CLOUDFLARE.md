@@ -33,6 +33,8 @@ npm run dev:worker
 npm run deploy:worker
 ```
 
+部署前先提交所有改动：`deploy:worker` 只部署干净的提交，并在代码产生新规则版本时先要求提交它（见 [规则版本与容量边界](ACCOUNTS-HISTORY.md#规则版本与容量边界)）。
+
 首次部署到新 Worker 后，在 **Workers & Pages → stronghold-protocol → Settings → Domains & Routes → Add → Custom domain** 中绑定自己的域名。已有 Worker 可在同一位置更换或增加域名，无需修改仓库。由于 `workers.dev` 和版本预览入口已关闭，新 Worker 绑定域名前没有公开访问入口。不要用 `"routes": []` 代替省略字段，否则部署会移除已有路由。
 
 这些命令使用 `npm ci` 按 `package-lock.json` 安装的项目内 Wrangler，使本地开发、配置校验与部署使用相同版本。更新 Wrangler 时，应更新锁文件并完成构建与测试后再部署。

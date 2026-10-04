@@ -36,7 +36,7 @@
     "build:worker": "node tools/build-worker.mjs",
     "archives:backup": "node tools/archive-backup.mjs",
     "dev:worker": "wrangler dev",
-    "deploy:worker": "wrangler deploy",
+    "deploy:worker": "node tools/build-replay.mjs --release && wrangler deploy",
     "resources:manifest": "node tools/resource-pack.mjs --manifest-only",
     "resources:pack": "node tools/resource-pack.mjs",
     "resources:zip": "node tools/vendor.mjs && node tools/fetch-assets.mjs && node tools/resource-pack.mjs --out=."
@@ -55,7 +55,7 @@
     "ws": "^8.22.0"
   },
   "devDependencies": {
-    "esbuild": "^0.28.2",
+    "esbuild": "0.28.2",
     "miniflare": "^5.20261001.0-alpha",
     "puppeteer-core": "^25.12.0",
     "wrangler": "^4.147.0"

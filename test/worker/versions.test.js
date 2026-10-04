@@ -6,21 +6,51 @@ import { pathToFileURL } from 'node:url';
 import { tmpdir } from 'node:os';
 import { bundleWorker,ROOT } from '../../tools/build-worker.mjs';
 import { exportMatch } from '../../server/match/checkpoint.js';
-import {buildReplayVersions} from '../../tools/build-replay.mjs';
+import { buildReplayVersions, retainedRecovery, PLACEHOLDER } from '../../tools/build-replay.mjs';
 
-test('rules versions survive CRLF checkout normalization and retain older artifacts',async t=>{
-  const root=await fs.mkdtemp(path.join(tmpdir(),'sp-version-lines-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));
-  for(const dir of ['server','shared','data','worker','tools'])await fs.mkdir(path.join(root,dir));
-  const names=['server/game.js','shared/example.js','data/example.json','worker/replay-engine.js','worker/recovery-engine.js','worker/data-loader.js','worker/sim-data-loader.js','tools/build-worker.mjs','tools/build-replay.mjs'];
-  for(const name of names)await fs.writeFile(path.join(root,name),'first\r\nsecond\r\n');
-  const bundle=async({outfile,rulesVersion})=>fs.writeFile(outfile,'export const version='+JSON.stringify(rulesVersion));
-  const a=await buildReplayVersions({root,bundle});
-  for(const name of names)await fs.writeFile(path.join(root,name),'first\nsecond\n');
-  const b=await buildReplayVersions({root,bundle});assert.equal(a.current,b.current);assert.equal(b.entries.length,1);
-  await fs.writeFile(path.join(root,'server/game.js'),'changed\n');
-  const c=await buildReplayVersions({root,bundle});assert.notEqual(c.current,b.current);assert.equal(c.entries.length,2);
-  await fs.writeFile(path.join(root,'replay-versions',a.current+'.json.gz'),'broken');
-  await assert.rejects(buildReplayVersions({root,bundle}));
+test('rules versions are the engines\' content, minted only by a release and refused unarchived in CI', async (t) => {
+  const root = await fs.mkdtemp(path.join(tmpdir(), 'sp-versions-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  for (const dir of ['worker', 'data']) await fs.mkdir(path.join(root, dir));
+  const write = (name, text) => fs.writeFile(path.join(root, name), text);
+  // stub bundler: an engine is its entry's source plus its rules version, embedded like a real bundle embeds it
+  const bundle = async ({ root: from, outfile, entry, rulesVersion }) =>
+    fs.writeFile(outfile, `${await fs.readFile(path.join(from, entry), 'utf8')}\nexport const rulesVersion = ${JSON.stringify(rulesVersion)};`);
+  await write('worker/replay-engine.js', 'replay 1');
+  await write('worker/recovery-engine.js', 'recovery 1');
+
+  const dev = await buildReplayVersions({ root, bundle, ci: false });
+  assert.equal(dev.archived, false);
+  await assert.rejects(fs.access(path.join(root, 'replay-versions.json')), 'a development build never writes the committed manifest');
+  await assert.rejects(buildReplayVersions({ root, bundle, ci: true }), /not archived/);
+
+  const first = await buildReplayVersions({ root, bundle, mint: true, ci: false });
+  assert.equal(first.current, dev.current, 'the same sources give the same id');
+  assert.equal(first.minted, true);
+  const engine = await fs.readFile(path.join(root, '.replay-engines', first.current, 'engine.js'), 'utf8');
+  assert.ok(engine.includes(first.current) && !engine.includes(PLACEHOLDER), 'the archived engine carries its own id');
+
+  // what the engines do not contain never mints: docs, git-ignored per-machine files, build plumbing
+  await write('README.md', 'docs');
+  await write('data/local-assets.json', '{"count":1475}');
+  const again = await buildReplayVersions({ root, bundle, ci: true });
+  assert.deepEqual([again.current, again.archived, again.minted], [first.current, true, false]);
+
+  await write('worker/recovery-engine.js', 'recovery 2');
+  const second = await buildReplayVersions({ root, bundle, mint: true, ci: false });
+  assert.notEqual(second.current, first.current);
+  assert.deepEqual(second.entries.map((e) => e.id), [first.current, second.current]);
+  assert.deepEqual(retainedRecovery(second.entries, second.current).map((e) => e.id), [first.current]);
+
+  await fs.writeFile(path.join(root, 'replay-versions', first.current + '.json.gz'), 'broken');
+  await assert.rejects(buildReplayVersions({ root, bundle, ci: false }), 'archives are immutable');
+});
+
+test('a Worker keeps the recovery engines of the newest older versions only', () => {
+  const entries = ['v1', 'v2', 'v3', 'v4', 'v5'].map((id) => ({ id }));
+  assert.deepEqual(retainedRecovery(entries, 'v5', 3).map((e) => e.id), ['v2', 'v3', 'v4']);
+  // a revert to older sources is that older version again, and still restores the newer versions' matches
+  assert.deepEqual(retainedRecovery(entries, 'v2', 3).map((e) => e.id), ['v3', 'v4', 'v5']);
 });
 test('a new release retains executable old recovery and isolated old replay data', {timeout:60000},async t=>{
   const dir=await fs.mkdtemp(path.join(tmpdir(),'sp-versions-'));t.after(()=>fs.rm(dir,{recursive:true,force:true}));

@@ -123,8 +123,11 @@ export async function buildWorker({ root = ROOT } = {}) {
     const run = spawnSync(process.execPath, [path.join(root, 'tools/fetch-assets.mjs')], { cwd: root, stdio: 'inherit' });
     if (run.status !== 0) throw new Error('tools/fetch-assets.mjs failed: the game assets could not be downloaded — retry the deploy');
   }
-  const { buildReplayVersions } = await import('./build-replay.mjs');
-  const versions = await buildReplayVersions({root,bundle:bundleWorker});
+  const { buildReplayVersions, retainedRecovery } = await import('./build-replay.mjs');
+  const versions = await buildReplayVersions({ root, bundle: bundleWorker });
+  if (!versions.archived) {
+    console.warn(`Workers build: rules version ${versions.current} is not archived. Fine for \`wrangler dev\`; deploy only with \`npm run deploy:worker\`.`);
+  }
   const { buildResourceManifest } = await import('./resource-pack.mjs');
   const manifest = await buildResourceManifest({ root });
   if (!manifest.files.some((file) => file.url.startsWith('/assets/'))) {
@@ -133,21 +136,25 @@ export async function buildWorker({ root = ROOT } = {}) {
   const buildTag = buildId({ root });
   const assets = await copyRuntimeAssets({ root, buildTag });
   const pack = await writePackParts({ root, manifest });
-  for(const version of versions.entries) {
-    const target=path.join(assets.out,'replay-engines',version.id);
-    await fs.mkdir(target,{recursive:true});
-    await fs.copyFile(path.join(root,'.replay-engines',version.id,'engine.js'),path.join(target,'engine.js'));
-    if((await fs.stat(path.join(target,'engine.js'))).size>25*1024*1024)throw new Error('Retained replay engine exceeds static asset limit: '+version.id);
+  // Every archived replay engine stays published: an old match replays with its own rules (static assets are cheap).
+  const published = [...new Set([...versions.entries.map((v) => v.id), versions.current])];
+  for (const id of published) {
+    const target = path.join(assets.out, 'replay-engines', id);
+    await fs.mkdir(target, { recursive: true });
+    await fs.copyFile(path.join(root, '.replay-engines', id, 'engine.js'), path.join(target, 'engine.js'));
+    if ((await fs.stat(path.join(target, 'engine.js'))).size > 25 * 1024 * 1024) throw new Error('Replay engine exceeds the 25 MiB static asset limit: ' + id);
     assets.count++;
   }
-  if(assets.count + pack.parts.length + 1>100000)throw new Error('Retained engines exceed static asset count limit');
-  // Current matches restore through the main engine; do not embed a second copy of it.
-  await bundleWorker({ root, buildTag, rulesVersion:versions.current, versionModules:versions.entries.filter(v=>v.id!==versions.current) });
-  const bundleBytes=await fs.readFile(path.join(root,'dist/worker/index.mjs'));
-  const compressed=gzipSync(bundleBytes).length;
+  if (assets.count + pack.parts.length + 1 > 100000) throw new Error('Static assets exceed the 100,000 file limit');
+  // The current version restores through the main bundle; a few older ones through their own recovery engine.
+  const recovery = retainedRecovery(versions.entries, versions.current);
+  await bundleWorker({ root, buildTag, rulesVersion: versions.current, versionModules: recovery, publishedVersions: published });
+  const bundleBytes = await fs.readFile(path.join(root, 'dist/worker/index.mjs'));
+  const compressed = gzipSync(bundleBytes).length;
   // Cloudflare's September 2026 limit is 64 MiB uncompressed; gzip is informational.
-  if(bundleBytes.length>64*1024*1024)throw new Error('Worker exceeds the 64 MiB uncompressed limit. Preserve published engines; plan a version-storage migration before deploying.');
-  console.log(`Worker ${(bundleBytes.length/1024/1024).toFixed(2)} MiB uncompressed / gzip ${(compressed/1024/1024).toFixed(2)} MiB; ${versions.entries.length} retained rules version(s)`);
+  if (bundleBytes.length > 64 * 1024 * 1024) throw new Error('Worker exceeds the 64 MiB uncompressed limit: lower RECOVERY_RETAINED in tools/build-replay.mjs');
+  console.log(`Worker ${(bundleBytes.length / 1024 / 1024).toFixed(2)} MiB uncompressed / gzip ${(compressed / 1024 / 1024).toFixed(2)} MiB; `
+    + `rules version ${versions.current}, recovery for ${recovery.length} older version(s), ${published.length} replay engine(s)`);
   console.log(`Workers build: ${assets.count} static files; resource version ${manifest.version}, ${(manifest.totalBytes / 1024 / 1024).toFixed(1)} MiB`);
   console.log(`Workers build: commit ${buildTag}; resource ZIP ${pack.size} bytes in ${pack.parts.length} parts`);
   return { assets, manifest, pack };
@@ -192,7 +199,7 @@ export async function writePackParts({ root = ROOT, out = path.join(root, 'dist/
 }
 
 export async function bundleWorker({ root = ROOT, outfile = path.join(root, 'dist/worker/index.mjs'),
-  buildTag='local',entry='worker/entry.js',rulesVersion='development-v1',versionModules=[] } = {}) {
+  buildTag = 'local', entry = 'worker/entry.js', rulesVersion = 'development-v1', versionModules = [], publishedVersions = [] } = {}) {
   const replacements = new Map([
     [path.join(root, 'server/data-node.js'), path.join(root, 'worker/data-loader.js')],
     [path.join(root, 'server/sim/nodeData.js'), path.join(root, 'worker/sim-data-loader.js')],
@@ -230,9 +237,19 @@ export async function bundleWorker({ root = ROOT, outfile = path.join(root, 'dis
         const body=source.slice(0,exports.index)+`return {${pairs.join(',')}};`;
         return {loader:'js',contents:`let cached,pending;export async function prepare(){return cached || (pending ||= (async()=>{${body}})().then(value=>cached=value));}export function restore(...args){if(!cached)throw new Error('Recovery engine not prepared');return cached.restore(...args);}`};
       });
-      if(versionModules.length) builder.onLoad({filter:/[\\/]worker[\\/]match-versions\.js$/},()=>({loader:'js',contents:
-        versionModules.map((v,i)=>`import {restore as r${i},prepare as p${i}} from ${JSON.stringify(v.file || path.join(root,'.replay-engines',v.id,'recovery.mjs'))};`).join('\n')+
-        `\nexport const retainedMatchVersions={${versionModules.map((v,i)=>`${JSON.stringify(v.id)}:r${i}`).join(',')}};const preparers={${versionModules.map((v,i)=>`${JSON.stringify(v.id)}:p${i}`).join(',')}};export async function prepareMatchVersion(id){await preparers[id]?.();}`}));
+      // worker/match-versions.js of this build: the retained recovery engines and the published replay versions
+      if (versionModules.length || publishedVersions.length) builder.onLoad({ filter: /[\\/]worker[\\/]match-versions\.js$/ }, () => {
+        const file = (v) => JSON.stringify(v.file || path.join(root, '.replay-engines', v.id, 'recovery.mjs'));
+        const restores = versionModules.map((v, i) => `${JSON.stringify(v.id)}: r${i}`).join(', ');
+        const preparers = versionModules.map((v, i) => `${JSON.stringify(v.id)}: p${i}`).join(', ');
+        return { loader: 'js', contents: [
+          ...versionModules.map((v, i) => `import { restore as r${i}, prepare as p${i} } from ${file(v)};`),
+          `export const retainedMatchVersions = { ${restores} };`,
+          `const preparers = { ${preparers} };`,
+          'export async function prepareMatchVersion(id) { await preparers[id]?.(); }',
+          `export const publishedRulesVersions = ${JSON.stringify(publishedVersions)};`,
+        ].join('\n') };
+      });
       builder.onResolve({ filter: /(?:data-node|nodeData)\.js$/ }, args => {
         const replacement = replacements.get(path.resolve(args.resolveDir, args.path));
         return replacement ? { path: replacement } : undefined;

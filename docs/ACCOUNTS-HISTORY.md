@@ -57,11 +57,16 @@
 
 ## 规则版本与容量边界
 
-`replay-versions.json` 和 `replay-versions/*.json.gz` 必须一同提交、备份。构建保留浏览器回放引擎和服务端恢复引擎的原代码/数据，并校验哈希；不能用新规则读取旧局。首次发布前的未使用实验产物可整理，**已发布版本不得直接删除**。
+`replay-versions.json` 列出生产环境运行过的每个规则版本；`replay-versions/<id>.json.gz` 是该版本的浏览器回放引擎和服务端恢复引擎。二者一同提交、备份，永不修改或删除。版本号是这两个引擎打包结果的哈希（`tools/build-replay.mjs`）：只有引擎实际包含的代码和数据会改变版本号，文档、Worker 的 HTTP 代码、构建脚本、`data/assets.json`（美术与语音清单）和本机未提交的文件都不会。
+
+- **回放**：每个归档版本的回放引擎都作为静态资源永久发布，旧对局始终用它自己的规则回放。
+- **恢复**：Worker 只内置当前版本和最近 3 个旧版本的恢复引擎（每个约 5 MiB，Worker 约 22 MiB，远低于 64 MiB 上限）。对局期间又经历了更多次规则变更部署的对局无法恢复，按中断结束并释放座位。
+- **部署**：只用 `npm run deploy:worker`。它先运行 `node tools/build-replay.mjs --release`：工作区必须干净；当前代码若是新版本，会先归档并提示提交 `replay-versions.json` 和新的 `.json.gz`，提交后再部署一次。Cloudflare 控制台 / CI 构建遇到未归档的版本直接失败；`wrangler dev` 和测试不写这些文件。
+- **回滚**：不要用 Cloudflare 控制台的版本回滚越过一次规则变更，旧 Worker 不认识新版本的对局。用 `git revert` 提交后正常部署：撤回到旧代码就是旧版本号，较新版本的恢复引擎仍在保留范围内。
 
 当前恢复通过重执行完整的有序输入与计时日志来重建技能闭包及共享对象，详细归属见 [持久状态说明](persistence-fields.md)。这是完整事件恢复，尚未实现固定成本的模拟状态快照。日志上限为 200,000 条；恢复耗时随对局长度/服务端战斗量增长。测试的完整合作局包含 28,829 条事件；本机简化首领血量的完整普通难度/隐秘核心恢复约 1.7 秒，该数字不是 Cloudflare CPU/内存保证。长局与大量掉线托管应在生产配额下压测，不能承诺无限长度或免费运行。
 
-构建检查单文件 25 MiB、Workers Paid 套餐的 100,000 个静态文件，以及 Worker 未压缩包体 64 MiB 限额（Cloudflare 2026-09-04 更新后 gzip 大小仅作参考）。构建默认使用付费套餐限制，无需额外环境变量。保留版本会增大包体，接近限额时必须设计独立版本服务/存储迁移，不能删除仍被历史或活跃局引用的引擎来绕过检查。参考 [Workers 限额](https://developers.cloudflare.com/workers/platform/limits/) 和 [DO 限额](https://developers.cloudflare.com/durable-objects/platform/limits/)。
+构建检查单个静态文件 25 MiB、Workers Paid 的 100,000 个静态文件和 Worker 未压缩 64 MiB 限额（gzip 大小仅作参考）。参考 [Workers 限额](https://developers.cloudflare.com/workers/platform/limits/) 和 [DO 限额](https://developers.cloudflare.com/durable-objects/platform/limits/)。
 
 活跃房间每 100ms 推进并持久化，不进入休眠；服务端回放保留 5fps 的关键帧/增量序列，归档 outbox 在压缩前仍需序列化整局数据。编码结果落盘后才发布，并移除 outbox 中的原始回放副本。浏览器下载所有回放块后播放，解压总量上限 128 MiB；个人统计扫描该账号全部历史，会话命令去重最多 50,000 条。当前面向少量朋友的房间，尚未完成大规模容量验收；这些成本不会因使用 DO 自动消失。
 

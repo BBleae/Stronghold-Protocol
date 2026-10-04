@@ -1,14 +1,15 @@
 import { hash,accountOf,directoryOf,json } from '../accounts/auth.js';
 import { archiveOf } from '../archive/routes.js';
 import { RULES_VERSION } from '../../shared/rules-version.js';
-import { retainedMatchVersions } from '../match-versions.js';
+import { publishedRulesVersions } from '../match-versions.js';
 import { AccountError,requireId } from '../../shared/account-protocol.js';
 import {decodeReplayChunk,REPLAY_MAX_BYTES,REPLAY_CHUNK_BYTES} from '../../shared/replay-codec.js';
 
 export async function sealBackup(facts,chunks) {
   const body={formatVersion:1,facts,chunks};return {...body,hash:await hash(JSON.stringify(body))};
 }
-export async function validateBackup(backup,versions=[RULES_VERSION,...Object.keys(retainedMatchVersions)]) {
+// An archive can be imported when this deployment publishes the replay engine of its rules version.
+export async function validateBackup(backup,versions=[RULES_VERSION,...publishedRulesVersions]) {
   if(backup?.formatVersion!==1 || !backup.facts || !Array.isArray(backup.chunks))throw new AccountError('INVALID_BACKUP');
   const {formatVersion,facts,chunks}=backup;
   requireId(facts.matchId);
