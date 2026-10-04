@@ -41,7 +41,7 @@ npm run deploy:worker
 
 若已安装 Bun，也可在完成上述 `npm ci` 后运行 `bun run dev:worker` 和 `bun run deploy:worker`，同样调用项目内 Wrangler；Bun 是可选工具，不是部署前提。
 
-Wrangler 执行构建、上传本地静态文件，保留 `ROOMS`（房间），并通过追加迁移增加 `SITES`（身份/目录）、`ACCOUNTS`（个人索引）、`MATCH_ARCHIVES`（历史/回放）SQLite DO。按网络（IPv4 地址 / IPv6 /64）和账号的请求限流使用 Cloudflare 的 rate limiting 绑定（`wrangler.jsonc` 的 `ratelimits`，每分钟计数，不写存储）：每个 `/api` 请求和房间连接先按网络计数，再接触任何 DO（包括登录查询）；原来的 `ADMISSION` 限流 DO 由迁移 `v3-ratelimits` 删除（它只存短期计数）。GitHub OAuth 配置、迁移、独立备份见 [账号与历史指南](ACCOUNTS-HISTORY.md)。Cloudflare 插件可用于账号、Worker 配置和部署版本的管理、检查；本地批量文件上传使用 Wrangler。
+Wrangler 执行构建、上传本地静态文件，保留 `ROOMS`（房间），并通过追加迁移增加 `SITES`（身份/目录）、`ACCOUNTS`（个人索引）、`MATCH_ARCHIVES`（历史/回放）SQLite DO。按网络（IPv4 地址 / IPv6 /64）和账号的请求限流使用 Cloudflare 的 rate limiting 绑定（`wrangler.jsonc` 的 `ratelimits`，每分钟计数，不写存储）：每个 `/api` 请求和房间连接先按网络计数，再接触任何 DO（包括登录查询）；注册、登录和修改密码另按网络和用户名计数（`REGISTER_LIMIT`、`LOGIN_LIMIT`、`USERNAME_LIMIT`）；原来的 `ADMISSION` 限流 DO 由迁移 `v3-ratelimits` 删除（它只存短期计数）。账号的两种登录方式（用户名密码，以及配置有效时的 GitHub）、管理员重置密码的凭据 `ACCOUNT_ADMIN_TOKEN` 与 `npm run accounts:reset-password`、迁移、独立备份见 [账号与历史指南](ACCOUNTS-HISTORY.md)。Cloudflare 插件可用于账号、Worker 配置和部署版本的管理、检查；本地批量文件上传使用 Wrangler。
 
 构建只发布 `dist/client/` 以及 `dist/worker/index.mjs`。前端保持 `/data/`、`/shared/`、`/sim/` 的既有路径；Node 文件系统数据读取由构建时 JSON 导入替换。`public/dev/`、ZIP、日志、source map 和服务端私有数据读取模块不会发布。不要手动把整个仓库上传为静态站点。
 
@@ -68,7 +68,7 @@ Wrangler 执行构建、上传本地静态文件，保留 `ROOMS`（房间），
 
 登录后普通断网使用绑定账号的房间 token 重连，换设备可点击「继续对局」接管原席位。房间连接被拒绝或结束时，服务器以 WebSocket 关闭码说明原因（席位被接管 4001、登录失效 4003、房间不存在或已结束 4004、连接过多 1013 等），浏览器读不到被拒绝升级请求的 HTTP 状态，所以拒绝也先接受连接再关闭；完整列表见 `worker/close-codes.js`。登录只在建立连接时由 Worker 验证；之后房间在后台每分钟向账号目录确认一次（退出登录最迟约一分钟后以 4003 断开），会话到期则在下一条消息时断开，游戏消息从不等待账号目录。等候房间、玩家席位、审批和活动对局日志持久化，支持 DO 休眠/重启后恢复。房间代码 / token 不与其他房间共用。
 
-账号模式的进行中对局通过原版本规则及完整有序日志恢复；构建会保留旧规则引擎。无法恢复的对局按中断结束并释放席位（见 [持久状态说明](persistence-fields.md)）：在 Cloudflare 上回滚到更早的部署会中断所有在新规则版本上进行的对局（玩家看到「服务器版本已回退」），修复问题应提交回退改动重新部署（前滚）。Worker 只有账号模式（房间都属于 GitHub 账号，对局都有日志）；Node 本地模式保持原匿名流程。恢复成本随对局长度增长，长时间对局、AI 计算、回放体积和 DO 请求 / 存储写入仍受 Cloudflare 配额限制，具体边界见 [持久化与备份说明](ACCOUNTS-HISTORY.md)。PITR 不能代替独立备份。
+账号模式的进行中对局通过原版本规则及完整有序日志恢复；构建会保留旧规则引擎。无法恢复的对局按中断结束并释放席位（见 [持久状态说明](persistence-fields.md)）：在 Cloudflare 上回滚到更早的部署会中断所有在新规则版本上进行的对局（玩家看到「服务器版本已回退」），修复问题应提交回退改动重新部署（前滚）。Worker 只有账号模式（房间都属于账号，对局都有日志）；Node 本地模式保持原匿名流程。恢复成本随对局长度增长，长时间对局、AI 计算、回放体积和 DO 请求 / 存储写入仍受 Cloudflare 配额限制，具体边界见 [持久化与备份说明](ACCOUNTS-HISTORY.md)。PITR 不能代替独立备份。
 
 ## 运行日志
 
@@ -83,6 +83,10 @@ Wrangler 执行构建、上传本地静态文件，保留 `ROOMS`（房间），
 | `listing_publish_failed` | 在线大厅列表更新失败，按同样的退避重试（带下次重试时间 `retryAt`） |
 | `login_check_failed` | 房间向账号目录复核已连接的登录失败；不断开任何连接，按同样的退避重试（带 `retryAt`） |
 | `room_runtime` | 规则代码（大厅、连接、对局）的警告和错误；恢复时重放出的行带 `restoring: true` |
+| `github_credentials_invalid` | GitHub OAuth App 的凭据无效（`incorrect_client_credentials` / `redirect_uri_mismatch`）：「使用 GitHub 登录」不再显示，1 小时后再检查；更换 secret 后立即重新检查 |
+| `github_check_failed` | 检查 GitHub 凭据时没有得到明确答复（网络错误或其他答复）；照常显示 GitHub 登录，5 分钟后再检查 |
+| `account_password_reset` | 管理员重置了一个账号的密码（带账号 ID），该账号的登录全部失效 |
+| `backup_profile_missing` | 导出备份时某个账号没有账号资料（带账号 ID），导出失败 |
 
 ## 验证
 
@@ -92,7 +96,7 @@ node --test test/worker-client.test.js test/worker-build.test.js test/worker/*.t
 $env:SP_RESOURCES_E2E = '1'
 node --test test/resources/browser.e2e.test.js
 $env:SP_ACCOUNTS_E2E = '1'
-node --test test/ui/account-history.e2e.test.js test/ui/preferences.e2e.test.js test/ui/github-account.e2e.test.js
+node --test test/ui/password-accounts.e2e.test.js test/ui/account-flows.e2e.test.js test/ui/account-history.e2e.test.js test/ui/preferences.e2e.test.js test/ui/github-account.e2e.test.js
 $env:SP_SPECTATORS_E2E = '1'
 node --test test/ui/spectators.e2e.test.js
 ```

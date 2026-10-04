@@ -62,7 +62,7 @@ English summary: [below](#english).
 
 ### Cloudflare Workers 部署
 
-本 fork 支持 Workers Static Assets 分发资源、每个房间一个 Durable Object 的 WebSocket 联机，以及浏览器资源包下载 / 本地 ZIP 导入。Cloudflare 模式新增 GitHub 账号、跨设备续局、需审批的在线大厅、历史回放和个人统计，配置与备份见 [账号与历史指南](docs/ACCOUNTS-HISTORY.md)。原来的 Node.js 启动方式继续可用。构建、部署、资源包分发与运行限制见 [Cloudflare 部署指南](docs/CLOUDFLARE.md)。
+本 fork 支持 Workers Static Assets 分发资源、每个房间一个 Durable Object 的 WebSocket 联机，以及浏览器资源包下载 / 本地 ZIP 导入。Cloudflare 模式新增账号（用户名密码登录；配置 GitHub OAuth App 后也可用 GitHub 登录，玩家显示为「博士代号#编号」）、跨设备续局、需审批的在线大厅、历史回放和个人统计，配置、管理员重置密码与备份见 [账号与历史指南](docs/ACCOUNTS-HISTORY.md)。原来的 Node.js 启动方式继续可用。构建、部署、资源包分发与运行限制见 [Cloudflare 部署指南](docs/CLOUDFLARE.md)。
 
 ### 方式一：整合包（推荐）
 
