@@ -252,12 +252,10 @@ function wireNet() {
   // The deep-link join goes out once the player has entered and the client can join (whichever comes last).
   store.subscribe((s, prev) => {
     if (joinReady(s) && !joinReady(prev)) schedulePendingJoin();
-    if (s.room && !prev.room) {
-      // in a room (co-op or solo, also a resumed one) a match is near: its data starts downloading
-      warmGameData();
-      // an approved join application enters the room from any page: the account pages give way to it
-      if (s.ui.accountPage) store.patch('ui', { accountPage: null });
-    }
+    // in a room (co-op or solo, also a resumed one) a match is near: its data starts downloading
+    if (s.room && !prev.room) warmGameData();
+    // an approved join application enters the room from any page: the account pages give way to it
+    if (s.room && !prev.room && s.ui.accountPage) store.patch('ui', { accountPage: null });
   });
 }
 
