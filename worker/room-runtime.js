@@ -10,6 +10,7 @@ import { RecordedMatch, exportMatch, restoreMatch } from '../server/match/checkp
 import { ApplicationQueue } from './rooms/applications.js';
 import { retainedMatchVersions } from './match-versions.js';
 import { Spectators } from './rooms/spectators.js';
+import { withRules } from './rooms/rules.js';
 import { logWarn, logError, errorFields } from './log.js';
 import { CLOSE } from './close-codes.js';
 
@@ -120,6 +121,10 @@ export class RoomRuntime {
     this.lobby.onSpectatorEnd = (frames) => this.spectators.end(frames);
     this.lobby.broadcastState = () => this.spectators.broadcastState();
     this.lobby.sendState = (room, session) => this.spectators.state(session);
+    // A browser simulates a battle with the rules its match runs on: b.start names them (battle/runner.js loads that
+    // version's engine when it is not the page's own — a match restored from an older deployment).
+    const matchSend = this.lobby.matchSend.bind(this.lobby);
+    this.lobby.matchSend = (room, ctx, playerId, msg) => matchSend(room, ctx, playerId, withRules(msg, ctx.match));
     const broadcast = this.lobby.broadcastRoom.bind(this.lobby);
     this.lobby.broadcastRoom = (room, msg) => {
       const result = broadcast(room, msg);

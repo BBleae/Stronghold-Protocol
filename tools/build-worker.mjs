@@ -32,7 +32,7 @@ export function buildId({ root = ROOT, env = process.env } = {}) {
   return /^[0-9a-f]{7,40}$/.test(sha || '') ? sha.slice(0, 7) : 'local';
 }
 
-export async function copyRuntimeAssets({ root = ROOT, out = path.join(root, 'dist/client'), buildTag = 'local' } = {}) {
+export async function copyRuntimeAssets({ root = ROOT, out = path.join(root, 'dist/client'), buildTag = 'local', rulesVersion = 'development-v1' } = {}) {
   root = path.resolve(root);
   out = path.resolve(out);
   if (out !== path.join(root, 'dist', 'client')) throw new Error('Build output must be <root>/dist/client');
@@ -55,7 +55,8 @@ export async function copyRuntimeAssets({ root = ROOT, out = path.join(root, 'di
   // published: the deployed site always says there is none.
   await fs.writeFile(path.join(out, 'data/local-assets.json'), JSON.stringify({ version: 1, source: 'none', count: 0, groups: {} }));
   let html = await fs.readFile(path.join(out, 'index.html'), 'utf8');
-  html = html.replace('<html ', `<html data-sp-runtime="cloudflare" data-sp-build="${buildTag}" `);
+  // data-sp-rules: the rules version of the page's own simulation (/sim/), compared with a battle's (battle/runner.js)
+  html = html.replace('<html ', `<html data-sp-runtime="cloudflare" data-sp-build="${buildTag}" data-sp-rules="${rulesVersion}" `);
   html = html.replace('src="/js/main.js"', 'src="/js/worker-entry.js"');
   // Local fonts and system fallbacks keep the resource gate independent of Google Fonts reachability.
   html = html.replace(/\s*<link[^>]+https:\/\/fonts\.(?:googleapis|gstatic)\.com[^>]*>/g, '');
@@ -125,7 +126,7 @@ export async function buildWorker({ root = ROOT } = {}) {
     throw new Error('No game assets under public/assets: run `npm run assets` first — the resource manifest is built from them (SP_SKIP_ASSETS=1 skips the download, not this check)');
   }
   const buildTag = buildId({ root });
-  const assets = await copyRuntimeAssets({ root, buildTag });
+  const assets = await copyRuntimeAssets({ root, buildTag, rulesVersion: versions.current });
   // Every archived replay engine stays published: an old match replays with its own rules (static assets are cheap).
   const published = [...new Set([...versions.entries.map((v) => v.id), versions.current])];
   for (const id of published) {

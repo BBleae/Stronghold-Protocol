@@ -72,6 +72,9 @@ test('a new release retains executable old recovery and isolated old replay data
   assert.deepEqual(recovered.publicView(),match.publicView(),'old recovery ignores changed current data');
   const replayFile=path.join(dir,'replay.mjs');await bundleWorker({entry:'worker/replay-engine.js',outfile:replayFile,rulesVersion:old});
   const replay=await import(pathToFileURL(replayFile));await replay.ready();assert.equal(replay.rulesVersion,old);
+  // the engine also runs live battles of its version (battle/runner.js loadEngineSim)
+  for(const name of ['createBattleFromSpec','battleProgress','compactResult','fitResult','uniteLeft','attachLpMeter'])assert.equal(typeof replay.spec[name],'function',name);
+  assert.ok(replay.dataSource());
   const stageId=Object.keys(match.data.stages)[0];assert.deepEqual(replay.stage(stageId),match.data.stages[stageId]);
   recovered.dispose();match.dispose();
 });

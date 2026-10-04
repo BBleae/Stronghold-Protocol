@@ -1,5 +1,6 @@
 import { sendSession, sendRaw } from '../../server/net.js';
 import { CLOSE } from '../close-codes.js';
+import { withRules } from './rules.js';
 
 // A changed spectator count is broadcast at most this often: joins and leaves in between are coalesced.
 const PRESENCE_MS = 1000;
@@ -188,7 +189,7 @@ export class Spectators {
       session.watchField = field.fieldId;
       fieldKey = field.battleId + ':' + field.done;
       if (force || previous.fieldKey !== fieldKey) {
-        sendSession(session, match._startMsg(field, session.playerId, { watch: true }));
+        sendSession(session, withRules(match._startMsg(field, session.playerId, { watch: true }), match));
         // A late join needs the current shared boss pool even if it has not changed recently enough to produce another
         // room-wide b.pool frame.
         if (match.bossPool) {

@@ -30,7 +30,7 @@ function fakeNet() {
   return n;
 }
 
-function rig({ hidden = false } = {}) {
+function rig({ hidden = false, ...deps } = {}) {
   let t = 1000;
   const frames = [];
   const intervals = [];
@@ -46,6 +46,7 @@ function rig({ hidden = false } = {}) {
     clearInterval: () => {},
     loadSim: async () => ({ spec: specMod, ds: DS }),
     logger: { error() {}, warn() {}, info() {}, debug() {} },
+    ...deps,
   });
   const feed = { snaps: [], evs: [], fields: [] };
   runner.on('snap', (s) => feed.snaps.push(s));
@@ -506,4 +507,37 @@ test('live unit stats (user playtest #4 item 7): unitStats(id) reads the battle 
   assert.equal(r.runner.unitStats(ally.id), null, 'nothing on screen after the battles were dropped');
   assert.equal(r.runner.unitIdOf(ally.uid, ally.ownerId), null);
   r.runner.dispose();
+});
+
+test("a battle on older rules runs on that version's engine; an engine that cannot run live battles leaves the page's own rules", async () => {
+  const start = realStart();
+  const loads = [];
+  let engineBattles = 0;
+  const engineSpec = { ...specMod, createBattleFromSpec: (...a) => { engineBattles++; return specMod.createBattleFromSpec(...a); } };
+  const failing = new Set(['flaky']);
+  const r = rig({
+    rulesVersion: 'own',
+    loadEngine: async (version) => {
+      loads.push(version);
+      if (version === 'archived-before') throw Object.assign(new Error('cannot run live battles'), { code: 'ENGINE_NOT_LIVE' });
+      if (failing.delete(version)) throw new TypeError('Failed to fetch');
+      return { spec: engineSpec, ds: DS };
+    },
+  });
+  const begin = async (rulesVersion, n) => {
+    r.net.emit('b.start', { ...start, battleId: `${start.battleId}-${n}`, rulesVersion });
+    await r.settle();
+  };
+  await begin('own', 1);
+  assert.deepEqual([loads, engineBattles, r.feed.fields.length], [[], 0, 1], "its own rules: the page's simulation");
+  await begin('older', 2);
+  await begin('older', 3);
+  assert.deepEqual([loads, engineBattles, r.feed.fields.length], [['older'], 2, 3], 'older rules: that engine, loaded once');
+  await begin('archived-before', 4);
+  await begin('archived-before', 5);
+  assert.deepEqual([loads.slice(1), engineBattles, r.feed.fields.length], [['archived-before'], 2, 5], "no live engine: the page's rules, asked once");
+  await begin('flaky', 6);
+  assert.equal(r.feed.fields.length, 5, 'a failed load starts nothing (the server takes the field over)');
+  await begin('flaky', 7);
+  assert.deepEqual([loads.slice(2), engineBattles, r.feed.fields.length], [['flaky', 'flaky'], 3, 6], 'and the next battle loads it again');
 });

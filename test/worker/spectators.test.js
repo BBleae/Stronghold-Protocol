@@ -133,6 +133,9 @@ test('spectators follow prep and combat without authority, and leave when the ma
   rt.spectators.pump();
   const battle=viewer.take('b.start');assert.ok(battle);
   assert.equal(battle.authoritative,false);assert.equal(battle.watch,true);
+  // the browser simulates a battle with its match's rules (battle/runner.js): every b.start names them
+  assert.equal(battle.rulesVersion,match.recording.rulesVersion);
+  assert.equal(host.take('b.start')?.rulesVersion,match.recording.rulesVersion);
   const before=match.recording.events.length;
   send(rt,viewer,'b.progress',{battleId:battle.battleId,tick:1,killed:0,total:1});
   assert.equal(match.recording.events.length,before,'spectator reports cannot enter the match log');

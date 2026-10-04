@@ -159,6 +159,21 @@ export async function loadBrowserSim({ base = '/sim/', dataBase = '/data/', fetc
   return { spec, ds: new simdata.DataSource(raw, null) };
 }
 
+/**
+ * Another rules version's simulation: the archived engine the deployment publishes for it (worker/replay-engine.js,
+ * /replay-engines/<id>/engine.js), with the spec helpers a live battle needs. An engine archived before it exported
+ * those helpers cannot run a live battle: rejects with code ENGINE_NOT_LIVE (a failed load rejects as it is).
+ */
+export async function loadEngineSim(version, { importFn = (url) => import(url) } = {}) {
+  const engine = await importFn(`/replay-engines/${version}/engine.js`);
+  if (engine.rulesVersion !== version) throw new Error(`engine ${version} reports rules version ${engine.rulesVersion}`);
+  if (!engine.spec || typeof engine.dataSource !== 'function') {
+    throw Object.assign(new Error(`the engine of rules version ${version} cannot run live battles`), { code: 'ENGINE_NOT_LIVE' });
+  }
+  await engine.ready();
+  return { spec: engine.spec, ds: engine.dataSource() };
+}
+
 /** Battle logger: content errors are isolated by the sim; report them as warnings (the server logs its own). */
 const SIM_LOGGER = Object.freeze({
   error: (...a) => console.warn('[sim]', ...a),
@@ -168,7 +183,11 @@ const SIM_LOGGER = Object.freeze({
 });
 
 /**
+ * `rulesVersion`: the rules of the page's own simulation (index.html data-sp-rules in the Cloudflare build). A b.start
+ * naming other rules (a match the room Worker restored from an older deployment) is simulated with that version's
+ * engine (loadEngine), so the browser and the server run the match on the same rules.
  * @param {{ net: any, store: any, loadSim?: () => Promise<{ spec: any, ds: any }>, now?: () => number,
+ *   rulesVersion?: string|null, loadEngine?: (version: string) => Promise<{ spec: any, ds: any }>,
  *   raf?: (fn: (t: number) => void) => any, caf?: (h: any) => void, setInterval?: Function, clearInterval?: Function,
  *   doc?: { hidden?: boolean, addEventListener?: Function } | null, logger?: object }} deps
  */
@@ -182,6 +201,8 @@ export function createBattleRunner(deps) {
   const clearIv = deps.clearInterval || ((h) => globalThis.clearInterval(h));
   const doc = deps.doc !== undefined ? deps.doc : (typeof document !== 'undefined' ? document : null);
   const loadSim = deps.loadSim || (() => loadBrowserSim());
+  const ownRules = deps.rulesVersion !== undefined ? deps.rulesVersion : (doc?.documentElement?.dataset?.spRules ?? null);
+  const loadEngine = deps.loadEngine || ((version) => loadEngineSim(version));
   const logger = deps.logger || SIM_LOGGER;
 
   const listeners = new Map();
@@ -222,6 +243,25 @@ export function createBattleRunner(deps) {
       simP = loadSim().catch((err) => { simP = null; throw err; });
     }
     return simP;
+  }
+
+  // The simulation of a battle's rules: the page's own, or that version's archived engine. An engine that cannot run
+  // live battles (archived before it could) leaves only the page's own rules — said in the console, once per version;
+  // a failed load is not kept (the next b.start tries again, as with the page's own simulation).
+  const engines = new Map();
+  function simFor(version) {
+    if (!version || version === ownRules) return ensureSim();
+    if (!engines.has(version)) {
+      engines.set(version, loadEngine(version).catch((err) => {
+        if (err.code !== 'ENGINE_NOT_LIVE') {
+          engines.delete(version);
+          throw err;
+        }
+        console.warn(`[runner] rules version ${version}: ${err.message}; simulating with this page's rules`);
+        return ensureSim();
+      }));
+    }
+    return engines.get(version);
   }
 
   /** Counted leaks so far of every normal field simulated here: { [fieldId]: n } (user playtest #3 item 2). */
@@ -646,7 +686,7 @@ export function createBattleRunner(deps) {
     loading = { battleId: msg.battleId, fieldId: msg.fieldId, kind: msg.kind };
     publishState();
     let sim;
-    try { sim = await ensureSim(); } catch (err) {
+    try { sim = await simFor(msg.rulesVersion); } catch (err) {
       console.warn('[runner] simulation unavailable', err);
       if (seq === startSeq) { loading = null; publishState(); }
       return;

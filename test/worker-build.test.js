@@ -21,9 +21,10 @@ test('Workers static build preserves public routes without publishing game resou
   }
   const { copyRuntimeAssets } = await import('../tools/build-worker.mjs');
   const out = path.join(root, 'dist/client');
-  await copyRuntimeAssets({ root, out });
+  await copyRuntimeAssets({ root, out, rulesVersion: '0123456789abcdef0123' });
   assert.equal(await readFile(path.join(out, 'js/main.js'), 'utf8'), 'code');
   assert.match(await readFile(path.join(out, 'index.html'), 'utf8'), /data-sp-runtime="cloudflare"/);
+  assert.match(await readFile(path.join(out, 'index.html'), 'utf8'), /data-sp-rules="0123456789abcdef0123"/, 'the page knows its rules version');
   assert.match(await readFile(path.join(out, 'index.html'), 'utf8'), /src="\/js\/worker-entry.js"/);
   assert.match(await readFile(path.join(out, 'data.js'), 'utf8'), /getSimData/);
   await access(path.join(out, 'sim/Battle.js'));
