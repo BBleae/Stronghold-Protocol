@@ -150,7 +150,8 @@ export class Spectators {
       this.stop(session);
       this.countChanged = true;
       if (session.connected) {
-        sendSession(session, { t: 'room.closed', reason: 'ended' });
+        // `result`: the match's final view and result follow, so the page keeps the match on screen for them
+        sendSession(session, { t: 'room.closed', reason: 'ended', ...(frames?.length ? { result: true } : {}) });
         for (const frame of frames ?? []) sendRaw(session.ws, frame);
         this.rt.network.conns.get(session.ws)?.close(CLOSE.ROOM_GONE, 'match ended');
       } else {

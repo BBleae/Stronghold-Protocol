@@ -4,7 +4,7 @@
 import { Buffer } from 'node:buffer';
 import { randomBytes } from 'node:crypto';
 import { Lobby, Room, CODE_ALPHABET } from '../server/lobby.js';
-import { Network, Session, SessionRegistry, TokenBucket, encode, newToken, normalizeIp, limitKeyOf } from '../server/net.js';
+import { Network, Session, SessionRegistry, TokenBucket, encode, newToken, normalizeIp, limitKeyOf, sendSession } from '../server/net.js';
 import { ERR, MAX_SEATS } from '../shared/constants.js';
 import { RecordedMatch, exportMatch, restoreMatch } from '../server/match/checkpoint.js';
 import { ApplicationQueue } from './rooms/applications.js';
@@ -156,8 +156,18 @@ export class RoomRuntime {
         if (!info.repeat) s.connectionEpoch = (s.connectionEpoch || 0) + 1;
         meta.connectionEpoch = s.connectionEpoch;
         if (meta.canCreate && this.reservation) s.canCreate = true;
-        if (s.spectating) this.spectators.hello(s, info);
-        else this.lobby.onHello(s, info);
+        if (s.spectating) {
+          this.spectators.hello(s, info);
+          return;
+        }
+        const told = !!s.notice;
+        this.lobby.onHello(s, info);
+        // The page resuming a session waits for its room's state or room.closed. A resumed session in no room that was
+        // told nothing (a reload before its room.create / room.join was answered) gets room.closed: 'unfinished' while
+        // it still holds the reservation (creating again finishes it), else 'expired'.
+        if (info.resumed && !told && !this.lobby.roomOf(s)) {
+          sendSession(s, { t: 'room.closed', reason: s.canCreate ? 'unfinished' : 'expired' });
+        }
       },
       onMessage: (s, msg) => {
         if (msg.t === 'room.spectate') return this.spectators.join(s);

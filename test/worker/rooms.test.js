@@ -65,6 +65,8 @@ test('lobby hibernation restores seats, sessions and the reservation\'s capabili
   t.after(() => awake.lobby.shutdown());
   const resumed = connect(awake, 'owner', { token });
   assert.equal(resumed.take('welcome').resumed, true);
+  // the page resuming a session that has no room yet is told so; creating again finishes the reservation
+  assert.equal(resumed.take('room.closed').reason, 'unfinished');
   send(awake, resumed, { t: 'room.create', mode: 'coop', difficulty: 'FUNNY', rid: 3 });
   assert.equal(resumed.take('room.state').code, 'ABCD');
   const guest = connect(awake, 'guest', { ticket: approve(awake, 'guest') });

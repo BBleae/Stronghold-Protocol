@@ -153,6 +153,7 @@ test('spectators get the players\' result when the match ends, then their socket
   const end=viewer.frames.slice(viewer.frames.findIndex(f=>f.t==='room.closed'));
   assert.deepEqual(end.map(f=>f.t),['room.closed','m.public','m.result']);
   assert.equal(end[0].reason,'ended');
+  assert.equal(end[0].result,true,'says a result follows, so the page keeps the match on screen');
   assert.equal(end[1].phase,'RESULT');
   assert.equal(end[2].victory,true);
   assert.equal(end[2].playerId,undefined,'the shared result, nobody\'s own');
