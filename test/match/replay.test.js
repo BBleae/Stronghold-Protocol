@@ -43,3 +43,38 @@ test('independent replay applies tick inputs, pauses and disposes without networ
   runner.setSpeed(2);runner.play();runner.advance(0.5);assert.equal(steps,45);
   runner.dispose();runner.advance(1);assert.equal(steps,45);assert.ok(frames>0);
 });
+
+test('the replay clock reaches subscribers on a player action and once per whole replay second, never per frame or while paused', () => {
+  const battle = {
+    tickCount: 0, finished: false, sharedBoss: null,
+    step() { this.tickCount++; },
+    snapshot() { return { t: this.tickCount / 30, units: [] }; },
+    drainEvents() { return []; },
+    fieldMeta() { return {}; },
+    forceEnd() { this.finished = true; },
+  };
+  const runner = createReplayRunner({ engine: { createBattle: () => battle } });
+  const heard = [];
+  const off = runner.subscribe((s) => heard.push(s));
+  const frames = (n) => { for (let i = 0; i < n; i++) runner.advance(1 / 60); };
+  assert.deepEqual(heard, [{ playing: false, speed: 1, seconds: 0, duration: 0 }], 'the current clock at once');
+  runner.select({ kind: 'normal', spec: {}, tick: 100, inputs: [] });
+  assert.deepEqual(heard.at(-1), { playing: false, speed: 1, seconds: 0, duration: 4 });
+  frames(120);
+  assert.equal(heard.length, 2, 'nothing while paused');
+  runner.play();
+  assert.deepEqual(heard.at(-1), { playing: true, speed: 1, seconds: 0, duration: 4 });
+  frames(150);
+  assert.deepEqual(heard.slice(3).map((s) => s.seconds), [1, 2], 'one update per whole second of 150 frames');
+  runner.setSpeed(2);
+  frames(60);
+  assert.deepEqual(heard.slice(5).map((s) => [s.speed, s.seconds, s.playing]), [[2, 2, true], [2, 3, true], [2, 3, false]],
+    'the speed, the next second, the end');
+  frames(60);
+  runner.pause();
+  assert.equal(heard.length, 8, 'a finished replay is silent; pausing it changes nothing');
+  off();
+  runner.select({ kind: 'normal', spec: {}, tick: 100, inputs: [] });
+  assert.equal(heard.length, 8, 'unsubscribed');
+  runner.dispose();
+});
