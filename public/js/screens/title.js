@@ -15,7 +15,7 @@ import { LogoutButton } from '../ui/accountMenu.js';
 import { GuideButton } from '../ui/guide.js';
 import { toast } from '../ui/toasts.js';
 import { net, identity } from '../net.js';
-import { account } from '../account.js';
+import { account, loginUrl } from '../account.js';
 import { store, useStore, shallowEqual } from '../store.js';
 import { data, useData } from '../data.js';
 import { FullscreenButton, detectFeatures } from '../ui/device.js';
@@ -178,6 +178,8 @@ function Ridges() {
 const STATUS_TEXT = {
   idle: '准备连接', connecting: '正在连接服务器', connected: '已连接服务器', handshaking: '正在验证身份',
   online: '已连接服务器', reconnecting: '连接中断，正在重连', closed: '连接已关闭',
+  // account mode (room-net.js): no room and no socket, the lobby works over HTTP
+  menu: '已连接服务器',
 };
 
 /** Title screen component. */
@@ -209,7 +211,7 @@ export function TitleScreen() {
     store.patch('session', {entered: true});
   };
 
-  const online = conn.status === 'online' || conn.status === 'connected';
+  const online = conn.status === 'online' || conn.status === 'connected' || conn.status === 'menu';
   const dotClass = online ? 'is-on' : conn.status === 'reconnecting' || conn.status === 'connecting' || conn.status === 'handshaking' ? 'is-warn' : 'is-bad';
 
   // touch screens: no autofocus (it would pop the on-screen keyboard over a landscape phone's whole view)
@@ -263,7 +265,7 @@ export function TitleScreen() {
           </div>
           <${Button} class="title-login__enter" variant="primary" size="xl" block=${true} onClick=${enterAccount}>进入大厅<//>
         ` : account.enabled ? html`<${Button} class="title-login__github" variant="primary" size="xl" block=${true} disabled=${!account.loginReady}
-          onClick=${()=>location.assign('/api/auth/github/start')}>${account.loginReady?'使用 GitHub 登录':'GitHub 登录尚未配置'}<//>
+          onClick=${() => location.assign(loginUrl(pendingJoin))}>${account.loginReady ? '使用 GitHub 登录' : 'GitHub 登录尚未配置'}<//>
           <${Button} variant="ghost" size="lg" block=${true} onClick=${()=>store.patch('session',{entered:true})}>浏览在线大厅<//>` : html`
         <${TextField} label="博士代号" micro="CALLSIGN" size="lg" icon="user" value=${name} maxLength=${NAME_MAX_LEN}
           placeholder="输入你的代号（最多 ${NAME_MAX_LEN} 字）" autoFocus=${!touchUi}
