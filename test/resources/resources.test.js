@@ -73,6 +73,10 @@ function site(files, version = 'a'.repeat(64)) {
   return server;
 }
 
+/** The store of a site that serves `siteManifest` and no files: for imports. */
+const storeOf = (siteManifest, caches = new MemoryCaches()) =>
+  new ResourceStore(siteManifest, { caches, fetcher: async () => Response.json(siteManifest) });
+
 test('the build validates manifests: resource paths only, no traversal, unique URLs, consistent sizes', () => {
   const good = manifest([entry('/assets/audio/a.mp3', 'abc')]);
   assert.deepEqual(validateManifest(good), good);
@@ -105,7 +109,7 @@ test('manifest build is deterministic, excludes programs and unrelated public fi
   const packed = unzipSync(await readFile(result.path));
   assert.deepEqual(Object.keys(packed).sort(), ['assets/audio/a.mp3', 'fonts/a.woff2']);
   assert.equal(new TextDecoder().decode(packed['assets/audio/a.mp3']), 'abc');
-  const store = new ResourceStore(first, { caches: new MemoryCaches() });
+  const store = storeOf(first);
   await importResourceZip(new Blob([await readFile(result.path)]), store, { zipjs });
   assert.equal((await store.check()).complete, true);
   await assert.rejects(writeResourcePack({ root, manifest: first, output: join(root, 'public/resources.zip') }), /public|deploy/i);
@@ -155,7 +159,7 @@ test('the version-keyed caches of earlier releases are adopted in place, merged 
   const { '/resource-cache-status.json': _, ...files } = await caches.contents(old);
   assert.deepEqual(files, { '/assets/a.mp3': 'abc', '/assets/b.mp3': 'new', '/assets/c.mp3': 'add' });
   assert.deepEqual(copies(caches), ['put /assets/b.mp3', 'put /assets/c.mp3', 'put /resource-cache-status.json'], 'only what it lacked');
-  assert.deepEqual(server.requests, ['/resource-manifest.json'], 'nothing is downloaded again');
+  assert.deepEqual(server.requests.filter(url => url !== '/resource-manifest.json'), [], 'nothing is downloaded again');
   // New files go to the adopted cache too.
   server.deploy([['/assets/a.mp3', 'abc'], ['/assets/b.mp3', 'new'], ['/assets/c.mp3', 'add'], ['/assets/d.mp3', 'more']], 'f'.repeat(64));
   await store.download({ retryDelays: NO_WAIT });
@@ -266,6 +270,43 @@ test('a site redeployed during a download: the download continues with the new m
   assert.deepEqual(files, { '/assets/a.mp3': 'abc', '/assets/b.mp3': 'new', '/assets/d.mp3': 'add' });
 });
 
+test('a redeploy during a download that changed only files already stored: the download ends on the new version', async () => {
+  const caches = new MemoryCaches();
+  const server = site([['/assets/a.mp3', 'abc'], ['/assets/b.mp3', 'def']]);
+  const fetcher = async url => {
+    // The deploy lands while b downloads and changes a, which is stored already; nothing fails.
+    if (url === '/assets/b.mp3' && server.manifest.version === 'a'.repeat(64)) {
+      server.deploy([['/assets/a.mp3', 'new'], ['/assets/b.mp3', 'def']], 'b'.repeat(64));
+    }
+    return server.fetcher(url);
+  };
+  const store = await ResourceStore.load({ caches, fetcher });
+  const status = await store.download({ concurrency: 1, retryDelays: NO_WAIT });
+  assert.deepEqual([status.version, status.complete], ['b'.repeat(64), true]);
+  const { '/resource-cache-status.json': saved, ...files } = await caches.contents('stronghold-resources');
+  assert.deepEqual(files, { '/assets/a.mp3': 'new', '/assets/b.mp3': 'def' });
+  assert.equal(JSON.parse(saved).version, 'b'.repeat(64));
+});
+
+test('a page loaded before a deploy brings the cache to the live version, never back to its own', async () => {
+  const caches = new MemoryCaches();
+  const server = site([['/assets/a.mp3', 'abc'], ['/assets/b.mp3', 'old']]);
+  const stale = await ResourceStore.load({ caches, fetcher: server.fetcher });
+  server.deploy([['/assets/a.mp3', 'abc'], ['/assets/b.mp3', 'new']], 'b'.repeat(64));
+  // A page of the new version installs it; then the old page checks.
+  await (await ResourceStore.load({ caches, fetcher: server.fetcher })).download({ retryDelays: NO_WAIT });
+  const status = await stale.check();
+  assert.deepEqual([status.version, status.complete], ['b'.repeat(64), true]);
+  const { '/resource-cache-status.json': _, ...files } = await caches.contents('stronghold-resources');
+  assert.deepEqual(files, { '/assets/a.mp3': 'abc', '/assets/b.mp3': 'new' });
+
+  // A ZIP of the live site imported into the old page imports whole, for the live version.
+  server.deploy([['/assets/a.mp3', 'abc'], ['/assets/b.mp3', 'newer']], 'c'.repeat(64));
+  const pack = zipSync({ 'assets/a.mp3': bytes('abc'), 'assets/b.mp3': bytes('newer') });
+  const imported = await importResourceZip(new Blob([pack]), stale, { zipjs });
+  assert.deepEqual([imported.version, imported.complete, imported.imported, imported.skipped], ['c'.repeat(64), true, 2, 0]);
+});
+
 test('pausing keeps the finished files; a full disk stops at once; clearing leaves unrelated caches alone', async () => {
   const caches = new MemoryCaches();
   const server = site([['/assets/a.mp3', 'abc'], ['/assets/b.mp3', 'def']]);
@@ -300,7 +341,7 @@ test('pausing keeps the finished files; a full disk stops at once; clearing leav
 test('ZIP imports use the trusted manifest, validate hashes and read files by range', async () => {
   const a = entry('/assets/a.mp3', 'abc');
   const b = entry('/assets/b.mp3', 'def');
-  const store = new ResourceStore(manifest([a, b]), { caches: new MemoryCaches() });
+  const store = storeOf(manifest([a, b]));
   // Larger than the maximum EOCD search window, so range-based readers must seek
   // without buffering the complete archive. Tiny archives may legitimately fit in one read.
   const local = zipSync({ 'assets/a.mp3': bytes('abc'), 'assets/b.mp3': bytes('def') }, { comment: 'x'.repeat(65535) });
@@ -308,7 +349,7 @@ test('ZIP imports use the trusted manifest, validate hashes and read files by ra
   await importResourceZip(new LocalFile([local]), store, { zipjs });
   assert.equal((await store.check()).complete, true);
   for (const [name, content] of [['assets/a.mp3', 'BAD'], ['assets/a.mp3', 'too big']]) {
-    const fresh = new ResourceStore(manifest([a]), { caches: new MemoryCaches() });
+    const fresh = storeOf(manifest([a]));
     await assert.rejects(importResourceZip(new Blob([zipSync({ [name]: bytes(content) })]), fresh, { zipjs }), /清单/);
     assert.equal((await fresh.check()).count, 0);
   }
@@ -319,7 +360,7 @@ test('ZIP imports skip unrelated files and directories without validating their 
   const b = entry('/fonts/%E5%AD%97%20font.woff2', 'font');
   b.type = 'font/woff2';
   const caches = new MemoryCaches();
-  const store = new ResourceStore(manifest([a, b]), { caches });
+  const store = storeOf(manifest([a, b]), caches);
   const archive = zipSync({
     'assets/audio/sfx/player/p_atk/p_atk_archet_s.mp3': bytes('unused'),
     'assets/': new Uint8Array(),
@@ -343,7 +384,7 @@ test('ZIP imports skip unrelated files and directories without validating their 
 
 test('ZIP imports accept large unrelated payloads and repeated unrelated entries', async () => {
   const a = entry('/assets/a.mp3', 'abc');
-  const store = new ResourceStore(manifest([a]), { caches: new MemoryCaches() });
+  const store = storeOf(manifest([a]));
   const parts = [];
   const archive = new Zip((error, data) => { assert.ifError(error); parts.push(data); });
   for (const [name, data] of [
@@ -363,7 +404,7 @@ test('ZIP imports accept large unrelated payloads and repeated unrelated entries
 
 test('ZIP imports report no matching resources without changing existing progress', async () => {
   const a = entry('/assets/a.mp3', 'abc');
-  const store = new ResourceStore(manifest([a]), { caches: new MemoryCaches() });
+  const store = storeOf(manifest([a]));
   await store.put(a, bytes('abc'));
   await assert.rejects(importResourceZip(new Blob([zipSync({ 'README.txt': bytes('unused') })]), store, { zipjs }), /没有.*匹配/);
   assert.equal((await store.check()).complete, true);
@@ -372,7 +413,7 @@ test('ZIP imports report no matching resources without changing existing progres
 test('ZIP import rejects missing end records, forged sizes and duplicate entries', async () => {
   const a = entry('/assets/a.mp3', 'abc');
   const archive = zipSync({ 'assets/a.mp3': bytes('abc') });
-  const fresh = () => new ResourceStore(manifest([a]), { caches: new MemoryCaches() });
+  const fresh = () => storeOf(manifest([a]));
   await assert.rejects(importResourceZip(new Blob([archive.slice(0, -22)]), fresh(), { zipjs }), /ZIP/);
   const forged = archive.slice();
   new DataView(forged.buffer).setUint32(22, 10000000, true);
@@ -381,7 +422,7 @@ test('ZIP import rejects missing end records, forged sizes and duplicate entries
   const duplicate = new Zip((error, data) => { assert.ifError(error); duplicateParts.push(data); });
   for (let i = 0; i < 2; i++) { const file = new ZipPassThrough('assets/a.mp3'); duplicate.add(file); file.push(bytes('abc'), true); }
   duplicate.end();
-  const pair = new ResourceStore(manifest([a, entry('/assets/b.mp3', 'def')]), { caches: new MemoryCaches() });
+  const pair = storeOf(manifest([a, entry('/assets/b.mp3', 'def')]));
   await assert.rejects(importResourceZip(new Blob(duplicateParts), pair, { zipjs }), /重复|duplicate|ambiguous/i);
 });
 
@@ -396,7 +437,7 @@ test('streamed stored ZIP imports binary files containing ZIP signatures without
   archive.add(streamed);
   streamed.push(payload, true);
   archive.end();
-  const store = new ResourceStore(manifest([file]), { caches: new MemoryCaches() });
+  const store = storeOf(manifest([file]));
   await importResourceZip(new Blob(parts), store, { zipjs });
   assert.equal((await store.check()).complete, true);
 });
@@ -406,7 +447,7 @@ test('a pack of another deployment imports the files that match and skips the re
   const b = entry('/assets/b.mp3', 'def');
   const c = entry('/assets/c.mp3', 'ghi');
   const caches = new MemoryCaches();
-  const store = new ResourceStore(manifest([a, b, c]), { caches });
+  const store = storeOf(manifest([a, b, c]), caches);
   // a matches; b has another hash; c has another size; unrelated names must not block either behavior.
   const pack = zipSync({ 'assets/a.mp3': bytes('abc'), 'assets/b.mp3': bytes('XYZ'),
     'assets/c.mp3': bytes('old-size'), 'assets/old.mp3': bytes('old'), '../unused.txt': bytes('unused') });
@@ -417,7 +458,7 @@ test('a pack of another deployment imports the files that match and skips the re
   const { '/resource-cache-status.json': _, ...files } = await caches.contents('stronghold-resources');
   assert.deepEqual(Object.keys(files), ['/assets/a.mp3']);
   // nothing matches at all: refused, so the player knows the pack is for another version
-  const other = new ResourceStore(manifest([b]), { caches: new MemoryCaches() });
+  const other = storeOf(manifest([b]));
   await assert.rejects(importResourceZip(new Blob([pack]), other, { zipjs }), /清单/);
 });
 

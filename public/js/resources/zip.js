@@ -11,7 +11,8 @@ const MAX_READ_BYTES = 16 * 1024 * 1024;
 export async function importResourceZip(blob, store, { signal, onProgress = () => {}, zipjs } = {}) {
   checkAbort(signal);
   zipjs ??= await import('/vendor/zip.module.js');
-  const status = await store.reconcile();
+  // Against the live manifest: a pack of the current site imports whole even after a deploy during a long session.
+  const status = await store.reconcile(signal);
   const expected = new Map(store.manifest.files.map(file => [decodeURIComponent(file.url.slice(1)), file]));
   const seen = new Set();
   let imported = 0, skipped = 0;

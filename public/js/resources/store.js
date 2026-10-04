@@ -4,6 +4,9 @@
 // its X-Resource-SHA256 and size match the manifest; reconcile() removes the others. A status entry in the same cache
 // records the site version the cache was last reconciled against and how much of it is present, so that a page load
 // of an unchanged site needs no scan of thousands of entries.
+//
+// The cache only ever follows the live site version: reconcile() fetches the manifest before it changes anything, and
+// downloads and imports start with it.
 import { mediaUrl } from '../media.js';
 import { CACHE_PREFIX, checkAbort, matchesResource, readBoundedResponse, resourceResponse, verifyBytes } from './common.js';
 
@@ -80,12 +83,12 @@ export class ResourceStore {
     return new ResourceStore(await fetchManifest(options.fetcher), options);
   }
 
-  /** Names of the existing resource caches, oldest first. */
+  /** Names of the existing resource caches. */
   async #cacheNames() {
     return (await this.caches.keys()).filter(name => name.startsWith(CACHE_PREFIX));
   }
 
-  /** The cache's status for the current manifest: its status entry when that is of this site version, else reconcile(). */
+  /** The cache's status: its status entry when that is of the store's site version, else reconcile(). */
   async check() {
     const names = await this.#cacheNames();
     if (!names.length) return cacheStatus(this.manifest, 0, 0);
@@ -101,11 +104,13 @@ export class ResourceStore {
   }
 
   /**
-   * Scan the cache: keep the entries of the current manifest, delete every other one, and record the result.
+   * Bring the cache to the live site version: fetch the manifest (a 304 when unchanged), keep the entries it lists,
+   * delete every other one, and record the result.
    * Earlier releases kept one cache per site version. The fullest resource cache stays the cache; the others hand
    * over the files it lacks and are deleted. So an earlier installation is adopted in place, never copied whole.
    */
-  async reconcile() {
+  async reconcile(signal) {
+    await this.refreshManifest(signal);
     const manifest = this.manifest;
     const files = new Map(manifest.files.map(file => [file.url, file]));
     const names = await this.#cacheNames();
@@ -170,9 +175,8 @@ export class ResourceStore {
    * continues with the new manifest. Pausing (`signal`) or a full disk stops everything at once.
    */
   async download({ signal, onProgress = () => {}, concurrency = 6, retryDelays = RETRY_DELAYS_MS } = {}) {
-    await this.refreshManifest(signal);
     while (true) {
-      const status = await this.reconcile();
+      const status = await this.reconcile(signal);
       onProgress({ ...status });
       const queue = this.manifest.files.filter(file => !status.present.has(file.url));
       const failed = [];
@@ -198,10 +202,11 @@ export class ResourceStore {
       }
       checkAbort(signal); // a pause wins over the errors of files that were in flight
       if (stop) throw stop;
-      if (!failed.length) return status;
-      // Files that keep failing are what a redeploy changed or removed: then start over with the new manifest.
+      // A redeploy during the pass changed what is complete, and explains files that kept failing (changed or
+      // removed): start over with the new manifest.
       if (await this.refreshManifest(signal)) continue;
-      throw new DownloadError(failed);
+      if (failed.length) throw new DownloadError(failed);
+      return status;
     }
   }
 
