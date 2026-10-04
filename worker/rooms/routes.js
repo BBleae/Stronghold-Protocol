@@ -1,6 +1,6 @@
 import { authenticate, accountOf, directoryOf, json, requireOrigin } from '../accounts/auth.js';
 import { AccountError } from '../../shared/account-protocol.js';
-import { clearStaleApplication, seatOf } from '../accounts/routes.js';
+import { clearStaleApplication, giveUpReservation, seatOf } from '../accounts/routes.js';
 import { errorResponse, readJson } from '../http.js';
 export async function handleLobbyRoutes(request, env) {
   const url = new URL(request.url);
@@ -16,7 +16,10 @@ export async function handleLobbyRoutes(request, env) {
   if (!session) return json({ error: 'LOGIN_REQUIRED' }, 401);
   const body = request.method === 'POST' ? await readJson(request, 2048) : null;
   if (body?.action === 'apply') {
-    if (await seatOf(env, session.accountId)) return json({ error: 'ALREADY_SEATED' }, 409);
+    // A seat in a live room blocks applying elsewhere; a reservation the account never used (a create that failed)
+    // does not: applying gives it up.
+    const seat = await seatOf(env, session.accountId);
+    if (seat && !(seat.reserved && await giveUpReservation(env, session.accountId))) return json({ error: 'ALREADY_SEATED' }, 409);
     await clearStaleApplication(env, session.accountId);
   }
   const room = env.ROOMS.get(env.ROOMS.idFromName(match[1]));
@@ -74,7 +77,11 @@ export async function roomApplications(rt,request,env) {
       // The applicant's seat was validated when they applied (handleLobbyRoutes).
       const claim = await applicant.claimSeat({ claimId: item.id,
         seat: { roomId: rt.code, roomGeneration: rt.generation, matchId: null, seatId: null } });
-      if(!claim.ok) throw new AccountError(claim.error,409);
+      if (!claim.ok) {
+        // The applicant took a seat elsewhere since applying: the application is over, and the host is told why.
+        queue.drop(item.id);
+        throw new AccountError('APPLICANT_BUSY', 409);
+      }
       try {
         const approved=queue.decide(accountId,item.id,'approved',{hostId:host,inMatch:!!room.match,freeSeats:room.seats.filter(x=>!x).length});
         await applicant.clearApplication(rt.code);return json(approved);

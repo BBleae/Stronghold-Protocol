@@ -4,7 +4,7 @@
 import { Buffer } from 'node:buffer';
 import { randomBytes } from 'node:crypto';
 import { Lobby, Room, CODE_ALPHABET } from '../server/lobby.js';
-import { Network, Session, SessionRegistry, TokenBucket, encode, normalizeIp, limitKeyOf } from '../server/net.js';
+import { Network, Session, SessionRegistry, TokenBucket, encode, newToken, normalizeIp, limitKeyOf } from '../server/net.js';
 import { ERR, MAX_SEATS } from '../shared/constants.js';
 import { RecordedMatch, exportMatch, restoreMatch } from '../server/match/checkpoint.js';
 import { ApplicationQueue } from './rooms/applications.js';
@@ -33,8 +33,19 @@ class RoomNetwork extends Network {
     if (presented && presented.accountId !== meta.accountId) {
       this.reply(conn, {t: 'error', code: ERR.BAD_MSG, detail: 'account mismatch', rid: msg.rid}); return;
     }
-    if (previous && this.roomRuntime.lobby.roomOf(previous) && !conn.session && !meta.takeover && token !== previous.token) {
-      this.reply(conn, {t: 'error', code: ERR.BAD_MSG, detail: 'resume required', rid: msg.rid}); return;
+    if (previous && this.roomRuntime.lobby.roomOf(previous) && !conn.session && !meta.takeover) {
+      // The account's seat is resumed with its token. A token the seat no longer has was superseded by a takeover
+      // (继续对局 on another device): this socket was replaced, as the old one of the takeover itself was.
+      if (token && token !== previous.token) { conn.close(CLOSE.REPLACED, 'session replaced'); return; }
+      if (token !== previous.token) {
+        this.reply(conn, {t: 'error', code: ERR.BAD_MSG, detail: 'resume required', rid: msg.rid}); return;
+      }
+    }
+    if (previous && meta.takeover && !conn.session) {
+      // A takeover gives the seat a new token: a device that slept through it cannot take the seat back with the old one.
+      this.registry.byTokenMap.delete(previous.token);
+      do previous.token = newToken(); while (this.registry.byTokenMap.has(previous.token));
+      this.registry.byTokenMap.set(previous.token, previous);
     }
     // An account has one session in the room.
     super.onHelloMsg(conn, { ...msg, token: previous?.token }, now);
@@ -161,7 +172,7 @@ export class RoomRuntime {
           // Joining takes the host's approval (worker/rooms/routes.js), used once.
           const ticket = this.socketMeta.get(s.ws)?.joinTicket;
           const entry = this.applications.list(s.accountId).find((x) => x.status === 'approved' && x.ticket === ticket);
-          if (!entry) return { error: ERR.NOT_HOST, detail: 'approval required' };
+          if (!entry) return { error: ERR.APPLICATION_EXPIRED };
           const result = this.lobby.onMessage(s, msg);
           if (!result.error) this.applications.consume(s.accountId, ticket);
           return result;

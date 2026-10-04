@@ -43,6 +43,24 @@ export async function seatOf(env, accountId, method = 'GET') {
   return response.json();
 }
 
+/**
+ * The account gives up its seat if it is a reservation it never used (a create that failed before room.create):
+ * the room drops the reservation and the pointer is released. Resolves false when the seat is a real one (or became
+ * one meanwhile).
+ */
+export async function giveUpReservation(env, accountId) {
+  const account = accountOf(env, accountId);
+  const seat = await account.getActiveSeat();
+  if (!seat) return true;
+  const room = env.ROOMS.get(env.ROOMS.idFromName(seat.roomId));
+  const response = await room.fetch(new Request('https://room.internal/_account', {
+    method: 'DELETE', headers: { 'X-Account-ID': accountId, 'X-Room-Generation': seat.roomGeneration } }));
+  if (response.status === 409) return false;
+  if (!response.ok && response.status !== 404) throw new Error(`room ${seat.roomId} answered ${response.status} to a reservation given up`);
+  await account.releaseSeat({ claimId: seat.claimId });
+  return true;
+}
+
 export async function handleAccountRoutes(request, env) {
   const path = new URL(request.url).pathname;
   if (!['/api/me/active-match','/api/me/resume','/api/me/preferences'].includes(path)) return null;

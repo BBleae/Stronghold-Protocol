@@ -33,7 +33,7 @@ export class ApplicationQueue {
     if(!['approved','rejected'].includes(decision)) throw new AccountError('INVALID_DECISION');
     if(decision==='approved') {
       if(room.freeSeats<=this.reservedCount()) throw new AccountError('ROOM_FULL',409);
-      item.ticket=randomBytes(16).toString('hex');item.expiresAt=this.now()+ACCOUNT_LIMITS.reservationMs;
+      item.ticket=randomBytes(16).toString('hex');item.expiresAt=this.now()+ACCOUNT_LIMITS.approvalMs;
     }
     item.status=decision;return {...item};
   }
@@ -43,6 +43,11 @@ export class ApplicationQueue {
     if(item.status==='joined')throw new AccountError('ALREADY_JOINED',409);
     if(['pending','approved'].includes(item.status)) {item.status='cancelled';delete item.ticket;}
     return {...item};
+  }
+  /** The application can no longer be approved (its applicant is busy elsewhere). */
+  drop(id) {
+    const item=this.items.find(x=>x.id===id && ['pending','approved'].includes(x.status));
+    if(item) {item.status='expired';delete item.ticket;}
   }
   consume(accountId,ticket) {
     this.expire();

@@ -600,12 +600,19 @@ export class RoomDurableObject {
       // The room is the truth about an account's seat (worker/accounts/routes.js seatOf): 404 releases it.
       const accountId = request.headers.get('X-Account-ID');
       if (request.headers.get('X-Room-Generation') !== rt.generation || !rt.hasAccount(accountId)) return error(404, 'ROOM_NOT_FOUND');
+      const reserved = rt.reservation?.accountId === accountId;
+      if (request.method === 'DELETE') {
+        // The account gives up a reservation it never used (worker/accounts/routes.js giveUpReservation).
+        if (!reserved) return error(409, 'ALREADY_SEATED');
+        rt.reservation = null;
+        return json({ ok: true });
+      }
       if (request.method === 'POST') {
         const ticket = rt.resumeAccount(accountId);
         return json({ code: rt.code, generation: rt.generation, ticket,
-          join: rt.applications.list(accountId).some((x) => x.status === 'approved'), reserved: rt.reservation?.accountId === accountId });
+          join: rt.applications.list(accountId).some((x) => x.status === 'approved'), reserved });
       }
-      return json({ activeSeat: { roomId: rt.code, roomGeneration: rt.generation }, status: rt.status() });
+      return json({ activeSeat: { roomId: rt.code, roomGeneration: rt.generation }, status: rt.status(), reserved });
     }
     if (url.pathname === '/_status' && request.method === 'GET') {
       const status = rt.status();

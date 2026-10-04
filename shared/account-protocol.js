@@ -1,6 +1,7 @@
 export const ACCOUNT_LIMITS = Object.freeze({
   sessionMs: 30 * 86400000, oauthMs: 600000, applicationMs: 120000,
-  reservationMs: 30000, leaseMs: 60000, heartbeatMs: 20000, pageSize: 50,
+  // How long an approval holds the applicant's seat: long enough to switch apps on a phone and back.
+  approvalMs: 120000, leaseMs: 60000, heartbeatMs: 20000, pageSize: 50,
 });
 export class AccountError extends Error {
   constructor(code, status = 400) { super(code); this.code = code; this.status = status; }

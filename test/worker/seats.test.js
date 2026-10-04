@@ -62,3 +62,68 @@ test('an approval ends with its room: the applicant is never left seated', { tim
   assert.equal(await world.account(guest, 'getActiveSeat'), null, 'the read released the pointer');
   assert.equal((await world.api('b', '/api/rooms', { method: 'POST' })).status, 201);
 });
+
+test('a create that failed does not block applying elsewhere: applying gives the reservation up', { timeout: 120000 }, async (t) => {
+  const world = await createWorld(t);
+  await world.seed('a');
+  const guest = (await world.seed('b')).accountId;
+  const failed = (await world.api('b', '/api/rooms', { method: 'POST' })).body; // never connected
+  const route = (await world.api('a', '/api/rooms', { method: 'POST' })).body;
+  const host = await world.player('a', route);
+  await host.request('room.create', { mode: 'coop', difficulty: 'FUNNY' });
+
+  const applied = await world.api('b', `/api/rooms/${route.code}/applications`, { method: 'POST', body: { action: 'apply' } });
+  assert.equal(applied.status, 201);
+  assert.equal(await world.account(guest, 'getActiveSeat'), null);
+  assert.equal((await world.room(failed.code, 'snapshot'))?.reservation ?? null, null, 'the reservation is gone from its room');
+  const approved = await world.api('a', `/api/rooms/${route.code}/applications`, { method: 'POST', body: { action: 'approve', id: applied.body.id } });
+  assert.equal(approved.status, 200);
+  assert.equal((await world.account(guest, 'getActiveSeat')).roomId, route.code);
+});
+
+test('approving an applicant who took a seat elsewhere ends the application and tells the host', { timeout: 120000 }, async (t) => {
+  const world = await createWorld(t);
+  await world.seed('a');
+  await world.seed('b');
+  const route = (await world.api('a', '/api/rooms', { method: 'POST' })).body;
+  const host = await world.player('a', route);
+  await host.request('room.create', { mode: 'coop', difficulty: 'FUNNY' });
+  const applications = `/api/rooms/${route.code}/applications`;
+  const applied = await world.api('b', applications, { method: 'POST', body: { action: 'apply' } });
+  // Meanwhile the applicant creates a room of its own.
+  const own = (await world.api('b', '/api/rooms', { method: 'POST' })).body;
+  const player = await world.player('b', own);
+  assert.equal((await player.request('room.create', { mode: 'solo', difficulty: 'FUNNY' })).t, 'ok');
+
+  const approved = await world.api('a', applications, { method: 'POST', body: { action: 'approve', id: applied.body.id } });
+  assert.deepEqual(approved, { status: 409, body: { error: 'APPLICANT_BUSY' } });
+  const seen = await world.api('b', applications);
+  assert.equal(seen.body.items.find((item) => item.id === applied.body.id).status, 'expired');
+});
+
+test('a takeover gives the seat a new token: the device it replaced cannot take the seat back', { timeout: 120000 }, async (t) => {
+  const world = await createWorld(t);
+  await world.seed('a');
+  const route = (await world.api('a', '/api/rooms', { method: 'POST' })).body;
+  const first = await world.player('a', route);
+  await first.request('room.create', { mode: 'solo', difficulty: 'FUNNY' });
+  await first.request('room.start');
+  const old = first.welcome.token;
+
+  // 继续对局 on a second device.
+  const resume = (await world.api('a', '/api/me/resume', { method: 'POST' })).body;
+  const second = await world.player('a', { code: resume.code, ticket: resume.ticket });
+  assert.equal(second.welcome.resumed, true);
+  assert.equal(second.welcome.playerId, first.welcome.playerId);
+  assert.notEqual(second.welcome.token, old);
+  assert.deepEqual(await first.waitClosed(), { code: 4001, reason: 'session replaced' });
+
+  // The first device wakes up and reconnects with the token it had: it is told it was replaced.
+  const stale = await world.socket('a', { code: route.code });
+  stale.send({ t: 'hello', name: 'Player a', token: old });
+  assert.deepEqual(await stale.waitClosed(), { code: 4001, reason: 'session replaced' });
+  assert.equal(stale.frames.some((f) => f.t === 'welcome'), false);
+  assert.equal(second.closed, null, 'the device that took over keeps the seat');
+  const again = await world.player('a', { code: route.code, token: second.welcome.token });
+  assert.equal(again.welcome.resumed, true);
+});
