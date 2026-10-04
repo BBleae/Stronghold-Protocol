@@ -27,7 +27,7 @@ const sameOrigin = (request) => !request.headers.has('Origin') || request.header
 
 // Request limits: Cloudflare's rate limiting bindings (wrangler.jsonc "ratelimits": a limit per minute, counted at each
 // Cloudflare location, nothing stored). A request counts against the client's network (its IPv4 address or IPv6 /64,
-// as the edge reports it) and, where there is one, against its account: within(env.CONNECT_LIMIT, network(request)).
+// as the edge reports it) and, where there is one, against its account.
 const network = (request) => 'net:' + limitKeyOf(edgeIp(request));
 async function within(limit, key) {
   const { success } = await limit.limit({ key });
@@ -85,9 +85,9 @@ async function route(request, env) {
         method: 'POST', headers: { 'X-Account-ID': session.accountId } }));
       if (response.status !== 409) {
         if (response.ok) {
-          const route = await response.clone().json();
+          const reserved = await response.clone().json();
           const claim = await accountOf(env, session.accountId).claimSeat({ claimId: crypto.randomUUID(),
-            seat: { roomId: route.code, roomGeneration: route.generation, matchId: null, seatId: null } });
+            seat: { roomId: reserved.code, roomGeneration: reserved.generation, matchId: null, seatId: null } });
           if (!claim.ok) return error(409, 'ALREADY_SEATED');
         }
         return response;
@@ -174,7 +174,7 @@ const OUTBOX_TABLES = [
 const backoff = (failures) => Math.min(3600_000, 30_000 * 2 ** (failures - 1));
 // A visible lobby listing is refreshed this often (the directory hides a listing a minute after its last refresh).
 const LEASE_REFRESH_MS = 20_000;
-// Match timers keep the room in memory while someone is connected or the next one is due within this long.
+// Timed steps (match timers) keep the room in memory while someone is connected or the next is due within this long.
 const AWAKE_MS = 60_000;
 // A save compares the snapshot with liveness timestamps rounded to this: pings alone write at most this often.
 const LIVENESS_MS = 30_000;
@@ -196,7 +196,7 @@ export class RoomDurableObject {
     this.outboxSize = 0;
     this.storedAttempts = 0;
     this.alarmAt = null;
-    // The in-memory match timer (arm).
+    // The in-memory timer (arm), at the room's next timed step.
     this.timer = null;
     this.timerAt = null;
     // Background jobs (startJobs): an archive being published; the lobby listing's job (in flight, failures in a row,
@@ -345,7 +345,7 @@ export class RoomDurableObject {
   }
 
   // The end of every event: save what changed in one transaction, then release the event's output (clients never see
-  // uncommitted state), start background publishing, and schedule the next wake.
+  // uncommitted state), start the background jobs, and schedule the next wake.
   async commit() {
     const rt = this.runtime;
     // A socket the event closed leaves the room, but still gets what the event sent it before its close.

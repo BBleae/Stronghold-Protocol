@@ -19,7 +19,8 @@ export async function handleLobbyRoutes(request, env) {
     // A seat in a live room blocks applying elsewhere; a reservation the account never used (a create that failed)
     // does not: applying gives it up.
     const seat = await seatOf(env, session.accountId);
-    if (seat && !(seat.reserved && await giveUpReservation(env, session.accountId))) return json({ error: 'ALREADY_SEATED' }, 409);
+    const free = !seat || (seat.reserved && await giveUpReservation(env, session.accountId));
+    if (!free) return json({ error: 'ALREADY_SEATED' }, 409);
     await clearStaleApplication(env, session.accountId);
   }
   const room = env.ROOMS.get(env.ROOMS.idFromName(match[1]));
