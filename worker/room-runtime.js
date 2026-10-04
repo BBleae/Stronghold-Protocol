@@ -101,9 +101,9 @@ export class RoomRuntime {
   constructor({ snapshot, now = Date.now } = {}) {
     this.generation = snapshot?.generation || randomBytes(16).toString('hex');
     this.resumeTickets = new Map(snapshot?.resumeTickets || []);
-    this.applications = new ApplicationQueue({snapshot:snapshot?.applications,now});
+    this.applications = new ApplicationQueue({ snapshot: snapshot?.applications, now });
     this.publicRoom = snapshot?.publicRoom ?? false;
-    this.archiveOutbox=structuredClone(snapshot?.archiveOutbox || []);
+    this.archiveOutbox = structuredClone(snapshot?.archiveOutbox || []);
     this.now = now;
     this.code = snapshot?.code || null;
     this.reservation = snapshot?.reservation || null;
@@ -219,7 +219,7 @@ export class RoomRuntime {
         if (!result.error && msg.t === 'room.start') this.applications.invalidate();
         return result;
       },
-      routeGame: (s, msg) => s.spectating?this.spectators.command(s,msg):this.lobby.routeGame(s, msg),
+      routeGame: (s, msg) => (s.spectating ? this.spectators.command(s, msg) : this.lobby.routeGame(s, msg)),
       onDisconnect: (s) => (s.spectating ? this.spectators.disconnect(s) : this.lobby.onDisconnect(s)),
       onExpire: (s) => (s.spectating ? this.spectators.leave(s) : this.lobby.onExpire(s)),
     };
@@ -341,17 +341,17 @@ export class RoomRuntime {
     return ticket;
   }
   hasAccount(accountId) {
-    return !!accountId && (this.reservation?.accountId === accountId ||
-      this.applications.list(accountId).some(x=>x.status==='approved') ||
-      [...this.registry.all()].some(s => s.accountId === accountId && this.lobby.roomOf(s)));
+    return !!accountId && (this.reservation?.accountId === accountId
+      || this.applications.list(accountId).some((x) => x.status === 'approved')
+      || [...this.registry.all()].some((s) => s.accountId === accountId && this.lobby.roomOf(s)));
   }
   resumeAccount(accountId) {
     if (!this.hasAccount(accountId)) return null;
-    if (this.reservation?.accountId===accountId) return this.reservation.ticket;
-    const approved=this.applications.list(accountId).find(x=>x.status==='approved');
-    if(approved) return approved.ticket;
-    const ticket=randomBytes(16).toString('hex');
-    this.resumeTickets.set(ticket,{accountId,expiresAt:this.now()+30000});
+    if (this.reservation?.accountId === accountId) return this.reservation.ticket;
+    const approved = this.applications.list(accountId).find((x) => x.status === 'approved');
+    if (approved) return approved.ticket;
+    const ticket = randomBytes(16).toString('hex');
+    this.resumeTickets.set(ticket, { accountId, expiresAt: this.now() + 30000 });
     return ticket;
   }
   status() {
@@ -395,19 +395,23 @@ export class RoomRuntime {
   // `sessionId` / `sessionExpiresAt`: the login the Worker validated at the upgrade (checkLogins checks it again);
   // `name` / `avatarUrl`: the account's display name and avatar at the upgrade.
   connect(ws, { ip = '0.0.0.0', ticket, attachment, accountId, sessionId, sessionExpiresAt = null, name, avatarUrl, takeover = false } = {}) {
-    if (!attachment && this.admission(ip,accountId)) { ws.close(CLOSE.TRY_LATER, 'connection limit'); return; }
+    if (!attachment && this.admission(ip, accountId)) {
+      ws.close(CLOSE.TRY_LATER, 'connection limit');
+      return;
+    }
     const normalized = normalizeIp(ip) || '0.0.0.0';
-    const resume=this.resumeTickets.get(ticket);
-    if (resume && resume.accountId===accountId && resume.expiresAt>this.now()) {
-      takeover=true; this.resumeTickets.delete(ticket);
+    const resume = this.resumeTickets.get(ticket);
+    if (resume && resume.accountId === accountId && resume.expiresAt > this.now()) {
+      takeover = true;
+      this.resumeTickets.delete(ticket);
     }
     // A stranger's socket (it can only spectate) is an observer's: it sends little (its bucket below, message()).
     const observer = attachment ? !!attachment.observer : !this.hasAccount(accountId);
     this.socketMeta.set(ws, { ip: normalized, key: limitKeyOf(normalized),
       accountId: attachment?.accountId || accountId, takeover, observer,
       name: attachment ? attachment.name : name, avatarUrl: attachment?.avatarUrl ?? avatarUrl,
-      joinTicket:attachment?.joinTicket || ticket,
-      sessionId:attachment?.sessionId || sessionId, connectionEpoch:attachment?.connectionEpoch,
+      joinTicket: attachment?.joinTicket || ticket,
+      sessionId: attachment?.sessionId || sessionId, connectionEpoch: attachment?.connectionEpoch,
       // Sockets saved before logins were kept with them have neither: their first check is due at once.
       sessionExpiresAt: attachment ? attachment.sessionExpiresAt ?? null : sessionExpiresAt,
       sessionCheckedAt: attachment ? attachment.sessionCheckedAt ?? 0 : this.now(),
@@ -426,7 +430,8 @@ export class RoomRuntime {
       const session = this.registry.byId(attachment.playerId);
       if (session) {
         if (attachment.accountId !== session.accountId || attachment.connectionEpoch !== session.connectionEpoch) {
-          conn.close(CLOSE.REPLACED,'session replaced');return conn;
+          conn.close(CLOSE.REPLACED, 'session replaced');
+          return conn;
         }
         conn.session = session;
         session.ws = ws;
@@ -468,7 +473,7 @@ export class RoomRuntime {
   }
   sweep() {
     this.applications.expire();
-    for (const [ticket,value] of this.resumeTickets) if (value.expiresAt<=this.now()) this.resumeTickets.delete(ticket);
+    for (const [ticket, value] of this.resumeTickets) if (value.expiresAt <= this.now()) this.resumeTickets.delete(ticket);
     for (const conn of this.network.conns.values()) {
       if (!conn.session && this.now() - conn.openedAt >= this.network.opts.helloTimeoutMs) conn.close(CLOSE.HELLO_TIMEOUT, 'hello timeout');
       else if (conn.session && this.now() - conn.session.lastSeen >= ROOM_LIMITS.idleSocketMs) conn.close(CLOSE.IDLE, 'idle connection');
@@ -480,7 +485,11 @@ export class RoomRuntime {
     // Applications are for a room that exists: once it is gone, none can be joined.
     if (!this.lobby.getRoom(this.code)) this.applications.invalidate();
   }
-  pump(now=this.now()) {const result=this.lobby.getRoom(this.code)?.match?.pump?.(now) || 0;this.spectators.pump();return result;}
+  pump(now = this.now()) {
+    const result = this.lobby.getRoom(this.code)?.match?.pump?.(now) || 0;
+    this.spectators.pump();
+    return result;
+  }
   /**
    * After a wake (the room, its surviving sockets and its match are back): a session that was connected at the last
    * save but whose socket did not survive (a restart closes every socket; hibernation keeps them) disconnects now, the
@@ -566,8 +575,8 @@ export class RoomRuntime {
   snapshot() {
     const room = this.lobby.getRoom(this.code);
     const base = { version: 1, code: this.code, reservation: this.reservation,
-      generation:this.generation,resumeTickets:[...this.resumeTickets],
-      publicRoom:this.publicRoom,applications:this.applications.snapshot() };
+      generation: this.generation, resumeTickets: [...this.resumeTickets],
+      publicRoom: this.publicRoom, applications: this.applications.snapshot() };
     if (room?.match) base.matchCheckpoint = this.checkpoint(room.match);
     return { ...base, sessions: [...this.registry.all()].map(({ ws, ...s }) => ({ ...s,
       resyncAt: Number.isFinite(s.resyncAt) ? s.resyncAt : null })), deadlines: [...this.lobby.deadlines],

@@ -1,30 +1,54 @@
 /** A replay owns its simulation and clock. It has no imports from the live socket or store. */
-import {decodeReplayChunk,REPLAY_MAX_BYTES} from '../../../shared/replay-codec.js';
-import {decodeReplayFrame} from '../../../shared/replay-frames.js';
-export async function verifyReplayChunks(manifest,loadChunk) {
-  if(!Array.isArray(manifest?.chunks) || manifest.chunks.length>10001) throw new Error('REPLAY_INCOMPLETE');
-  const compressed=manifest.codec==='gzip-base64';
-  if(manifest.codec && !compressed || !compressed && manifest.schemaVersion && manifest.schemaVersion!==1 || compressed && (manifest.schemaVersion!==2 || !Number.isSafeInteger(manifest.decodedBytes) || manifest.decodedBytes>REPLAY_MAX_BYTES || manifest.decodedBytes<1))throw new Error('REPLAY_INCOMPLETE');
-  const text=[],decoder=new TextDecoder('utf-8',{fatal:true});let decodedBytes=0;
-  for(const [index,expected] of manifest.chunks.entries()) {
-    if(expected.index!==index) throw new Error('REPLAY_INCOMPLETE');
-    const chunk=await loadChunk(index);
-    if(typeof chunk?.text!=='string') throw new Error('REPLAY_INCOMPLETE');
-    const bytes=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(chunk.text));
-    const digest=Array.from(new Uint8Array(bytes),x=>x.toString(16).padStart(2,'0')).join('');
-    if(digest!==expected.hash) throw new Error('REPLAY_INCOMPLETE');
-    if(compressed){const bytes=await decodeReplayChunk(chunk.text,expected.rawBytes);decodedBytes+=bytes.length;
-      if(decodedBytes>manifest.decodedBytes)throw new Error('REPLAY_INCOMPLETE');
-      try{text.push(decoder.decode(bytes,{stream:true}));}catch{throw new Error('REPLAY_INCOMPLETE');}
-    }else text.push(chunk.text);
+import { decodeReplayChunk, REPLAY_MAX_BYTES } from '../../../shared/replay-codec.js';
+import { decodeReplayFrame } from '../../../shared/replay-frames.js';
+
+export async function verifyReplayChunks(manifest, loadChunk) {
+  if (!Array.isArray(manifest?.chunks) || manifest.chunks.length > 10001) throw new Error('REPLAY_INCOMPLETE');
+  const compressed = manifest.codec === 'gzip-base64';
+  if (manifest.codec && !compressed
+    || !compressed && manifest.schemaVersion && manifest.schemaVersion !== 1
+    || compressed && (manifest.schemaVersion !== 2 || !Number.isSafeInteger(manifest.decodedBytes)
+      || manifest.decodedBytes > REPLAY_MAX_BYTES || manifest.decodedBytes < 1)) throw new Error('REPLAY_INCOMPLETE');
+  const text = [], decoder = new TextDecoder('utf-8', { fatal: true });
+  let decodedBytes = 0;
+  for (const [index, expected] of manifest.chunks.entries()) {
+    if (expected.index !== index) throw new Error('REPLAY_INCOMPLETE');
+    const chunk = await loadChunk(index);
+    if (typeof chunk?.text !== 'string') throw new Error('REPLAY_INCOMPLETE');
+    const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(chunk.text));
+    const digest = Array.from(new Uint8Array(bytes), (x) => x.toString(16).padStart(2, '0')).join('');
+    if (digest !== expected.hash) throw new Error('REPLAY_INCOMPLETE');
+    if (compressed) {
+      const bytes = await decodeReplayChunk(chunk.text, expected.rawBytes);
+      decodedBytes += bytes.length;
+      if (decodedBytes > manifest.decodedBytes) throw new Error('REPLAY_INCOMPLETE');
+      try {
+        text.push(decoder.decode(bytes, { stream: true }));
+      } catch {
+        throw new Error('REPLAY_INCOMPLETE');
+      }
+    } else text.push(chunk.text);
   }
-  if(compressed){if(decodedBytes!==manifest.decodedBytes)throw new Error('REPLAY_INCOMPLETE');try{text.push(decoder.decode());}catch{throw new Error('REPLAY_INCOMPLETE');}}
-  try{return JSON.parse(text.join(''));}catch{throw new Error('REPLAY_INCOMPLETE');}
+  if (compressed) {
+    if (decodedBytes !== manifest.decodedBytes) throw new Error('REPLAY_INCOMPLETE');
+    try {
+      text.push(decoder.decode());
+    } catch {
+      throw new Error('REPLAY_INCOMPLETE');
+    }
+  }
+  try {
+    return JSON.parse(text.join(''));
+  } catch {
+    throw new Error('REPLAY_INCOMPLETE');
+  }
 }
+
 /**
  * Plays one archived battle at a time on its own clock (30 ticks per game second): a battle re-simulated from its spec
- * and tick `inputs` (client battles, and server battles that ran from their spec alone), or a battle on a shared boss pool
- * from its `meta` and `frames` (the first one captured at its start) — the records server/match/checkpoint.js archives. onField(meta) when a battle is selected, onFrame(frame) as it plays.
+ * and tick `inputs` (client battles, and server battles that ran from their spec alone), or a battle on a shared boss
+ * pool from its `meta` and `frames` (the first one captured at its start): the records server/match/checkpoint.js
+ * archives. onField(meta) when a battle is selected, onFrame(frame) as it plays.
  * state() is its clock in whole seconds — { playing, speed, seconds, duration }; subscribers hear it change on a
  * player's action or when the replay passes a whole second, never per animation frame.
  */

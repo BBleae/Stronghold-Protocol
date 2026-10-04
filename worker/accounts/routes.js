@@ -8,19 +8,26 @@ import { hashPassword, verifyPassword } from './passwords.js';
 
 async function preferenceBody(request) {
   const body = await readJson(request, 65536, 'INVALID_PREFERENCES');
-  if (Object.keys(body).some(k => !['accountId','patch','initialize'].includes(k))
+  if (Object.keys(body).some((k) => !['accountId', 'patch', 'initialize'].includes(k))
     || (body.initialize !== undefined && typeof body.initialize !== 'boolean')) throw new AccountError('INVALID_PREFERENCES');
   validatePreferencePatch(body.patch);
   return body;
 }
-export async function clearStaleApplication(env,accountId) {
-  const account=accountOf(env,accountId),pending=await account.getApplication();
-  if(!pending)return;
-  const response=await env.ROOMS.get(env.ROOMS.idFromName(pending.roomId)).fetch(new Request('https://room.internal/_applications',{headers:{'X-Account-ID':accountId}}));
-  if(response.status===404){await account.clearApplication(pending.roomId,pending.id);return;}
-  if(!response.ok)throw new Error('APPLICATION_UNAVAILABLE');
-  const body=await response.json();
-  if(!body.items.some(x=>x.id===pending.id && ['pending','approved'].includes(x.status)))await account.clearApplication(pending.roomId,pending.id);
+export async function clearStaleApplication(env, accountId) {
+  const account = accountOf(env, accountId);
+  const pending = await account.getApplication();
+  if (!pending) return;
+  const response = await env.ROOMS.get(env.ROOMS.idFromName(pending.roomId))
+    .fetch(new Request('https://room.internal/_applications', { headers: { 'X-Account-ID': accountId } }));
+  if (response.status === 404) {
+    await account.clearApplication(pending.roomId, pending.id);
+    return;
+  }
+  if (!response.ok) throw new Error('APPLICATION_UNAVAILABLE');
+  const body = await response.json();
+  if (!body.items.some((x) => x.id === pending.id && ['pending', 'approved'].includes(x.status))) {
+    await account.clearApplication(pending.roomId, pending.id);
+  }
 }
 
 // Seats. An account points at the seat it holds (activeSeat: room code, room generation, claim id); the room is the

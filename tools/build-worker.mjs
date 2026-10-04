@@ -176,19 +176,23 @@ export async function bundleWorker({ root = ROOT, outfile = path.join(root, 'dis
     plugins: [{ name: 'worker-data-loaders', setup(builder) {
       // Keep immutable recovery bundles, but initialize only the version a room restores.
       // Eagerly initializing every historical engine exceeds the Worker startup CPU budget.
-      builder.onLoad({filter:/\.mjs$/},async args=>{
-        if(!versionModules.some(v=>path.resolve(v.file || path.join(root,'.replay-engines',v.id,'recovery.mjs'))===args.path))return;
-        let source=await fs.readFile(args.path,'utf8');
+      builder.onLoad({ filter: /\.mjs$/ }, async (args) => {
+        if (!versionModules.some((v) => path.resolve(v.file || path.join(root, '.replay-engines', v.id, 'recovery.mjs')) === args.path)) return;
+        let source = await fs.readFile(args.path, 'utf8');
         // Restoration compares only view/RNG. Avoid cloning the entire event history
         // in old exportMatch implementations just to discard that clone immediately.
-        const eventDefault=/referenceEvents:([A-Za-z_$][\w$]*)=!1/g;
-        if([...source.matchAll(eventDefault)].length!==1)throw new Error('Unsupported recovery event export: '+args.path);
-        source=source.replace(eventDefault,'referenceEvents:$1=!0');
-        const exports=source.match(/export\{([^}]+)\};\s*$/);
-        if(!exports)throw new Error('Unsupported retained recovery exports: '+args.path);
-        const pairs=exports[1].split(',').map(s=>{const m=s.trim().match(/^(\w+) as (\w+)$/);if(!m)throw new Error('Unsupported recovery export');return `${m[2]}:${m[1]}`;});
-        const body=source.slice(0,exports.index)+`return {${pairs.join(',')}};`;
-        return {loader:'js',contents:`let cached,pending;export async function prepare(){return cached || (pending ||= (async()=>{${body}})().then(value=>cached=value));}export function restore(...args){if(!cached)throw new Error('Recovery engine not prepared');return cached.restore(...args);}`};
+        const eventDefault = /referenceEvents:([A-Za-z_$][\w$]*)=!1/g;
+        if ([...source.matchAll(eventDefault)].length !== 1) throw new Error('Unsupported recovery event export: ' + args.path);
+        source = source.replace(eventDefault, 'referenceEvents:$1=!0');
+        const exports = source.match(/export\{([^}]+)\};\s*$/);
+        if (!exports) throw new Error('Unsupported retained recovery exports: ' + args.path);
+        const pairs = exports[1].split(',').map((s) => {
+          const m = s.trim().match(/^(\w+) as (\w+)$/);
+          if (!m) throw new Error('Unsupported recovery export');
+          return `${m[2]}:${m[1]}`;
+        });
+        const body = source.slice(0, exports.index) + `return {${pairs.join(',')}};`;
+        return { loader: 'js', contents: `let cached,pending;export async function prepare(){return cached || (pending ||= (async()=>{${body}})().then(value=>cached=value));}export function restore(...args){if(!cached)throw new Error('Recovery engine not prepared');return cached.restore(...args);}` };
       });
       // worker/match-versions.js of this build: the retained recovery engines and the published replay versions
       if (versionModules.length || publishedVersions.length) builder.onLoad({ filter: /[\\/]worker[\\/]match-versions\.js$/ }, () => {
