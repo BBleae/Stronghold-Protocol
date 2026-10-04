@@ -42,8 +42,8 @@
 //   Leaving the battle drops its pending lines: none reaches the result screen or the next battle. The end line
 //   (3星结束行动 without LP lost in the match / 非3星结束行动 / 行动失败), said by the latest battle's leader, plays once
 //   per match when m.result arrives. All voice timing is real time (battles run at 2x).
-// - Nothing is said on a hidden page (the context is suspended). Teammates' operators (a shared or watched field) never
-//   speak on this client.
+// - Nothing is said on a hidden page (the context is suspended); voice off, at 0 or muted stops the line playing and
+//   drops the one loading. Teammates' operators (a shared or watched field) never speak on this client.
 //
 // `bgmKeyFor(route, pub)` picks the track for the current screen/phase (main.js calls `audio.install()`,
 // which follows the store).
@@ -512,7 +512,8 @@ export class AudioManager {
     this.volumes = { bgm: n(v?.bgm, this.volumes.bgm), sfx: n(v?.sfx, this.volumes.sfx), voice: n(v?.voice, this.volumes.voice),
       voiceLang: typeof v?.voiceLang === 'string' ? v.voiceLang : this.volumes.voiceLang,
       muted: typeof v?.muted === 'boolean' ? v.muted : this.volumes.muted };
-    if (this.volumes.voiceLang === 'off' || this.volumes.voice <= 0) this.stopVoice();
+    // voice off, at 0 or muted: the line playing stops and the one loading never starts
+    if (!this._voiceOn()) this._silenceVoice();
     this._applyVolumes();
   }
 

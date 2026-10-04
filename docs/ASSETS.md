@@ -163,7 +163,7 @@ game plays a line — and downloads them from the ArknightsAssets2 `voice` branc
   Leaving a battle drops its pending lines, so none reaches the settlement, the result screen or the next battle. The
   end line is said once per match, when the result arrives, by the leader who opened the latest battle.
 - All voice timing is real time (battles run at 2x, so 10 s is 20 s of battle time). Nothing plays while the page is
-  hidden (the line playing stops).
+  hidden (the line playing stops); turning voice off, to 0 or muting drops a line that is still loading.
 - A voice file that fails to load plays nothing (logged once) and starts no cooldown; it is fetched again by a request
   10 s or more after the failure (BGM and sound effects alike), never on every use meanwhile.
 - Only own operators speak: a teammate's operator on a shared field (最终攻势) or a watched one (前往查看) says nothing

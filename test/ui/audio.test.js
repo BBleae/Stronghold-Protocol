@@ -830,6 +830,27 @@ describe('operator voice', () => {
     assert.deepEqual(r.played(), [['select', OP, 10000]]);
   });
 
+  test('voice turned off, to 0 or muted: the line still loading never plays; lines play again once it is back on', async (t) => {
+    const r = voiceRig(t);
+    const silences = [['deploy', { voiceLang: 'off' }, { voiceLang: 'cn' }], ['select', { voice: 0 }, { voice: 0.8 }],
+      ['combat', { muted: true }, { muted: false }]];
+    for (const [i, [role, silent, back]] of silences.entries()) {
+      const release = holdFile(r, lines(OP)[role][0]);
+      await r.at(i * 1000);
+      assert.equal(r.a.voice(OP, role), true);
+      r.a.setVolumes(silent);
+      assert.equal(r.a.voice(OP2, role), false, 'nothing is requested meanwhile');
+      release();
+      await r.at(i * 1000 + 500);
+      r.a.setVolumes(back);
+    }
+    assert.deepEqual(r.played(), []);
+    await r.at(3000);
+    r.a.voice(OP2, 'deploy');
+    await r.at(3100);
+    assert.deepEqual(r.played(), [['deploy', OP2, 3000]]);
+  });
+
   test('a hidden page says nothing: the line playing stops, and none starts until the page shows again', async (t) => {
     const r = voiceRig(t);
     r.a.voice(OP, 'deploy');
