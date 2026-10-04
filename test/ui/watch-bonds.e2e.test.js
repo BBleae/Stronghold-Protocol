@@ -500,6 +500,9 @@ describe('DESIGN §20.15 — the bond strip shows the watched teammate\'s bonds 
           return { fieldId: pick.fieldId, playerId: pick.players[0], name: pub.players.find((p) => p.playerId === pick.players[0]).name };
         }, { timeout: 240000, polling: 250 }).then((h) => h.jsonValue());
         if (target.gone) { console.log(`round ${round}: no teammate battle left to watch, next round`); continue; }
+        // 前往查看 opens once the own picture is over too, as the 作战结束 pill says (battle/observe.js ownHeld: the
+        // picture is drawn behind the sim)
+        await host.page.waitForFunction(() => [...document.querySelectorAll('.chud__msg')].some((m) => m.textContent.includes('作战结束')), { timeout: 10000 });
         const name = target.name;
         await watchMate(host, name);
         await ownerIs(host, name);
