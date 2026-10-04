@@ -480,7 +480,9 @@ describe('operator voice', () => {
 
   // ---- one client, on a virtual clock -----------------------------------------------------------------------
 
-  const CHESS = { lead: { charId: LEADER, rarity: 6 }, op: { charId: OP, rarity: 5 }, op2: { charId: OP2, rarity: 4 } };
+  // aux: 盟约·辅助干员, the pool's operator without voice lines
+  const CHESS = { lead: { charId: LEADER, rarity: 6 }, op: { charId: OP, rarity: 5 }, op2: { charId: OP2, rarity: 4 },
+    aux: { charId: 'char_616_pithst', rarity: 4 } };
   const getChess = (id) => CHESS[id] ?? null;
 
   /**
@@ -632,6 +634,18 @@ describe('operator voice', () => {
     assert.deepEqual(r.played(), [['combat', OP, 15000]]);
   });
 
+  test('a squad leader without voice lines says no 行动开始; 作战中 waits only until it was due', async (t) => {
+    const r = voiceRig(t);
+    r.board('aux');
+    r.phase(PHASE.COMBAT, 1);
+    await r.at(1000);
+    r.enemy();
+    await r.at(3500);
+    r.skill(2);
+    await r.at(4000);
+    assert.deepEqual(r.played(), [['combat', OP, 3500]]);
+  });
+
   test('a tab hidden before the first enemy keeps the battle\'s 行动开始, and 作战中 still waits for it', async (t) => {
     const r = voiceRig(t);
     r.phase(PHASE.COMBAT, 1);
@@ -769,6 +783,18 @@ describe('operator voice', () => {
     assert.deepEqual(r.played(), [['start', OP, 13000], ['start', OP, 23000]]);
   });
 
+  test('the squad leader is the one on the board when 行动开始 is said (m.private after m.public, as after a reload)', async (t) => {
+    const r = voiceRig(t);
+    r.store.patch('match', { private: null });
+    r.phase(PHASE.COMBAT, 1);
+    await r.at(1000);
+    r.enemy();
+    await r.at(2000);
+    r.board('op', 'op2');
+    await r.at(4000);
+    assert.deepEqual(r.played(), [['start', OP, 3000]]);
+  });
+
   test('a 作战中 still loading when its battle ends never plays', async (t) => {
     const r = voiceRig(t);
     const release = holdFile(r, line(OP, '025'));
@@ -782,6 +808,7 @@ describe('operator voice', () => {
     release();
     await r.at(8000);
     assert.deepEqual(r.played(), [['start', LEADER, 3000]]);
+    assert.deepEqual(r.a.voiceLog.map((l) => l.role), ['start'], 'voiceLog lists the lines that started, not the ones requested');
   });
 
   test('the 作战中 cooldown runs from the start of the line that played (a slow load starts it late)', async (t) => {
@@ -828,6 +855,22 @@ describe('operator voice', () => {
     r.result({ victory: true, players: [{ playerId: 'me', stats: { lpLost: 0 } }] });
     await r.at(21000);
     assert.deepEqual(r.played(), [['start', LEADER, 3000], ['fail', LEADER, 6000], ['start', OP, 13000], ['win3', OP, 20000]]);
+  });
+
+  test('an end line still loading when the player goes back to the room never plays there', async (t) => {
+    const r = voiceRig(t);
+    const release = holdFile(r, line(LEADER, '032'));
+    r.phase(PHASE.COMBAT, 1);
+    await r.at(1000);
+    r.enemy();
+    await r.at(6000);
+    r.phase(PHASE.RESULT, 1);
+    r.result({ victory: false, players: [] });
+    await r.at(6500);
+    r.store.set({ match: emptyMatch() }); // 返回房间
+    release();
+    await r.at(8000);
+    assert.deepEqual(r.played(), [['start', LEADER, 3000]]);
   });
 
   test('a line that fails to load plays nothing, is logged and starts no cooldown', async (t) => {
@@ -917,6 +960,19 @@ describe('operator voice', () => {
     assert.equal(r.a.voice(OP, 'select'), true, 'the 部署 line was stopped: a 选中 line may start');
     await r.at(1100);
     assert.deepEqual(r.played(), [['deploy', OP, 0], ['select', OP, 1000]]);
+  });
+
+  test('a line still loading when the page is hidden never plays, not even once the page shows again', async (t) => {
+    const r = voiceRig(t);
+    const release = holdFile(r, line(OP, '023'));
+    r.a.voice(OP, 'deploy');
+    await r.at(500);
+    r.hide();
+    await r.at(1000);
+    r.show();
+    release();
+    await r.at(1500);
+    assert.deepEqual(r.played(), []);
   });
 
   test('a saved language the site lacks falls back to the one it has; 关闭 says nothing', async (t) => {
