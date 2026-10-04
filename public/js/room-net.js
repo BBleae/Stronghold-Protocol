@@ -28,9 +28,10 @@
 //   room.closed  (pushed) this session has no room here any more   → menu
 //   welcome      `resumed` is false when the account had no session left in the room (resuming fails); in a room,
 //                a welcome for another player id means the seat expired while away → room.closed {reason: 'timeout'}
-//   A refused upgrade (HTTP 401 / 404 from a Worker that does not close with 4003 / 4004 yet) reaches the browser only
-//   as a close before open. GET /api/me/active-match tells which it was (401 → lost; no seat in this room → gone;
-//   spectators: GET /api/rooms/CODE 404 → gone); anything else is retried with Net's backoff.
+//   close 1013   try again later                                   → Net's reconnect with backoff
+//   Any other close, also before the socket opened (the network failed), is retried with Net's backoff.
+// And from the account API: POST /api/rooms answers this account's own unused reservation (a create that failed after
+// reserving: finishing it is what the player asks for), and 409 ALREADY_SEATED only for a seat in a live room.
 
 import { Net, NetError, CLOSE_REPLACED, configureTransport } from './net.js';
 import { accountRequest } from './account.js';
@@ -41,6 +42,8 @@ export const CLOSE_LOGIN_INVALID = 4003;
 export const CLOSE_ROOM_GONE = 4004;
 /** How long entering waits for each answer of the room (its welcome, then its state), reconnects included. */
 export const ENTER_TIMEOUT_MS = 12000;
+/** How long a room the server ended may still deliver its final frames before the client closes the socket. */
+export const DRAIN_MS = 5000;
 /** How often a pending join application is checked. */
 export const APPLICATION_POLL_MS = 3000;
 
@@ -66,12 +69,12 @@ export class RoomNet extends Net {
     /** This account's join application ({ code, id, status, error? }) or null: see watchApplication(). */
     this.application = null;
     this._token = null;      // hello token on the route: the last welcome's, or the saved one being resumed
-    this._opened = false;    // the current socket opened (a close before open was a refused upgrade)
     this._waiting = null;    // { fail } while entering waits for an answer of the room
     this._applicationTimer = null;
     this.getToken = () => this._token;
     this.on('room.state', (msg) => { this.room = msg; });
-    this.on('room.closed', () => this._toMenu());
+    // A room.closed the server pushed may be followed by the match's final view and result: read them (see _drain).
+    this.on('room.closed', (msg) => this._toMenu(!msg.local));
   }
 
   /**
@@ -224,20 +227,9 @@ export class RoomNet extends Net {
     }
   }
 
-  // A reservation to create a room in. POST /api/rooms answers 409 ALREADY_SEATED for any seat the account still
-  // holds; two of those are no real conflict: a stale seat (released once /api/me/resume asks its room) and this
-  // account's own reservation from a create that failed — finishing that create is what the player asks for.
+  // A reservation to create a room in: a new one, or this account's own unused one (see the header).
   async _reserve() {
-    const reserve = async () => ({ ...await accountRequest('/api/rooms', {}, this.fetch), reserved: true });
-    try {
-      return await reserve();
-    } catch (error) {
-      if (error.code !== 'ALREADY_SEATED') throw error;
-      const seat = await accountRequest('/api/me/resume', {}, this.fetch);
-      if (seat?.reserved) return seat;
-      if (seat?.code) throw error; // a seat in a live room: continue it (继续对局) or leave it first
-      return reserve();
-    }
+    return { ...await accountRequest('/api/rooms', {}, this.fetch), reserved: true };
   }
 
   // This account's seat for 继续对局: { code, ticket, join, reserved }.
@@ -306,7 +298,6 @@ export class RoomNet extends Net {
     if (code === CLOSE_REPLACED) this._routeEnded(new NetError('REPLACED'));
     else if (code === CLOSE_LOGIN_INVALID) this._routeEnded(new NetError('LOGIN_REQUIRED'));
     else if (code === CLOSE_ROOM_GONE) this._routeEnded(new NetError('ROOM_GONE'));
-    else if (!this._opened) void this._diagnose();
     else super._onClose(ev);
   }
 
@@ -322,39 +313,11 @@ export class RoomNet extends Net {
     // In a room, a welcome for another player id is a new session: this account's session in the room expired while
     // the client was away, so the room is over for it.
     if (this.state === 'room' && msg.playerId !== this.playerId) {
-      this._emit('room.closed', { t: 'room.closed', reason: 'timeout' });
+      this._emit('room.closed', { t: 'room.closed', reason: 'timeout', local: true });
       return;
     }
     this._token = msg.token;
     super._onWelcome(msg);
-  }
-
-  // A socket that closed before it opened was refused, or the network failed: the Worker's HTTP refusal is invisible
-  // to the browser, so ask the account API whether the route can still work.
-  async _diagnose() {
-    const route = this.route;
-    this._teardownSocket();
-    this._failPending('DISCONNECTED', false);
-    this._setStatus('reconnecting');
-    const problem = await this._routeProblem(route);
-    if (this.route !== route) return; // the route ended while asking (left, timed out, another room)
-    if (problem) this._routeEnded(problem);
-    else if (!this.ws) this._scheduleReconnect(); // unless 立即重连 already opened a socket
-  }
-
-  // Why `route` cannot work any more (LOGIN_REQUIRED or ROOM_GONE), or null when a retry may succeed.
-  async _routeProblem(route) {
-    try {
-      const { activeSeat } = await accountRequest('/api/me/active-match', undefined, this.fetch);
-      if (route.spectate) await accountRequest(`/api/rooms/${route.code}`, undefined, this.fetch);
-      else if (activeSeat?.roomId !== route.code) return new NetError('ROOM_GONE');
-      return null;
-    } catch (error) {
-      if (error.code === 'LOGIN_REQUIRED') return error;
-      if (error.code === 'ROOM_NOT_FOUND') return new NetError('ROOM_GONE');
-      console.warn('[room-net] could not check the room; retrying', error);
-      return null;
-    }
   }
 
   // The route cannot go on. Entering fails with the reason (enter() decides where to go). In a room an invalid login
@@ -367,7 +330,7 @@ export class RoomNet extends Net {
     } else if (error.code === 'LOGIN_REQUIRED') {
       this._lose(error);
     } else {
-      this._emit('room.closed', { t: 'room.closed', reason: error.code === 'REPLACED' ? 'replaced' : 'expired' });
+      this._emit('room.closed', { t: 'room.closed', reason: error.code === 'REPLACED' ? 'replaced' : 'expired', local: true });
     }
   }
 
@@ -392,9 +355,10 @@ export class RoomNet extends Net {
   }
 
   // Back to the menu: no socket, no route. Requests still waiting for the room fail with NOT_IN_ROOM.
-  _toMenu() {
+  _toMenu(drain = false) {
     this._clearTimer('_reconnectTimer', 'clearTimeout');
-    this._dropSocket();
+    if (drain) this._drain();
+    else this._dropSocket();
     this._failPending('NOT_IN_ROOM', true);
     this.state = 'menu';
     this.route = null;
@@ -409,14 +373,20 @@ export class RoomNet extends Net {
 
   // ---- socket details ------------------------------------------------------------------------------------------------
 
-  _onOpen() {
-    this._opened = true;
-    super._onOpen();
-  }
-
-  _teardownSocket() {
-    super._teardownSocket();
-    this._opened = false;
+  // The server ended this session's room and may still send the match's final frames (its public view and result,
+  // as server/lobby.js does for a removed member and worker/rooms/spectators.js for spectators) before it closes the
+  // socket: deliver those, then forget the socket. It is no route any more: its close neither reconnects nor ends a room.
+  _drain() {
+    const ws = this.ws;
+    this._teardownSocket();
+    if (!ws) return;
+    const timer = this.timers.setTimeout(() => ws.close(1000, 'left room'), DRAIN_MS);
+    ws.onmessage = (ev) => {
+      let msg;
+      try { msg = JSON.parse(String(ev?.data)); } catch { return; }
+      if (msg?.t === 'm.public' || msg?.t === 'm.result') this._emit(msg.t, msg);
+    };
+    ws.onclose = () => this.timers.clearTimeout(timer);
   }
 
   // Close the route's socket if one is still open (a closed one is just forgotten).

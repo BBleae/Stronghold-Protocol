@@ -200,6 +200,8 @@ const CLOSE_REASON = {
   host_left: '创建者已离开，同盟已解散', timeout: '由于长时间断开连接，你已离开同盟', empty: '同盟已解散',
   kicked: '你已被移出同盟', ended: '模拟已结束', expired: '同盟已过期', shutdown: '服务器维护中，同盟已关闭',
   restart: '服务器已更新或重启，本局已结束，请重新创建房间',
+  // account mode: the page was reloaded before its room was created; creating again finishes the reserved room
+  unfinished: '房间尚未创建完成，请重新创建',
   // account mode (room-net.js): 继续对局 on another page or device took this seat over
   replaced: '已在其他页面或设备继续对局',
   // account mode: the room Worker cannot restore a match recorded by a newer deployment (a rollback)
@@ -226,7 +228,10 @@ function wireNet() {
   net.on('unhandledError', (err) => toastError(err));
   net.on('room.state', onRoomState);
   net.on('room.closed', (msg) => {
-    backToLobby();
+    // A match that ended with a result to show (spectators get it after room.closed: worker/rooms/spectators.js) stays on
+    // screen for its final view and result; the result screen leads back to the lobby. Anything else leaves at once.
+    if (msg.reason === 'ended' && msg.result && store.get().match.public) store.set({ room: null });
+    else backToLobby();
     toast(CLOSE_REASON[msg.reason] || (typeof msg.reason === 'string' && msg.reason.length < 60 ? `同盟已关闭：${msg.reason}` : '同盟已关闭'), 'warn');
   });
   net.on('m.public', (msg) => { matchAt = Date.now(); store.patch('match', { public: payload(msg) }); maybeFinishRestore(); });

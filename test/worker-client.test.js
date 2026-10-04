@@ -3,7 +3,7 @@
 // statuses, events, promise outcomes and their texts, and the sockets that get opened.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { RoomNet, roomFromToken, ENTER_TIMEOUT_MS, APPLICATION_POLL_MS } from '../public/js/room-net.js';
+import { RoomNet, roomFromToken, ENTER_TIMEOUT_MS, DRAIN_MS, APPLICATION_POLL_MS } from '../public/js/room-net.js';
 import { REQUEST_TIMEOUT_MS } from '../public/js/net.js';
 import { installLoadoutSync } from '../public/js/ui/loadoutSync.js';
 import { createStore } from '../public/js/store.js';
@@ -166,13 +166,12 @@ test('create reserves a room, opens its socket with the ticket and creates the r
   assert.deepEqual(h.api.unexpected, []);
 });
 
-test('one refused upgrade while creating is retried while the account still holds the room', async () => {
+test('a connection that fails before it opens is retried while creating', async () => {
   const h = setup();
   h.api.reply('POST /api/rooms', [201, { code: 'ABCD', ticket: TICKET, generation: 'g1' }]);
   const created = h.net.request('room.create', { mode: 'solo', difficulty: 'FUNNY' });
   await settle();
-  h.api.reply('GET /api/me/active-match', [200, { activeSeat: { roomId: 'ABCD', roomGeneration: 'g1' }, status: null }]);
-  h.ws.last().drop(1006); // the browser's view of a refused upgrade: closed before open
+  h.ws.last().drop(1006); // the network failed before the socket opened
   await settle();
   assert.equal(h.net.status, 'reconnecting');
   await h.timers.advance(500);
@@ -200,9 +199,8 @@ test('a create that fails after reserving returns to the menu, and the next crea
   assert.equal(first.closedWith, 1000, 'the socket that held the reservation is closed');
   await h.timers.advance(60_000);
   assert.equal(h.ws.sockets.length, 1, 'no reconnect from the menu');
-  // POST /api/rooms refuses while the reservation lives; finishing it is what the player asks for
-  h.api.reply('POST /api/rooms', [409, { error: 'ALREADY_SEATED' }]);
-  h.api.reply('POST /api/me/resume', [200, { code: 'ABCD', ticket: TICKET, join: false, reserved: true }]);
+  // the Worker answers the account's own unused reservation: finishing it is what the player asks for
+  h.api.reply('POST /api/rooms', [200, { code: 'ABCD', ticket: TICKET, generation: 'g1' }]);
   const again = h.net.request('room.create', { mode: 'solo', difficulty: 'HARD' });
   await settle();
   assert.equal(h.ws.last().url, `wss://game.example/ws?room=ABCD&ticket=${TICKET}`);
@@ -215,24 +213,9 @@ test('a create that fails after reserving returns to the menu, and the next crea
   assert.deepEqual(h.api.unexpected, []);
 });
 
-test('create after leaving a room does not trip over the seat the server has not released yet', async () => {
-  const h = setup();
-  h.api.reply('POST /api/rooms', [409, { error: 'ALREADY_SEATED' }], [201, { code: 'WXYZ', ticket: TICKET, generation: 'g2' }]);
-  h.api.reply('POST /api/me/resume', [200, { activeSeat: null }]); // asking the old room released the stale seat
-  const created = h.net.request('room.create', { mode: 'coop', difficulty: 'FUNNY' });
-  await settle();
-  assert.equal(h.ws.last().url, `wss://game.example/ws?room=WXYZ&ticket=${TICKET}`);
-  await welcome(h);
-  roomState(h.ws.last(), { code: 'WXYZ' });
-  ok(h.ws.last(), 'room.create');
-  await created;
-  assert.deepEqual(h.api.unexpected, []);
-});
-
 test('create while the account is seated in a live room explains what to do', async () => {
   const h = setup();
   h.api.reply('POST /api/rooms', [409, { error: 'ALREADY_SEATED' }]);
-  h.api.reply('POST /api/me/resume', [200, { code: 'WXYZ', ticket: TICKET, join: false, reserved: false }]);
   await assert.rejects(h.net.request('room.create', { mode: 'coop', difficulty: 'FUNNY' }),
     { code: 'ALREADY_SEATED', message: '你已有一个房间，请先继续对局或离开' });
   assert.equal(h.net.status, 'menu');
@@ -396,28 +379,40 @@ test('spectating opens a socket without a ticket; the end of the match closes it
   ok(h.ws.last(), 'room.spectate');
   await watching;
   assert.equal(h.net.status, 'online');
-  h.ws.last().recv({ t: 'room.closed', reason: 'ended' });
+  const delivered = [];
+  for (const t of ['room.closed', 'm.public', 'm.result']) h.net.on(t, (msg) => delivered.push(t + (msg.local ? ' (local)' : '')));
+  const socket = h.ws.last();
+  socket.recv({ t: 'room.closed', reason: 'ended', result: true });
   assert.equal(h.net.status, 'menu');
-  assert.equal(h.ws.last().closedWith, 1000);
+  // the match's final view and result follow the room.closed; the server then closes the socket (4004)
+  socket.recv({ t: 'm.public', phase: 'RESULT' });
+  socket.recv({ t: 'm.result', victory: false });
+  socket.drop(4004);
+  assert.deepEqual(delivered, ['room.closed', 'm.public', 'm.result'], 'no second room.closed for the closing socket');
+  assert.equal(h.net.status, 'menu');
   await h.timers.advance(60_000);
+  assert.equal(h.ws.sockets.length, 1, 'never reconnects');
+});
+
+test('a room the server ended without closing its socket is closed by the client after the drain window', async () => {
+  const h = setup();
+  await inRoom(h);
+  const socket = h.ws.last();
+  socket.recv({ t: 'room.closed', reason: 'kicked' });
+  assert.equal(h.net.status, 'menu');
+  assert.equal(socket.closedWith, null, 'still open for the final frames');
+  await h.timers.advance(DRAIN_MS);
+  assert.equal(socket.closedWith, 1000);
   assert.equal(h.ws.sockets.length, 1);
 });
 
-test('spectating a room that is gone fails at once, before the Worker sends 4004 and after', async () => {
+test('spectating a room that is gone fails at once (close 4004)', async () => {
   const h = setup();
   const watching = h.net.enter({ kind: 'spectate', code: 'ZZZZ' });
   await settle();
-  h.api.reply('GET /api/me/active-match', [200, { activeSeat: null }]);
-  h.api.reply('GET /api/rooms/ZZZZ', [404, { error: 'ROOM_NOT_FOUND' }]);
-  h.ws.last().drop(1006);
-  await assert.rejects(watching, { code: 'ROOM_GONE', message: '房间已关闭或已过期' });
-  assert.equal(h.net.status, 'menu');
-
-  const again = h.net.enter({ kind: 'spectate', code: 'ZZZZ' });
-  await settle();
   h.ws.last().open();
   h.ws.last().drop(4004);
-  await assert.rejects(again, { code: 'ROOM_GONE' });
+  await assert.rejects(watching, { code: 'ROOM_GONE', message: '房间已关闭或已过期' });
   assert.equal(h.net.status, 'menu');
   assert.deepEqual(h.api.unexpected, []);
 });
@@ -439,8 +434,8 @@ test('a room that vanished while reconnecting returns to the menu and says so', 
   await settle();
   assert.equal(h.net.status, 'reconnecting');
   await h.timers.advance(500);
-  h.api.reply('GET /api/me/active-match', [200, { activeSeat: null }]);
-  h.ws.last().drop(1006); // the room's object is empty now: the upgrade is refused
+  h.ws.last().open();
+  h.ws.last().drop(4004); // the room's object is empty now: the Worker refuses with 4004
   await settle();
   assert.deepEqual(closes(h), [['room.closed', 'expired']]);
   assert.equal(h.net.status, 'menu');
@@ -457,21 +452,13 @@ test('close 4004 in a room returns to the menu with room.closed', async () => {
   assert.equal(h.net.status, 'menu');
 });
 
-test('an invalid login stops reconnecting and asks to log in again (close 4003, or a refused upgrade)', async () => {
-  for (const refusal of ['close', 'upgrade']) {
+test('an invalid login stops reconnecting and asks to log in again (close 4003)', async () => {
+  {
     const h = setup();
     await inRoom(h);
-    if (refusal === 'close') {
-      h.ws.last().drop(4003);
-    } else {
-      h.ws.last().drop(1006);
-      await h.timers.advance(500);
-      h.api.reply('GET /api/me/active-match', [401, { error: 'LOGIN_REQUIRED' }]);
-      h.ws.last().drop(1006);
-      await settle();
-    }
+    h.ws.last().drop(4003);
     const snap = h.net.snapshot();
-    assert.equal(snap.status, 'closed', refusal);
+    assert.equal(snap.status, 'closed');
     assert.deepEqual(snap.lastError, { code: 'LOGIN_REQUIRED', text: '登录已失效，请重新登录' });
     const sockets = h.ws.sockets.length;
     h.net.retryNow(); // the browser's 'online' event
@@ -554,28 +541,6 @@ test('a transient refusal is retried and the seat resumes with its token', async
   assert.equal(hello.token, TOKEN, 'the session token of the last welcome');
   assert.equal(h.net.status, 'online');
   assert.deepEqual(closes(h), []);
-  assert.deepEqual(h.api.unexpected, []);
-});
-
-test('立即重连 while a refused upgrade is being checked keeps the new connection', async () => {
-  const h = setup();
-  await inRoom(h);
-  h.ws.last().drop(1006);
-  await h.timers.advance(500);
-  let answer;
-  h.api.reply('GET /api/me/active-match', () => new Promise((resolve) => { answer = resolve; }));
-  h.ws.last().drop(1006);
-  await settle();
-  h.net.retryNow(); // the banner's 立即重连 while the check is still out
-  await welcome(h, { resumed: true });
-  assert.equal(h.net.status, 'online');
-  answer([200, { activeSeat: { roomId: 'ABCD', roomGeneration: 'g1' }, status: null }]);
-  await settle();
-  assert.equal(h.net.status, 'online');
-  const sockets = h.ws.sockets.length;
-  await h.timers.advance(3000);
-  assert.equal(h.ws.sockets.length, sockets, 'no second reconnect');
-  assert.equal(h.net.status, 'online');
   assert.deepEqual(h.api.unexpected, []);
 });
 
