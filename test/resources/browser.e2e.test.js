@@ -39,13 +39,18 @@ const PAGE = `<!doctype html><html><head><meta name="viewport" content="width=de
   installResourceManager();
   </script></body></html>`;
 
-/** A site version: its resource files, manifest and resource ZIP. The site serves only the manifest. */
+/**
+ * A site version: its resource files (all of them referenced by its data/assets.json), manifest and resource ZIP. The
+ * site serves only the manifest.
+ */
 async function siteVersion(files) {
   const dir = await mkdtemp(join(tmpdir(), 'stronghold-browser-resources-'));
   for (const [name, text] of Object.entries(files)) {
     await mkdir(dirname(join(dir, 'public', name)), { recursive: true });
     await writeFile(join(dir, 'public', name), text);
   }
+  await mkdir(join(dir, 'data'));
+  await writeFile(join(dir, 'data/assets.json'), JSON.stringify(Object.keys(files).filter(name => name.startsWith('assets/')).map(name => '/' + name)));
   const manifest = await buildResourceManifest({ root: dir });
   const { path: pack } = await writeResourcePack({ root: dir, manifest });
   return { dir, manifest, pack };

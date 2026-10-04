@@ -38,8 +38,9 @@ test('public spectator UI: live board, presence, read-only controls and restart 
   const errors=[],out=path.join(ROOT,'test/e2e/out/spectators');await mkdir(out,{recursive:true});
   const player=async actor=>{
     const ctx=await browser.createBrowserContext(),page=await ctx.newPage();
-    await page.setRequestInterception(true);
-    page.on('request',req=>req.url().startsWith('https://avatars.githubusercontent.com/')
+    // GitHub avatars, and the art a player imports (the site hosts none): one image for every one of them
+    await page.setBypassServiceWorker(true);await page.setRequestInterception(true);
+    page.on('request',req=>req.url().startsWith('https://avatars.githubusercontent.com/') || new URL(req.url()).pathname.startsWith('/assets/')
       ? req.respond({status:200,contentType:'image/svg+xml',body:'<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80"><rect width="80" height="80" fill="teal"/></svg>'}) : req.continue());
     page.on('pageerror',e=>errors.push(e.message));await page.setViewport({width:1920,height:1080});
     await page.evaluateOnNewDocument(()=>{localStorage.setItem('stronghold-resource-mode','ondemand');globalThis.__SP_RENDER__='fallback';});
