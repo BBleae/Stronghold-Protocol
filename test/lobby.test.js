@@ -15,7 +15,7 @@ import { startServer, parseRange, acceptsGzip, parseTrustProxy } from '../server
 import { loadData, lookup, getChess, getBond, getBand, getMode, getConfig, INDEXED_FILES } from '../server/data.js';
 import * as dataModule from '../server/data.js';
 import { CODE_ALPHABET, BOT_NAMES } from '../server/lobby.js';
-import { sanitizeName, TokenBucket, SessionRegistry, clientAddress, normalizeIp, isLocalIp, limitKeyOf } from '../server/net.js';
+import { normalizeName, sanitizeName, TokenBucket, SessionRegistry, clientAddress, normalizeIp, isLocalIp, limitKeyOf } from '../server/net.js';
 import { StubMatch as Match } from '../server/match/StubMatch.js';
 import { Match as RealMatch } from '../server/match/Match.js';
 import { TestClient } from './helpers/wsClient.js';
@@ -1794,6 +1794,18 @@ describe('platform units', () => {
     assert.equal(sanitizeName(''), null);
     assert.equal(sanitizeName(42), null);
     assert.equal([...sanitizeName('😀'.repeat(20))].length, 12);
+  });
+
+  test('normalizeName gives a name that normalizes to itself (NFC after the stripping)', () => {
+    const chars = (...codes) => String.fromCodePoint(...codes);
+    // x, soft hyphen, combining diaeresis: once the soft hyphen is gone, NFC makes one character of the other two.
+    assert.equal(normalizeName(chars(0x78, 0xad, 0x308)), chars(0x1e8d));
+    // Hangul jamo split by a zero-width space: one syllable once the space is gone.
+    assert.equal(normalizeName(chars(0x1100, 0x200b, 0x1161)), chars(0xac00));
+    for (const raw of [chars(0x78, 0xad, 0x308), chars(0x1100, 0x200b, 0x1161), 'e' + chars(0x301), ' 凯 尔希 ']) {
+      const name = normalizeName(raw);
+      assert.equal(normalizeName(name), name, JSON.stringify(raw));
+    }
   });
 
   test('TokenBucket refills continuously up to burst', () => {

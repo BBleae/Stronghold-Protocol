@@ -67,6 +67,7 @@ test('accounts export with their identities and display names, and restore witho
     import { handleBackupRoutes } from './worker/storage/backup.js';
     import { hash } from './worker/accounts/auth.js';
     import { hashPassword, verifyPassword } from './worker/accounts/passwords.js';
+    import { parseNickname } from './worker/accounts/names.js';
     export class TestObject extends SiteDirectory {
       exec(query, ...params) { return this.sql.exec(query, ...params).toArray(); }
     }
@@ -77,7 +78,7 @@ test('accounts export with their identities and display names, and restore witho
       if (i.register) {
         const accountId = crypto.randomUUID();
         return Response.json(await account(accountId).register({ accountId, username: i.register.username,
-          password: await hashPassword(i.register.password), nickname: i.register.nickname }));
+          password: await hashPassword(i.register.password), nickname: parseNickname(i.register.nickname) }));
       }
       if (i.github) {
         const identity = await site.resolveGithubUser(i.github);
@@ -99,6 +100,10 @@ test('accounts export with their identities and display names, and restore witho
   const call = async (h, body) => (await h.fetch(body)).json();
   const local = await call(source, { register: { username: 'Doctor_01', password: 'correct horse', nickname: '晴猫' } });
   const github = await call(source, { github: { id: '42', login: 'BBleae', name: 'GitHub 猫', avatarUrl: null } });
+  // A nickname that NFC changes once an invisible character is gone (x, soft hyphen, combining diaeresis) is stored
+  // normalized, so that its backup entry restores.
+  const composed = await call(source, { register: { username: 'Doctor_02', password: 'correct horse', nickname: 'x\u00ad\u0308' } });
+  assert.equal(composed.nickname, '\u1e8d');
 
   const catalog = await call(source, { path: 'catalog?kind=profiles' });
   const entries = Object.fromEntries(catalog.items.map((entry) => [entry.accountId, entry]));
@@ -129,12 +134,14 @@ test('accounts export with their identities and display names, and restore witho
   }
   assert.deepEqual(await call(destination, { profile: local.accountId }), local);
   assert.deepEqual(await call(destination, { profile: github.accountId }), github);
+  assert.deepEqual(await call(destination, { profile: composed.accountId }), composed);
   assert.equal(await call(destination, { verify: { username: 'DOCTOR_01', password: 'correct horse' } }), true);
   assert.equal(await call(destination, { session: { token: 'b'.repeat(64) } }), null);
   assert.equal((await call(destination, { session: { token: 'c'.repeat(64) } })).accountId, other.accountId);
   assert.deepEqual((await call(destination, { exec: ['SELECT name_key, disc, account_id FROM display_names ORDER BY name_key'] })),
     [{ name_key: 'github 猫', disc: github.discriminator, account_id: github.accountId }, { name_key: 'other', disc: other.discriminator,
-      account_id: other.accountId }, { name_key: '晴猫', disc: local.discriminator, account_id: local.accountId }]);
+      account_id: other.accountId }, { name_key: '\u1e8d', disc: composed.discriminator, account_id: composed.accountId },
+    { name_key: '晴猫', disc: local.discriminator, account_id: local.accountId }]);
   // Restoring again changes nothing.
   for (const entry of catalog.items) assert.equal((await call(destination, { path: 'profile', body: { profile: entry, dryRun: false } })).written, 1);
   assert.deepEqual(await call(destination, { profile: local.accountId }), local);

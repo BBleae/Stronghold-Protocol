@@ -24,15 +24,15 @@ export function stripLoneSurrogates(str) {
 }
 
 /**
- * Normalise a name like the server does, without shortening it: NFC, strip lone surrogates / control / invisible /
- * bidi characters, collapse whitespace, trim.
+ * Normalise a name like the server does, without shortening it: strip lone surrogates / control / invisible / bidi
+ * characters, collapse whitespace, trim, then NFC (last, as on the server: a normalised name normalises to itself).
  * @param {any} raw
  * @returns {string}
  */
 export function normalizeName(raw) {
-  let s = String(raw ?? '');
+  let s = stripLoneSurrogates(String(raw ?? '')).replace(/\s+/g, ' ').replace(CONTROL_CHARS, '').replace(/ {2,}/g, ' ').trim();
   try { s = s.normalize('NFC'); } catch { /* keep as is */ }
-  return stripLoneSurrogates(s).replace(/\s+/g, ' ').replace(CONTROL_CHARS, '').replace(/ {2,}/g, ' ').trim();
+  return s;
 }
 
 /**

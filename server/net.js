@@ -337,14 +337,16 @@ const STRIP_RE = new RegExp('[' + STRIP_RANGES.map(([a, b]) => (a === b ? hexEsc
 const LONE_SURROGATE_RE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g;
 
 /**
- * Normalize a name without shortening it: NFC, strip control/invisible characters and lone surrogates, collapse
- * whitespace, trim. Returns '' when nothing printable remains.
+ * Normalize a name without shortening it: strip control/invisible characters and lone surrogates, collapse
+ * whitespace, trim, then NFC. NFC comes last so that a normalized name normalizes to itself: stripping can bring
+ * together characters that NFC composes (x, soft hyphen, combining diaeresis). Returns '' when nothing printable
+ * remains.
  * @param {unknown} raw
  * @returns {string}
  */
 export function normalizeName(raw) {
   if (typeof raw !== 'string') return '';
-  return raw.normalize('NFC').replace(LONE_SURROGATE_RE, '').replace(/\s+/g, ' ').replace(STRIP_RE, '').replace(/ {2,}/g, ' ').trim();
+  return raw.replace(LONE_SURROGATE_RE, '').replace(/\s+/g, ' ').replace(STRIP_RE, '').replace(/ {2,}/g, ' ').trim().normalize('NFC');
 }
 
 /**
