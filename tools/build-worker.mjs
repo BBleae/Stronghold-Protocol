@@ -58,20 +58,12 @@ export async function copyRuntimeAssets({ root = ROOT, out = path.join(root, 'di
   html = html.replace('</head>', '  <link rel="stylesheet" href="/css/resources.css" />\n</head>');
   await fs.writeFile(path.join(out, 'index.html'), html);
   await fs.writeFile(path.join(out, '_headers'), `# Every rule whose path matches applies, and the values of a header set by several of them are joined:
-# each header is set by one rule per path. A path without a Cache-Control rule gets the platform default
-# "public, max-age=0, must-revalidate": pages, code, /vendor (it must match the code importing it), data,
-# the resource manifest and service worker revalidate on every use. Resource files may be a day old.
+# each header is set by one rule per path. No path has a Cache-Control rule: all get the platform default
+# "public, max-age=0, must-revalidate", so pages, code, /vendor (it must match the code importing it), data,
+# the resource manifest and service worker revalidate on every use.
 /*
   X-Content-Type-Options: nosniff
   Referrer-Policy: same-origin
-/assets/*
-  Cache-Control: public, max-age=86400
-/fonts/*
-  Cache-Control: public, max-age=86400
-/assets/*.atlas
-  Content-Type: text/plain; charset=utf-8
-/assets/*.skel
-  Content-Type: application/octet-stream
 `);
   let count = 0;
   async function check(directory) {
