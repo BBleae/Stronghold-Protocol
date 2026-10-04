@@ -34,8 +34,15 @@ export const NUMBER_SIGNS = /[#\uFE5F\uFF03]/g;
 export const validPassword = (password) => typeof password === 'string'
   && [...password].length >= PASSWORD_LENGTH.min && [...password].length <= PASSWORD_LENGTH.max;
 
-/** Whether an already normalized nickname is one: 1–NICKNAME_MAX characters, no number sign. */
-export const validNickname = (nickname) => typeof nickname === 'string' && nickname.length > 0
+/**
+ * The key a nickname's discriminators are unique under (the directory allocates them): look-alike, case and invisible
+ * variants of a nickname share it. It drops what Unicode calls invisible (default-ignorable characters), then takes
+ * NFKC and lower case. An empty key: the nickname shows nothing.
+ */
+export const nicknameKey = (nickname) => nickname.replace(/\p{Default_Ignorable_Code_Point}/gu, '').normalize('NFKC').toLowerCase();
+
+/** Whether an already normalized nickname is one: 1–NICKNAME_MAX characters, something visible, no number sign. */
+export const validNickname = (nickname) => typeof nickname === 'string' && nicknameKey(nickname).length > 0
   && [...nickname].length <= NICKNAME_MAX && !nickname.match(NUMBER_SIGNS);
 
 /** The name every other player sees: the nickname and the account's discriminator (0000–9999), e.g. 晴猫#1145. */

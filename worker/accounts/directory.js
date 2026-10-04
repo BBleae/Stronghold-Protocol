@@ -1,7 +1,6 @@
 import { DurableObject } from 'cloudflare:workers';
 import { randomInt } from 'node:crypto';
-import { AccountError, pageLimit } from '../../shared/account-protocol.js';
-import { nameKey } from './names.js';
+import { AccountError, nicknameKey, pageLimit } from '../../shared/account-protocol.js';
 
 /**
  * The site-wide identity and session index (one object): who an account is (its GitHub user, or its username and
@@ -21,7 +20,8 @@ export class SiteDirectory extends DurableObject {
     // Password accounts: the username as typed, unique without regard to case (username_key: lower case), and the
     // password hash with its parameters (JSON).
     this.sql.exec('CREATE TABLE IF NOT EXISTS local_users (username_key TEXT PRIMARY KEY, username TEXT NOT NULL, account_id TEXT NOT NULL UNIQUE, password TEXT NOT NULL, created_at INTEGER NOT NULL)');
-    // Display names: one (nickname key, discriminator) pair per account, no pair shared (names.js nameKey).
+    // Display names: one (nickname key, discriminator) pair per account, no pair shared (the key:
+    // shared/account-protocol.js nicknameKey).
     this.sql.exec('CREATE TABLE IF NOT EXISTS display_names (name_key TEXT NOT NULL, disc TEXT NOT NULL, account_id TEXT NOT NULL UNIQUE, PRIMARY KEY (name_key, disc))');
     // What the GitHub OAuth app's credentials were last found to be, per configuration (worker/accounts/github.js).
     this.sql.exec('CREATE TABLE IF NOT EXISTS provider_status (fingerprint TEXT PRIMARY KEY, verdict TEXT NOT NULL, expires_at INTEGER NOT NULL)');
@@ -104,7 +104,7 @@ export class SiteDirectory extends DurableObject {
   }
 
   #claim(accountId, nickname, discriminator) {
-    const key = nameKey(nickname);
+    const key = nicknameKey(nickname);
     const held = this.sql.exec('SELECT name_key, disc FROM display_names WHERE account_id=?', accountId).toArray()[0];
     if (held?.name_key === key) return held.disc;
     const taken = new Set(this.sql.exec('SELECT disc FROM display_names WHERE name_key=?', key).toArray().map((row) => row.disc));
@@ -200,7 +200,7 @@ export class SiteDirectory extends DurableObject {
     const usernameKey = username?.toLowerCase() ?? null;
     const github = this.sql.exec('SELECT account_id, github_id FROM users WHERE account_id=? OR github_id=?', accountId, githubId).toArray();
     const local = this.sql.exec('SELECT account_id, username_key FROM local_users WHERE account_id=? OR username_key=?', accountId, usernameKey).toArray();
-    const name = profile.discriminator ? { key: nameKey(profile.nickname), disc: profile.discriminator } : null;
+    const name = profile.discriminator ? { key: nicknameKey(profile.nickname), disc: profile.discriminator } : null;
     const nameTaken = !!name && this.sql.exec('SELECT 1 FROM display_names WHERE name_key=? AND disc=? AND account_id!=?', name.key, name.disc, accountId).toArray().length > 0;
     if (github.some((row) => row.account_id !== accountId || row.github_id !== githubId)
       || local.some((row) => row.account_id !== accountId || row.username_key !== usernameKey) || nameTaken) {

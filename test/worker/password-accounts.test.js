@@ -8,6 +8,10 @@ import { PBKDF2_ITERATIONS } from '../../worker/accounts/passwords.js';
 
 const ADMIN_TOKEN = 'admin-'.repeat(8);
 const ZERO_WIDTH_SPACE = String.fromCharCode(0x200b);
+// Invisible characters (Unicode's default-ignorable ones) that the name normalization keeps.
+const HANGUL_FILLER = String.fromCharCode(0x3164);
+const GRAPHEME_JOINER = String.fromCharCode(0x034f);
+const ARABIC_LETTER_MARK = String.fromCharCode(0x061c);
 let network = 0;
 /** A network of its own, so that one scenario's attempts never count against another's limit. */
 const freshIp = () => `10.${(++network >> 8) & 255}.${network & 255}.1`;
@@ -85,6 +89,8 @@ test('registration refuses invalid usernames, passwords and nicknames', { timeou
     [['gooduser', 12345678, '代号'], 'INVALID_PASSWORD'],
     [['gooduser', 'long enough', ''], 'INVALID_NICKNAME'],
     [['gooduser', 'long enough', ` ${ZERO_WIDTH_SPACE} `], 'INVALID_NICKNAME'],
+    [['gooduser', 'long enough', HANGUL_FILLER], 'INVALID_NICKNAME'],
+    [['gooduser', 'long enough', HANGUL_FILLER + GRAPHEME_JOINER], 'INVALID_NICKNAME'],
     [['gooduser', 'long enough', 'a#b'], 'INVALID_NICKNAME'],
     [['gooduser', 'long enough', '晴猫＃1'], 'INVALID_NICKNAME'],
     [['gooduser', 'long enough', '名'.repeat(13)], 'INVALID_NICKNAME'],
@@ -140,6 +146,21 @@ test('concurrent registrations with one nickname get distinct discriminators unt
   assert.deepEqual((await a.rename(created[0].session, 'full')).body, { error: 'NICKNAME_FULL' });
 });
 
+test('invisible variants of a nickname share its discriminators, so no two display names look the same', { timeout: 120000 }, async (t) => {
+  const world = await createWorld(t);
+  const a = accounts(world);
+  const victim = (await a.register('victim_1', 'long enough', '晴猫')).body.user;
+  // Every number of 晴猫 is taken but one: a look-alike with an invisible character can only get that one.
+  const spare = victim.discriminator === '0000' ? '0001' : '0000';
+  await world.exec(`WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < 9999)
+    INSERT INTO display_names SELECT '晴猫', printf('%04d', i), 'filler-' || i FROM n WHERE printf('%04d', i) NOT IN (?, ?)`,
+  victim.discriminator, spare);
+  const lookalike = (await a.register('lookalike_1', 'long enough', '晴猫' + ARABIC_LETTER_MARK)).body.user;
+  assert.equal(lookalike.nickname, '晴猫' + ARABIC_LETTER_MARK, 'the nickname as typed');
+  assert.equal(lookalike.discriminator, spare);
+  assert.deepEqual((await a.register('lookalike_2', 'long enough', '晴' + GRAPHEME_JOINER + '猫')).body, { error: 'NICKNAME_FULL' });
+});
+
 test('a new nickname keeps the discriminator when it is free, and frees the old name', { timeout: 120000 }, async (t) => {
   const world = await createWorld(t);
   const a = accounts(world);
@@ -156,7 +177,9 @@ test('a new nickname keeps the discriminator when it is free, and frees the old 
   assert.notEqual(moved.discriminator, user.discriminator);
   assert.equal(moved.name, 'Busy#' + moved.discriminator);
   assert.equal((await a.rename(session, 'busy')).body.user.discriminator, moved.discriminator, 'a case change keeps it');
-  for (const nickname of ['', 'a#b', '名'.repeat(13), 42]) assert.deepEqual((await a.rename(session, nickname)).body, { error: 'INVALID_NICKNAME' });
+  for (const nickname of ['', HANGUL_FILLER, 'a#b', '名'.repeat(13), 42]) {
+    assert.deepEqual((await a.rename(session, nickname)).body, { error: 'INVALID_NICKNAME' });
+  }
   assert.equal((await a.rename('', 'x')).status, 401);
   assert.equal((await world.api('z', '/api/me/nickname', { method: 'POST', body: { nickname: 'x' }, cookie: session,
     headers: { Origin: 'https://evil.example' } })).status, 403);

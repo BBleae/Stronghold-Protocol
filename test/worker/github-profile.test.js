@@ -103,7 +103,8 @@ test('a GitHub account goes by its GitHub name with a discriminator, which a new
   assert.notEqual(moved.discriminator, user.discriminator);
   assert.equal(moved.name, 'Taken#' + moved.discriminator);
 
-  for (const name of [null, undefined, '', '   ', 123, '###']) {
+  // (U+3164 HANGUL FILLER: a name that shows nothing)
+  for (const name of [null, undefined, '', '   ', 123, '###', String.fromCharCode(0x3164)]) {
     await h.login({ id: 42, login: 'BBleae', name, avatar_url: avatar });
     assert.equal((await h.me(cookie)).user.nickname, 'BBleae', `GitHub name ${JSON.stringify(name)}: the login`);
   }
