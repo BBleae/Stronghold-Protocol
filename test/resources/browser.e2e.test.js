@@ -125,6 +125,11 @@ test('resource cache in a real browser', { skip: !enabled, timeout: 240000 }, as
       void readFile(join(server.site.dir, 'public/resource-manifest.json')).then(body => response.end(body));
     }
   }
+  // Every case starts on the first site version with its manifest answered, whatever the case before left.
+  t.beforeEach(() => {
+    server.site = v1;
+    releaseManifest();
+  });
 
   const puppeteer = (await import('puppeteer-core')).default;
   const browser = await puppeteer.launch({ executablePath: chrome, headless: true, args: ['--no-sandbox'] });
@@ -284,7 +289,6 @@ test('resource cache in a real browser', { skip: !enabled, timeout: 240000 }, as
   });
 
   await t.test('a failed import says why; a match start cancels an import and closes the dialog; the dialog fits', async () => {
-    server.site = v1;
     const { context, page } = await newPage();
     await returningPlayer(page);
     await page.goto(base);
@@ -382,7 +386,6 @@ test('resource cache in a real browser', { skip: !enabled, timeout: 240000 }, as
   });
 
   await t.test('a clear in one page waits for an import in another; the status stays true to what is stored', async () => {
-    server.site = v1;
     const { context, page: importing } = await newPage();
     await returningPlayer(importing);
     const clearing = await samePage(context);
@@ -423,7 +426,6 @@ test('resource cache in a real browser', { skip: !enabled, timeout: 240000 }, as
   });
 
   await t.test('a first visit can skip; a site without a manifest or a browser without the APIs boots and says so', async () => {
-    server.site = v1;
     const skipping = await newPage();
     await skipping.page.goto(base);
     await skipping.page.waitForSelector('[data-action="import"]:not(:disabled)');
