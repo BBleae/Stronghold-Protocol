@@ -10,9 +10,9 @@
 | PlayerState 的 Map/Set、对象共享、临时增益、技能闭包、召唤及 AI 内部状态 | 原构造器与原技能代码重执行，不从 JSON 恢复函数/对象指针 |
 | Battle 单位/位置、波次、射弹、伤害序列、共享首领池、联防映射 | 原 spec、原规则、真实客户端进度/结果和服务端计时事件重执行 |
 | 定时闭包与截止时间 | VirtualScheduler 按原注册顺序重建，日志记录触发 ID/时刻；恢复时核验下一个计时器 |
-| 人类连接、离开/重连、托管接管 | 有序 onDisconnect/onReconnect/onLeave；DO 唤醒后与仍存活且会话有效的 WebSocket 重新对齐 |
+| 人类连接、离开/重连、托管接管 | 有序 onDisconnect/onReconnect/onLeave；DO 唤醒后接回休眠中保持的 WebSocket（登录与其到期时间随连接附件保存，到期本地检查，每分钟后台向账号目录复核）；重启时丢失连接的会话按正常断线处理（Lobby.onDisconnect：单人对局保留 24 小时恢复期，大厅席位的宽限从唤醒时起算） |
 | 对局外房间配置、申请/预留、席位账号、连接 epoch、继续票据 | Room snapshot，分块 KV 与 SQL 日志同事务提交 |
-| 完成事实、提前离开时的个人事实、录制片段 | 房间的 archive_outbox / archive_chunks 表（对局结束的同一事务写入，编码一次，不进入快照）；幂等发布至独立 Archive/Account |
+| 完成事实、提前离开时的个人事实、录制片段 | 房间的 archive_outbox / archive_chunks 表（对局结束的同一事务写入，编码一次，不进入快照）；幂等发布至独立 Archive/Account，失败按条记录尝试次数与下次重试时间（attempts / retry_at） |
 
 恢复过程禁止再次广播旧帧或重复执行外部 onEnd。完成后比较 publicView 和 RNG 状态。定时推进单批有上限；历史记录上限 200,000 条用于拒绝无法处理的输入。此上限不是固定恢复 CPU 保证，也不是事件裁剪策略。
 
