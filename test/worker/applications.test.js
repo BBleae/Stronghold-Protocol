@@ -36,6 +36,16 @@ test('pending approvals and expiry persist; cancellation and invalidation releas
   assert.equal(restored.list().find(x=>x.id===c.id).status,'expired');
 });
 
+test('an account has one application in a room: applying again replaces the ones that ended', () => {
+  const q = new ApplicationQueue();
+  for (let i = 0; i < 50; i++) q.cancel('alice', q.apply({ accountId: 'alice', name: 'Alice' }).id);
+  assert.deepEqual(q.snapshot().map((x) => [x.accountId, x.status]), [['alice', 'cancelled']]);
+  const again = q.apply({ accountId: 'alice', name: 'Alice' });
+  assert.deepEqual(q.snapshot().map((x) => [x.id, x.status]), [[again.id, 'pending']]);
+  q.apply({ accountId: 'bob', name: 'Bob' });
+  assert.equal(q.snapshot().length, 2);
+});
+
 class Socket extends EventEmitter {
   readyState = 1; bufferedAmount = 0; frames = [];
   send(s) { this.frames.push(JSON.parse(s)); }

@@ -1,9 +1,32 @@
 // HTTP plumbing shared by the Worker's routes and the room's internal routes.
 
 import { AccountError } from '../shared/account-protocol.js';
+import { normalizeIp, limitKeyOf } from '../server/net.js';
 import { logWarn, logError, errorFields } from './log.js';
 
-const json = (body, status) => Response.json(body, { status, headers: { 'Cache-Control': 'no-store' } });
+const json = (body, status, headers = {}) => Response.json(body, { status, headers: { 'Cache-Control': 'no-store', ...headers } });
+
+// Request limits: Cloudflare's rate limiting bindings (wrangler.jsonc "ratelimits": a limit per minute, counted at each
+// Cloudflare location, nothing stored). A request counts against the client's network (its IPv4 address or IPv6 /64,
+// as the edge reports it) and, where there is one, against its account.
+
+/** The client's address as Cloudflare's edge reports it (never a header the client sets). */
+export const edgeIp = (request) => normalizeIp(request.headers.get('CF-Connecting-IP')) || '0.0.0.0';
+
+/** The limit key of the client's network. */
+export const networkKey = (request) => 'net:' + limitKeyOf(edgeIp(request));
+
+/** The limit key of an account. */
+export const accountKey = (accountId) => 'account:' + accountId;
+
+/** Whether one more request under `key` is within `limit` (a rate limiting binding). */
+export async function within(limit, key) {
+  const { success } = await limit.limit({ key });
+  return success;
+}
+
+/** The answer to a request over its limit. */
+export const tooMany = () => json({ error: 'RATE', detail: 'too many requests' }, 429, { 'Retry-After': '10' });
 
 /**
  * The response for an error that ended a request. A known error answers with its own code and status: an AccountError

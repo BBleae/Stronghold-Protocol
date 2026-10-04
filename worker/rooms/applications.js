@@ -15,14 +15,21 @@ export class ApplicationQueue {
   list(accountId=null) {this.expire();return this.items.filter(x=>!accountId || x.accountId===accountId).map(x=>({...x}));}
   snapshot() {this.expire();return structuredClone(this.items);}
   reservedCount() {return this.list().filter(x=>x.status==='approved').length;}
-  apply({accountId,name}) {
-    requireId(accountId);this.expire();
-    const previous=this.items.find(x=>x.accountId===accountId && ['pending','approved'].includes(x.status));
-    if(previous) return {...previous};
-    if(this.items.filter(x=>x.status==='pending').length>=20) throw new AccountError('TOO_MANY_APPLICATIONS',429);
-    const item={id:randomBytes(16).toString('hex'),accountId,name:String(name || '博士').slice(0,80),
-      status:'pending',createdAt:this.now(),expiresAt:this.now()+ACCOUNT_LIMITS.applicationMs};
-    this.items.push(item);return {...item};
+  /**
+   * The account's application: its pending or approved one, else a new one. An account has one application in the
+   * room: a new one replaces the ones that ended, so applying again (after a cancel, a rejection) never grows the list.
+   */
+  apply({ accountId, name }) {
+    requireId(accountId);
+    this.expire();
+    const previous = this.items.find((x) => x.accountId === accountId && ['pending', 'approved'].includes(x.status));
+    if (previous) return { ...previous };
+    if (this.items.filter((x) => x.status === 'pending').length >= 20) throw new AccountError('TOO_MANY_APPLICATIONS', 429);
+    this.items = this.items.filter((x) => x.accountId !== accountId);
+    const item = { id: randomBytes(16).toString('hex'), accountId, name: String(name || '博士').slice(0, 80),
+      status: 'pending', createdAt: this.now(), expiresAt: this.now() + ACCOUNT_LIMITS.applicationMs };
+    this.items.push(item);
+    return { ...item };
   }
   decide(actor,id,decision,room) {
     this.expire();

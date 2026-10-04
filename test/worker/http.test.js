@@ -41,6 +41,26 @@ test('request limits count the network the edge reports, never forwarded headers
   assert.deepEqual([...counts], [['net:8.8.8.8', 9], ['net:2001:db8:1:2::/64', 2]]);
 });
 
+test('application requests count against the account as well as its network', async () => {
+  const counts = new Map();
+  const env = {
+    SITES: { idFromName: (name) => name, get: () => ({ getSession: async () => ({ accountId: 'a', expiresAt: Date.now() + 60_000 }) }) },
+    ACCOUNTS: { idFromName: (name) => name, get: () => ({ getActiveSeat: async () => null, getApplication: async () => null }) },
+    ROOMS: { idFromName: (name) => name, get: () => ({ fetch: async () => Response.json({ id: 'x' }, { status: 201 }) }) },
+    APPLICATION_LIMIT: { async limit({ key }) {
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+      return { success: counts.get(key) <= 30 };
+    } },
+  };
+  const apply = (ip) => worker.fetch(new Request('https://game.example/api/rooms/ABCD/applications', { method: 'POST',
+    headers: { Origin: 'https://game.example', cookie: `__Host-sp_session=${'a'.repeat(64)}`, 'CF-Connecting-IP': ip },
+    body: JSON.stringify({ action: 'apply' }) }), env);
+  // A new network for every request: the account's 31st is refused.
+  for (let n = 0; n < 30; n++) assert.equal((await apply(`10.0.${n}.1`)).status, 201);
+  assert.equal((await apply('10.0.99.1')).status, 429);
+  assert.equal(counts.get('account:a'), 31);
+});
+
 test('a request ends with its own status: client errors keep their code, failures are logged with their route', async (t) => {
   const lines = [];
   for (const level of ['warn', 'error']) t.mock.method(console, level, (line) => lines.push({ level, ...line }));

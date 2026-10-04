@@ -1,7 +1,7 @@
 import { authenticate, accountOf, directoryOf, json, requireOrigin } from '../accounts/auth.js';
 import { AccountError } from '../../shared/account-protocol.js';
 import { clearStaleApplication, giveUpReservation, seatOf } from '../accounts/routes.js';
-import { errorResponse, readJson } from '../http.js';
+import { errorResponse, readJson, accountKey, within, tooMany } from '../http.js';
 export async function handleLobbyRoutes(request, env) {
   const url = new URL(request.url);
   if (url.pathname === '/api/rooms' && request.method === 'GET') {
@@ -14,6 +14,8 @@ export async function handleLobbyRoutes(request, env) {
   if (request.method === 'POST') requireOrigin(request);
   const session = await authenticate(request, env);
   if (!session) return json({ error: 'LOGIN_REQUIRED' }, 401);
+  // Applying, cancelling and deciding count against the account too: a stranger who changes networks is still one.
+  if (request.method === 'POST' && !(await within(env.APPLICATION_LIMIT, accountKey(session.accountId)))) return tooMany();
   const body = request.method === 'POST' ? await readJson(request, 2048) : null;
   if (body?.action === 'apply') {
     // A seat in a live room blocks applying elsewhere; a reservation the account never used (a create that failed)

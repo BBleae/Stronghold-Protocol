@@ -1,7 +1,6 @@
 import { randomInt } from 'node:crypto';
 import { APP_VERSION } from '../shared/constants.js';
 import { CODE_ALPHABET } from '../server/lobby.js';
-import { normalizeIp, limitKeyOf } from '../server/net.js';
 import { RoomRuntime, validCode } from './room-runtime.js';
 import { prepareMatchVersion, retainedMatchVersions } from './match-versions.js';
 import { RULES_VERSION } from '../shared/rules-version.js';
@@ -13,7 +12,7 @@ import { handleLobbyRoutes, roomApplications } from './rooms/routes.js';
 import { handleHistoryRoutes } from './archive/routes.js';
 import { publishArchive,prepareArchive } from './archive/outbox.js';
 import { handleBackupRoutes } from './storage/backup.js';
-import { errorResponse } from './http.js';
+import { errorResponse, edgeIp, networkKey, accountKey, within, tooMany } from './http.js';
 import { CLOSE, refuseSocket } from './close-codes.js';
 
 // the deployed commit (tools/build-worker.mjs buildId; esbuild defines it, unbundled tests see 'local')
@@ -21,19 +20,8 @@ const BUILD = typeof __SP_BUILD__ === 'string' ? __SP_BUILD__ : 'local';
 const json = (body, status = 200, headers = {}) => Response.json(body, { status,
   headers: { 'Cache-Control': 'no-store', ...headers } });
 const error = (status, code, detail) => json({ error: code, ...(detail ? { detail } : {}) }, status);
-const edgeIp = (request) => normalizeIp(request.headers.get('CF-Connecting-IP')) || '0.0.0.0';
 const roomStub = (env, code) => env.ROOMS.get(env.ROOMS.idFromName(code), { locationHint: 'apac' });
 const sameOrigin = (request) => !request.headers.has('Origin') || request.headers.get('Origin') === new URL(request.url).origin;
-
-// Request limits: Cloudflare's rate limiting bindings (wrangler.jsonc "ratelimits": a limit per minute, counted at each
-// Cloudflare location, nothing stored). A request counts against the client's network (its IPv4 address or IPv6 /64,
-// as the edge reports it) and, where there is one, against its account.
-const network = (request) => 'net:' + limitKeyOf(edgeIp(request));
-async function within(limit, key) {
-  const { success } = await limit.limit({ key });
-  return success;
-}
-const tooMany = () => json({ error: 'RATE', detail: 'too many requests' }, 429, { 'Retry-After': '10' });
 
 export default {
   // The one place a request's unexpected error ends: logged with its route, answered with a status (worker/http.js).
@@ -51,10 +39,10 @@ async function route(request, env) {
   const url = new URL(request.url);
   const path = url.pathname;
   const backup=await handleBackupRoutes(request,env);if(backup)return backup;
-  if (path === '/api/auth/github/start' && !(await within(env.AUTH_LIMIT, network(request)))) return tooMany();
+  if (path === '/api/auth/github/start' && !(await within(env.AUTH_LIMIT, networkKey(request)))) return tooMany();
   if ((path === '/api/rooms' && request.method === 'GET') || /\/applications$/.test(path)) {
     const limit = request.method === 'GET' ? env.STATUS_LIMIT : env.APPLICATION_LIMIT;
-    if (!(await within(limit, network(request)))) return tooMany();
+    if (!(await within(limit, networkKey(request)))) return tooMany();
   }
   const auth = await handleAuth(request, env);
   if (auth) return auth;
@@ -72,7 +60,7 @@ async function route(request, env) {
     if (request.method !== 'POST') return error(405, 'BAD_MSG');
     // A write: only from the game's own page.
     if (request.headers.get('Origin') !== url.origin) return error(403, 'BAD_MSG', 'origin mismatch');
-    if (!(await within(env.RESERVE_LIMIT, network(request)))) return tooMany();
+    if (!(await within(env.RESERVE_LIMIT, networkKey(request)))) return tooMany();
     const session = await authenticate(request, env);
     if (!session) return error(401, 'LOGIN_REQUIRED');
     // A create that failed after its reservation (e.g. at the first connect) goes on with that reservation.
@@ -100,7 +88,7 @@ async function route(request, env) {
     if (request.method !== 'GET') return error(405, 'BAD_MSG');
     const code = statusMatch[1].toUpperCase();
     if (!validCode(code)) return error(404, 'ROOM_NOT_FOUND');
-    if (!(await within(env.STATUS_LIMIT, network(request)))) return tooMany();
+    if (!(await within(env.STATUS_LIMIT, networkKey(request)))) return tooMany();
     return roomStub(env, code).fetch(new Request('https://room.internal/_status'));
   }
   if (path === '/ws') {
@@ -112,10 +100,10 @@ async function route(request, env) {
     if (!validCode(code)) return refuseSocket(CLOSE.ROOM_GONE, 'no such room');
     const ip = edgeIp(request);
     // Connections count against the network before the login is looked up, and against the account after.
-    if (!(await within(env.CONNECT_LIMIT, network(request)))) return refuseSocket(CLOSE.TRY_LATER, 'too many connections');
+    if (!(await within(env.CONNECT_LIMIT, networkKey(request)))) return refuseSocket(CLOSE.TRY_LATER, 'too many connections');
     const session = await authenticate(request, env);
     if (!session) return refuseSocket(CLOSE.LOGIN_INVALID, 'login required');
-    if (!(await within(env.CONNECT_LIMIT, 'account:' + session.accountId))) return refuseSocket(CLOSE.TRY_LATER, 'too many connections');
+    if (!(await within(env.CONNECT_LIMIT, accountKey(session.accountId)))) return refuseSocket(CLOSE.TRY_LATER, 'too many connections');
     const dest = new URL('https://room.internal/_ws');
     dest.searchParams.set('room', code);
     const ticket = url.searchParams.get('ticket');
