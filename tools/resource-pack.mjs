@@ -135,11 +135,9 @@ export async function writeResourcePack({ root = repository, manifest, output } 
   }
 }
 
-// node tools/resource-pack.mjs [--manifest-only] [--out=DIR]   (DIR: where the ZIP goes, default .cache; not public/)
+// node tools/resource-pack.mjs [--manifest-only]   (the ZIP goes to .cache/, never public/)
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const manifest = await buildResourceManifest();
   console.log(`Resources: ${manifest.files.length} files, ${(manifest.totalBytes / 1048576).toFixed(1)} MiB, version ${manifest.version}`);
-  const outDir = process.argv.find(a => a.startsWith('--out='))?.slice(6);
-  const output = outDir ? join(resolve(outDir), `stronghold-resources-${manifest.version.slice(0, 12)}.zip`) : undefined;
-  if (!process.argv.includes('--manifest-only')) console.log(`Local ZIP: ${(await writeResourcePack({ manifest, output })).path}`);
+  if (!process.argv.includes('--manifest-only')) console.log(`Local ZIP: ${(await writeResourcePack({ manifest })).path}`);
 }
