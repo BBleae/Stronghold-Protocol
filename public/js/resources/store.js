@@ -6,7 +6,8 @@
 // of an unchanged site needs no scan of thousands of entries.
 //
 // The cache only ever follows the live site version: reconcile() fetches the manifest before it changes anything, and
-// downloads and imports start with it.
+// downloads and imports start with it. Cache Storage is shared by every page of the site; the caller runs one
+// operation at a time across all of them (js/resources/index.js).
 import { mediaUrl } from '../media.js';
 import { CACHE_PREFIX, checkAbort, matchesResource, readBoundedResponse, resourceResponse, verifyBytes } from './common.js';
 

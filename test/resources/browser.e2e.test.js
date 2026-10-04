@@ -2,6 +2,7 @@
 // Opt-in like every browser suite: SP_RESOURCES_E2E=1 (Chrome from CHROME_PATH or the default install path).
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import { existsSync } from 'node:fs';
 import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
@@ -46,6 +47,23 @@ async function siteVersion(files) {
   const manifest = await buildResourceManifest({ root: dir });
   const { path: pack } = await writeResourcePack({ root: dir, manifest });
   return { dir, manifest, pack };
+}
+
+const sha256 = text => createHash('sha256').update(text).digest('hex');
+
+/** A site version that serves only its manifest, for tests that put the files into the cache themselves. */
+async function manifestOnlySite(files) {
+  const dir = await mkdtemp(join(tmpdir(), 'stronghold-browser-resources-'));
+  const entries = files.map(({ url, text }) => ({ url, size: Buffer.byteLength(text), sha256: sha256(text), type: 'image/png' }));
+  const manifest = {
+    format: 1,
+    version: sha256(JSON.stringify(entries)),
+    files: entries,
+    totalBytes: entries.reduce((sum, file) => sum + file.size, 0),
+  };
+  await mkdir(join(dir, 'public'));
+  await writeFile(join(dir, 'public/resource-manifest.json'), JSON.stringify(manifest));
+  return { dir, manifest };
 }
 
 test('resource cache in a real browser', { skip: !enabled, timeout: 240000 }, async t => {
@@ -130,8 +148,10 @@ test('resource cache in a real browser', { skip: !enabled, timeout: 240000 }, as
     return { context, page };
   }
   const text = (page, selector) => page.$eval(selector, node => node.textContent.trim());
+  // Polled on a timer: a tab in the background gets no animation frames.
   const waitText = (page, selector, part, timeout = 30000) => page.waitForFunction(
-    (selector, part) => [...document.querySelectorAll(selector)].some(node => node.textContent.includes(part)), { timeout }, selector, part);
+    (selector, part) => [...document.querySelectorAll(selector)].some(node => node.textContent.includes(part)),
+    { timeout, polling: 100 }, selector, part);
   const fetchText = (page, url) => page.evaluate(async url => {
     const response = await fetch(url);
     return { status: response.status, type: response.headers.get('Content-Type'), body: await response.text() };
@@ -147,6 +167,17 @@ test('resource cache in a real browser', { skip: !enabled, timeout: 240000 }, as
     const { store, emptyMatch } = await import('/js/store.js');
     store.set(inMatch ? { session: { entered: true }, room: { inMatch: true } } : { room: null, match: emptyMatch() });
   }, inMatch);
+  // A second page (tab) of the same browser profile. Only the front tab is visible: bring a page to the front before
+  // clicking in it.
+  async function samePage(context) {
+    const page = await context.newPage();
+    page.on('pageerror', error => errors.push(error.message));
+    return page;
+  }
+  async function clickIn(page, selector) {
+    await page.bringToFront();
+    await page.click(selector);
+  }
 
   await t.test('first visit imports the pack locally; then the worker answers cached files and /media/ audio with the site down', async () => {
     const { context, page } = await newPage();
@@ -296,6 +327,91 @@ test('resource cache in a real browser', { skip: !enabled, timeout: 240000 }, as
       await page.waitForSelector('.resource-dialog', { hidden: true });
       assert.equal(await page.evaluate(() => document.activeElement.id), 'resource-manager-open');
     }
+    await context.close();
+  });
+
+  await t.test('two pages that boot together adopt an earlier installation once and lose nothing', async () => {
+    // An earlier release's installation: complete caches of two site versions, large enough that adopting them
+    // takes a while. The live version changed 60 files and added one that is not installed.
+    const older = Array.from({ length: 3000 }, (_, i) => ({ url: `/assets/f${i}.png`, text: `file ${i} `.repeat(20) }));
+    const newer = older.map((file, i) => i < 60 ? { ...file, text: `${file.text}v2` } : file);
+    const live = await manifestOnlySite([...newer, { url: '/assets/new.png', text: 'not installed' }]);
+    t.after(() => rm(live.dir, { recursive: true, force: true }));
+    const legacy = [older, newer].map((files, i) => ({
+      name: `stronghold-resources-v1-${String(i + 1).repeat(64)}`,
+      files: files.map(file => ({ ...file, size: Buffer.byteLength(file.text), sha256: sha256(file.text) })),
+    }));
+    server.site = live;
+    // When the second page starts its check inside the first page's adoption depends on the machine: try several.
+    for (const delay of [50, 100, 150, 200, 300]) {
+      const { context, page: first } = await newPage();
+      await first.goto(`${base}/blank`);
+      await first.evaluate(async legacy => {
+        for (const { name, files } of legacy) {
+          const cache = await caches.open(name);
+          await Promise.all(files.map(file => cache.put(file.url, new Response(file.text, { headers: {
+            'Content-Type': 'image/png', 'Content-Length': String(file.size), 'X-Resource-SHA256': file.sha256 } }))));
+        }
+        localStorage.setItem('stronghold-resource-mode', 'install');
+      }, legacy);
+      const second = await samePage(context);
+      const boots = [first.goto(base)];
+      await new Promise(done => setTimeout(done, delay));
+      boots.push(second.goto(base));
+      await Promise.all(boots);
+      // Each page's check ends with the reminder of the file that is not installed.
+      await Promise.all([first, second].map(page => waitText(page, '.toast__text', '本地资源缺少 1 个文件')));
+      const cached = await first.evaluate(async () => {
+        const names = await caches.keys();
+        const cache = await caches.open(names[0]);
+        const files = (await cache.keys()).filter(request => new URL(request.url).pathname.startsWith('/assets/'));
+        const status = await cache.match('/resource-cache-status.json');
+        const changed = await cache.match('/assets/f0.png');
+        return { caches: names.length, files: files.length, recorded: status && (await status.json()).count,
+          changed: changed && await changed.text() };
+      });
+      const expected = { caches: 1, files: 3000, recorded: 3000, changed: newer[0].text };
+      assert.deepEqual(cached, expected, `second page ${delay} ms after the first`);
+      await context.close();
+    }
+  });
+
+  await t.test('a clear in one page waits for a download in another; the status stays true to what is stored', async () => {
+    server.site = v1;
+    const { context, page: downloading } = await newPage();
+    await downloading.goto(`${base}/blank`);
+    await downloading.evaluate(() => localStorage.setItem('stronghold-resource-mode', 'ondemand'));
+    const clearing = await samePage(context);
+    for (const page of [downloading, clearing]) {
+      await page.goto(base);
+      await page.waitForFunction(() => window.gameReady, { polling: 100 });
+      await clickIn(page, '#resource-manager-open');
+      await waitText(page, '.resource-stat', '0 / 3');
+    }
+    const storedFiles = () => clearing.evaluate(async () => {
+      let count = 0;
+      for (const name of await caches.keys()) {
+        const requests = await (await caches.open(name)).keys();
+        count += requests.filter(request => new URL(request.url).pathname !== '/resource-cache-status.json').length;
+      }
+      return count;
+    });
+    server.hold.add('/assets/b.png');
+    await clickIn(downloading, '[data-action="download"]');
+    await waitText(downloading, '.resource-stat', '2 / 3');
+    await clickIn(clearing, '[data-action="clear"]');
+    await waitText(clearing, '.spinner__label', '等待其他资源操作完成');
+    // 暂停 also ends the wait.
+    await clickIn(clearing, '[data-action="cancel"]');
+    await waitText(clearing, '.resource-message', '已暂停');
+    assert.equal(await storedFiles(), 2, 'nothing cleared');
+    await clickIn(clearing, '[data-action="clear"]');
+    await waitText(clearing, '.spinner__label', '等待其他资源操作完成');
+    await clickIn(downloading, '[data-action="cancel"]');
+    await waitText(clearing, '.resource-message', '本地资源已清理');
+    server.hold.clear();
+    assert.match(await text(clearing, '.resource-stat'), /^0 \/ 3/);
+    assert.deepEqual(await clearing.evaluate(() => caches.keys()), [], 'no file and no status entry left');
     await context.close();
   });
 

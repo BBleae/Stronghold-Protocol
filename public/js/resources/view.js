@@ -21,9 +21,11 @@ export function ResourceDialog({ state, firstTime, totalBytes, onClose, onDownlo
   const route = useStore(selectRoute);
   const input = useRef(null);
   useEffect(() => { if (!firstTime && route === 'game') void onClose(); }, [route, firstTime, onClose]);
-  const { status, busy, phase, message, error } = state;
+  const { status, busy, waiting, phase, message, error } = state;
   const complete = status?.complete ?? false;
-  const phaseLabel = { checking: '正在检查本地资源', download: '正在下载', import: '正在导入', clear: '正在清理' }[phase];
+  // Another page of the site (or this page's boot check) is using the local resources.
+  const phaseLabel = waiting ? '等待其他资源操作完成'
+    : { checking: '正在检查本地资源', download: '正在下载', import: '正在导入', clear: '正在清理' }[phase];
   const continueText = firstTime ? complete ? '资源已就绪，进入游戏' : '暂时跳过，按需加载' : '返回游戏';
   return html`<${Modal} open=${true} class="resource-dialog" width="min(8rem, 94vw)"
     title=${firstTime ? '准备游戏资源' : '资源管理'} micro="RESOURCE MANAGER // 本地资源"

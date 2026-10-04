@@ -9,6 +9,8 @@ import { ResourceDialog, ResourceLauncher } from './view.js';
 // The player's choice: 'install' (keep every resource file locally) or 'ondemand'. Unset until the first visit's
 // dialog closes; a returning player's boot never waits for the resource layer.
 const MODE_KEY = 'stronghold-resource-mode';
+// The Web Lock every cache operation holds, in every page of the site.
+const LOCK_NAME = 'stronghold-resources';
 let storePromise, openDialog;
 
 const mib = n => `${(n / 1048576).toFixed(1)} MiB`;
@@ -18,9 +20,10 @@ function preference(value) {
   return localStorage.getItem(MODE_KEY);
 }
 
-/** Cache Storage and service workers need a secure context and site data; some in-app browsers have neither. */
+/** Cache Storage, service workers and Web Locks need a secure context and site data; some in-app browsers lack them. */
 function supported() {
-  if (!globalThis.isSecureContext || !('serviceWorker' in navigator) || !('caches' in globalThis)) return false;
+  const apis = globalThis.isSecureContext && 'serviceWorker' in navigator && 'caches' in globalThis && 'locks' in navigator;
+  if (!apis) return false;
   try {
     localStorage.getItem(MODE_KEY);
     return true;
@@ -44,13 +47,16 @@ function loadStore() {
   });
 }
 
-// One cache operation at a time: the boot check, and the dialog's check, download, import and clear. Interleaved, a
-// check that scans while the cache is cleared would record files that are gone.
-let operations = Promise.resolve();
-function exclusive(operation) {
-  const result = operations.then(operation);
-  operations = result.then(() => {}, () => {}); // the outcome is the caller's
-  return result;
+/**
+ * Run `operation` holding the resource lock. Cache Storage is shared by every page of the site, so one cache
+ * operation (the boot check; the dialog's check, download, import and clear) runs at a time across all of them:
+ * interleaved, two pages reconciling at once can each keep the cache the other deletes, and a clear deletes what a
+ * download is storing. `onWait` is called when another operation holds the lock; aborting `signal` stops the wait.
+ */
+async function exclusive(operation, { signal, onWait } = {}) {
+  const { held } = await navigator.locks.query();
+  if (held.some(lock => lock.name === LOCK_NAME)) onWait?.();
+  return navigator.locks.request(LOCK_NAME, { signal }, operation);
 }
 
 function readableError(error) {
@@ -128,11 +134,12 @@ function showManager(store, firstTime = false) {
       .map(element => ({ element, inert: element.inert }));
     for (const { element } of background) element.inert = true;
 
+    // Aborts the check or operation in progress (暂停, closing the dialog), also while it waits for the lock.
     let controller = null;
     let operation = null;
     let closing = false;
     let closed = false;
-    const state = { status: null, busy: true, phase: 'checking', message: '', error: false };
+    const state = { status: null, busy: true, waiting: false, phase: 'checking', message: '', error: false };
 
     function update(patch) {
       Object.assign(state, patch);
@@ -142,10 +149,21 @@ function showManager(store, firstTime = false) {
         onCancel=${() => { controller?.abort(); update({ message: '正在暂停…' }); }} />`, host);
     }
 
-    async function refresh() {
+    /** Run `task` holding the resource lock; the dialog shows when it waits for another operation. */
+    function locked(task) {
+      controller = new AbortController();
+      const { signal } = controller;
+      return exclusive(() => {
+        update({ waiting: false });
+        return task(signal);
+      }, { signal, onWait: () => update({ waiting: true }) });
+    }
+
+    async function check() {
       try {
-        update({ status: await exclusive(() => store.check()), busy: false });
+        update({ status: await locked(() => store.check()), busy: false });
       } catch (error) {
+        if (error.name === 'AbortError') return; // the dialog closed while the check waited
         console.error('[resources] local resource check failed', error);
         update({ message: readableError(error), error: true, busy: false });
       }
@@ -153,16 +171,22 @@ function showManager(store, firstTime = false) {
 
     async function run(phase, action, done) {
       if (operation || closing) return;
-      controller = new AbortController();
       update({ busy: true, phase, message: '正在准备，请稍候…', error: false });
       operation = (async () => {
         try {
-          const status = await exclusive(() => action(controller.signal));
-          const message = done(status);
+          const result = await locked(async signal => {
+            try {
+              return await action(signal);
+            } finally {
+              // What the operation left, read before another operation can change it.
+              update({ status: await store.check() });
+            }
+          });
+          const message = done(result);
           update({ message });
           toast(message, 'success');
           // Ask the browser not to evict a complete installation under storage pressure.
-          if (status?.complete) void navigator.storage.persist();
+          if (result?.complete) void navigator.storage.persist();
         } catch (error) {
           const paused = error.name === 'AbortError';
           if (!paused) console.error(`[resources] ${phase} failed`, error);
@@ -170,7 +194,7 @@ function showManager(store, firstTime = false) {
           update({ message, error: !paused });
           toast(message, paused ? 'info' : 'error');
         }
-        await refresh();
+        update({ busy: false, waiting: false });
         operation = null;
       })();
       await operation;
@@ -219,7 +243,7 @@ function showManager(store, firstTime = false) {
     }
 
     update({});
-    void refresh();
+    void check();
   });
   return openDialog;
 }
