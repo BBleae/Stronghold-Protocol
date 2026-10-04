@@ -10,9 +10,9 @@ test('server delta replay emits the initial event once and preserves renderer-in
   const r=createReplayRunner({engine:{},onFrame:frame=>{
     events.push(...frame.events.ev);if(frame.snapshot.units[0]){assert.equal(frame.snapshot.units[0][3],1);frame.snapshot.units[0][3]=999;}
   }});
-  r.select({source:'server',frameEncoding:'delta-v1',frames,spec:{},tick:12});
+  r.select({source:'server',frameEncoding:'delta-v1',frames,meta:{units:[]},spec:{},tick:12});
   r.play();r.advance(0.4);assert.deepEqual(events,[['event',0],['event',6],['event',12]]);
-  r.select({source:'server',frames:[{tick:0,snapshot:{t:0,units:[]},events:[]}],spec:{},tick:0});r.dispose();
+  r.select({source:'server',frames:[{tick:0,snapshot:{t:0,units:[]},events:[]}],meta:{units:[]},spec:{},tick:0});r.dispose();
 });
 test('recording rejects gaps, backwards ticks and foreign authorities',()=>{
   const f={authority:'alice',spec:{battleId:'b'},battleId:'b'};

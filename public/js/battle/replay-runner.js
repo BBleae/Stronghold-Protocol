@@ -23,9 +23,10 @@ export async function verifyReplayChunks(manifest,loadChunk) {
 }
 /**
  * Plays one archived battle at a time on its own clock (30 ticks per game second): a client battle re-simulated from
- * its spec and tick inputs, a server battle from its frames. onField(meta) when a battle is selected, onFrame(frame) as
- * it plays. state() is its clock in whole seconds — { playing, speed, seconds, duration }; subscribers hear it change
- * on a player's action or when the replay passes a whole second, never per animation frame.
+ * its spec and tick `inputs`, a server battle from its `meta` and `frames` (the first one captured at its start) — the
+ * records server/match/checkpoint.js archives. onField(meta) when a battle is selected, onFrame(frame) as it plays.
+ * state() is its clock in whole seconds — { playing, speed, seconds, duration }; subscribers hear it change on a
+ * player's action or when the replay passes a whole second, never per animation frame.
  */
 export function createReplayRunner({ engine, onFrame = () => {}, onField = () => {} }) {
   let battle = null;
@@ -44,9 +45,9 @@ export function createReplayRunner({ engine, onFrame = () => {}, onField = () =>
     onFrame({ snapshot: { ...rest, t: 'b.snap', gt, fieldId: record.fieldId }, events: { t: 'b.ev', gt, fieldId: record.fieldId, ev: events } });
   };
   const apply = () => {
-    while (cursor < (record.inputs?.length || 0) && record.inputs[cursor].tick <= battle.tickCount) {
+    while (cursor < record.inputs.length && record.inputs[cursor].tick <= battle.tickCount) {
       const input = record.inputs[cursor++];
-      if (input.kind === 'pool') battle.sharedBoss?.sync(input.hp, input.acked ?? undefined);
+      if (input.kind === 'pool') battle.sharedBoss.sync(input.hp, input.acked ?? undefined);
       else if (input.kind === 'end') battle.forceEnd(input.reason);
     }
   };
@@ -68,11 +69,11 @@ export function createReplayRunner({ engine, onFrame = () => {}, onField = () =>
       frameCursor = 0;
       snapshot = null;
       battle = value.source === 'server' ? null : engine.createBattle(value.spec);
-      onField({ ...value.meta || battle?.fieldMeta(), fieldId: value.fieldId, kind: value.kind, stageId: value.spec.stageId, rect: value.spec.rect });
+      onField({ ...value.meta || battle.fieldMeta(), fieldId: value.fieldId, kind: value.kind, stageId: value.spec.stageId, rect: value.spec.rect });
       if (battle) {
         apply();
         emit(battle.snapshot(), battle.drainEvents());
-      } else if (value.frames?.length) {
+      } else {
         snapshot = decodeReplayFrame(null, value.frames[0]);
         emit(snapshot, value.frames[0].events);
         frameCursor = 1;
@@ -91,7 +92,7 @@ export function createReplayRunner({ engine, onFrame = () => {}, onField = () =>
         apply();
         emit(battle.snapshot(), battle.drainEvents());
       } else {
-        while (frameCursor < (record.frames?.length || 0) && record.frames[frameCursor].tick <= position) {
+        while (frameCursor < record.frames.length && record.frames[frameCursor].tick <= position) {
           const frame = record.frames[frameCursor++];
           snapshot = decodeReplayFrame(snapshot, frame);
           emit(snapshot, frame.events);
