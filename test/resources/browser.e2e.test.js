@@ -181,7 +181,7 @@ test('resource cache in a real browser', { skip: !enabled, timeout: 240000 }, as
     await page.click(selector);
   }
 
-  await t.test('a first visit imports a ZIP on this device; the worker answers every resource itself', async () => {
+  await t.test('a first visit imports a ZIP on this device and starts over with it; the worker answers every resource itself', async () => {
     const { context, page } = await newPage();
     await page.goto(base);
     await page.waitForSelector('.resource-dialog[role="dialog"]');
@@ -203,10 +203,11 @@ test('resource cache in a real browser', { skip: !enabled, timeout: 240000 }, as
     assert.equal(await text(page, '[data-action="continue"]'), '资源已就绪，进入游戏');
 
     const start = server.hits.length;
-    await page.click('[data-action="continue"]');
+    await Promise.all([page.waitForNavigation({ waitUntil: 'domcontentloaded' }), page.click('[data-action="continue"]')]);
     await page.waitForFunction(() => window.gameReady);
     assert.equal(await page.$('.resource-dialog'), null);
-    await page.waitForFunction(() => navigator.serviceWorker.controller);
+    assert.ok(await page.evaluate(() => !!navigator.serviceWorker.controller), 'the page started over under the worker');
+    assert.equal(await fontRules(page), 1, 'the fonts of the ZIP');
     assert.deepEqual(await fetchText(page, '/assets/audio/a.mp3'), { status: 200, type: 'audio/mpeg', body: 'abcdef' });
     assert.deepEqual(await fetchText(page, '/media/a'), { status: 200, type: 'audio/mpeg', body: 'abcdef' }, 'the extension-less audio alias');
     assert.equal((await fetchText(page, '/assets/missing.png')).status, 404);
@@ -266,7 +267,7 @@ test('resource cache in a real browser', { skip: !enabled, timeout: 240000 }, as
     await waitText(page, '.resource-stat', '2 / 3');
     assert.deepEqual(await page.evaluate(() => caches.keys()), [legacy], 'the earlier cache is the cache now; the other one was merged and deleted');
     await importZip(page, v2.pack);
-    await waitText(page, '.resource-message', '全部资源已导入。');
+    await waitText(page, '.resource-message', '全部资源已导入。刷新页面后完全生效。');
     assert.match(await text(page, '.resource-stat'), /^3 \/ 3/);
     assert.deepEqual(await page.evaluate(() => caches.keys()), [legacy]);
     await page.click('[data-action="continue"]');
@@ -425,8 +426,10 @@ test('resource cache in a real browser', { skip: !enabled, timeout: 240000 }, as
     const skipping = await newPage();
     await skipping.page.goto(base);
     await skipping.page.waitForSelector('[data-action="import"]:not(:disabled)');
+    await skipping.page.evaluate(() => { window.samePage = true; });
     await skipping.page.click('[data-action="continue"]');
     await skipping.page.waitForFunction(() => window.gameReady);
+    assert.ok(await skipping.page.evaluate(() => window.samePage), 'nothing stored: no reload');
     await skipping.page.reload();
     await skipping.page.waitForFunction(() => window.gameReady);
     assert.equal(await skipping.page.$('.resource-dialog'), null);

@@ -82,8 +82,13 @@ export async function prepareResources() {
   }
   const store = await openStore();
   if (!store) return; // reported by openStore(); the next visit asks again
-  await showManager(store, true);
+  const status = await showManager(store, true);
   localStorage.setItem(VISITED_KEY, 'visited');
+  if (status?.count) {
+    // This page asked for /fonts/fonts.css before the service worker could answer it: start over with the files.
+    location.reload();
+    await new Promise(() => {}); // the reload replaces this page; its boot goes no further
+  }
 }
 
 /** Bring the cache to the live site version: a new version drops the files it changed. */
@@ -118,6 +123,7 @@ async function openStore() {
   }
 }
 
+/** Show the dialog; resolves with the installation's last known status when it closes. */
 function showManager(store, firstTime = false) {
   openDialog ??= new Promise(resolve => {
     const lastFocus = document.activeElement;
@@ -200,9 +206,13 @@ function showManager(store, firstTime = false) {
 
     function importZip(file) {
       const action = signal => importResourceZip(file, store, { signal, onProgress: status => update({ status }) });
-      return run('import', action, ({ complete, imported, skipped, total, count }) => complete ? '全部资源已导入。'
-        : skipped ? `已导入 ${imported} 个文件，${skipped} 个与本站版本不一致已跳过，还缺 ${total - count} 个。`
-        : `已导入 ${imported} 个文件，还缺 ${total - count} 个。`);
+      return run('import', action, ({ complete, imported, skipped, total, count }) => {
+        const result = complete ? '全部资源已导入。'
+          : skipped ? `已导入 ${imported} 个文件，${skipped} 个与本站版本不一致已跳过，还缺 ${total - count} 个。`
+          : `已导入 ${imported} 个文件，还缺 ${total - count} 个。`;
+        // The first visit's page starts over when the dialog closes; a running page uses the files it loads from now on.
+        return firstTime ? result : `${result}刷新页面后完全生效。`;
+      });
     }
 
     function clear() {
@@ -222,7 +232,7 @@ function showManager(store, firstTime = false) {
       if (boot) boot.style.display = bootDisplay;
       if (lastFocus?.isConnected) lastFocus.focus();
       openDialog = undefined;
-      resolve();
+      resolve(state.status);
     }
 
     update({});
