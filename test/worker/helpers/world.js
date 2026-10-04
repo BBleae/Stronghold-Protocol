@@ -1,7 +1,7 @@
 // The production Worker (tools/build-worker.mjs bundleWorker) with every Durable Object, in workerd (Miniflare).
 //
 // The fixture entry adds what tests need and production lacks: seeded GitHub accounts with session cookies (actor
-// 'a' → cookie 'aaaa…'), WebSocket upgrades on behalf of an actor, hooks on a room's Durable Object (storage
+// 'a' → cookie 'aaaa…', profile name 'Player a#NNNN'), WebSocket upgrades on behalf of an actor, hooks on a room's Durable Object (storage
 // access, a snapshot rewrite applied at its next wake, the structured log lines of the isolate (every room's), its
 // in-memory timer, its login checks or its failed jobs' retries made due) and on the directory (session lookups and
 // room listings counted, a logout, an outage). Any hook wakes the room it is sent to. Storage persists across restart(), which replaces the
@@ -20,8 +20,9 @@ import worker, { SiteDirectory, AccountDurableObject, RoomDurableObject as Produ
 import { hash } from './worker/accounts/auth.js';
 
 // The directory, with its session lookups and room listings counted (failed ones too). fail(method, on): the method
-// throws while on, as an unavailable directory does.
+// throws while on, as an unavailable directory does. exec(query, ...params): its SQL, for a test to set up or read.
 export class TestObject extends SiteDirectory {
+  exec(query, ...params) { return this.sql.exec(query, ...params).toArray(); }
   getSession(key) {
     this.lookups = (this.lookups ?? 0) + 1;
     if (this.failing?.getSession) throw new Error('directory unavailable (test)');
@@ -122,10 +123,10 @@ export default {
     if (request.headers.get('Upgrade') === 'websocket') {
       const actor = url.searchParams.get('actor') || 'a';
       const ip = url.searchParams.get('ip');
-      url.searchParams.delete('actor');
-      url.searchParams.delete('ip');
+      const session = url.searchParams.get('session');
+      for (const key of ['actor', 'ip', 'session']) url.searchParams.delete(key);
       return worker.fetch(new Request('https://game.example/ws' + url.search, { headers: { Upgrade: 'websocket',
-        Origin: 'https://game.example', cookie: cookie(actor), ...(ip ? { 'CF-Connecting-IP': ip } : {}) } }), env);
+        Origin: 'https://game.example', cookie: session ? '__Host-sp_session=' + session : cookie(actor), ...(ip ? { 'CF-Connecting-IP': ip } : {}) } }), env);
     }
     const input = await request.json();
     const actor = input.actor || 'a';
@@ -142,21 +143,28 @@ export default {
       if (input.directory === 'fail') await site.fail(input.method, input.on);
       return Response.json(await site.counts());
     }
+    if (input.exec) {
+      return Response.json(await env.SITES.get(env.SITES.idFromName('directory')).exec(input.exec, ...(input.params || [])));
+    }
     if (input.seed) {
+      // A GitHub account as its first login makes it.
       const site = env.SITES.get(env.SITES.idFromName('directory'));
-      const user = await site.resolveGithubUser({ id: String(actor.charCodeAt(0)), login: 'Player ' + actor, avatarUrl: null });
-      await env.ACCOUNTS.get(env.ACCOUNTS.idFromName(user.accountId)).setProfile(user);
-      await site.saveSession(await hash(actor.repeat(64)), { accountId: user.accountId, user, expiresAt: Date.now() + (input.ttl ?? 3600000) });
+      const identity = await site.resolveGithubUser({ id: String(actor.charCodeAt(0)), login: 'Player-' + actor, name: 'Player ' + actor, avatarUrl: null });
+      const user = await env.ACCOUNTS.get(env.ACCOUNTS.idFromName(identity.accountId)).applyGithubLogin(identity);
+      await site.saveSession(await hash(actor.repeat(64)), { accountId: user.accountId, expiresAt: Date.now() + (input.ttl ?? 3600000) });
       return Response.json(user);
     }
+    // input.cookie: a session token of the test's own (a login's), else the actor's seeded one.
     return worker.fetch(new Request('https://game.example' + input.path, { method: input.method || 'GET',
-      headers: { Origin: 'https://game.example', cookie: cookie(actor), 'Content-Type': 'application/json' },
+      headers: { Origin: 'https://game.example', cookie: input.cookie !== undefined ? '__Host-sp_session=' + input.cookie : cookie(actor),
+        'Content-Type': 'application/json', ...(input.ip ? { 'CF-Connecting-IP': input.ip } : {}), ...(input.headers || {}) },
       body: input.body === undefined ? undefined : JSON.stringify(input.body) }), env);
   },
 };
 `;
 
-export async function createWorld(t) {
+/** `bindings`: environment variables and secrets of the Worker (e.g. ACCOUNT_ADMIN_TOKEN). */
+export async function createWorld(t, { bindings = {} } = {}) {
   const dir = await mkdtemp(path.join(tmpdir(), 'sp-world-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const bundle = path.join(dir, 'worker.mjs');
@@ -164,19 +172,25 @@ export async function createWorld(t) {
   const durableObjects = Object.fromEntries([['SITES', 'TestObject'], ['ACCOUNTS', 'AccountDurableObject'],
     ['ROOMS', 'RoomDurableObject'], ['MATCH_ARCHIVES', 'MatchArchive']]
     .map(([binding, className]) => [binding, { className, useSQLite: true }]));
-  const h = await createAccountHarness(fixture(bundle), { durableObjects, ratelimits: productionLimits });
+  const h = await createAccountHarness(fixture(bundle), { durableObjects, ratelimits: productionLimits, bindings });
   t.after(() => h.dispose());
 
   const world = {
     restart: () => h.restart(),
-    /** A GitHub account with a session cookie for `actor`; resolves with its profile ({ accountId, … }). */
+    /** A GitHub account with a session cookie for `actor`; resolves with its profile ({ accountId, name, … }). */
     seed: async (actor, ttl) => (await h.fetch({ seed: true, actor, ttl })).json(),
-    /** An HTTP request to the Worker as `actor`; resolves with { status, body }. */
-    api: async (actor, path, { method = 'GET', body } = {}) => {
-      const response = await h.fetch({ actor, path, method, body });
+    /**
+     * An HTTP request to the Worker as `actor` (or with the session `cookie`, from `ip`, with extra `headers`); resolves
+     * with { status, body } and, when the answer sets a session cookie, its token: { session }.
+     */
+    api: async (actor, path, { method = 'GET', body, cookie, ip, headers } = {}) => {
+      const response = await h.fetch({ actor, path, method, body, cookie, ip, headers });
       const text = await response.text();
-      return { status: response.status, body: text ? JSON.parse(text) : null };
+      const session = /__Host-sp_session=([a-f0-9]{64})/.exec(response.headers.get('Set-Cookie') ?? '')?.[1];
+      return { status: response.status, body: text ? JSON.parse(text) : null, ...(session ? { session } : {}) };
     },
+    /** The directory's SQL (rows), for a test to set up or read. */
+    exec: async (query, ...params) => (await h.fetch({ exec: query, params })).json(),
     /** A hook of the room's Durable Object (see the fixture). */
     room: async (code, hook, body) => (await h.fetch({ room: code, hook, body })).json(),
     /** An RPC method of an account's Durable Object. */
@@ -192,11 +206,11 @@ export async function createWorld(t) {
     /** The room's Durable Object is evicted; its WebSockets hibernate and stay open. */
     evict: (code) => h.evict('RoomDurableObject', code),
     /**
-     * Upgrade /ws as `actor` (from `ip`, as the edge reports it): { status, ws, frames, wait(type, predicate?),
-     * send(msg), closed } (ws null when refused).
+     * Upgrade /ws as `actor` (or with the session token `session`; from `ip`, as the edge reports it): { status, ws,
+     * frames, wait(type, predicate?), send(msg), closed } (ws null when refused).
      */
-    async socket(actor, { code, ticket, ip } = {}) {
-      const query = new URLSearchParams({ room: code, actor, ...(ticket ? { ticket } : {}), ...(ip ? { ip } : {}) });
+    async socket(actor, { code, ticket, ip, session } = {}) {
+      const query = new URLSearchParams({ room: code, actor, ...(ticket ? { ticket } : {}), ...(ip ? { ip } : {}), ...(session ? { session } : {}) });
       const response = await h.request('https://test.example/ws?' + query, { headers: { Upgrade: 'websocket' } });
       const result = { status: response.status, ws: response.webSocket, frames: [], closed: null };
       if (!result.ws) return result;
@@ -220,11 +234,14 @@ export async function createWorld(t) {
       };
       return result;
     },
-    /** Connect and say hello (with `token` to resume a session); resolves with the socket after its welcome. */
-    async player(actor, { code, ticket, token, ip } = {}) {
-      const socket = await world.socket(actor, { code, ticket, ip });
+    /**
+     * Connect and say hello (with `token` to resume a session; `name`: the name the client claims, which the room
+     * ignores); resolves with the socket after its welcome.
+     */
+    async player(actor, { code, ticket, token, ip, session, name = 'Player ' + actor } = {}) {
+      const socket = await world.socket(actor, { code, ticket, ip, session });
       assert.equal(socket.status, 101);
-      socket.send({ t: 'hello', name: 'Player ' + actor, ...(token ? { token } : {}) });
+      socket.send({ t: 'hello', name, ...(token ? { token } : {}) });
       socket.welcome = await socket.wait('welcome');
       let rid = 100;
       /** A request; resolves with its reply ({ t: 'ok' } or { t: 'error', code }). */

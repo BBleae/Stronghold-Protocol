@@ -1,24 +1,34 @@
-import { ACCOUNT_LIMITS, AccountError } from '../../shared/account-protocol.js';
-import { logWarn, logError, errorFields } from '../log.js';
-const SESSION_COOKIE = '__Host-sp_session', OAUTH_COOKIE = '__Host-sp_oauth';
+// Logins. An account signs in with its username and password, or with GitHub (worker/accounts/github.js) where that
+// is available; either way the browser gets a session cookie. A session is { accountId, expiresAt } (sessions saved
+// before kept a copy of the profile, `user`: it is never read — what shows an account reads its profile).
+
+import { ACCOUNT_LIMITS, AccountError, USERNAME_PATTERN, validPassword } from '../../shared/account-protocol.js';
+import { readJson, networkKey, within } from '../http.js';
+import { hashPassword, verifyPassword, outdated } from './passwords.js';
+import { parseNickname } from './names.js';
+
+const SESSION_COOKIE = '__Host-sp_session';
 export const directoryOf = env => env.SITES.get(env.SITES.idFromName('directory'));
 export const accountOf = (env, id) => env.ACCOUNTS.get(env.ACCOUNTS.idFromName(id));
-export const json = (body, status = 200) => Response.json(body, {status, headers: {'Cache-Control': 'no-store'}});
+export const json = (body, status = 200, headers = {}) => Response.json(body, { status, headers: { 'Cache-Control': 'no-store', ...headers } });
 export function cookieValue(request, key) {
   return (request.headers.get('cookie') || '').split(';').map(s => s.trim()).find(s => s.startsWith(key + '='))?.slice(key.length + 1) || null;
 }
-const randomToken = () => Array.from(crypto.getRandomValues(new Uint8Array(32)), b => b.toString(16).padStart(2, '0')).join('');
+export const randomToken = () => Array.from(crypto.getRandomValues(new Uint8Array(32)), b => b.toString(16).padStart(2, '0')).join('');
 export async function hash(value) {
   return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))), b => b.toString(16).padStart(2, '0')).join('');
 }
-const cookie = (key, value, seconds) => key + '=' + value + '; Path=/; Max-Age=' + seconds + '; Secure; HttpOnly; SameSite=Lax';
-// Where a login may return to: the lobby, or the invite link the player is applying with (/?room=CODE). The path is
-// bound to the OAuth state server-side, so the callback never redirects anywhere a request parameter names.
-const RETURN_PATH = /^\/(\?room=[A-Z]{4})?$/;
+export const cookie = (key, value, seconds) => key + '=' + value + '; Path=/; Max-Age=' + seconds + '; Secure; HttpOnly; SameSite=Lax';
 export function requireOrigin(request) {
   if (request.headers.get('Origin') !== new URL(request.url).origin) throw new AccountError('ORIGIN_MISMATCH', 403);
 }
-export function configured(env) { return !!(env.SITES && env.GITHUB_CLIENT_ID && env.GITHUB_CLIENT_SECRET && env.AUTH_ORIGIN); }
+
+/** Whether an administrator request carries `secret` (≥ 32 characters) as its bearer token; compared by digest. */
+export async function bearerAuthorized(request, secret) {
+  const supplied = request.headers.get('Authorization')?.replace(/^Bearer /, '');
+  return !!secret && secret.length >= 32 && !!supplied && await hash(supplied) === await hash(secret);
+}
+
 export async function authenticate(request, env, {now = Date.now} = {}) {
   const token = cookieValue(request, SESSION_COOKIE);
   if (!env.SITES || !token || !/^[a-f0-9]{64}$/.test(token)) return null;
@@ -26,107 +36,52 @@ export async function authenticate(request, env, {now = Date.now} = {}) {
   const session = await directoryOf(env).getSession(sessionId);
   return session && session.expiresAt > now() ? {...session, sessionId} : null;
 }
-// Accounts created before display names were stored can keep their existing session.
-// Only legacy profiles need this lookup; an upstream outage must not break /api/me.
-async function refreshLegacyProfile(user, env, providerFetch) {
-  if (!user || user.githubLogin || !env.ACCOUNTS || !/^\d{1,20}$/.test(user.githubId)) return user;
-  try {
-    const response = await providerFetch('https://api.github.com/user/' + user.githubId, {headers: {
-      Accept: 'application/vnd.github+json', 'User-Agent': 'Stronghold-Protocol'}, signal: AbortSignal.timeout(5000)});
-    if (!response.ok) return user;
-    const profile = await response.json();
-    if (!Number.isSafeInteger(profile.id) || String(profile.id) !== user.githubId || typeof profile.login !== 'string') return user;
-    const avatarUrl = typeof profile.avatar_url === 'string' && /^https:\/\/avatars\.githubusercontent\.com\//.test(profile.avatar_url) ? profile.avatar_url : null;
-    const updated = await directoryOf(env).resolveGithubUser({id: user.githubId, login: profile.login.slice(0, 80), name: profile.name, avatarUrl});
-    if (updated.accountId !== user.accountId) return user;
-    await accountOf(env, user.accountId).setProfile(updated);
-    return updated;
-  } catch (error) {
-    logWarn('legacy_profile_refresh_failed', { accountId: user.accountId, error: errorFields(error) });
-    return user;
-  }
+
+/** A new login session of `accountId`: the Set-Cookie header that gives it to the browser. */
+export async function startSession(env, accountId, now = Date.now) {
+  const token = randomToken();
+  await directoryOf(env).saveSession(await hash(token), { accountId, expiresAt: now() + ACCOUNT_LIMITS.sessionMs });
+  return cookie(SESSION_COOKIE, token, ACCOUNT_LIMITS.sessionMs / 1000);
 }
-export async function handleAuth(request, env, {now = Date.now, fetch: providerFetch = globalThis.fetch} = {}) {
+
+/** The rate limit key of a username's login attempts (any case). */
+export const usernameKey = (username) => 'username:' + username.toLowerCase();
+
+/**
+ * POST /api/auth/register {username, password, nickname} and /api/auth/login {username, password}: the account's
+ * profile ({ user }) and a session cookie. POST /api/auth/logout. Credential attempts count against their own limits
+ * (wrangler.jsonc ratelimits): registrations and logins per network, logins per username (RATE_LIMITED).
+ */
+export async function handleAuth(request, env, { now = Date.now } = {}) {
   const url = new URL(request.url);
-  if (!url.pathname.startsWith('/api/auth/') && url.pathname !== '/api/me') return null;
-  let returnTo = '/';
-  try {
-    if (url.pathname === '/api/me') {
-      if (request.method !== 'GET') return json({error: 'METHOD'}, 405);
-      const session = await authenticate(request, env, {now});
-      const storedUser = session ? (env.ACCOUNTS ? await accountOf(env, session.accountId).getProfile() : session.user) : null;
-      const user = await refreshLegacyProfile(storedUser, env, providerFetch);
-      return json({user, capabilities: {accounts: configured(env),accountSystem:!!env.ACCOUNTS},
-        application:session && env.ACCOUNTS ? await accountOf(env,session.accountId).getApplication() : null,
-        activeSeat: session && env.ACCOUNTS ? await accountOf(env, session.accountId).getActiveSeat() : null});
-    }
-    if (!configured(env)) return json({error: 'AUTH_UNAVAILABLE'}, 503);
-    if (url.origin !== env.AUTH_ORIGIN) return json({error: 'INVALID_ORIGIN'}, 400);
-    const directory = directoryOf(env);
-    if (url.pathname === '/api/auth/logout') {
-      if (request.method !== 'POST') return json({error: 'METHOD'}, 405);
-      requireOrigin(request);
-      const session = await authenticate(request, env, {now});
-      if (session) await directory.revokeSession(session.sessionId);
-      return new Response(null, {status: 204, headers: {'Set-Cookie': cookie(SESSION_COOKIE, '', 0), 'Cache-Control': 'no-store'}});
-    }
-    if (request.method !== 'GET') return json({error: 'METHOD'}, 405);
-    const callback = env.AUTH_ORIGIN + '/api/auth/github/callback';
-    if (url.pathname === '/api/auth/github/start') {
-      const returnPath = url.searchParams.get('return') ?? '/';
-      if (!RETURN_PATH.test(returnPath)) throw new AccountError('BAD_RETURN_PATH');
-      const state = randomToken(), verifier = randomToken();
-      const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier)));
-      const challenge = btoa(String.fromCharCode(...digest)).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '');
-      await directory.saveOAuth(await hash(state), {verifier, returnTo: returnPath, expiresAt: now() + ACCOUNT_LIMITS.oauthMs});
-      const dest = new URL('https://github.com/login/oauth/authorize');
-      dest.search = new URLSearchParams({client_id: env.GITHUB_CLIENT_ID, redirect_uri: callback, state,
-        code_challenge: challenge, code_challenge_method: 'S256'}).toString();
-      return new Response(null, {status: 302, headers: {Location: dest.href, 'Cache-Control': 'no-store', 'Set-Cookie': cookie(OAUTH_COOKIE, state, 600)}});
-    }
-    if (url.pathname !== '/api/auth/github/callback') return json({error: 'NOT_FOUND'}, 404);
-    const state = url.searchParams.get('state');
-    if (!state || !/^[a-f0-9]{64}$/.test(state) || state !== cookieValue(request, OAUTH_COOKIE)) throw new AccountError('OAUTH_STATE');
-    const transaction = await directory.consumeOAuth(await hash(state));
-    returnTo = transaction?.returnTo ?? '/';
-    if (!transaction || transaction.expiresAt <= now() || url.searchParams.has('error')) throw new AccountError('OAUTH_EXPIRED_OR_DENIED');
-    const code = url.searchParams.get('code');
-    if (!code || code.length > 1024) throw new AccountError('OAUTH_CODE');
-    const tokens = await providerFetch('https://github.com/login/oauth/access_token', {method: 'POST',
-      headers: {Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded'},
-      body: new URLSearchParams({client_id: env.GITHUB_CLIENT_ID, client_secret: env.GITHUB_CLIENT_SECRET,
-        code, code_verifier: transaction.verifier, redirect_uri: callback}).toString(), signal: AbortSignal.timeout(10000)});
-    if (!tokens.ok) throw new AccountError('OAUTH_PROVIDER_FAILED', 502);
-    const token = await tokens.json();
-    if (typeof token.access_token !== 'string' || !token.access_token) throw new AccountError('OAUTH_PROVIDER_FAILED', 502);
-    const response = await providerFetch('https://api.github.com/user', {headers: {
-      Authorization: 'Bearer ' + token.access_token, Accept: 'application/vnd.github+json', 'User-Agent': 'Stronghold-Protocol'},
-      signal: AbortSignal.timeout(10000)});
-    if (!response.ok) throw new AccountError('OAUTH_PROVIDER_FAILED', 502);
-    const profile = await response.json();
-    if (!Number.isSafeInteger(profile.id) || profile.id <= 0 || typeof profile.login !== 'string') throw new AccountError('OAUTH_PROVIDER_FAILED', 502);
-    const avatarUrl = typeof profile.avatar_url === 'string' && /^https:\/\/avatars\.githubusercontent\.com\//.test(profile.avatar_url) ? profile.avatar_url : null;
-    const user = await directory.resolveGithubUser({id: String(profile.id), login: profile.login.slice(0, 80), name: profile.name, avatarUrl});
-    if (env.ACCOUNTS) await accountOf(env, user.accountId).setProfile(user);
-    const sessionToken = randomToken();
-    await directory.saveSession(await hash(sessionToken), {accountId: user.accountId, user, expiresAt: now() + ACCOUNT_LIMITS.sessionMs});
-    const headers = new Headers({Location: returnTo, 'Cache-Control': 'no-store'});
-    headers.append('Set-Cookie', cookie(SESSION_COOKIE, sessionToken, ACCOUNT_LIMITS.sessionMs / 1000));
-    headers.append('Set-Cookie', cookie(OAUTH_COOKIE, '', 0));
-    return new Response(null, {status: 303, headers});
-  } catch (e) {
-    // A known error (AccountError — also one from the directory's RPC, which keeps only code and status) is the answer;
-    // anything else is a bug: logged, and answered by the Worker's error response (worker/http.js).
-    const known = typeof e?.code === 'string' && Number.isInteger(e.status);
-    if (url.pathname === '/api/auth/github/callback' && request.headers.get('Accept')?.includes('text/html')) {
-      if (!known) logError('auth_failed', { path: url.pathname, error: errorFields(e) });
-      // Back where the login started (an invite stays), with the notice that it did not complete.
-      const back = new URL(returnTo, url.origin);
-      back.searchParams.set('authError', '1');
-      return new Response(null, {status: 303, headers: {Location: back.pathname + back.search, 'Cache-Control': 'no-store',
-        'Set-Cookie': cookie(OAUTH_COOKIE, '', 0)}});
-    }
-    if (!known) throw e;
-    return json({error: e.code}, e.status);
+  if (!['/api/auth/register', '/api/auth/login', '/api/auth/logout'].includes(url.pathname)) return null;
+  if (request.method !== 'POST') return json({ error: 'METHOD' }, 405);
+  requireOrigin(request);
+  const directory = directoryOf(env);
+  if (url.pathname === '/api/auth/logout') {
+    const session = await authenticate(request, env, { now });
+    if (session) await directory.revokeSession(session.sessionId);
+    return new Response(null, { status: 204, headers: { 'Set-Cookie': cookie(SESSION_COOKIE, '', 0), 'Cache-Control': 'no-store' } });
   }
+  if (url.pathname === '/api/auth/register') {
+    if (!(await within(env.REGISTER_LIMIT, networkKey(request)))) throw new AccountError('RATE_LIMITED', 429);
+    const body = await readJson(request, 4096);
+    if (typeof body.username !== 'string' || !USERNAME_PATTERN.test(body.username)) throw new AccountError('INVALID_USERNAME');
+    if (!validPassword(body.password)) throw new AccountError('INVALID_PASSWORD');
+    const nickname = parseNickname(body.nickname);
+    const accountId = crypto.randomUUID();
+    const user = await accountOf(env, accountId).register({ accountId, username: body.username, password: await hashPassword(body.password), nickname });
+    return json({ user }, 201, { 'Set-Cookie': await startSession(env, accountId, now) });
+  }
+  if (!(await within(env.LOGIN_LIMIT, networkKey(request)))) throw new AccountError('RATE_LIMITED', 429);
+  const { username, password } = await readJson(request, 4096);
+  if (typeof username !== 'string' || typeof password !== 'string') throw new AccountError('BAD_MSG');
+  const wellFormed = USERNAME_PATTERN.test(username);
+  if (wellFormed && !(await within(env.USERNAME_LIMIT, usernameKey(username)))) throw new AccountError('RATE_LIMITED', 429);
+  // An unknown username is answered like a wrong password, and as late: its check derives a hash all the same.
+  const user = wellFormed ? await directory.localUser(username) : null;
+  if (!(await verifyPassword(password, user?.password ?? null))) throw new AccountError('BAD_CREDENTIALS', 401);
+  if (outdated(user.password)) await directory.updatePassword(user.accountId, await hashPassword(password));
+  const profile = await accountOf(env, user.accountId).getProfile();
+  return json({ user: profile }, 200, { 'Set-Cookie': await startSession(env, user.accountId, now) });
 }

@@ -14,3 +14,29 @@ export function pageLimit(value = 20) {
   if (!Number.isSafeInteger(value) || value < 1 || value > ACCOUNT_LIMITS.pageSize) throw new AccountError('INVALID_PAGE');
   return value;
 }
+
+// Password accounts (worker/accounts/*, the title screen's account card). The Worker decides; the client checks the
+// same rules first so a player sees a mistake before sending it.
+
+/** A username is a login identifier only, never shown to other players: 3–20 letters, digits or underscores. */
+export const USERNAME_PATTERN = /^[A-Za-z0-9_]{3,20}$/;
+
+/** A password has 8–128 characters (code points), any characters. */
+export const PASSWORD_LENGTH = Object.freeze({ min: 8, max: 128 });
+
+/** A nickname (博士代号) has at most this many characters (code points) after the name normalization. */
+export const NICKNAME_MAX = 12;
+
+/** Every character that reads as '#' (its NFKC form): a nickname has none, so its display name parses one way. */
+export const NUMBER_SIGNS = /[#\uFE5F\uFF03]/g;
+
+/** Whether a password has an allowed length. */
+export const validPassword = (password) => typeof password === 'string'
+  && [...password].length >= PASSWORD_LENGTH.min && [...password].length <= PASSWORD_LENGTH.max;
+
+/** Whether an already normalized nickname is one: 1–NICKNAME_MAX characters, no number sign. */
+export const validNickname = (nickname) => typeof nickname === 'string' && nickname.length > 0
+  && [...nickname].length <= NICKNAME_MAX && !nickname.match(NUMBER_SIGNS);
+
+/** The name every other player sees: the nickname and the account's discriminator (0000–9999), e.g. 晴猫#1145. */
+export const displayName = (nickname, discriminator) => `${nickname}#${discriminator}`;

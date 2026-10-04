@@ -1,7 +1,10 @@
-import { authenticate, accountOf, json, requireOrigin } from './auth.js';
-import { AccountError } from '../../shared/account-protocol.js';
+import { authenticate, accountOf, directoryOf, json, requireOrigin, usernameKey } from './auth.js';
+import { AccountError, validPassword } from '../../shared/account-protocol.js';
 import { validatePreferencePatch } from '../../public/js/preferenceSchema.js';
-import { readJson } from '../http.js';
+import { readJson, networkKey, within } from '../http.js';
+import { githubEnabled } from './github.js';
+import { parseNickname } from './names.js';
+import { hashPassword, verifyPassword } from './passwords.js';
 
 async function preferenceBody(request) {
   const body = await readJson(request, 65536, 'INVALID_PREFERENCES');
@@ -63,21 +66,53 @@ export async function giveUpReservation(env, accountId) {
   return true;
 }
 
-export async function handleAccountRoutes(request, env) {
+const METHODS = { '/api/me': 'GET', '/api/me/active-match': 'GET', '/api/me/resume': 'POST', '/api/me/preferences': ['GET', 'POST'],
+  '/api/me/nickname': 'POST', '/api/me/password': 'POST' };
+
+/**
+ * The signed-in account's routes. GET /api/me: its profile (null when signed out), the sign-in methods offered
+ * (password always, GitHub when it can work: worker/accounts/github.js), its join application and seat. Its seat
+ * (GET /api/me/active-match, POST /api/me/resume) and preferences. POST /api/me/nickname {nickname}: its 博士代号 →
+ * { user }. POST /api/me/password {current, password} (password accounts): a new password; the account's other
+ * sessions end. A password check counts as a login attempt (RATE_LIMITED).
+ */
+export async function handleAccountRoutes(request, env, deps = {}) {
   const path = new URL(request.url).pathname;
-  if (!['/api/me/active-match','/api/me/resume','/api/me/preferences'].includes(path)) return null;
-  const preferences = path === '/api/me/preferences';
-  if (preferences ? !['GET','POST'].includes(request.method) : request.method !== (path.endsWith('/resume') ? 'POST' : 'GET')) return json({error:'METHOD'},405);
+  if (!Object.hasOwn(METHODS, path)) return null;
+  if (![METHODS[path]].flat().includes(request.method)) return json({ error: 'METHOD' }, 405);
   if (request.method === 'POST') requireOrigin(request);
-  const session = await authenticate(request,env);
-  if (!session) return json({error:'LOGIN_REQUIRED'},401);
-  const account = accountOf(env,session.accountId);
-  if (preferences) {
+  const session = await authenticate(request, env);
+  const account = session && accountOf(env, session.accountId);
+  if (path === '/api/me') {
+    const [user, application, activeSeat, github] = await Promise.all([account?.getProfile() ?? null,
+      account?.getApplication() ?? null, account?.getActiveSeat() ?? null, githubEnabled(env, deps)]);
+    return json({ user, capabilities: { password: true, github }, application, activeSeat });
+  }
+  if (!session) return json({ error: 'LOGIN_REQUIRED' }, 401);
+  if (path === '/api/me/preferences') {
     if (request.method === 'GET') return json({accountId:session.accountId,preferences:await account.getPreferences()});
     const body = await preferenceBody(request);
     // A tab left open under another account must not write using its replacement session cookie.
     if (body.accountId !== session.accountId) return json({error:'ACCOUNT_CHANGED'},409);
     return json({accountId:session.accountId,preferences:await account.savePreferences(body.patch,body.initialize === true)});
+  }
+  if (path === '/api/me/nickname') {
+    const body = await readJson(request, 4096);
+    return json({ user: await account.rename(parseNickname(body.nickname)) });
+  }
+  if (path === '/api/me/password') {
+    const { current, password } = await readJson(request, 4096);
+    if (typeof current !== 'string') throw new AccountError('BAD_MSG');
+    if (!validPassword(password)) throw new AccountError('INVALID_PASSWORD');
+    const profile = await account.getProfile();
+    if (profile.provider !== 'password') throw new AccountError('NO_PASSWORD', 409);
+    if (!(await within(env.LOGIN_LIMIT, networkKey(request))) || !(await within(env.USERNAME_LIMIT, usernameKey(profile.username)))) {
+      throw new AccountError('RATE_LIMITED', 429);
+    }
+    const directory = directoryOf(env);
+    if (!(await verifyPassword(current, await directory.passwordOf(session.accountId)))) throw new AccountError('WRONG_PASSWORD', 403);
+    await directory.changePassword(session.accountId, await hashPassword(password), session.sessionId);
+    return new Response(null, { status: 204, headers: { 'Cache-Control': 'no-store' } });
   }
   return json((await seatOf(env, session.accountId, request.method)) ?? { activeSeat: null });
 }

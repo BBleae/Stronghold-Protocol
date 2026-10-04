@@ -57,3 +57,92 @@ test('export, default dry-run and restore rebuild history without exporting sess
   for(let i=0;i<2;i++)assert.equal((await (await h.fetch({path:'archive',body:{backup,dryRun:false}})).json()).written,1);
   assert.equal((await (await h.fetch({stats:p.accountId})).json()).completed,1);
 });
+
+// Accounts in backups: password accounts with their hashes, display names, and identities that must not change hands.
+test('accounts export with their identities and display names, and restore without taking another account\'s', {timeout:60000}, async t => {
+  const create = () => createAccountHarness(`
+    import { SiteDirectory } from './worker/accounts/directory.js';
+    export { AccountDurableObject } from './worker/accounts/account.js';
+    export { MatchArchive } from './worker/archive/archive.js';
+    import { handleBackupRoutes } from './worker/storage/backup.js';
+    import { hash } from './worker/accounts/auth.js';
+    import { hashPassword, verifyPassword } from './worker/accounts/passwords.js';
+    export class TestObject extends SiteDirectory {
+      exec(query, ...params) { return this.sql.exec(query, ...params).toArray(); }
+    }
+    export default { async fetch(req, env) {
+      const i = await req.json();
+      const site = env.SITES.get(env.SITES.idFromName('directory'));
+      const account = (id) => env.ACCOUNTS.get(env.ACCOUNTS.idFromName(id));
+      if (i.register) {
+        const accountId = crypto.randomUUID();
+        return Response.json(await account(accountId).register({ accountId, username: i.register.username,
+          password: await hashPassword(i.register.password), nickname: i.register.nickname }));
+      }
+      if (i.github) {
+        const identity = await site.resolveGithubUser(i.github);
+        return Response.json(await account(identity.accountId).applyGithubLogin(identity));
+      }
+      if (i.verify) return Response.json(await verifyPassword(i.verify.password, (await site.localUser(i.verify.username))?.password ?? null));
+      if (i.session) {
+        if (i.session.accountId) await site.saveSession(await hash(i.session.token), { accountId: i.session.accountId, expiresAt: Date.now() + 60000 });
+        return Response.json(await site.getSession(await hash(i.session.token)));
+      }
+      if (i.exec) return Response.json(await site.exec(...i.exec));
+      if (i.profile) return Response.json(await account(i.profile).getProfile());
+      return handleBackupRoutes(new Request('https://game.example/api/admin/backup/' + i.path, { method: i.body ? 'POST' : 'GET',
+        headers: { Authorization: 'Bearer ' + (i.body ? 'i' : 'e').repeat(40) }, body: i.body ? JSON.stringify(i.body) : undefined }), env)
+        .catch((error) => Response.json({ error: error.code }, { status: error.status }));
+    }};`, { durableObjects: { SITES: { className: 'TestObject', useSQLite: true }, ACCOUNTS: { className: 'AccountDurableObject', useSQLite: true },
+    MATCH_ARCHIVES: { className: 'MatchArchive', useSQLite: true } }, bindings: { ARCHIVE_EXPORT_TOKEN: 'e'.repeat(40), ARCHIVE_IMPORT_TOKEN: 'i'.repeat(40) } });
+  const source = await create(); t.after(() => source.dispose());
+  const call = async (h, body) => (await h.fetch(body)).json();
+  const local = await call(source, { register: { username: 'Doctor_01', password: 'correct horse', nickname: '晴猫' } });
+  const github = await call(source, { github: { id: '42', login: 'BBleae', name: 'GitHub 猫', avatarUrl: null } });
+
+  const catalog = await call(source, { path: 'catalog?kind=profiles' });
+  const entries = Object.fromEntries(catalog.items.map((entry) => [entry.accountId, entry]));
+  assert.deepEqual(entries[github.accountId], github, 'a GitHub account: its profile');
+  const { password, createdAt, ...profile } = entries[local.accountId];
+  assert.deepEqual(profile, local, 'a password account: its profile…');
+  assert.equal(password.alg, 'pbkdf2-sha256');
+  assert.ok(Number.isSafeInteger(createdAt), '…its password hash and creation time');
+  assert.ok(!JSON.stringify(catalog).includes('correct horse'));
+
+  const destination = await create(); t.after(() => destination.dispose());
+  // Someone else has the GitHub account's display name there: nothing is written.
+  await call(destination, { exec: ['INSERT INTO display_names VALUES (?,?,?)', 'github 猫', github.discriminator, 'someone-else'] });
+  assert.deepEqual(await call(destination, { path: 'profile', body: { profile: entries[github.accountId], dryRun: true } }), { error: 'IDENTITY_CONFLICT' });
+  await call(destination, { exec: ['DELETE FROM display_names'] });
+  // Nor may the username belong to another account.
+  const other = await call(destination, { register: { username: 'doctor_01', password: 'another one', nickname: 'Other' } });
+  assert.deepEqual(await call(destination, { path: 'profile', body: { profile: entries[local.accountId], dryRun: false } }), { error: 'IDENTITY_CONFLICT' });
+  assert.equal(await call(destination, { profile: local.accountId }), null);
+  await call(destination, { exec: ['DELETE FROM local_users WHERE account_id=?', other.accountId] });
+
+  // Restored: the same accounts, names and password; the restored account's earlier sessions end, nobody else's.
+  await call(destination, { session: { token: 'b'.repeat(64), accountId: local.accountId } });
+  await call(destination, { session: { token: 'c'.repeat(64), accountId: other.accountId } });
+  for (const entry of catalog.items) {
+    assert.deepEqual(await call(destination, { path: 'profile', body: { profile: entry } }), { ok: true, written: 0 }, 'a dry run by default');
+    assert.deepEqual(await call(destination, { path: 'profile', body: { profile: entry, dryRun: false } }), { ok: true, written: 1 });
+  }
+  assert.deepEqual(await call(destination, { profile: local.accountId }), local);
+  assert.deepEqual(await call(destination, { profile: github.accountId }), github);
+  assert.equal(await call(destination, { verify: { username: 'DOCTOR_01', password: 'correct horse' } }), true);
+  assert.equal(await call(destination, { session: { token: 'b'.repeat(64) } }), null);
+  assert.equal((await call(destination, { session: { token: 'c'.repeat(64) } })).accountId, other.accountId);
+  assert.deepEqual((await call(destination, { exec: ['SELECT name_key, disc, account_id FROM display_names ORDER BY name_key'] })),
+    [{ name_key: 'github 猫', disc: github.discriminator, account_id: github.accountId }, { name_key: 'other', disc: other.discriminator,
+      account_id: other.accountId }, { name_key: '晴猫', disc: local.discriminator, account_id: local.accountId }]);
+  // Restoring again changes nothing.
+  for (const entry of catalog.items) assert.equal((await call(destination, { path: 'profile', body: { profile: entry, dryRun: false } })).written, 1);
+  assert.deepEqual(await call(destination, { profile: local.accountId }), local);
+
+  // Entries that are not an account are refused.
+  for (const entry of [{ ...entries[local.accountId], password: { ...password, iterations: 100001 } }, { ...entries[local.accountId], name: 'other#0000' },
+    { ...entries[local.accountId], nickname: 'a#b', name: 'a#b#' + local.discriminator }, { ...entries[github.accountId], githubId: undefined },
+    { ...entries[github.accountId], avatarUrl: 'https://evil.example/a.png' }, { ...entries[local.accountId], username: 'no' }]) {
+    assert.deepEqual(await call(destination, { path: 'profile', body: { profile: entry } }), { error: 'INVALID_PROFILE' });
+  }
+});

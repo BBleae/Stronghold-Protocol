@@ -1,33 +1,42 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { handleAuth, authenticate } from '../../worker/accounts/auth.js';
+import { handleGithub } from '../../worker/accounts/github.js';
+import { errorResponse } from '../../worker/http.js';
 
-function setup() {
-  const transactions = new Map(), sessions = new Map(), users = new Map();
+// The GitHub OAuth flow against stub Durable Objects. GitHub's credentials are known to be valid (another isolate
+// checked them: the directory has the verdict); the check itself is test/worker/github-availability.test.js.
+function setup({ secret = 'secret' } = {}) {
+  const transactions = new Map(), sessions = new Map(), users = new Map(), verdicts = [];
   let now = 1000, githubCalls = 0;
   const directory = {
     async saveOAuth(hash, value) { transactions.set(hash, value); },
     async consumeOAuth(hash) { const v = transactions.get(hash); transactions.delete(hash); return v || null; },
     async resolveGithubUser(p) { const id = users.get(p.id)?.accountId || crypto.randomUUID();
-      const user = {accountId: id, githubId: p.id, name: p.login, avatarUrl: p.avatarUrl}; users.set(p.id, user); return user; },
+      const user = {accountId: id, githubId: p.id, githubLogin: p.login, name: p.name || p.login, avatarUrl: p.avatarUrl}; users.set(p.id, user); return user; },
     async saveSession(hash, value) { sessions.set(hash, value); },
     async getSession(hash) { return sessions.get(hash) || null; },
     async revokeSession(hash) { sessions.delete(hash); },
+    async providerStatus() { return {verdict: 'valid', expiresAt: Number.MAX_SAFE_INTEGER}; },
+    async setProviderStatus(fingerprint, verdict) { verdicts.push(verdict); },
   };
-  const env = {AUTH_ORIGIN: 'https://game.example', GITHUB_CLIENT_ID: 'client', GITHUB_CLIENT_SECRET: 'secret',
-    SITES: {idFromName: n => n, get: () => directory}};
-  let login = 'Alice', providerFailure = false;
+  const account = { async applyGithubLogin(identity) { return {...identity, name: identity.name + '#0001'}; } };
+  const env = {AUTH_ORIGIN: 'https://game.example', GITHUB_CLIENT_ID: 'client', GITHUB_CLIENT_SECRET: secret,
+    SITES: {idFromName: n => n, get: () => directory}, ACCOUNTS: {idFromName: n => n, get: () => account}};
+  let login = 'Alice', providerFailure = false, tokenError = null;
   const deps = {now: () => now, fetch: async (url, init) => {
     githubCalls++;
     if (providerFailure) return new Response('upstream failed', {status: 502});
     if (String(url).includes('access_token')) {
       assert.ok(new URLSearchParams(init.body).get('code_verifier'));
-      return Response.json({access_token: 'DO-NOT-EXPOSE', token_type: 'bearer'});
+      return Response.json(tokenError ? {error: tokenError} : {access_token: 'DO-NOT-EXPOSE', token_type: 'bearer'});
     }
     return Response.json({id: 42, login, avatar_url: 'https://avatars.githubusercontent.com/u/42'});
   }};
-  const request = (path, init = {}) => new Request(env.AUTH_ORIGIN + path, init);
-  const handle = (path, init) => handleAuth(request(path, init), env, deps);
+  const request = (path, init = {}) => new Request('https://game.example' + path, init);
+  // As the Worker answers: a thrown error becomes its error response.
+  const handle = (path, init) => (path.startsWith('/api/auth/github/') ? handleGithub : handleAuth)(request(path, init), env, deps)
+    .catch((error) => errorResponse(error, {}));
   const begin = async () => {
     const r = await handle('/api/auth/github/start');
     const u = new URL(r.headers.get('location'));
@@ -35,8 +44,8 @@ function setup() {
     return {state: u.searchParams.get('state'), cookie: r.headers.get('set-cookie').split(';')[0]};
   };
   const finish = b => handle('/api/auth/github/callback?code=ok&state=' + b.state, {headers: {cookie: b.cookie}});
-  return {env, deps, request, handle, begin, finish, sessions, calls: () => githubCalls,
-    rename: v => login = v, advance: ms => now += ms, failProvider: () => providerFailure = true};
+  return {env, deps, request, handle, begin, finish, sessions, verdicts, calls: () => githubCalls,
+    rename: v => login = v, advance: ms => now += ms, failProvider: () => providerFailure = true, failToken: (error) => tokenError = error};
 }
 test('OAuth ties state to the browser, uses PKCE, creates private revocable sessions and stable identity', async () => {
   const h = setup(), b = await h.begin();
@@ -49,6 +58,7 @@ test('OAuth ties state to the browser, uses PKCE, creates private revocable sess
   const headers = {cookie: cookie.split(';')[0]};
   const first = await authenticate(h.request('/api/me', {headers}), h.env, h.deps);
   assert.ok(first.accountId);
+  assert.equal(first.user, undefined, 'a session keeps no copy of the profile');
   assert.equal((await h.finish(b)).status, 400);
   h.rename('名字 changed');
   const secondLogin = await h.finish(await h.begin());
@@ -90,6 +100,30 @@ test('a cancelled login goes back to the invite it started from, with the notice
   const back = await h.handle('/api/auth/github/callback?error=access_denied&state=' + state,
     {headers: {cookie: r.headers.get('set-cookie').split(';')[0], Accept: 'text/html'}});
   assert.equal(back.status, 303);
-  assert.equal(back.headers.get('location'), '/?room=ABCD&authError=1');
+  assert.equal(back.headers.get('location'), '/?room=ABCD&authError=OAUTH_EXPIRED_OR_DENIED');
   assert.equal(h.sessions.size, 0);
+});
+test('a login that meets invalid credentials records them at once and says GitHub is unavailable', async () => {
+  for (const error of ['incorrect_client_credentials', 'redirect_uri_mismatch']) {
+    const h = setup({secret: 'revoked-' + error});
+    const b = await h.begin();
+    h.failToken(error);
+    const back = await h.handle('/api/auth/github/callback?code=ok&state=' + b.state, {headers: {cookie: b.cookie, Accept: 'text/html'}});
+    assert.equal(back.headers.get('location'), '/?authError=GITHUB_UNAVAILABLE', error);
+    assert.deepEqual(h.verdicts, ['invalid'], error);
+    assert.equal(h.sessions.size, 0);
+    // This isolate knows it too: the next login does not leave for GitHub.
+    const again = await h.handle('/api/auth/github/start', {headers: {Accept: 'text/html'}});
+    assert.equal(again.headers.get('location'), '/?authError=GITHUB_UNAVAILABLE', error);
+  }
+});
+test('GitHub routes are unavailable without a complete configuration', async () => {
+  for (const [key, value] of [['GITHUB_CLIENT_ID', ''], ['GITHUB_CLIENT_SECRET', undefined], ['AUTH_ORIGIN', 'http://game.example'],
+    ['AUTH_ORIGIN', 'https://game.example/'], ['AUTH_ORIGIN', 'https://Game.example']]) {
+    const h = setup();
+    h.env[key] = value;
+    const r = await h.handle('/api/auth/github/start');
+    assert.equal(r.status, 503, `${key}=${value}`);
+    assert.deepEqual(await r.json(), {error: 'GITHUB_UNAVAILABLE'});
+  }
 });

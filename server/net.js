@@ -337,15 +337,24 @@ const STRIP_RE = new RegExp('[' + STRIP_RANGES.map(([a, b]) => (a === b ? hexEsc
 const LONE_SURROGATE_RE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g;
 
 /**
- * Normalize a nickname: strip control/invisible characters and lone surrogates, collapse whitespace,
- * trim, cap at NAME_MAX_LEN code points. Returns null when nothing printable remains.
+ * Normalize a name without shortening it: NFC, strip control/invisible characters and lone surrogates, collapse
+ * whitespace, trim. Returns '' when nothing printable remains.
+ * @param {unknown} raw
+ * @returns {string}
+ */
+export function normalizeName(raw) {
+  if (typeof raw !== 'string') return '';
+  return raw.normalize('NFC').replace(LONE_SURROGATE_RE, '').replace(/\s+/g, ' ').replace(STRIP_RE, '').replace(/ {2,}/g, ' ').trim();
+}
+
+/**
+ * Normalize a nickname (normalizeName) and cap it at NAME_MAX_LEN code points. Returns null when nothing printable
+ * remains.
  * @param {unknown} raw
  * @returns {string | null}
  */
 export function sanitizeName(raw) {
-  if (typeof raw !== 'string') return null;
-  let s = raw.normalize('NFC').replace(LONE_SURROGATE_RE, '').replace(/\s+/g, ' ').replace(STRIP_RE, '').replace(/ {2,}/g, ' ').trim();
-  s = [...s].slice(0, NAME_MAX_LEN).join('').trim();
+  const s = [...normalizeName(raw)].slice(0, NAME_MAX_LEN).join('').trim();
   return s.length > 0 ? s : null;
 }
 

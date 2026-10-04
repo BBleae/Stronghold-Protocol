@@ -48,12 +48,13 @@ test('account seat claims are atomic, persistent and released only by their owne
     }};`);
   t.after(() => h.dispose());
   const call = async (op,...args) => (await h.fetch({op,args})).json();
-  await call('setProfile',{accountId:'a',githubId:'42',name:'Alice',avatarUrl:null});
+  await call('setProfile',{accountId:'a',provider:'github',githubId:'42',githubLogin:'alice',nickname:'Alice',nicknameSource:'github',
+    discriminator:'0042',name:'Alice#0042',avatarUrl:null});
   const expiresAt=Date.now()+60000, seat={roomId:'ABCD',roomGeneration:'g1',matchId:null,seatId:null};
   const claims = await Promise.all(['c1','c2'].map(claimId => call('claimSeat',{claimId,seat,expiresAt})));
   assert.equal(claims.filter(c=>c.ok).length,1);
   await h.restart();
-  assert.equal((await call('getProfile')).name,'Alice');
+  assert.equal((await call('getProfile')).name,'Alice#0042');
   const active=await call('getActiveSeat');
   assert.equal(active.roomId,'ABCD');
   assert.equal((await call('releaseSeat',{claimId:'wrong'})).ok,false);
