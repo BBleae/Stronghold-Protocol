@@ -211,6 +211,21 @@ test('a download retries a failing file and reports the files that keep failing 
   assert.deepEqual([status.count, status.total], [3, 4]);
 });
 
+test('a download stops after 20 files kept failing, reports them and keeps the files it stored', async () => {
+  const caches = new MemoryCaches();
+  const missing = Array.from({ length: 25 }, (_, i) => [`/assets/gone${i}.mp3`, `gone ${i}`]);
+  const server = site([['/assets/a.mp3', 'abc'], ['/assets/b.mp3', 'def'], ...missing]);
+  for (const [url] of missing) server.bodies.delete(url); // listed, but every request answers 404
+  const store = new ResourceStore(server.manifest, { caches, fetcher: server.fetcher });
+  const error = await store.download({ concurrency: 1, retryDelays: NO_WAIT }).catch(e => e);
+  assert.ok(error instanceof DownloadError, error.stack);
+  assert.match(error.message, /^20 个文件下载失败，例如 \/assets\/gone0\.mp3（HTTP 404）/);
+  assert.deepEqual(error.failed.map(f => f.file.url), missing.slice(0, 20).map(([url]) => url));
+  const tried = new Set(server.requests.filter(url => url.startsWith('/assets/gone')));
+  assert.equal(tried.size, 20, 'the pass stopped: the other 5 files were not requested');
+  assert.equal((await store.check()).count, 2);
+});
+
 test('downloads fetch audio through the extension-less /media/ alias and store it under its file URL', async () => {
   const caches = new MemoryCaches();
   const server = site([['/assets/audio/bgm/act1.mp3', 'bgm'], ['/assets/voice/cn/a.mp3', 'voice'], ['/assets/b.png', 'image']]);
