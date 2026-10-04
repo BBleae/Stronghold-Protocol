@@ -22,7 +22,7 @@ function connect(rt, accountId, ticket, token) {
 const send = (rt, ws, t, fields = {}) => rt.message(ws, JSON.stringify({ t, rid: ws.frames.length + 1, commandId: randomUUID(), ...fields }));
 
 function coopRoom(t) {
-  const rt = new RoomRuntime({ accounts: true });
+  const rt = new RoomRuntime();
   t.after(() => rt.lobby.shutdown());
   const host = connect(rt, 'host', rt.reserve('ABCD', 'host'));
   send(rt, host, 'room.create', { mode: 'coop', difficulty: 'FUNNY' });
@@ -52,7 +52,7 @@ test('a snapshot that still holds the former command store loads without it', (t
   const { rt, host } = coopRoom(t);
   const snapshot = JSON.parse(JSON.stringify(rt.snapshot()));
   snapshot.sessions[0].commandResults = { old: { fingerprint: 'x'.repeat(1000), result: { ok: true } } };
-  const restored = new RoomRuntime({ accounts: true, snapshot });
+  const restored = new RoomRuntime({ snapshot });
   t.after(() => restored.lobby.shutdown());
   assert.equal('commandResults' in restored.snapshot().sessions[0], false);
   const welcome = host.frames.find((f) => f.t === 'welcome');

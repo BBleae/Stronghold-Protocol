@@ -23,13 +23,13 @@ function connect(rt,accountId,ticket,token,ip='8.8.8.8'){
 const drop=(rt,ws)=>{ws.close(1000);rt.pump();};
 // What the Durable Object does on wake: the room from its snapshot, then its running match.
 function restore(t,snapshot){
-  const rt=new RoomRuntime({accounts:true,snapshot});t.after(()=>rt.lobby.shutdown());
+  const rt=new RoomRuntime({snapshot});t.after(()=>rt.lobby.shutdown());
   rt.restoreMatch(snapshot.matchCheckpoint);return rt;
 }
 // clock.tick(ms): time passes, then the room's due steps run (a spectator count update is due a second after the last).
 function setup(t){
   const clock={offset:0,tick(ms=1000){clock.offset+=ms;rt.pump();}};
-  const rt=new RoomRuntime({accounts:true,now:()=>Date.now()+clock.offset});
+  const rt=new RoomRuntime({now:()=>Date.now()+clock.offset});
   const host=connect(rt,'host',rt.reserve('ABCD','host'));
   send(rt,host,'room.create',{mode:'coop',difficulty:'FUNNY'});
   t.after(()=>rt.lobby.shutdown());return {rt,host,clock};
@@ -172,7 +172,7 @@ test('offline spectators of an ended match learn it on their next hello and neve
     drop(rt,viewer);
     rt.pump();rt.lobby.getRoom('ABCD').match.finish({victory:false,reason:'defeat'});rt.pump();
     if(restart) {
-      rt=new RoomRuntime({accounts:true,now:rt.now,snapshot:JSON.parse(JSON.stringify(rt.snapshot()))});
+      rt=new RoomRuntime({now:rt.now,snapshot:JSON.parse(JSON.stringify(rt.snapshot()))});
       const restored=rt;t.after(()=>restored.lobby.shutdown());
       host=connect(rt,'host',undefined,hostToken);
     }
@@ -242,13 +242,13 @@ test('a published old-rules battle restores unchanged and accepts new spectators
 });
 
 test('room avatars come from authenticated profiles and survive reconnect snapshots',t=>{
-  const rt=new RoomRuntime({accounts:true});t.after(()=>rt.lobby.shutdown());
+  const rt=new RoomRuntime();t.after(()=>rt.lobby.shutdown());
   const avatarUrl='https://avatars.githubusercontent.com/u/123?v=4';
   const host=new Socket();rt.connect(host,{accountId:'host',ticket:rt.reserve('ABCD','host'),avatarUrl});
   send(rt,host,'hello',{name:'Host',avatarUrl:'https://example.com/spoof.png'});
   send(rt,host,'room.create',{mode:'coop',difficulty:'FUNNY'});
   assert.equal(host.take('room.state').seats[0].avatarUrl,avatarUrl);
-  const restored=new RoomRuntime({accounts:true,snapshot:rt.snapshot()});t.after(()=>restored.lobby.shutdown());
+  const restored=new RoomRuntime({snapshot:rt.snapshot()});t.after(()=>restored.lobby.shutdown());
   const resumed=connect(restored,'host',undefined,host.take('welcome').token);
   assert.equal(resumed.take('room.state').seats[0].avatarUrl,avatarUrl);
   send(restored,resumed,'room.addBot');

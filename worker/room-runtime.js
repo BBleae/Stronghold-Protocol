@@ -203,7 +203,7 @@ export class RoomRuntime {
       options: { autoTimers: false, trustProxy: false, maxConnections: ROOM_LIMITS.sockets,
         maxConnectionsPerAddr: ROOM_LIMITS.socketsPerIp, maxSessions: ROOM_LIMITS.sessions } });
     this.network.roomRuntime = this;
-    // interruptedUntil: a field of the former anonymous rooms, no longer read.
+    // interruptedUntil, running: fields of the former anonymous rooms, no longer read (the next save drops them).
     if (snapshot) {
       // The room and its sessions as saved. A session saved while connected waits for its socket (the Durable Object
       // attaches the sockets that survived hibernation), then reconcileSockets disconnects it if none did.
@@ -543,7 +543,7 @@ export class RoomRuntime {
     const room = this.lobby.getRoom(this.code);
     const base = { version: 1, code: this.code, reservation: this.reservation,
       generation:this.generation,resumeTickets:[...this.resumeTickets],
-      publicRoom:this.publicRoom,applications:this.applications.snapshot(), running: !!room?.match };
+      publicRoom:this.publicRoom,applications:this.applications.snapshot() };
     if (room?.match) base.matchCheckpoint = this.checkpoint(room.match);
     return { ...base, sessions: [...this.registry.all()].map(({ ws, ...s }) => ({ ...s,
       resyncAt: Number.isFinite(s.resyncAt) ? s.resyncAt : null })), deadlines: [...this.lobby.deadlines],

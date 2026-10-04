@@ -10,12 +10,12 @@ class Socket extends EventEmitter {
 }
 // What the Durable Object does on wake: the room from its snapshot, then its running match.
 function restore(snapshot,now){
-  const rt=new RoomRuntime({snapshot,accounts:true,now});
+  const rt=new RoomRuntime({snapshot,now});
   rt.restoreMatch(snapshot.matchCheckpoint);
   return rt;
 }
 test('account room snapshot restores an active match and accepts the original seat again', () => {
-  const rt=new RoomRuntime({accounts:true,now:()=>1000});
+  const rt=new RoomRuntime({now:()=>1000});
   const ws=new Socket();rt.connect(ws,{accountId:'alice',ticket:rt.reserve('ABCD','alice')});
   const send=(r,s,t,extra={})=>r.message(s,JSON.stringify({t,...extra}));
   send(rt,ws,'hello',{name:'Alice'});
@@ -37,7 +37,7 @@ test('account room snapshot restores an active match and accepts the original se
 });
 
 test('a cold restart reconciles missing sockets and resumes paused solo combat under server authority',()=>{
-  const rt=new RoomRuntime({accounts:true,now:()=>1000}),ws=new Socket();
+  const rt=new RoomRuntime({now:()=>1000}),ws=new Socket();
   rt.connect(ws,{accountId:'alice',ticket:rt.reserve('ABCD','alice')});
   const send=(t,extra={})=>rt.message(ws,JSON.stringify({t,...extra}));
   send('hello',{name:'Alice'});send('room.create',{mode:'solo',difficulty:'FUNNY'});send('room.start');
@@ -58,13 +58,13 @@ test('a cold restart reconciles missing sockets and resumes paused solo combat u
 // A socket lost with a restart: what the Durable Object does on wake after a deployment, which closes every socket.
 function restart(rt,now){
   const snapshot=JSON.parse(JSON.stringify(rt.snapshot()));
-  const recovered=new RoomRuntime({snapshot,accounts:true,now});
+  const recovered=new RoomRuntime({snapshot,now});
   if(snapshot.matchCheckpoint)recovered.restoreMatch(snapshot.matchCheckpoint);
   recovered.reconcileSockets();
   return recovered;
 }
 function soloRun(clock){
-  const rt=new RoomRuntime({accounts:true,now:()=>clock.at}),ws=new Socket();
+  const rt=new RoomRuntime({now:()=>clock.at}),ws=new Socket();
   rt.connect(ws,{accountId:'alice',ticket:rt.reserve('ABCD','alice')});
   for(const msg of [{t:'hello',name:'Alice'},{t:'room.create',mode:'solo',difficulty:'FUNNY'},{t:'room.start'}])rt.message(ws,JSON.stringify(msg));
   return {rt,ws,pid:[...rt.registry.all()][0].playerId,token:ws.frames.find(f=>f.t==='welcome').token};
@@ -103,7 +103,7 @@ test('a socket lost with a restart after its solo run ended gets the ordinary re
 
 test('a lobby seat whose socket was lost with a restart gets the lobby grace from the restart',t=>{
   const clock={at:1000};
-  const rt=new RoomRuntime({accounts:true,now:()=>clock.at});t.after(()=>rt.lobby.shutdown());
+  const rt=new RoomRuntime({now:()=>clock.at});t.after(()=>rt.lobby.shutdown());
   const host=new Socket();rt.connect(host,{accountId:'host',ticket:rt.reserve('ABCD','host')});
   for(const msg of [{t:'hello',name:'Host'},{t:'room.create',mode:'coop',difficulty:'FUNNY'}])rt.message(host,JSON.stringify(msg));
   clock.at+=30_000;
@@ -116,7 +116,7 @@ test('a lobby seat whose socket was lost with a restart gets the lobby grace fro
 });
 
 test('reusing an empty room code creates a new archive generation',()=>{
-  let now=1000;const rt=new RoomRuntime({accounts:true,now:()=>now});rt.reserve('ABCD','alice');
+  let now=1000;const rt=new RoomRuntime({now:()=>now});rt.reserve('ABCD','alice');
   const first=rt.generation;now+=120001;rt.sweep();assert.equal(rt.isEmpty(),true);
   assert.ok(rt.reserve('ABCD','bob'));assert.notEqual(rt.generation,first);
 });

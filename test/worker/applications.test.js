@@ -55,7 +55,7 @@ class Socket extends EventEmitter {
 
 test('applications end with their room, and the next generation of the code starts without them', (t) => {
   let now = 1000;
-  const rt = new RoomRuntime({ accounts: true, now: () => now });
+  const rt = new RoomRuntime({ now: () => now });
   t.after(() => rt.lobby.shutdown());
   const ws = new Socket();
   rt.connect(ws, { accountId: 'host', ticket: rt.reserve('ABCD', 'host') });
