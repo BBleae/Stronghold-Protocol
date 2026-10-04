@@ -21,8 +21,15 @@ const RULES = {
 };
 
 // The field an answer of the server is about.
-const FIELD_OF = { INVALID_USERNAME: 'username', USERNAME_TAKEN: 'username', INVALID_PASSWORD: 'password', BAD_CREDENTIALS: 'password',
-  INVALID_NICKNAME: 'nickname', NICKNAME_FULL: 'nickname', WRONG_PASSWORD: 'current' };
+const FIELD_OF = {
+  INVALID_USERNAME: 'username',
+  USERNAME_TAKEN: 'username',
+  INVALID_PASSWORD: 'password',
+  BAD_CREDENTIALS: 'password',
+  INVALID_NICKNAME: 'nickname',
+  NICKNAME_FULL: 'nickname',
+  WRONG_PASSWORD: 'current',
+};
 
 /**
  * A form's values, the mistake shown under each field, and whether it is being sent. `field(name)` gives a TextField
@@ -68,7 +75,10 @@ export function openLogin() {
   store.patch('session', { entered: false });
 }
 
-const TABS = [{ id: 'login', label: '登录' }, { id: 'register', label: '注册' }];
+const TABS = [
+  { id: 'login', label: '登录' },
+  { id: 'register', label: '注册' },
+];
 
 /**
  * The title screen's account card (account mode, signed out): 登录 / 注册 with a username and password, 使用 GitHub 登录
@@ -84,7 +94,11 @@ export function AccountCard({ pendingJoin, autoFocus }) {
   const send = (event) => {
     event.preventDefault();
     const found = { username: RULES.username(username), password: RULES.password(password) };
-    if (register) Object.assign(found, { nickname: RULES.nickname(nickname), confirm: confirm === password ? null : 'PASSWORD_MISMATCH' });
+    if (register)
+      Object.assign(found, {
+        nickname: RULES.nickname(nickname),
+        confirm: confirm === password ? null : 'PASSWORD_MISMATCH',
+      });
     form.submit(found, async () => {
       if (register) await accountRequest('/api/auth/register', { username, password, nickname });
       else await accountRequest('/api/auth/login', { username, password });
@@ -100,18 +114,34 @@ export function AccountCard({ pendingJoin, autoFocus }) {
     <form class="title-login__form" onSubmit=${send}>
       <${TextField} label="用户名" micro="USERNAME" icon="user" autocomplete="username" maxLength=${20} autoFocus=${autoFocus}
         placeholder=${register ? '仅用于登录，不会展示给其他博士' : '输入用户名'} ...${form.field('username')} />
-      ${register ? html`<${TextField} label="博士代号" micro="CALLSIGN" icon="edit" placeholder="输入你的代号（最多 12 字）"
-        ...${form.field('nickname')} />` : null}
+      ${
+        register
+          ? html`<${TextField} label="博士代号" micro="CALLSIGN" icon="edit" placeholder="输入你的代号（最多 12 字）"
+        ...${form.field('nickname')} />`
+          : null
+      }
       <${TextField} label="密码" micro="PASSWORD" icon="shield" type="password" autocomplete=${register ? 'new-password' : 'current-password'}
         placeholder=${register ? '8–128 位' : '输入密码'} ...${form.field('password')} />
-      ${register ? html`<${TextField} label="确认密码" micro="CONFIRM" icon="shield" type="password" autocomplete="new-password"
-        placeholder="再次输入密码" ...${form.field('confirm')} />` : null}
+      ${
+        register
+          ? html`<${TextField} label="确认密码" micro="CONFIRM" icon="shield" type="password" autocomplete="new-password"
+        placeholder="再次输入密码" ...${form.field('confirm')} />`
+          : null
+      }
       <${Button} type="submit" variant="primary" size="xl" block=${true} loading=${form.busy}>${register ? '注册' : '登录'}<//>
     </form>
-    ${register ? null : html`
-      ${account.github ? html`<${Button} class="title-login__github" variant="ghost" size="lg" block=${true}
-        onClick=${() => location.assign(githubLoginUrl(pendingJoin))}>使用 GitHub 登录<//>` : null}
-      <${Button} variant="ghost" size="lg" block=${true} onClick=${() => store.patch('session', { entered: true })}>浏览在线大厅<//>`}`;
+    ${
+      register
+        ? null
+        : html`
+      ${
+        account.github
+          ? html`<${Button} class="title-login__github" variant="ghost" size="lg" block=${true}
+        onClick=${() => location.assign(githubLoginUrl(pendingJoin))}>使用 GitHub 登录<//>`
+          : null
+      }
+      <${Button} variant="ghost" size="lg" block=${true} onClick=${() => store.patch('session', { entered: true })}>浏览在线大厅<//>`
+    }`;
 }
 
 // A dialog of the account menu: a form in a Modal, its buttons in the Modal's footer.
@@ -119,20 +149,24 @@ function AccountDialog({ id, title, form, onSubmit, onClose, children }) {
   return html`<${Modal} open=${true} title=${title} micro="ACCOUNT // 账号" onClose=${onClose}
     actions=${html`<${Button} variant="secondary" onClick=${onClose}>取消<//>
       <${Button} type="submit" form=${id} variant="primary" icon="check" loading=${form.busy}>确认<//>`}>
-    <form id=${id} class="account-form" onSubmit=${(event) => { event.preventDefault(); onSubmit(); }}>${children}</form>
+    <form id=${id} class="account-form" onSubmit=${(event) => {
+      event.preventDefault();
+      onSubmit();
+    }}>${children}</form>
   <//>`;
 }
 
 /** 修改代号: the account's nickname; its discriminator stays when it is free under the new one. */
 export function NicknameDialog({ onClose }) {
   const form = useForm({ nickname: account.user.nickname });
-  const save = () => form.submit({ nickname: RULES.nickname(form.values.nickname) }, async () => {
-    const { user } = await accountRequest('/api/me/nickname', { nickname: form.values.nickname });
-    account.user = user;
-    store.patch('me', { name: user.name });
-    toast(`博士代号已改为 ${user.name}`, 'success');
-    onClose();
-  });
+  const save = () =>
+    form.submit({ nickname: RULES.nickname(form.values.nickname) }, async () => {
+      const { user } = await accountRequest('/api/me/nickname', { nickname: form.values.nickname });
+      account.user = user;
+      store.patch('me', { name: user.name });
+      toast(`博士代号已改为 ${user.name}`, 'success');
+      onClose();
+    });
   return html`<${AccountDialog} id="account-nickname" title="修改代号" form=${form} onSubmit=${save} onClose=${onClose}>
     <${TextField} label="博士代号" micro="CALLSIGN" icon="edit" ...${form.field('nickname')} />
   <//>`;
@@ -142,12 +176,19 @@ export function NicknameDialog({ onClose }) {
 export function PasswordDialog({ onClose }) {
   const form = useForm({ current: '', password: '', confirm: '' });
   const { current, password, confirm } = form.values;
-  const save = () => form.submit({ current: current ? null : 'WRONG_PASSWORD', password: RULES.password(password),
-    confirm: confirm === password ? null : 'PASSWORD_MISMATCH' }, async () => {
-    await accountRequest('/api/me/password', { current, password });
-    toast('密码已修改，其他设备上的登录已退出', 'success');
-    onClose();
-  });
+  const save = () =>
+    form.submit(
+      {
+        current: current ? null : 'WRONG_PASSWORD',
+        password: RULES.password(password),
+        confirm: confirm === password ? null : 'PASSWORD_MISMATCH',
+      },
+      async () => {
+        await accountRequest('/api/me/password', { current, password });
+        toast('密码已修改，其他设备上的登录已退出', 'success');
+        onClose();
+      },
+    );
   // The hidden username (for password managers) comes last: the dialog focuses its first input, 当前密码.
   return html`<${AccountDialog} id="account-password" title="修改密码" form=${form} onSubmit=${save} onClose=${onClose}>
     <${TextField} label="当前密码" micro="PASSWORD" icon="shield" type="password" autocomplete="current-password" ...${form.field('current')} />

@@ -1,16 +1,21 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtemp,rm} from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import path from 'node:path';
-import {tmpdir} from 'node:os';
-import {bundleWorker} from '../../tools/build-worker.mjs';
-import {createAccountHarness} from './helpers/account-harness.js';
+import { tmpdir } from 'node:os';
+import { bundleWorker } from '../../tools/build-worker.mjs';
+import { createAccountHarness } from './helpers/account-harness.js';
 
-test('real RoomDO stores a large snapshot in parts and a finished match archive outside the snapshot',{timeout:60000},async t=>{
-  const dir=await mkdtemp(path.join(tmpdir(),'sp-large-room-'));t.after(()=>rm(dir,{recursive:true,force:true}));
-  const file=path.join(dir,'worker.mjs');await bundleWorker({outfile:file});
-  const h=await createAccountHarness(`
-    import {RoomDurableObject} from ${JSON.stringify(file.replaceAll('\\','/'))};
+test(
+  'real RoomDO stores a large snapshot in parts and a finished match archive outside the snapshot',
+  { timeout: 60000 },
+  async (t) => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'sp-large-room-'));
+    t.after(() => rm(dir, { recursive: true, force: true }));
+    const file = path.join(dir, 'worker.mjs');
+    await bundleWorker({ outfile: file });
+    const h = await createAccountHarness(`
+    import {RoomDurableObject} from ${JSON.stringify(file.replaceAll('\\', '/'))};
     export class TestObject extends RoomDurableObject {
       // Where a finished match waits is the subject here, not its publication: it stays in flight.
       archiveNext(){if(this.outboxSize)this.archiving=true;}
@@ -31,14 +36,27 @@ test('real RoomDO stores a large snapshot in parts and a finished match archive 
       }
     }
     export default {fetch(req,env){return env.TEST.get(env.TEST.idFromName('large')).fetch(req);}};
-  `);t.after(()=>h.dispose());
-  const large=await h.fetch({size:4500000});assert.equal(large.status,200,await large.clone().text());
-  const before=await large.json();assert.ok(before.parts>128);assert.equal(before.size,9000000);assert.equal(before.keys,before.parts+1);
-  await h.restart();assert.deepEqual(await (await h.fetch({})).json(),before);
-  const small=await (await h.fetch({size:10})).json();assert.equal(small.parts,1);assert.equal(small.keys,2);
-  await h.restart();assert.deepEqual(await (await h.fetch({})).json(),small);
-  // A 4 MB replay is encoded once into its own rows; the room snapshot stays one part.
-  const archived=await (await h.fetch({archive:2000000})).json();
-  assert.equal(archived.parts,1);assert.equal(archived.outbox.entries,1);assert.ok(archived.outbox.chunks>=1);
-  await h.restart();assert.deepEqual(await (await h.fetch({})).json(),archived);
-});
+  `);
+    t.after(() => h.dispose());
+    const large = await h.fetch({ size: 4500000 });
+    assert.equal(large.status, 200, await large.clone().text());
+    const before = await large.json();
+    assert.ok(before.parts > 128);
+    assert.equal(before.size, 9000000);
+    assert.equal(before.keys, before.parts + 1);
+    await h.restart();
+    assert.deepEqual(await (await h.fetch({})).json(), before);
+    const small = await (await h.fetch({ size: 10 })).json();
+    assert.equal(small.parts, 1);
+    assert.equal(small.keys, 2);
+    await h.restart();
+    assert.deepEqual(await (await h.fetch({})).json(), small);
+    // A 4 MB replay is encoded once into its own rows; the room snapshot stays one part.
+    const archived = await (await h.fetch({ archive: 2000000 })).json();
+    assert.equal(archived.parts, 1);
+    assert.equal(archived.outbox.entries, 1);
+    assert.ok(archived.outbox.chunks >= 1);
+    await h.restart();
+    assert.deepEqual(await (await h.fetch({})).json(), archived);
+  },
+);
