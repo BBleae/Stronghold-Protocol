@@ -57,7 +57,10 @@ function fakeSockets() {
   return { FakeWS, sockets, last: () => sockets.at(-1) };
 }
 
-/** The account API: answers are queued per "METHOD path"; anything else is recorded as unexpected. */
+/**
+ * The account API: answers ([status, body], or a function returning a promise of one) are queued per "METHOD path";
+ * anything else is recorded as unexpected.
+ */
 function fakeApi() {
   const queues = new Map();
   const calls = [];
@@ -73,7 +76,7 @@ function fakeApi() {
         unexpected.push(key);
         return { status: 599, ok: false, json: async () => ({ error: 'UNEXPECTED' }) };
       }
-      const [status, body] = answer;
+      const [status, body] = typeof answer === 'function' ? await answer() : answer;
       return { status, ok: status < 400, json: async () => body };
     },
   };
@@ -490,6 +493,28 @@ test('a transient refusal is retried and the seat resumes with its token', async
   assert.equal(hello.token, TOKEN, 'the session token of the last welcome');
   assert.equal(h.net.status, 'online');
   assert.deepEqual(closes(h), []);
+  assert.deepEqual(h.api.unexpected, []);
+});
+
+test('立即重连 while a refused upgrade is being checked keeps the new connection', async () => {
+  const h = setup();
+  await inRoom(h);
+  h.ws.last().drop(1006);
+  await h.timers.advance(500);
+  let answer;
+  h.api.reply('GET /api/me/active-match', () => new Promise((resolve) => { answer = resolve; }));
+  h.ws.last().drop(1006);
+  await settle();
+  h.net.retryNow(); // the banner's 立即重连 while the check is still out
+  await welcome(h, { resumed: true });
+  assert.equal(h.net.status, 'online');
+  answer([200, { activeSeat: { roomId: 'ABCD', roomGeneration: 'g1' }, status: null }]);
+  await settle();
+  assert.equal(h.net.status, 'online');
+  const sockets = h.ws.sockets.length;
+  await h.timers.advance(3000);
+  assert.equal(h.ws.sockets.length, sockets, 'no second reconnect');
+  assert.equal(h.net.status, 'online');
   assert.deepEqual(h.api.unexpected, []);
 });
 

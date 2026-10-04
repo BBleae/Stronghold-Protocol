@@ -22,7 +22,8 @@
 //   close 4003   the login is invalid (expired or revoked)         → lost
 //   close 4004   the room is gone                                  → room.closed {reason: 'expired'}
 //   room.closed  (pushed) this session has no room here any more   → menu
-//   welcome      `resumed` is false when the account had no session left in the room
+//   welcome      `resumed` is false when the account had no session left in the room (resuming fails); in a room,
+//                a welcome for another player id means the seat expired while away → room.closed {reason: 'timeout'}
 //   A refused upgrade (HTTP 401 / 404 from a Worker that does not close with 4003 / 4004 yet) reaches the browser only
 //   as a close before open. GET /api/me/active-match tells which it was (401 → lost; no seat in this room → gone;
 //   spectators: GET /api/rooms/CODE 404 → gone); anything else is retried with Net's backoff.
@@ -332,7 +333,7 @@ export class RoomNet extends Net {
     const problem = await this._routeProblem(route);
     if (this.route !== route) return; // the route ended while asking (left, timed out, another room)
     if (problem) this._routeEnded(problem);
-    else this._scheduleReconnect();
+    else if (!this.ws) this._scheduleReconnect(); // unless 立即重连 already opened a socket
   }
 
   // Why `route` cannot work any more (LOGIN_REQUIRED or ROOM_GONE), or null when a retry may succeed.
