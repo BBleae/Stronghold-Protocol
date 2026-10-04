@@ -17,6 +17,7 @@ import { LogoutButton } from '../ui/accountMenu.js';
 import { AccountCard } from '../ui/accountForms.js';
 import { GuideButton } from '../ui/guide.js';
 import { ResourceButton } from '../ui/resourceButton.js';
+import { InstallButton } from '../ui/install.js';
 import { toast } from '../ui/toasts.js';
 import { net, identity } from '../net.js';
 import { account } from '../account.js';
@@ -206,6 +207,7 @@ export function TitleScreen() {
       <div><${MicroLabel} tone="mint">RHODES ISLAND // SIMULATION SERVICE<//><br /><${MicroLabel}>TACTICAL CO-OP NODE · 02<//></div>
     </div>
     <div class="title-corner title-corner--tr">
+      <${InstallButton} class="title-install tapx" variant="secondary" />
       <${MicroLabel} tone="hi">TARGET POINT<//><br /><${MicroLabel}>STRONGHOLD PROTOCOL<//>
     </div>
 
