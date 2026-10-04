@@ -39,14 +39,19 @@ export async function validateBackup(backup,versions=[RULES_VERSION,...published
 const PROFILE_FIELDS = ['accountId', 'provider', 'githubId', 'githubLogin', 'username', 'nickname', 'nicknameSource', 'discriminator', 'name', 'avatarUrl'];
 const BASE64URL = /^[A-Za-z0-9_-]{1,128}$/;
 
-/** The account's backup entry (its profile, read from the account, completes a profile from before display names). */
+/**
+ * The account's backup entry: its profile, read from the account (which completes an unfinished one), and a password
+ * account's hash and creation time. A GitHub account whose first login stopped before its profile was stored is its
+ * GitHub identity from the directory, which restores like a profile from before display names.
+ */
 async function exportAccount(env, item) {
   const profile = await accountOf(env, item.accountId).getProfile();
+  if (item.githubId) return profile ?? item.identity;
   if (!profile) {
     logError('backup_profile_missing', { accountId: item.accountId });
     throw new AccountError('PROFILE_MISSING', 500);
   }
-  return item.password ? { ...profile, password: item.password, createdAt: item.createdAt } : profile;
+  return { ...profile, password: item.password, createdAt: item.createdAt };
 }
 
 /** A backup entry checked field by field: { profile, password, createdAt } (INVALID_PROFILE). */

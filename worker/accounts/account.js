@@ -1,5 +1,5 @@
 import { DurableObject } from 'cloudflare:workers';
-import { requireId, AccountError, displayName } from '../../shared/account-protocol.js';
+import { requireId, AccountError, isAccountError, displayName } from '../../shared/account-protocol.js';
 import { aggregateStats } from '../../shared/history.js';
 import { validatePreferencePatch } from '../../public/js/preferenceSchema.js';
 import { directoryOf } from './auth.js';
@@ -11,9 +11,9 @@ import { githubNickname } from './names.js';
  * The profile is what every page and room shows of the account: { accountId, provider: 'github'|'password',
  * githubId?, githubLogin?, username?, nickname, nicknameSource: 'github'|'user', discriminator, name, avatarUrl }, where
  * `name` is the display name 昵称#NNNN. Its display name is the directory's to allocate (SiteDirectory.claimName): this
- * object claims it there, then stores the profile, one change at a time. A GitHub account stored before display names
- * existed ({ accountId, githubId, githubLogin?, name, avatarUrl }) gets its nickname and discriminator when its profile is
- * next read.
+ * object claims it there, then stores the profile, one change at a time. A profile is completed when it is next read:
+ * a registration that stopped halfway is finished, and a GitHub account stored before display names existed
+ * ({ accountId, githubId, githubLogin?, name, avatarUrl }) gets its nickname and discriminator.
  */
 export class AccountDurableObject extends DurableObject {
   constructor(ctx,env) {
@@ -32,16 +32,34 @@ export class AccountDurableObject extends DurableObject {
     return run;
   }
 
-  // The stored profile (null: none), completed first when it is a GitHub account's from before display names: its
-  // name (GitHub's, else its login) becomes its nickname. Called inside #change.
+  // The stored profile (null: none), completed first. Without a profile, a stored registration is finished (register).
+  // A GitHub account's profile from before display names gets its nickname from its name (GitHub's, else its login).
+  // Called inside #change.
   async #profile() {
     const profile = (await this.ctx.storage.get('profile')) ?? null;
-    if (!profile || profile.discriminator) return profile;
+    if (!profile) {
+      const registration = await this.ctx.storage.get('registration');
+      return registration ? this.#register(registration) : null;
+    }
+    if (profile.discriminator) return profile;
     const nickname = githubNickname(profile.name, profile.githubLogin);
     const discriminator = await directoryOf(this.env).claimName(profile.accountId, nickname, null);
     const completed = { ...profile, provider: 'github', nickname, nicknameSource: 'github', discriminator, name: displayName(nickname, discriminator) };
     await this.ctx.storage.put('profile', completed);
     return completed;
+  }
+
+  // A password account's registration: the directory takes (or, a second time, confirms) its username, password hash
+  // and display name, then the profile replaces the registration.
+  async #register({ accountId, username, password, nickname }) {
+    const discriminator = await directoryOf(this.env).registerLocal({ accountId, username, password, nickname });
+    const profile = { accountId, provider: 'password', username, nickname, nicknameSource: 'user', discriminator,
+      name: displayName(nickname, discriminator), avatarUrl: null };
+    await this.ctx.storage.transaction(async (tx) => {
+      await tx.put('profile', profile);
+      await tx.delete('registration');
+    });
+    return profile;
   }
 
   /** The profile (null: none). */
@@ -51,16 +69,21 @@ export class AccountDurableObject extends DurableObject {
   setProfile(profile) { return this.#change(() => this.ctx.storage.put('profile', profile)); }
 
   /**
-   * A new password account (this object's name is `accountId`): the directory takes its username, password hash and
-   * display name (USERNAME_TAKEN, NICKNAME_FULL), then its profile is stored. Resolves with the profile.
+   * A new password account (this object's name is `accountId`), registered in two objects: this one stores the
+   * registration first, then the directory takes the username, password hash and display name, then the profile is
+   * stored. A registration that stops after the directory took it (an object reset mid-call) is finished when the
+   * account is next read: at its first login. One the directory refuses (an AccountError: USERNAME_TAKEN,
+   * NICKNAME_FULL; its transaction took nothing) leaves nothing. Resolves with the profile.
    */
-  register({ accountId, username, password, nickname }) {
+  register(registration) {
     return this.#change(async () => {
-      const discriminator = await directoryOf(this.env).registerLocal({ accountId, username, password, nickname });
-      const profile = { accountId, provider: 'password', username, nickname, nicknameSource: 'user', discriminator,
-        name: displayName(nickname, discriminator), avatarUrl: null };
-      await this.ctx.storage.put('profile', profile);
-      return profile;
+      await this.ctx.storage.put('registration', registration);
+      try {
+        return await this.#register(registration);
+      } catch (error) {
+        if (isAccountError(error)) await this.ctx.storage.delete('registration');
+        throw error;
+      }
     });
   }
 

@@ -108,6 +108,29 @@ test('registration refuses invalid usernames, passwords and nicknames', { timeou
   assert.equal((await a.register('abc', '12345678', `a${ZERO_WIDTH_SPACE}b`)).body.user.nickname, 'ab', 'invisible characters are dropped');
 });
 
+test('a registration that stopped after the directory took the username is finished at its first login', { timeout: 120000 }, async (t) => {
+  const exportToken = 'export-'.repeat(6);
+  const world = await createWorld(t, { bindings: { ARCHIVE_EXPORT_TOKEN: exportToken } });
+  const a = accounts(world);
+  // The directory takes the username, then resets before it answers: the account never hears back.
+  await world.failDirectory('registerLocal');
+  assert.deepEqual(await a.register('halfway', 'long enough', '半途'), { status: 500, body: { error: 'INTERNAL' } });
+  await world.failDirectory('registerLocal', false);
+  assert.deepEqual((await a.register('HALFWAY', 'another one', '别人')).body, { error: 'USERNAME_TAKEN' });
+
+  const login = await a.login('halfway', 'long enough');
+  assert.equal(login.status, 200);
+  const user = login.body.user;
+  assert.deepEqual(user, { accountId: user.accountId, provider: 'password', username: 'halfway', nickname: '半途', nicknameSource: 'user',
+    discriminator: user.discriminator, name: '半途#' + user.discriminator, avatarUrl: null });
+  assert.deepEqual((await a.me(login.session)).user, user);
+  assert.deepEqual(await world.exec('SELECT name_key, disc FROM display_names WHERE account_id=?', user.accountId),
+    [{ name_key: '半途', disc: user.discriminator }], 'the display name the directory took then');
+  const catalog = await world.api('z', '/api/admin/backup/catalog?kind=profiles', { cookie: '', headers: { Authorization: 'Bearer ' + exportToken } });
+  assert.equal(catalog.status, 200);
+  assert.deepEqual(catalog.body.items.map((entry) => entry.name), [user.name], 'a backup has it');
+});
+
 test('credential attempts are limited per network, and per username from each network', { timeout: 120000 }, async (t) => {
   const world = await createWorld(t);
   const a = accounts(world);

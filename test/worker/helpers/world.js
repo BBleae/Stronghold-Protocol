@@ -1,11 +1,12 @@
 // The production Worker (tools/build-worker.mjs bundleWorker) with every Durable Object, in workerd (Miniflare).
 //
 // The fixture entry adds what tests need and production lacks: seeded GitHub accounts with session cookies (actor
-// 'a' → cookie 'aaaa…', profile name 'Player a#NNNN'), WebSocket upgrades on behalf of an actor, hooks on a room's Durable Object (storage
-// access, a snapshot rewrite applied at its next wake, the structured log lines of the isolate (every room's), its
-// in-memory timer, its login checks or its failed jobs' retries made due) and on the directory (session lookups and
-// room listings counted, a logout, an outage). Any hook wakes the room it is sent to. Storage persists across restart(), which replaces the
-// runtime like a deployment does; evict() puts one room to sleep with its sockets open, as the platform does.
+// 'a' → cookie 'aaaa…', profile name 'Player a#NNNN'), WebSocket upgrades on behalf of an actor, hooks on a room's
+// Durable Object (storage access, a snapshot rewrite applied at its next wake, the structured log lines of the isolate
+// (every room's), its in-memory timer, its login checks or its failed jobs' retries made due) and on the directory
+// (session lookups and room listings counted, a logout, an outage, a registration whose answer is lost). Any hook
+// wakes the room it is sent to. Storage persists across restart(), which replaces the runtime like a deployment does;
+// evict() puts one room to sleep with its sockets open, as the platform does.
 
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -20,7 +21,8 @@ import worker, { SiteDirectory, AccountDurableObject, RoomDurableObject as Produ
 import { hash } from './worker/accounts/auth.js';
 
 // The directory, with its session lookups and room listings counted (failed ones too). fail(method, on): the method
-// throws while on, as an unavailable directory does. exec(query, ...params): its SQL, for a test to set up or read.
+// throws while on, as an unavailable directory does (registerLocal after its transaction committed, as a directory
+// reset before it answers). exec(query, ...params): its SQL, for a test to set up or read.
 export class TestObject extends SiteDirectory {
   exec(query, ...params) { return this.sql.exec(query, ...params).toArray(); }
   getSession(key) {
@@ -32,6 +34,11 @@ export class TestObject extends SiteDirectory {
     this.publishes = (this.publishes ?? 0) + 1;
     if (this.failing?.publishRoom) throw new Error('directory unavailable (test)');
     return super.publishRoom(room);
+  }
+  registerLocal(input) {
+    const discriminator = super.registerLocal(input);
+    if (this.failing?.registerLocal) throw new Error('directory reset before it answered (test)');
+    return discriminator;
   }
   fail(method, on) { this.failing = { ...this.failing, [method]: on }; }
   counts() { return { lookups: this.lookups ?? 0, publishes: this.publishes ?? 0 }; }
@@ -199,7 +206,7 @@ export async function createWorld(t, { bindings = {} } = {}) {
     lookups: async () => (await (await h.fetch({ directory: 'count' })).json()).lookups,
     /** How many room listings the directory has been sent (failed ones too). */
     publishes: async () => (await (await h.fetch({ directory: 'count' })).json()).publishes,
-    /** The directory's `method` (getSession, publishRoom) throws while `on`. */
+    /** The directory's `method` (getSession, publishRoom, registerLocal: after its transaction) throws while `on`. */
     failDirectory: (method, on = true) => h.fetch({ directory: 'fail', method, on }),
     /** `actor` logs out: the directory revokes its session. */
     logout: async (actor) => h.fetch({ directory: 'logout', actor }),

@@ -44,14 +44,17 @@ export class SiteDirectory extends DurableObject {
 
   /**
    * A new password account `accountId`: its username (USERNAME_TAKEN when another account has it, in any case), its
-   * password hash and its first display name. Resolves with the nickname's discriminator.
+   * password hash and its first display name. Resolves with the nickname's discriminator. Asked again for the same
+   * account (its registration stopped before its profile was stored: AccountDurableObject.register), it changes
+   * nothing and resolves with the same discriminator.
    */
   registerLocal({ accountId, username, password, nickname }) {
     return this.ctx.storage.transactionSync(() => {
       const key = username.toLowerCase();
-      if (this.sql.exec('SELECT 1 FROM local_users WHERE username_key=?', key).toArray().length) throw new AccountError('USERNAME_TAKEN', 409);
+      const holder = this.sql.exec('SELECT account_id FROM local_users WHERE username_key=?', key).toArray()[0]?.account_id;
+      if (holder && holder !== accountId) throw new AccountError('USERNAME_TAKEN', 409);
       const discriminator = this.#claim(accountId, nickname, null);
-      this.sql.exec('INSERT INTO local_users VALUES (?,?,?,?,?)', key, username, accountId, JSON.stringify(password), Date.now());
+      if (!holder) this.sql.exec('INSERT INTO local_users VALUES (?,?,?,?,?)', key, username, accountId, JSON.stringify(password), Date.now());
       return discriminator;
     });
   }
@@ -173,7 +176,8 @@ export class SiteDirectory extends DurableObject {
 
   /**
    * A page of the backup catalog. `profiles`: the accounts, each with what only this directory has of it (its GitHub
-   * id, or its username, password hash and creation time); `archives`: the archived match ids.
+   * id and its GitHub identity as its last login brought it, or its username, password hash and creation time);
+   * `archives`: the archived match ids.
    */
   backupCatalog({ cursor = '', kind = 'profiles', limit = 100 } = {}) {
     if (typeof cursor !== 'string' || cursor.length > 128 || !Number.isInteger(limit) || limit < 1 || limit > 100) throw new AccountError('INVALID_PAGE');
@@ -181,10 +185,12 @@ export class SiteDirectory extends DurableObject {
       const rows = this.sql.exec('SELECT match_id AS id FROM archives WHERE match_id>? ORDER BY match_id LIMIT ?', cursor, limit + 1).toArray();
       return { items: rows.slice(0, limit).map((row) => row.id), nextCursor: rows.length > limit ? rows[limit - 1].id : null };
     }
-    const rows = this.sql.exec(`SELECT account_id AS id, github_id, NULL AS username, NULL AS password, NULL AS created_at FROM users WHERE account_id>?
-      UNION ALL SELECT account_id, NULL, username, password, created_at FROM local_users WHERE account_id>? ORDER BY id LIMIT ?`,
+    const rows = this.sql.exec(`SELECT account_id AS id, github_id, profile AS identity, NULL AS username, NULL AS password, NULL AS created_at
+      FROM users WHERE account_id>?
+      UNION ALL SELECT account_id, NULL, NULL, username, password, created_at FROM local_users WHERE account_id>? ORDER BY id LIMIT ?`,
     cursor, cursor, limit + 1).toArray();
-    const items = rows.slice(0, limit).map((row) => (row.github_id != null ? { accountId: row.id, githubId: row.github_id }
+    const items = rows.slice(0, limit).map((row) => (row.github_id != null
+      ? { accountId: row.id, githubId: row.github_id, identity: JSON.parse(row.identity) }
       : { accountId: row.id, username: row.username, password: JSON.parse(row.password), createdAt: row.created_at }));
     return { items, nextCursor: rows.length > limit ? rows[limit - 1].id : null };
   }

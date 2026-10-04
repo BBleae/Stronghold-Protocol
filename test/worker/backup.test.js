@@ -84,6 +84,8 @@ test('accounts export with their identities and display names, and restore witho
         const identity = await site.resolveGithubUser(i.github);
         return Response.json(await account(identity.accountId).applyGithubLogin(identity));
       }
+      // A first GitHub login that stopped after the directory recorded the GitHub user, before the profile was stored.
+      if (i.githubIdentity) return Response.json(await site.resolveGithubUser(i.githubIdentity));
       if (i.verify) return Response.json(await verifyPassword(i.verify.password, (await site.localUser(i.verify.username))?.password ?? null));
       if (i.session) {
         if (i.session.accountId) await site.saveSession(await hash(i.session.token), { accountId: i.session.accountId, expiresAt: Date.now() + 60000 });
@@ -104,10 +106,12 @@ test('accounts export with their identities and display names, and restore witho
   // normalized, so that its backup entry restores.
   const composed = await call(source, { register: { username: 'Doctor_02', password: 'correct horse', nickname: 'x\u00ad\u0308' } });
   assert.equal(composed.nickname, '\u1e8d');
+  const unfinished = await call(source, { githubIdentity: { id: '43', login: 'Halfway', name: '半途', avatarUrl: null } });
 
   const catalog = await call(source, { path: 'catalog?kind=profiles' });
   const entries = Object.fromEntries(catalog.items.map((entry) => [entry.accountId, entry]));
   assert.deepEqual(entries[github.accountId], github, 'a GitHub account: its profile');
+  assert.deepEqual(entries[unfinished.accountId], unfinished, 'one without a profile yet: its GitHub identity');
   const { password, createdAt, ...profile } = entries[local.accountId];
   assert.deepEqual(profile, local, 'a password account: its profile…');
   assert.equal(password.alg, 'pbkdf2-sha256');
@@ -145,6 +149,8 @@ test('accounts export with their identities and display names, and restore witho
   // Restoring again changes nothing.
   for (const entry of catalog.items) assert.equal((await call(destination, { path: 'profile', body: { profile: entry, dryRun: false } })).written, 1);
   assert.deepEqual(await call(destination, { profile: local.accountId }), local);
+  // The GitHub identity restores like a profile from before display names: completed when read.
+  assert.match((await call(destination, { profile: unfinished.accountId })).name, /^半途#\d{4}$/);
 
   // Entries that are not an account are refused.
   for (const entry of [{ ...entries[local.accountId], password: { ...password, iterations: 100001 } }, { ...entries[local.accountId], name: 'other#0000' },

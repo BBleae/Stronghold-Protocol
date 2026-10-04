@@ -4,7 +4,7 @@
 
 ## 登录方式与博士代号
 
-- **用户名和密码**：始终可用（标题页的账号卡片：登录 / 注册）。用户名为 3–20 位字母、数字或下划线，不区分大小写唯一（保存输入时的大小写），只用于登录，从不展示给其他玩家。密码 8–128 位（任意字符），以 PBKDF2-SHA256 存储：100,000 次迭代（Cloudflare Workers 的上限；本地 workerd/Miniflare 不限制，不要调高）、16 字节随机盐、32 字节密钥，连同参数一起保存；参数变化后，下次登录成功时按新参数重新存储。哈希在 Worker 请求里计算，不在 SiteDirectory DO 里计算。用户名不存在时同样计算一次哈希；用户名不存在与密码错误给出同一个答复「用户名或密码错误」。
+- **用户名和密码**：始终可用（标题页的账号卡片：登录 / 注册）。用户名为 3–20 位字母、数字或下划线，不区分大小写唯一（保存输入时的大小写），只用于登录，从不展示给其他玩家。密码 8–128 位（任意字符），以 PBKDF2-SHA256 存储：100,000 次迭代（Cloudflare Workers 的上限；本地 workerd/Miniflare 不限制，不要调高）、16 字节随机盐、32 字节密钥，连同参数一起保存；参数变化后，下次登录成功时按新参数重新存储。哈希在 Worker 请求里计算，不在 SiteDirectory DO 里计算。用户名不存在时同样计算一次哈希；用户名不存在与密码错误给出同一个答复「用户名或密码错误」。注册要写两个对象：先在该账号的 Account DO 记下注册，再由 SiteDirectory 登记用户名、密码哈希与编号，最后保存账号资料；中途中断（例如部署时对象重启）的注册在第一次登录时补完。
 - **GitHub**：只有 `GITHUB_CLIENT_ID`、`GITHUB_CLIENT_SECRET`、`AUTH_ORIGIN`（不带路径的 https 源）都已配置、且凭据未被判定无效时，账号卡片才显示「使用 GitHub 登录」。Worker 用一个虚构的授权码向 GitHub 的 token 接口检查凭据，不需要用户：返回 `bad_verification_code` 表示有效，`incorrect_client_credentials` 或 `redirect_uri_mismatch` 表示无效，其他答复或网络错误为未知（照常显示，稍后再查），见 [GitHub 文档](https://docs.github.com/en/apps/oauth-apps/maintaining-oauth-apps/troubleshooting-oauth-app-access-token-request-errors)。结论按配置指纹（client id、secret 与 `AUTH_ORIGIN` 的 SHA-256）保存在 SiteDirectory DO 与各 isolate：有效 24 小时、无效 1 小时、未知 5 分钟，`/api/me` 最多约每个有效期等一次 GitHub。真实登录换取令牌时若 GitHub 给出上述「无效」答复，Worker 会立即检查一次凭据并记录检查结论：授权码是访问者带来的，可能是为其他回调地址签发的，只有检查结论对所有玩家生效（检查认为凭据没问题时，只有这次登录失败，记入运行日志 `github_code_refused`）。更换 secret 或 client id 即是新配置，会重新检查。无效凭据记入运行日志 `github_credentials_invalid`，检查失败记入 `github_check_failed`。
 - **博士代号**：每个账号在所有地方都显示为「代号#NNNN」（如 `晴猫#1145`）。代号为 1–12 个字（按名字规则规范化后，须含可见字符，不能包含 #），可以重名；编号 NNNN 为随机的 0000–9999，同一代号的编号全站唯一，由 SiteDirectory DO 统一分配。判断是否同一代号时，先去掉不可见字符（Unicode 的 Default_Ignorable_Code_Point），再做 NFKC 规范化并转小写，因此形近字、大小写变体和夹带不可见字符的代号共用一组编号，两个账号的「代号#编号」不会看起来相同。一个代号的 10000 个编号都被占用时，提示换一个代号。
 - GitHub 账号的代号取 GitHub 名称（没有或只有不可见字符时取登录名），去掉 #、截到 12 字。之前登录过、还没有编号的 GitHub 账号，下次打开页面或登录时自动分配并保存编号。GitHub 名称变化时，新代号下原编号空闲则保留，否则重新分配；玩家自己修改过代号后，GitHub 名称不再覆盖它。
@@ -98,7 +98,7 @@ GitHub 登录使用一次性 state、S256 PKCE，临时事务 10 分钟。会话
 
 DO 持久存储可跨休眠与重启保留，但误删 namespace、破坏性迁移及业务代码错误仍可能损坏数据。SQLite DO 的 PITR 有过去 30 天的恢复窗口，**不是永久独立备份**，各对象恢复点也不构成跨 DO 事务。参考 [SQLite 存储与 PITR](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/)。
 
-配置不同的随机管理凭据 `ARCHIVE_EXPORT_TOKEN`、`ARCHIVE_IMPORT_TOKEN`（各至少 32 字符），分别用 `wrangler secret put` 写入。玩家登录 Cookie 不能调用管理备份 API。备份工具仅写入显式指定的本地目录，不会自动发到第三方；备份不含 session、OAuth 事务、GitHub token 或 secret。导出的每个账号是其账号资料（含代号与编号）；用户名密码账号另含用户名、密码哈希（PBKDF2，不含明文）与创建时间，因此备份目录应与凭据同等妥善保管。
+配置不同的随机管理凭据 `ARCHIVE_EXPORT_TOKEN`、`ARCHIVE_IMPORT_TOKEN`（各至少 32 字符），分别用 `wrangler secret put` 写入。玩家登录 Cookie 不能调用管理备份 API。备份工具仅写入显式指定的本地目录，不会自动发到第三方；备份不含 session、OAuth 事务、GitHub token 或 secret。导出的每个账号是其账号资料（含代号与编号）；用户名密码账号另含用户名、密码哈希（PBKDF2，不含明文）与创建时间，因此备份目录应与凭据同等妥善保管。首次 GitHub 登录中途中断、还没有账号资料的 GitHub 账号，导出其 GitHub 身份，导入后与较早的无编号资料一样在读取时分配编号。
 
 ```powershell
 # 在当前终端环境安全设置 SP_ARCHIVE_EXPORT_TOKEN 后：
