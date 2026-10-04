@@ -8,7 +8,7 @@ import { RULES_VERSION } from '../shared/rules-version.js';
 import { logInfo, logError, errorFields } from './log.js';
 import { PACK_PATH, servePack } from './pack.js';
 import { handleAuth, authenticate, accountOf, directoryOf } from './accounts/auth.js';
-import { handleAccountRoutes } from './accounts/routes.js';
+import { handleAccountRoutes, seatOf } from './accounts/routes.js';
 import { handleLobbyRoutes, roomApplications } from './rooms/routes.js';
 import { handleHistoryRoutes } from './archive/routes.js';
 import { publishArchive,prepareArchive } from './archive/outbox.js';
@@ -55,7 +55,12 @@ export default {
       const session = env.ACCOUNTS ? await authenticate(request, env) : null;
       if (env.ACCOUNTS && !session) return error(401, 'LOGIN_REQUIRED');
       if (session && request.headers.get('Origin') !== url.origin) return error(403, 'BAD_MSG');
-      if (session && await accountOf(env, session.accountId).getActiveSeat()) return error(409, 'ALREADY_SEATED');
+      if (session) {
+        // A create that failed after its reservation (e.g. at the first connect) goes on with that reservation.
+        const seat = await seatOf(env, session.accountId, 'POST');
+        if (seat?.reserved) return json({ code: seat.code, ticket: seat.ticket, generation: seat.generation });
+        if (seat) return error(409, 'ALREADY_SEATED');
+      }
       const limited = await admit(env, edgeIp(request), 'reserve');
       if (limited) return limited;
       for (let i = 0; i < 12; i++) {
@@ -64,10 +69,10 @@ export default {
           method: 'POST', headers: session ? {'X-Account-ID':session.accountId} : {} }));
         if (response.status !== 409) {
           if (response.ok && session) {
-            const route=await response.clone().json(), claimId=crypto.randomUUID();
-            const claim=await accountOf(env,session.accountId).claimSeat({claimId,expiresAt:Date.now()+120000,
-              seat:{roomId:route.code,roomGeneration:route.generation,matchId:null,seatId:null}});
-            if (!claim.ok) return error(409,'ALREADY_SEATED');
+            const route = await response.clone().json();
+            const claim = await accountOf(env, session.accountId).claimSeat({ claimId: crypto.randomUUID(),
+              seat: { roomId: route.code, roomGeneration: route.generation, matchId: null, seatId: null } });
+            if (!claim.ok) return error(409, 'ALREADY_SEATED');
           }
           return response;
         }
@@ -405,13 +410,16 @@ export class RoomDurableObject {
         return ticket ? json({ code, ticket, ...(rt.accounts ? {generation:rt.generation} : {}) }, 201) : error(409, 'ROOM_FULL');
       }
       if (url.pathname === '/_account') {
-        const accountId=request.headers.get('X-Account-ID');
-        if (request.headers.get('X-Room-Generation')!==rt.generation || !rt.hasAccount(accountId)) return error(404,'ROOM_NOT_FOUND');
-        if (request.method==='POST') {
-          const ticket=rt.resumeAccount(accountId); await this.persist();
-          return ticket ? json({code:rt.code,ticket,join:rt.applications.list(accountId).some(x=>x.status==='approved'),reserved:rt.reservation?.accountId===accountId}) : error(404,'ROOM_NOT_FOUND');
+        // The room is the truth about an account's seat (worker/accounts/routes.js seatOf): 404 releases it.
+        const accountId = request.headers.get('X-Account-ID');
+        if (request.headers.get('X-Room-Generation') !== rt.generation || !rt.hasAccount(accountId)) return error(404, 'ROOM_NOT_FOUND');
+        if (request.method === 'POST') {
+          const ticket = rt.resumeAccount(accountId);
+          await this.persist();
+          return json({ code: rt.code, generation: rt.generation, ticket,
+            join: rt.applications.list(accountId).some((x) => x.status === 'approved'), reserved: rt.reservation?.accountId === accountId });
         }
-        return json({activeSeat:{roomId:rt.code,roomGeneration:rt.generation},status:rt.status()});
+        return json({ activeSeat: { roomId: rt.code, roomGeneration: rt.generation }, status: rt.status() });
       }
       if (url.pathname === '/_status' && request.method === 'GET') {
         const status = rt.status();

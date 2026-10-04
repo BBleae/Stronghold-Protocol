@@ -34,6 +34,30 @@ export async function clearStaleApplication(env,accountId) {
   const body=await response.json();
   if(!body.items.some(x=>x.id===pending.id && ['pending','approved'].includes(x.status)))await account.clearApplication(pending.roomId,pending.id);
 }
+
+// Seats. An account points at the seat it holds (activeSeat: room code, room generation, claim id); the room is the
+// truth about it. A pointer its room no longer confirms (the room ended, its reservation expired, an approval
+// lapsed, a restore interrupted the match) is released by whoever reads it next, so it never blocks the account.
+
+/**
+ * The account's seat as its room confirms it, or null. GET answers { activeSeat, status }; POST (resume) also hands
+ * out a ticket to connect with: { code, generation, ticket, join, reserved }.
+ */
+export async function seatOf(env, accountId, method = 'GET') {
+  const account = accountOf(env, accountId);
+  const seat = await account.getActiveSeat();
+  if (!seat) return null;
+  const room = env.ROOMS.get(env.ROOMS.idFromName(seat.roomId));
+  const response = await room.fetch(new Request('https://room.internal/_account', {
+    method, headers: { 'X-Account-ID': accountId, 'X-Room-Generation': seat.roomGeneration } }));
+  if (response.status === 404) {
+    await account.releaseSeat({ claimId: seat.claimId });
+    return null;
+  }
+  if (!response.ok) throw new Error(`room ${seat.roomId} answered ${response.status} for a seat`);
+  return response.json();
+}
+
 export async function handleAccountRoutes(request, env) {
   const path = new URL(request.url).pathname;
   if (!['/api/me/active-match','/api/me/resume','/api/me/preferences'].includes(path)) return null;
@@ -51,14 +75,6 @@ export async function handleAccountRoutes(request, env) {
       if (body.accountId !== session.accountId) return json({error:'ACCOUNT_CHANGED'},409);
       return json({accountId:session.accountId,preferences:await account.savePreferences(body.patch,body.initialize === true)});
     }
-    const seat = await account.getActiveSeat();
-    if (!seat) return json({activeSeat:null});
-    const stub=env.ROOMS.get(env.ROOMS.idFromName(seat.roomId));
-    const response=await stub.fetch(new Request('https://room.internal/_account' + (request.method==='POST'?'?resume=1':''), {
-      method:request.method,headers:{'X-Account-ID':session.accountId,'X-Room-Generation':seat.roomGeneration}}));
-    if (response.status===404) {
-      await account.releaseSeat({claimId:seat.claimId}); return json({activeSeat:null});
-    }
-    return response;
+    return json((await seatOf(env, session.accountId, request.method)) ?? { activeSeat: null });
   } catch(e) {return json({error:e.code || 'ACCOUNT_UNAVAILABLE'},e.status || 503);}
 }

@@ -63,14 +63,15 @@ export class AccountDurableObject extends DurableObject {
     const rows=this.ctx.storage.sql.exec('SELECT fact FROM history WHERE (?=\'\' OR mode=?) AND (?=\'\' OR difficulty=?)',mode,mode,difficulty,difficulty).toArray();
     return aggregateStats(rows.map(r=>JSON.parse(r.fact)));
   }
-  async claimSeat({claimId, seat, expiresAt}) {
+  // The seat is a pointer: its room decides whether it is still held (worker/accounts/routes.js seatOf), so it has no
+  // expiry of its own. Seats stored earlier carry an unused expiresAt.
+  async claimSeat({claimId, seat}) {
     requireId(claimId); requireId(seat.roomId); requireId(seat.roomGeneration);
-    if (!Number.isSafeInteger(expiresAt) || expiresAt <= Date.now()) throw new AccountError('INVALID_EXPIRY');
     return this.ctx.storage.transaction(async tx => {
       const active = await tx.get('activeSeat');
       if (active && active.claimId !== claimId) return {ok: false, error: 'ALREADY_SEATED'};
       if (active) return {ok: true, seat: active};
-      const value = {...seat, claimId, expiresAt};
+      const value = {...seat, claimId};
       await tx.put('activeSeat', value);
       return {ok: true, seat: value};
     });

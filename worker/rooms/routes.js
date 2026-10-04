@@ -1,6 +1,6 @@
 import { authenticate, accountOf, directoryOf, json, requireOrigin } from '../accounts/auth.js';
 import { AccountError } from '../../shared/account-protocol.js';
-import { clearStaleApplication,handleAccountRoutes } from '../accounts/routes.js';
+import { clearStaleApplication, seatOf } from '../accounts/routes.js';
 export async function handleLobbyRoutes(request,env) {
   const url=new URL(request.url);
   if(url.pathname==='/api/rooms' && request.method==='GET') {
@@ -18,9 +18,7 @@ export async function handleLobbyRoutes(request,env) {
     const body=request.method==='POST' ? await request.text() : null;
     if(body && body.length>2048) return json({error:'BAD_MSG'},413);
     if(body && JSON.parse(body).action==='apply') {
-      const validated=await handleAccountRoutes(new Request(new URL('/api/me/active-match',request.url),{headers:request.headers}),env);
-      if(!validated.ok)return validated;
-      if((await validated.json()).activeSeat)return json({error:'ALREADY_SEATED'},409);
+      if (await seatOf(env, session.accountId)) return json({ error: 'ALREADY_SEATED' }, 409);
       await clearStaleApplication(env,session.accountId);
     }
     const response=await env.ROOMS.get(env.ROOMS.idFromName(match[1])).fetch(new Request('https://room.internal/_'+match[2], {
@@ -75,8 +73,10 @@ export async function roomApplications(rt,request,env) {
     if(!item || item.status!=='pending') throw new AccountError('APPLICATION_EXPIRED',409);
     const applicant=accountOf(env,item.accountId);
     if(body.action==='approve') {
-      const claim=await applicant.claimSeat({claimId:item.id,expiresAt:Date.now()+30000,
-        seat:{roomId:rt.code,roomGeneration:rt.generation,matchId:null,seatId:null}});
+      // A plain claim: validating a stale seat would call another room from inside this room's critical section.
+      // The applicant's seat was validated when they applied (handleLobbyRoutes).
+      const claim = await applicant.claimSeat({ claimId: item.id,
+        seat: { roomId: rt.code, roomGeneration: rt.generation, matchId: null, seatId: null } });
       if(!claim.ok) throw new AccountError(claim.error,409);
       try {
         const approved=queue.decide(accountId,item.id,'approved',{hostId:host,inMatch:!!room.match,freeSeats:room.seats.filter(x=>!x).length});
