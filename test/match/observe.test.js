@@ -33,6 +33,22 @@ test('observeTarget: prep, own battle running / over, boss pairs, eliminated pla
   assert.deepEqual(observeTarget(P('d', 3), dead, 'a'), { fieldId: 'b2' }, 'eliminated: anything');
 });
 
+test('observeTarget ownHeld: 前往查看 opens with the 作战结束 pill — the server may list the own field over while its last frames are still to be drawn', () => {
+  const players = [P('a', 0), P('b', 1)];
+  // the server already says the own field is over (the sim ran 0.5 s ahead of the picture)
+  const over = pubOf('COMBAT', [
+    { fieldId: 'n:a', kind: 'normal', players: ['a'], live: false },
+    { fieldId: 'n:b', kind: 'normal', players: ['b'], live: true },
+  ], players);
+  assert.deepEqual(observeTarget(players[1], over, 'a'), { fieldId: 'n:b' }, 'not on screen / no picture to wait for: the server\'s word');
+  assert.match(observeTarget(players[1], over, 'a', { ownHeld: true }).reason, /作战中无法查看/, 'the own picture still runs: held');
+  assert.match(observeTarget(players[1], over, 'a', { ownHeld: true, ownDone: false }).reason, /作战中无法查看/);
+  assert.deepEqual(observeTarget(players[1], over, 'a', { ownHeld: false, ownDone: true }), { fieldId: 'n:b' }, 'the pill is up');
+  // an eliminated viewer is never held (no own picture)
+  const dead = [{ ...players[0], alive: false }, players[1]];
+  assert.deepEqual(observeTarget(players[1], { ...over, players: dead }, 'a', { ownHeld: true }), { fieldId: 'n:b' });
+});
+
 test('cameraLayers: ‹ LEFT / 全景 / RIGHT › with "你自己" / name / "无人在家"; none for normal or single boss fields', () => {
   const pub = { players: [P('a', 0), P('b', 1)] };
   const unite = { fieldId: 'u', kind: 'unite', rect: { r0: 9, r1: 12, c0: 0, c1: 20 }, players: ['a', 'b'], sides: { a: 'R', b: 'L' } };

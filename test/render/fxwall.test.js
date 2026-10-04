@@ -1,6 +1,8 @@
 // test/render/fxwall.test.js — 余 S3 fire wall visual (render/fx.js): the sim's `firewall` fx carries `axis` ('col' for
 // a RIGHT / LEFT facing, 'row' for UP / DOWN — sim/content/kits/tier6.js); the renderer lights that straight line of
-// tiles through his tile, clipped to the battle rect (it used to be a round zone whatever the facing).
+// tiles through his tile, clipped to the battle rect (it used to be a round zone whatever the facing) — as the FALLBACK
+// look: while his skill runs the held wall (render/fxsustain.js) is the only look and this one-shot is skipped
+// (test/render/fxsustain-batching.test.js).
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -18,7 +20,7 @@ test('wallTiles: his column (axis col) or his row (axis row), clipped to the fie
   assert.deepEqual(wallTiles('x', 10, 'col', RECT), []);
 });
 
-test('the firewall fx flashes the wall tiles along the event axis', () => {
+test('the firewall fx flashes the wall tiles along the event axis (no live view / skill: the held wall does not take it)', () => {
   assert.equal(FX_KINDS.firewall.a, 'wall');
   const cam = presetCamera('normal', { width: 1280, height: 720 });
   const flashes = [];

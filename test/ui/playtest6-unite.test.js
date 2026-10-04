@@ -102,7 +102,7 @@ describe('#7 the 联防 leak counter (HUD)', () => {
     const own = { lp: 30, pending: 10, unite: true, left: 11 };
     assert.deepEqual(rowLp(b, pub, own, { uniteLocal: { b: 2 } }), own, 'the own row keeps the top bar\'s value');
     // wiring: the game screen hands the runner's per-leaker counts to the team panel, which passes them to rowLp
-    assert.match(read('public/js/screens/game.js'), /const uniteLocal = phase === PHASE\.UNITE && battleState && battleState\.uniteLeft \? battleState\.uniteLeft : null;/);
+    assert.match(read('public/js/screens/game.js'), /const uniteLocal = phase === PHASE\.UNITE && drawnBattle && drawnBattle\.uniteLeft \? drawnBattle\.uniteLeft : null;/);
     assert.match(read('public/js/screens/game.js'), /<\$\{TeamPanel\}[^\n]*uniteLocal=\$\{uniteLocal\}/);
     assert.match(read('public/js/ui/teamPanel.js'), /rowLp\(p, pub, self \? selfLive : null, \{ uniteLocal, cap \}\)/);
   });
@@ -130,7 +130,7 @@ describe('#7 the 联防 leak counter (HUD)', () => {
     assert.ok(hasClass(MissTag({ n: 0 }), 'is-clear'));
     // wiring: the top bar hands the live value to the capsule; the game screen feeds liveLp with the leaker's count
     assert.match(read('public/js/ui/hud.js'), /PhaseCapsule} pub=\$\{pub\} hud=\$\{hud\} miss=/);
-    assert.match(read('public/js/screens/game.js'), /uniteLeft: leaker \? uniteRemaining\(localLeft, meP\?\.uniteLeft\) : null/);
+    assert.match(read('public/js/screens/game.js'), /uniteLeft: leaker \? uniteRemaining\(localLeft, gate\.serverOk \? meP\?\.uniteLeft : undefined\) : null/);
     assert.match(read('public/js/ui/teamPanel.js'), /<\$\{MissTag\} n=\$\{lp\.left\} name=/);
   });
 });

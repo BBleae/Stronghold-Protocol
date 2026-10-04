@@ -66,10 +66,18 @@ describe('掠海漂移体 drops to 爬行模式: its model crawls (headless Chro
         v.setLocalFeed({ on: true, speed: 2 });
         const raf = () => new Promise((r) => requestAnimationFrame(() => r()));
         const out = [];
-        let stunAt = null;
+        const hist = [];   // the sim's state per tick: the render clock shows it LOOK_AHEAD (1 game s) later
+        let stunAt = null, e = null;
+        // one row: what is drawn now (the clip, at the render clock) next to the sim's state at that game time
+        const row = () => {
+          const view = e && v.debug.views.get(e.id);
+          const rt = v.debug.interp.renderT, h = hist.findLast((x) => x.t <= rt) || hist[0];
+          if (e && h) out.push({ t: +rt.toFixed(2), flying: h.flying, blocked: h.blocked, clip: view?.actor?.current ?? null, form: view?.form ?? null, spine: !!view?.spineReady });
+        };
         for (let i = 0; i < 30 * 14; i++) {
           b.step();
-          const e = b.enemies.find((x) => x.defId === 'enemy_2025_syufo');
+          e = b.enemies.find((x) => x.defId === 'enemy_2025_syufo') || e;
+          if (e) hist.push({ t: b.time, flying: e.isFlying, blocked: !!e.blockedBy });
           if (stunAt == null && e && b.time >= 6) { stunAt = b.time; b.applyStatus(e, 'stun', { duration: 1, source: null }); }
           if (i % 3 === 2) {
             const ev = b.drainEvents();
@@ -77,10 +85,11 @@ describe('掠海漂移体 drops to 爬行模式: its model crawls (headless Chro
             v.pushSnapshot(b.snapshot());
             await raf();
             if (i === 30 * 3) await new Promise((r) => setTimeout(r, 2000));   // the Spine models load
-            const view = e && v.debug.views.get(e.id);
-            if (e && i % 6 === 5) out.push({ t: +b.time.toFixed(2), flying: e.isFlying, blocked: !!e.blockedBy, clip: view?.actor?.current ?? null, form: view?.form ?? null, spine: !!view?.spineReady });
+            if (i % 6 === 5) row();
           }
         }
+        // the feed is over: play the buffered frames out (the render clock trails the sim by LOOK_AHEAD)
+        for (let k = 0; k < 4000 && v.debug.interp.renderT < v.debug.interp.newestT - 1e-3; k++) { await raf(); if (k % 6 === 5) row(); }
         return { out, stunAt };
       }, SPEC);
       await page.screenshot({ path: path.join(OUT, 'forms-syufo-crawl.png') });

@@ -140,7 +140,9 @@ independent of the units' directions. Enemies keep their own horizontal facing l
 landing tile) compare offsets in the unit's facing-RIGHT frame (`localOrder` / `localBefore`; for a RIGHT unit exactly
 the old tile-key order), so a rotated layout plays the same (test/sim/facing-invariance.test.js: every chess × 4
 directions on an open field). 余 S3's fire wall runs through his tile perpendicular to his direction (his column facing
-RIGHT / LEFT, his row facing UP / DOWN; fx `firewall.axis` = `'col'|'row'`).
+RIGHT / LEFT, his row facing UP / DOWN; fx `firewall.axis` = `'col'|'row'`); that centre line is the LOGIC line (burn,
+bullet block), while the client draws the held wall half a tile in front of him (render/fxsustain.js `wallLine`, a visual
+choice) — moving the logic line is a rules change (RULES_VERSION) and an owner decision.
 `carryState: { hpPct, sp, skillActive }` restores unite helpers (HP ratio, SP; `skillActive` restarts a timed skill for a
 fresh duration/ammo **without spending a charge** — `unitsEnd` reports `sp: 0` while a skill runs, so pass it through as is).
 `carryState: { down: true }` = an operator knocked out at the end of the helper's own combat (PRTS 卫戍协议/帮助 "上一阶段为

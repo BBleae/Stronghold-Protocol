@@ -427,7 +427,7 @@ function fireShell(b, boss, target) {
   const sh = b.spawnEnemy(SHELL_KEY, { pos: [boss.y, boss.x], route: { motion: 'FLY', start: [boss.y, boss.x], end: [tr, tc], steps: [{ t: 'wait', s: 99999 }] }, tag: 'part', countInTotal: false, ownerPlayerId: boss.ownerId });
   if (!sh) return null;
   sh.mem.ab.shell = { tr, tc, boss };
-  b.fx('shell', { x: boss.x, y: boss.y, id: sh.id, tx: tc, ty: tr, r: 1.5, kind: 'helmShell' });
+  b.fx('helmShell', { x: boss.x, y: boss.y, id: sh.id, tx: tc, ty: tr, r: 1.5 });
   return sh;
 }
 

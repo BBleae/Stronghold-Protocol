@@ -2,7 +2,8 @@
 // attack at the clip's own speed (faster only when the attacks come quicker than the clip) and then its resting clip —
 // Move while the sim walks it again (server/sim/ai.js attackStand stands it for exactly that clip). It used to stretch
 // the clip over the whole attack interval and loop it for 1.4 intervals, so a ranged enemy seemed to slide while it
-// attacked. Operators keep the clip looping over their attack rhythm. Headless fake PIXI (test/render/fakepixi.js).
+// attacked. An operator's one-shot clip is never stretched more than ATTACK_STRETCH either (render/spine.js, as the
+// original). Headless fake PIXI (test/render/fakepixi.js).
 
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -17,10 +18,10 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const assets = JSON.parse(readFileSync(path.join(ROOT, 'data/assets.json'), 'utf8'));
 const JSHOOT = 'enemy_1019_jshoot';   // 隐形弩手: Attack 1.0 s, strike at 0.533 s; attacks every 2.7 s
 
-let fake, SpineActor, UnitView;
+let fake, SpineActor, UnitView, ATTACK_STRETCH;
 before(async () => {
   fake = installFakePixi();
-  ({ SpineActor } = await import('../../public/js/render/spine.js'));
+  ({ SpineActor, ATTACK_STRETCH } = await import('../../public/js/render/spine.js'));
   ({ UnitView } = await import('../../public/js/render/units.js'));
 });
 after(() => fake.restore());
@@ -71,13 +72,13 @@ test('an enemy attacking quicker than its clip plays it faster, one clip per att
   assert.equal(a.current, 'Move', 'the rest of the clip at 2×: 0.23 s');
 });
 
-test('an operator keeps its attack loop stretched over the attack rhythm (unchanged)', () => {
+test('an operator plays a one-shot clip once per attack too, stretched at most ATTACK_STRETCH over a longer interval', () => {
   const a = actor(JSHOOT, false);
   a.attack(2.7);
-  assert.equal(track(a).loop, true);
-  assert.ok(Math.abs(track(a).timeScale - 1 / 2.7) < 1e-9);
+  assert.equal(track(a).loop, false, 'one clip per attack');
+  assert.ok(Math.abs(track(a).timeScale - ATTACK_STRETCH) < 1e-9, 'at most ×1.25 slower, not stretched over the 2.7 s interval');
   run(a, 2);
-  assert.equal(a.current, 'Attack', 'still in attack mode 2 s later (1.4 × the interval)');
+  assert.equal(a.current, 'Move', 'then the resting state (it used to loop the attack for 1.4 intervals)');
 });
 
 test('UnitView: enemy models play a clip per attack, operator models do not', async () => {

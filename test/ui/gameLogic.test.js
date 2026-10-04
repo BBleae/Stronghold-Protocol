@@ -13,7 +13,7 @@ import {
   boardTargets, dropIntent, normalizeDraft, normalizeSp, groupEnemies, factionTypes, snapHud, bossFrac, attackInterval, fmtNum,
   rangeGridBox, shortcutFor, sanitizeSettings, DEFAULT_SETTINGS, normalizeResult, cycleField, fieldLabel, homeFieldId,
   activeBubbles, sortedPlayers, tileKey, prepCapsuleLabel, prepCamera, dropFailureReason,
-  pieceCharId, boardOperators, voiceLeader,
+  pieceCharId, boardOperators, voiceLeader, createHudDelay, pickDrawn, drawnChanged, hudChanged, drawnOf, ownFieldGate, snapUnits,
 } from '../../public/js/ui/gameLogic.js';
 import { pairPlayers } from '../../server/match/finalAssault.js';
 import { PHASE, GEO } from '../../shared/constants.js';
@@ -556,4 +556,295 @@ describe('operator voice', () => {
     assert.equal(voiceLeader(priv([chess(1, 'a'), chess(2, 'a_b')]), getChess), 'char_a');
   });
 
+});
+
+describe('createHudDelay: own-field HUD values follow the drawn battle (render 0.5 s behind its frames)', () => {
+  // fake clock + timers: what game.js does with performance.now / setTimeout
+  const harness = (field = () => 'n:P1') => {
+    let t = 0, seq = 0;
+    const timers = new Map();
+    const shown = [];      // hud releases: [time, hud]
+    const battles = [];    // battle slice releases: [time, slice]
+    const units = [];      // unit tuple releases: [time, Map]
+    const order = [];      // channel order of the releases
+    const d = createHudDelay({
+      onHud: (h) => { shown.push([t, h]); order.push('hud'); },
+      onBattle: (b) => { battles.push([t, b]); order.push('battle'); },
+      onUnits: (u) => { units.push([t, u]); order.push('units'); },
+      field, now: () => t,
+      setTimer: (fn, ms) => { const id = ++seq; timers.set(id, { fn, at: t + ms }); return id; },
+      clearTimer: (id) => { timers.delete(id); },
+    });
+    const advance = (ms) => {
+      const end = t + ms;
+      for (;;) {
+        let next = null;
+        for (const [id, x] of timers) if (x.at <= end && (!next || x.at < next[1].at)) next = [id, x];
+        if (!next) break;
+        timers.delete(next[0]);
+        t = next[1].at;
+        next[1].fn();
+      }
+      t = end;
+    };
+    return { d, timers, shown, battles, units, order, advance };
+  };
+
+  test('a whole battle of 20 Hz frames keeps one timer; each frame is shown 0.5 s after it arrived', () => {
+    const { d, timers, shown, advance } = harness();
+    let most = 0;
+    for (let i = 0; i < 1200; i++) {   // 60 s of frames
+      d.push('n:P1', { killed: i }, 500);
+      most = Math.max(most, timers.size);
+      advance(50);
+    }
+    assert.equal(most, 1, 'never more than one pending timer (it used to arm one more per frame)');
+    assert.ok(shown.length >= 1150);
+    for (const [at, h] of shown.slice(0, 50)) assert.ok(at >= h.killed * 50 + 500 && at < h.killed * 50 + 550, `frame ${h.killed} shown at ${at}`);
+    advance(600);
+    assert.equal(shown.at(-1)[1].killed, 1199);
+    assert.equal(timers.size, 0, 'idle once drained');
+  });
+
+  test('a watch switch drops the previous field\'s queued numbers', () => {
+    let cur = 'n:P1';
+    const { d, shown, advance } = harness(() => cur);
+    for (let i = 0; i < 10; i++) { d.push('n:P1', { field: 'P1', i }, 500); advance(50); }
+    cur = 'n:P2';
+    d.push('n:P2', { field: 'P2', i: 0 }, 500);
+    advance(1000);
+    assert.ok(shown.every(([at, h]) => h.field === 'P2' || at < 500 + 50 * 10), 'nothing of P1 after the switch');
+    assert.equal(shown.at(-1)[1].field, 'P2');
+  });
+
+  test('dispose clears the timer and the queue', () => {
+    const { d, timers, shown, battles, advance } = harness();
+    d.push('n:P1', { killed: 1 }, 500);
+    d.pushBattle('n:P1', { done: true }, 500);
+    d.dispose();
+    advance(1000);
+    assert.equal(timers.size, 0);
+    assert.equal(shown.length, 0);
+    assert.equal(battles.length, 0);
+    assert.equal(d.size, 0);
+  });
+
+  test('everything due is released together, in order: later values override, patches merge (it used to keep only the last)', () => {
+    const { d, shown, battles, order, advance } = harness();
+    // five entries due in the same drain: the capsule and the DP of different frames both survive
+    d.push('n:P1', { killed: 1, total: 8 }, 500);
+    d.push('n:P1', { dp: 7 }, 500);
+    d.push('n:P1', { killed: 2 }, 500);
+    d.pushBattle('n:P1', { leaks: { 'n:P1': 1 }, done: false }, 500);
+    d.pushBattle('n:P1', { done: true }, 500);
+    advance(499);
+    assert.equal(shown.length + battles.length, 0, 'nothing before the lag');
+    advance(1);
+    assert.deepEqual(shown.map(([, h]) => h), [{ killed: 2, total: 8, dp: 7 }], 'one release: merged in order, the later killed wins');
+    assert.deepEqual(battles.map(([, b]) => b), [{ leaks: { 'n:P1': 1 }, done: true }], 'the battle slices merge too');
+    assert.deepEqual(order, ['hud', 'battle'], 'the capsule before the slice (the screen flushes the capsule with the slice)');
+  });
+
+  test('regression: the 作战结束 flag is released together with the final frame\'s n/n, never before it', () => {
+    const { d, shown, battles, units, order, advance } = harness();
+    const u7 = new Map([[1, [1, 0, 0, 5, 10]]]), u8 = new Map([[1, [1, 0, 0, 0, 10]]]);
+    d.push('n:P1', { killed: 7, total: 8 }, 500, { units: u7 });
+    advance(1000);                                   // 7/8 drawn; the last enemy is still walking
+    d.push('n:P1', { killed: 8, total: 8 }, 500, { units: u8 });   // the finishing frame ...
+    d.pushBattle('n:P1', { done: true, leaks: {} }, 500);          // ... then the sim's done publish (same task)
+    advance(499);
+    assert.equal(shown.at(-1)[1].killed, 7, 'still 7/8 on screen, and no flag yet');
+    assert.equal(battles.length, 0);
+    advance(1);
+    assert.equal(shown.at(-1)[1].killed, 8);
+    assert.equal(battles.at(-1)[1].done, true);
+    assert.equal(units.at(-1)[1], u8, 'the unit card\'s HP follows the same frame');
+    assert.deepEqual(order.slice(-3), ['units', 'hud', 'battle']);
+    assert.equal(shown.at(-1)[0], battles.at(-1)[0], 'same instant');
+  });
+
+  test('a slice of another field is dropped at release (watch switch); an entry with nothing in it is not queued', () => {
+    let cur = 'n:P1';
+    const { d, battles, shown, advance } = harness(() => cur);
+    d.pushBattle('n:P1', { fieldId: 'n:P1', done: true }, 500);
+    d.push('n:P1', null, 500);
+    d.push('n:P1', null, 500, {});
+    assert.equal(d.size, 1);
+    cur = 'n:P2';
+    d.pushBattle('n:P2', { fieldId: 'n:P2', done: false }, 500);
+    advance(1000);
+    assert.deepEqual(battles.map(([, b]) => b.fieldId), ['n:P2']);
+    assert.equal(shown.length, 0);
+  });
+
+  test('clear() drops what is queued (a field entered again restarts at once) and the queue keeps working', () => {
+    const { d, timers, shown, battles, advance } = harness();
+    d.push('n:P1', { killed: 3 }, 500);
+    d.pushBattle('n:P1', { done: false }, 500);
+    d.clear();
+    advance(1000);
+    assert.equal(shown.length + battles.length, 0);
+    assert.equal(timers.size, 0);
+    d.push('n:P1', { killed: 4 }, 100);
+    advance(100);
+    assert.equal(shown.at(-1)[1].killed, 4);
+  });
+
+  test('the queue stays bounded (cap): the oldest entries go first, the newest survive', () => {
+    const got = [];
+    const small = createHudDelay({ onHud: (h) => got.push(h.i), field: () => 'n:P1', now: () => 0, setTimer: () => 1, clearTimer: () => {}, cap: 3 });
+    for (let i = 0; i < 10; i++) small.push('n:P1', { i }, 500);
+    assert.equal(small.size, 3);
+  });
+
+  test('setPaused (solo pause): nothing is released while paused; on resume the rest of the lag is waited out', () => {
+    const { d, timers, shown, battles, advance } = harness();
+    d.push('n:P1', { killed: 1 }, 500);               // due at 500
+    d.pushBattle('n:P1', { done: true }, 500);
+    advance(200);                                      // 300 ms of lag left
+    d.setPaused(true);
+    assert.equal(timers.size, 0, 'no timer runs while paused');
+    advance(5000);
+    assert.equal(shown.length + battles.length, 0, 'the frozen picture shows no new number');
+    d.setPaused(true);                                 // idempotent
+    d.setPaused(false);                                // t = 5200: 300 ms to go (not "5000 ms overdue")
+    advance(299);
+    assert.equal(shown.length + battles.length, 0);
+    advance(1);
+    assert.equal(shown.length, 1);
+    assert.equal(battles.length, 1);
+    assert.equal(shown[0][0], 5500);
+    d.setPaused(false);                                // resuming a running queue is a no-op
+  });
+
+  test('setPaused: a value pushed during the pause waits the full lag after the resume; later pauses add up', () => {
+    const { d, timers, shown, advance } = harness();
+    d.setPaused(true);
+    d.push('n:P1', { killed: 1 }, 500);                // the runner's last publish of the pause moment
+    advance(2000);
+    assert.equal(shown.length, 0);
+    d.setPaused(false);                                // resumed at t = 2000
+    advance(499);
+    assert.equal(shown.length, 0);
+    advance(1);
+    assert.equal(shown[0][0], 2500);
+    d.push('n:P1', { killed: 2 }, 500);                // due at 3000
+    advance(100);
+    d.setPaused(true);                                 // t = 2600, 400 ms left
+    advance(1000);
+    d.setPaused(false);                                // t = 3600
+    advance(399);
+    assert.equal(shown.length, 1);
+    advance(1);
+    assert.deepEqual(shown.map(([at, h]) => [at, h.killed]), [[2500, 1], [4000, 2]]);
+    assert.equal(timers.size, 0);
+  });
+
+  test('dispose while paused leaves no timer and no queue', () => {
+    const { d, timers, shown, advance } = harness();
+    d.push('n:P1', { killed: 1 }, 500);
+    d.setPaused(true);
+    d.dispose();
+    d.setPaused(false);
+    advance(2000);
+    assert.equal(timers.size, 0);
+    assert.equal(shown.length, 0);
+    assert.equal(d.size, 0);
+  });
+});
+
+describe('the drawn battle slice (pickDrawn / drawnOf / ownFieldGate): own-field values follow the picture, the server joins afterwards', () => {
+  const sim = (o = {}) => ({
+    battleId: 'b1', fieldId: 'n:p_0', kind: 'normal', authoritative: true, watch: false, done: false, own: true, members: ['p_0'], loading: false,
+    speed: 2, paused: false, leaks: { 'n:p_0': 2 }, uniteLeft: null, bondLayers: { p_0: { x: 1 } }, ...o,
+  });
+
+  test('pickDrawn keeps the HUD values and the gates\' identity; nothing for no battle on screen (null, still loading)', () => {
+    assert.deepEqual(pickDrawn(sim()), {
+      battleId: 'b1', fieldId: 'n:p_0', kind: 'normal', own: true, watch: false, done: false,
+      leaks: { 'n:p_0': 2 }, uniteLeft: null, bondLayers: { p_0: { x: 1 } },
+    });
+    assert.equal(pickDrawn(null), null, 'the runner publishes null when cleared / disposed');
+    assert.equal(pickDrawn(undefined), null);
+    assert.equal(pickDrawn({ loading: true, battleId: 'b2', fieldId: 'n:p_0', kind: 'normal', leaks: {}, uniteLeft: null, bondLayers: {} }), null, 'a battle that is still loading is not drawn yet');
+    assert.equal(pickDrawn(sim({ fieldId: '' })), null);
+    assert.deepEqual(pickDrawn(sim({ leaks: null })).leaks, {}, 'missing maps normalise');
+    assert.equal(pickDrawn(sim({ done: true })).done, true);
+  });
+
+  test('drawnChanged / hudChanged: what makes the capsule flush at once (DP alone keeps the throttle)', () => {
+    const a = pickDrawn(sim());
+    assert.equal(drawnChanged(a, pickDrawn(sim())), false, 'same values');
+    assert.equal(drawnChanged(a, pickDrawn(sim({ leaks: { 'n:p_0': 3 } }))), true);
+    assert.equal(drawnChanged(a, pickDrawn(sim({ done: true }))), true);
+    assert.equal(drawnChanged(a, pickDrawn(sim({ bondLayers: { p_0: { x: 2 } } }))), true);
+    assert.equal(drawnChanged(a, pickDrawn(sim({ uniteLeft: { p_0: 2 } }))), true);
+    assert.equal(drawnChanged(null, a), true);
+    assert.equal(drawnChanged(a, a), false);
+    assert.equal(hudChanged({ killed: 1, total: 8, dp: 5 }, { killed: 1, total: 8, dp: 6 }), false, 'DP alone');
+    assert.equal(hudChanged({ killed: 1, total: 8, dp: 5 }, { killed: 2, total: 8, dp: 5 }), true);
+    assert.equal(hudChanged({ killed: 1, total: 8 }, { killed: 1, total: 9 }), true);
+    assert.equal(hudChanged(null, { killed: 0, total: 8 }), true);
+  });
+
+  test('drawnOf: the released slice of this battle, else the live state (entry frame / not entered yet / another battle)', () => {
+    const live = sim({ leaks: { 'n:p_0': 5 }, done: true });
+    const old = pickDrawn(sim());
+    assert.equal(drawnOf(live, old), old, 'the drawn picture lags the sim: its older slice is what shows');
+    assert.equal(drawnOf(live, null), live, 'not seeded / entered yet: the live state (the entry frame is drawn at once)');
+    assert.equal(drawnOf(live, { ...old, battleId: 'b0' }), live, 'a slice of the previous battle is never shown');
+    assert.equal(drawnOf(live, { ...old, fieldId: 'n:p_1' }), live);
+    assert.equal(drawnOf(null, old), null, 'the runner cleared');
+  });
+
+  test('ownFieldGate: the pill follows the drawn picture, the pause gate the sim, the server only after the own picture finished', () => {
+    const own = 'n:p_0';
+    // the sim finished, the drawn picture still shows the last enemy: no pill, no server numbers, but the sim gate is open
+    const g1 = ownFieldGate(sim({ done: true }), pickDrawn(sim()), own);
+    assert.deepEqual(g1, { onScreen: true, simDone: true, drawnDone: false, serverOk: false });
+    // the drawn done slice released
+    const g2 = ownFieldGate(sim({ done: true }), pickDrawn(sim({ done: true })), own);
+    assert.deepEqual(g2, { onScreen: true, simDone: true, drawnDone: true, serverOk: true });
+    // freshly entered (no slice yet): the live state is the drawn one
+    assert.equal(ownFieldGate(sim({ done: true }), null, own).drawnDone, true);
+    assert.equal(ownFieldGate(sim(), null, own).drawnDone, false);
+    // watching a teammate / a 联防 field / nothing: the own picture is not on screen, the server's relayed numbers apply
+    for (const s of [sim({ watch: true, own: false, fieldId: 'n:p_1' }), sim({ fieldId: 'u:1', kind: 'unite' }), null]) {
+      assert.deepEqual(ownFieldGate(s, null, own), { onScreen: false, simDone: false, drawnDone: false, serverOk: true });
+    }
+    assert.equal(ownFieldGate(sim({ watch: true }), null, own).onScreen, false, 'a watched field is never "own"');
+  });
+
+  test('own leaks / uniteRemaining through the gate (the selectors game.js applies)', async () => {
+    const { ownLeaks, uniteRemaining } = await import('../../public/js/ui/hud.js');
+    const own = 'n:p_0';
+    // the sim already counts 3 leaks, the drawn slice 2 (the third enemy is still outside the gate), the server relays 3
+    const simNow = sim({ leaks: { [own]: 3 } });
+    const slice = pickDrawn(sim({ leaks: { [own]: 2 } }));
+    const g = ownFieldGate(simNow, slice, own);
+    const drawnLocal = drawnOf(simNow, slice).leaks[own];
+    assert.equal(drawnLocal, 2);
+    assert.equal(ownLeaks(drawnLocal, g.serverOk ? 3 : undefined), 2, 'the server\'s 3 is ahead of the picture: ignored while the own picture runs');
+    // after the picture finished the server can only confirm (or correct)
+    const fin = sim({ leaks: { [own]: 3 }, done: true });
+    const g2 = ownFieldGate(fin, pickDrawn(fin), own);
+    assert.equal(ownLeaks(drawnOf(fin, pickDrawn(fin)).leaks[own], g2.serverOk ? 4 : undefined), 4, 'a server-corrected count shows once the picture ended');
+    // watching a teammate: the own replica is not drawn, the server's count carries on
+    const g3 = ownFieldGate(sim({ watch: true, own: false, fieldId: 'n:p_1' }), null, own);
+    assert.equal(ownLeaks(1, g3.serverOk ? 4 : undefined), 4);
+    // 联防: the replica's per-leaker count (teammates' rows too) is the drawn slice's
+    const unite = sim({ fieldId: 'u:1', kind: 'unite', uniteLeft: { p_1: 4 } });
+    const dr = drawnOf(unite, pickDrawn(sim({ fieldId: 'u:1', kind: 'unite', uniteLeft: { p_1: 5 } })));
+    assert.equal(dr.uniteLeft.p_1, 5, 'the drawn count, not the sim\'s');
+    assert.equal(uniteRemaining(dr.uniteLeft.p_1, ownFieldGate(unite, null, own).serverOk ? 9 : undefined), 5, 'the local replica wins over the relayed count');
+  });
+
+  test('snapUnits: the snapshot\'s unit tuples by id', () => {
+    const t1 = [1, 0, 0, 5, 10], t2 = [2, 1, 1, 7, 7];
+    const mp = snapUnits({ units: [t1, t2, null, 'x'] });
+    assert.equal(mp.size, 2);
+    assert.equal(mp.get(2), t2);
+    assert.equal(snapUnits(null).size, 0);
+    assert.equal(snapUnits({}).size, 0);
+  });
 });
