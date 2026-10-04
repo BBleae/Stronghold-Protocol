@@ -11,14 +11,14 @@ const repository = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const MAX_FILE_BYTES = 25 * 1024 * 1024;
 
 /** Content-Type per resource file extension; other files under public/assets and public/fonts are not resources. */
-export const RESOURCE_TYPES = Object.freeze({
+const RESOURCE_TYPES = Object.freeze({
   png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif', svg: 'image/svg+xml',
   mp3: 'audio/mpeg', ogg: 'audio/ogg', wav: 'audio/wav', m4a: 'audio/mp4', mp4: 'video/mp4',
   woff: 'font/woff', woff2: 'font/woff2', ttf: 'font/ttf', otf: 'font/otf', css: 'text/css; charset=utf-8',
   atlas: 'text/plain; charset=utf-8', obj: 'text/plain; charset=utf-8', json: 'application/json', skel: 'application/octet-stream',
 });
 
-export function resourceType(url) {
+function resourceType(url) {
   return RESOURCE_TYPES[url.split('.').pop().toLowerCase()];
 }
 
