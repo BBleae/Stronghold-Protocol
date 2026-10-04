@@ -74,7 +74,10 @@ function readableError(error) {
  * service worker already answers from it. A first visit shows the resource dialog: import a ZIP or skip.
  */
 export async function prepareResources() {
-  if (!supported()) return;
+  if (!supported()) {
+    toast('当前浏览器无法保存本地资源，游戏将使用占位图。请用最新版 Chrome、Edge、Safari 或 Firefox 打开本站。', 'warn', { ttl: 8000 });
+    return;
+  }
   if (localStorage.getItem(VISITED_KEY)) {
     registerWorker().catch(error => console.error('[resources] service worker registration failed', error));
     checkInstallation().catch(error => console.error('[resources] local resource check failed', error));

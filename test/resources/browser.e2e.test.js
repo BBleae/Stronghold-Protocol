@@ -421,7 +421,7 @@ test('resource cache in a real browser', { skip: !enabled, timeout: 240000 }, as
     await context.close();
   });
 
-  await t.test('a first visit can skip; a site without a manifest boots and says so', async () => {
+  await t.test('a first visit can skip; a site without a manifest or a browser without the APIs boots and says so', async () => {
     server.site = v1;
     const skipping = await newPage();
     await skipping.page.goto(base);
@@ -446,6 +446,14 @@ test('resource cache in a real browser', { skip: !enabled, timeout: 240000 }, as
     assert.equal(await plain.page.evaluate(() => localStorage.getItem('stronghold-resource-mode')), null, 'the next visit asks again');
     server.manifest = 'ok';
     await plain.context.close();
+
+    const old = await newPage();
+    await old.page.evaluateOnNewDocument(() => { delete Navigator.prototype.locks; });
+    await old.page.goto(base);
+    await old.page.waitForFunction(() => window.gameReady);
+    await waitText(old.page, '.toast__text', '当前浏览器无法保存本地资源，游戏将使用占位图');
+    assert.equal(await old.page.$('.resource-dialog, #resource-manager-open'), null);
+    await old.context.close();
   });
 
   assert.deepEqual(errors, []);
