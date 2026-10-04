@@ -1,4 +1,5 @@
 import { ACCOUNT_LIMITS, AccountError } from '../../shared/account-protocol.js';
+import { logWarn, logError, errorFields } from '../log.js';
 const SESSION_COOKIE = '__Host-sp_session', OAUTH_COOKIE = '__Host-sp_oauth';
 export const directoryOf = env => env.SITES.get(env.SITES.idFromName('directory'));
 export const accountOf = (env, id) => env.ACCOUNTS.get(env.ACCOUNTS.idFromName(id));
@@ -40,7 +41,10 @@ async function refreshLegacyProfile(user, env, providerFetch) {
     if (updated.accountId !== user.accountId) return user;
     await accountOf(env, user.accountId).setProfile(updated);
     return updated;
-  } catch { return user; }
+  } catch (error) {
+    logWarn('legacy_profile_refresh_failed', { accountId: user.accountId, error: errorFields(error) });
+    return user;
+  }
 }
 export async function handleAuth(request, env, {now = Date.now, fetch: providerFetch = globalThis.fetch} = {}) {
   const url = new URL(request.url);
@@ -111,13 +115,18 @@ export async function handleAuth(request, env, {now = Date.now, fetch: providerF
     headers.append('Set-Cookie', cookie(OAUTH_COOKIE, '', 0));
     return new Response(null, {status: 303, headers});
   } catch (e) {
+    // A known error (AccountError — also one from the directory's RPC, which keeps only code and status) is the answer;
+    // anything else is a bug: logged, and answered by the Worker's error response (worker/http.js).
+    const known = typeof e?.code === 'string' && Number.isInteger(e.status);
     if (url.pathname === '/api/auth/github/callback' && request.headers.get('Accept')?.includes('text/html')) {
+      if (!known) logError('auth_failed', { path: url.pathname, error: errorFields(e) });
       // Back where the login started (an invite stays), with the notice that it did not complete.
       const back = new URL(returnTo, url.origin);
       back.searchParams.set('authError', '1');
       return new Response(null, {status: 303, headers: {Location: back.pathname + back.search, 'Cache-Control': 'no-store',
         'Set-Cookie': cookie(OAUTH_COOKIE, '', 0)}});
     }
-    return json({error: e instanceof AccountError ? e.code : 'AUTH_FAILED'}, e instanceof AccountError ? e.status : 502);
+    if (!known) throw e;
+    return json({error: e.code}, e.status);
   }
 }
