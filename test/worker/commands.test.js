@@ -15,7 +15,7 @@ class Socket extends EventEmitter {
 }
 function connect(rt, accountId, ticket, token) {
   const ws = new Socket();
-  rt.connect(ws, { accountId, ticket, ip: '8.8.8.8' });
+  rt.connect(ws, { accountId, ticket, ip: '8.8.8.8', name: accountId });
   rt.message(ws, JSON.stringify({ t: 'hello', name: accountId, token }));
   return ws;
 }

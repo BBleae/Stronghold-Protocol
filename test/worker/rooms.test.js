@@ -23,7 +23,7 @@ function setup(t, code = 'ABCD') {
 }
 function connect(rt, accountId, { ticket, token, ip = '8.8.8.8' } = {}) {
   const ws = new Socket();
-  rt.connect(ws, { ip, ticket, accountId });
+  rt.connect(ws, { ip, ticket, accountId, name: accountId });
   rt.message(ws, JSON.stringify({ t: 'hello', name: accountId, token, rid: 1 }));
   return ws;
 }
@@ -157,7 +157,7 @@ test('sockets per network and idle sessions stay bounded', (t) => {
   // A member's network has 8 sockets (a stranger's 3: test/worker/spectators.test.js).
   const sockets = Array.from({ length: 9 }, () => {
     const ws = new Socket();
-    s.rt.connect(ws, { ip: '8.8.8.8', accountId: 'owner' });
+    s.rt.connect(ws, { ip: '8.8.8.8', accountId: 'owner', name: 'owner' });
     return ws;
   });
   assert.equal(sockets[8].closed.code, 1013);

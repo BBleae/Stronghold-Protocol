@@ -77,7 +77,8 @@ test('application requests count against the account as well as its network', as
   const counts = new Map();
   const env = {
     SITES: { idFromName: (name) => name, get: () => ({ getSession: async () => ({ accountId: 'a', expiresAt: Date.now() + 60_000 }) }) },
-    ACCOUNTS: { idFromName: (name) => name, get: () => ({ getActiveSeat: async () => null, getApplication: async () => null }) },
+    ACCOUNTS: { idFromName: (name) => name, get: () => ({ getActiveSeat: async () => null, getApplication: async () => null,
+      getProfile: async () => ({ name: 'A#0001' }) }) },
     ROOMS: { idFromName: (name) => name, get: () => ({ fetch: async () => Response.json({ id: 'x' }, { status: 201 }) }) },
     APPLICATION_LIMIT: { async limit({ key }) {
       counts.set(key, (counts.get(key) ?? 0) + 1);

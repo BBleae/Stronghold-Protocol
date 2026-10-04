@@ -15,7 +15,7 @@ test('trusted accounts retain their seat across devices; stolen browser tokens d
   const ticket = rt.reserve('ABCD','alice');
   const connect = (accountId, token, takeover = false) => {
     const ws = new Socket();
-    rt.connect(ws, {accountId, ticket, takeover});
+    rt.connect(ws, {accountId, ticket, takeover, name: 'Player'});
     rt.message(ws, JSON.stringify({t:'hello',name:'Player',token}));
     return ws;
   };
@@ -33,7 +33,7 @@ test('trusted accounts retain their seat across devices; stolen browser tokens d
   assert.equal(rt.registry.byId(b.last('welcome').playerId).accountId,'alice');
   const restored = new RoomRuntime({snapshot:rt.snapshot()});
   const fresh = new Socket();
-  restored.connect(fresh,{accountId:'alice',takeover:true});
+  restored.connect(fresh,{accountId:'alice',takeover:true,name:'Player'});
   restored.message(fresh,JSON.stringify({t:'hello',name:'Player'}));
   assert.equal(fresh.last('welcome').playerId,b.last('welcome').playerId);
   rt.network.close(); restored.network.close();

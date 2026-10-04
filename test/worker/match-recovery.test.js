@@ -16,7 +16,7 @@ function restore(snapshot,now){
 }
 test('account room snapshot restores an active match and accepts the original seat again', () => {
   const rt=new RoomRuntime({now:()=>1000});
-  const ws=new Socket();rt.connect(ws,{accountId:'alice',ticket:rt.reserve('ABCD','alice')});
+  const ws=new Socket();rt.connect(ws,{accountId:'alice',ticket:rt.reserve('ABCD','alice'),name:'Alice'});
   const send=(r,s,t,extra={})=>r.message(s,JSON.stringify({t,...extra}));
   send(rt,ws,'hello',{name:'Alice'});
   send(rt,ws,'room.create',{mode:'solo',difficulty:'FUNNY'});
@@ -26,7 +26,7 @@ test('account room snapshot restores an active match and accepts the original se
   const recovered=restore(snapshot,()=>1000);
   assert.ok(recovered.lobby.getRoom('ABCD')?.match,'active match must not be discarded');
   assert.deepEqual(recovered.lobby.getRoom('ABCD').match.publicView(),before);
-  const next=new Socket();recovered.connect(next,{accountId:'alice',takeover:true});
+  const next=new Socket();recovered.connect(next,{accountId:'alice',takeover:true,name:'Alice'});
   send(recovered,next,'hello',{name:'Alice'});
   send(recovered,next,'g.infoReady');
   recovered.pump(1000);
@@ -38,7 +38,7 @@ test('account room snapshot restores an active match and accepts the original se
 
 test('a cold restart reconciles missing sockets and resumes paused solo combat under server authority',()=>{
   const rt=new RoomRuntime({now:()=>1000}),ws=new Socket();
-  rt.connect(ws,{accountId:'alice',ticket:rt.reserve('ABCD','alice')});
+  rt.connect(ws,{accountId:'alice',ticket:rt.reserve('ABCD','alice'),name:'Alice'});
   const send=(t,extra={})=>rt.message(ws,JSON.stringify({t,...extra}));
   send('hello',{name:'Alice'});send('room.create',{mode:'solo',difficulty:'FUNNY'});send('room.start');
   const match=rt.lobby.getRoom('ABCD').match,pid=[...rt.registry.all()][0].playerId;
@@ -65,7 +65,7 @@ function restart(rt,now){
 }
 function soloRun(clock){
   const rt=new RoomRuntime({now:()=>clock.at}),ws=new Socket();
-  rt.connect(ws,{accountId:'alice',ticket:rt.reserve('ABCD','alice')});
+  rt.connect(ws,{accountId:'alice',ticket:rt.reserve('ABCD','alice'),name:'Alice'});
   for(const msg of [{t:'hello',name:'Alice'},{t:'room.create',mode:'solo',difficulty:'FUNNY'},{t:'room.start'}])rt.message(ws,JSON.stringify(msg));
   return {rt,ws,pid:[...rt.registry.all()][0].playerId,token:ws.frames.find(f=>f.t==='welcome').token};
 }
@@ -78,7 +78,7 @@ test('a socket lost with a restart disconnects as a closing one does: a solo run
   clock.at+=600_001;recovered.sweep();
   assert.equal(recovered.hasAccount('alice'),true,'not the ordinary ten minutes');
   assert.equal(recovered.status()?.inMatch,true);
-  const back=new Socket();recovered.connect(back,{accountId:'alice'});
+  const back=new Socket();recovered.connect(back,{accountId:'alice',name:'Alice'});
   recovered.message(back,JSON.stringify({t:'hello',name:'Alice',token}));
   assert.equal(back.frames.find(f=>f.t==='welcome').playerId,pid);
   assert.equal(recovered.lobby.getRoom('ABCD').match.players.get(pid).connected,true);
@@ -90,7 +90,7 @@ test('a socket lost with a restart after its solo run ended gets the ordinary re
   const clock={at:1000};
   const {rt,ws}=soloRun(clock);t.after(()=>rt.lobby.shutdown());
   ws.close();ws.readyState=1;                    // a drop during the run gives the session the solo window...
-  const back=new Socket();rt.connect(back,{accountId:'alice'});
+  const back=new Socket();rt.connect(back,{accountId:'alice',name:'Alice'});
   rt.message(back,JSON.stringify({t:'hello',name:'Alice',token:ws.frames.find(f=>f.t==='welcome').token}));
   rt.pump();rt.lobby.getRoom('ABCD').match.finish({victory:false,reason:'defeat'});rt.pump();
   const recovered=restart(rt,()=>clock.at);t.after(()=>recovered.lobby.shutdown());
@@ -104,7 +104,7 @@ test('a socket lost with a restart after its solo run ended gets the ordinary re
 test('a lobby seat whose socket was lost with a restart gets the lobby grace from the restart',t=>{
   const clock={at:1000};
   const rt=new RoomRuntime({now:()=>clock.at});t.after(()=>rt.lobby.shutdown());
-  const host=new Socket();rt.connect(host,{accountId:'host',ticket:rt.reserve('ABCD','host')});
+  const host=new Socket();rt.connect(host,{accountId:'host',ticket:rt.reserve('ABCD','host'),name:'Host'});
   for(const msg of [{t:'hello',name:'Host'},{t:'room.create',mode:'coop',difficulty:'FUNNY'}])rt.message(host,JSON.stringify(msg));
   clock.at+=30_000;
   const recovered=restart(rt,()=>clock.at);t.after(()=>recovered.lobby.shutdown());

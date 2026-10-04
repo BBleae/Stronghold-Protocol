@@ -17,6 +17,7 @@ export async function handleLobbyRoutes(request, env) {
   // Applying, cancelling and deciding count against the account too: a stranger who changes networks is still one.
   if (request.method === 'POST' && !(await within(env.APPLICATION_LIMIT, accountKey(session.accountId)))) return tooMany();
   const body = request.method === 'POST' ? await readJson(request, 2048) : null;
+  const headers = { 'X-Account-ID': session.accountId, 'Content-Type': 'application/json' };
   if (body?.action === 'apply') {
     // A seat in a live room blocks applying elsewhere; a reservation the account never used (a create that failed)
     // does not: applying gives it up.
@@ -24,10 +25,11 @@ export async function handleLobbyRoutes(request, env) {
     const free = !seat || (seat.reserved && await giveUpReservation(env, session.accountId));
     if (!free) return json({ error: 'ALREADY_SEATED' }, 409);
     await clearStaleApplication(env, session.accountId);
+    // The host sees the application under the account's display name, read here (not in the room's critical section).
+    headers['X-Account-Name'] = encodeURIComponent((await accountOf(env, session.accountId).getProfile()).name);
   }
   const room = env.ROOMS.get(env.ROOMS.idFromName(match[1]));
-  return room.fetch(new Request('https://room.internal/_' + match[2], { method: request.method,
-    headers: { 'X-Account-ID': session.accountId, 'Content-Type': 'application/json' }, body: body && JSON.stringify(body) }));
+  return room.fetch(new Request('https://room.internal/_' + match[2], { method: request.method, headers, body: body && JSON.stringify(body) }));
 }
 export async function roomApplications(rt,request,env) {
   const accountId=request.headers.get('X-Account-ID'), room=rt.lobby.getRoom(rt.code);
@@ -57,9 +59,8 @@ export async function roomApplications(rt,request,env) {
       if(room.seats.filter(x=>!x).length<=queue.reservedCount()) throw new AccountError('ROOM_FULL',409);
       const claimed=await account.claimApplication({roomId:rt.code,expiresAt:Date.now()+120000});
       if(!claimed.ok) throw new AccountError(claimed.error,409);
-      const profile=await account.getProfile();
       try {
-        const item=queue.apply({accountId,name:profile?.name});
+        const item=queue.apply({accountId,name:decodeURIComponent(request.headers.get('X-Account-Name') ?? '')});
         await account.claimApplication({roomId:rt.code,id:item.id,expiresAt:item.expiresAt});
         return json(item,201);
       }

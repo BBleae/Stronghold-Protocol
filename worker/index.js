@@ -122,12 +122,13 @@ async function route(request, env) {
     dest.searchParams.set('room', code);
     const ticket = url.searchParams.get('ticket');
     if (ticket && /^[0-9a-f]{32}$/.test(ticket)) dest.searchParams.set('ticket', ticket);
-    // The room keeps the login with the socket (and checks it again on its own schedule) and shows the account's
-    // avatar: both are read here, so the room's critical section never waits on another object for them.
+    // The room keeps the login with the socket (and checks it again on its own schedule), names the session after the
+    // account and shows its avatar: all are read here, so the room's critical section never waits on another object
+    // for them.
     const profile = await accountOf(env, session.accountId).getProfile();
     return roomStub(env, code).fetch(new Request(dest, { headers: { Upgrade: 'websocket', 'X-Room-IP': ip,
       'X-Account-ID': session.accountId, 'X-Session-ID': session.sessionId, 'X-Session-Expires': String(session.expiresAt),
-      'X-Avatar-URL': profile?.avatarUrl ?? '' } }));
+      'X-Account-Name': encodeURIComponent(profile.name), 'X-Avatar-URL': profile.avatarUrl ?? '' } }));
   }
   if (path.startsWith('/api/')) return error(404, 'ROOM_NOT_FOUND');
   return env.ASSETS ? env.ASSETS.fetch(request) : error(404, 'ROOM_NOT_FOUND');
@@ -646,7 +647,7 @@ export class RoomDurableObject {
     const expires = request.headers.get('X-Session-Expires');
     rt.connect(adapter, { ip, ticket: url.searchParams.get('ticket'), accountId,
       sessionId: request.headers.get('X-Session-ID'), sessionExpiresAt: expires ? Number(expires) : null,
-      avatarUrl: request.headers.get('X-Avatar-URL') || null });
+      name: decodeURIComponent(request.headers.get('X-Account-Name') ?? ''), avatarUrl: request.headers.get('X-Avatar-URL') || null });
     return new Response(null, { status: 101, webSocket: client });
   }
 

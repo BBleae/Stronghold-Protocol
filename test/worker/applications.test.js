@@ -58,7 +58,7 @@ test('applications end with their room, and the next generation of the code star
   const rt = new RoomRuntime({ now: () => now });
   t.after(() => rt.lobby.shutdown());
   const ws = new Socket();
-  rt.connect(ws, { accountId: 'host', ticket: rt.reserve('ABCD', 'host') });
+  rt.connect(ws, { accountId: 'host', ticket: rt.reserve('ABCD', 'host'), name: 'Host' });
   for (const msg of [{ t: 'hello', name: 'Host' }, { t: 'room.create', mode: 'coop', difficulty: 'FUNNY' }]) rt.message(ws, JSON.stringify(msg));
   const item = rt.applications.apply({ accountId: 'guest', name: 'Guest' });
   rt.applications.decide('host', item.id, 'approved', { hostId: 'host', inMatch: false, freeSeats: 3 });
@@ -89,11 +89,11 @@ test('room.join without a valid approval answers APPLICATION_EXPIRED: missing, u
   const rt = new RoomRuntime({ now: () => now });
   t.after(() => rt.lobby.shutdown());
   const host = new Socket();
-  rt.connect(host, { accountId: 'host', ticket: rt.reserve('ABCD', 'host') });
+  rt.connect(host, { accountId: 'host', ticket: rt.reserve('ABCD', 'host'), name: 'Host' });
   for (const msg of [{ t: 'hello', name: 'Host' }, { t: 'room.create', mode: 'coop', difficulty: 'FUNNY' }]) rt.message(host, JSON.stringify(msg));
   const join = (accountId, ticket) => {
     const ws = new Socket();
-    rt.connect(ws, { accountId, ticket });
+    rt.connect(ws, { accountId, ticket, name: accountId });
     rt.message(ws, JSON.stringify({ t: 'hello', name: accountId }));
     rt.message(ws, JSON.stringify({ t: 'room.join', code: 'ABCD', rid: 7 }));
     return ws.frames.find((f) => f.rid === 7);
