@@ -10,7 +10,7 @@
 // of the invalid answers has the credentials checked at once: that code is the visitor's (it may have been issued for
 // another redirect URI), so only the check, which nobody else can influence, decides for every player.
 
-import { ACCOUNT_LIMITS, AccountError } from '../../shared/account-protocol.js';
+import { ACCOUNT_LIMITS, AccountError, isAccountError } from '../../shared/account-protocol.js';
 import { logWarn, logError, errorFields } from '../log.js';
 import { directoryOf, accountOf, hash, cookie, cookieValue, randomToken, startSession } from './auth.js';
 
@@ -133,7 +133,7 @@ export async function handleGithub(request, env, { now = Date.now, fetch: provid
     // A known error (AccountError — also one from a Durable Object's RPC, which keeps only code and status) is the
     // answer; anything else is a bug: logged, and answered by the Worker's error response (worker/http.js). A browser
     // navigation goes back where the login started (an invite stays), with the code of what went wrong.
-    const known = typeof error?.code === 'string' && Number.isInteger(error.status);
+    const known = isAccountError(error);
     if (!request.headers.get('Accept')?.includes('text/html')) throw error;
     if (!known) logError('auth_failed', { path: url.pathname, error: errorFields(error) });
     const back = new URL(returnTo, url.origin);

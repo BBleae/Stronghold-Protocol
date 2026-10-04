@@ -1,6 +1,6 @@
 // HTTP plumbing shared by the Worker's routes and the room's internal routes.
 
-import { AccountError } from '../shared/account-protocol.js';
+import { AccountError, isAccountError } from '../shared/account-protocol.js';
 import { normalizeIp, limitKeyOf } from '../server/net.js';
 import { logWarn, logError, errorFields } from './log.js';
 
@@ -35,7 +35,7 @@ export const tooMany = () => json({ error: 'RATE', detail: 'too many requests' }
  * Everything but a client error (4xx) is logged with `context` (method, path; never headers, cookies or bodies).
  */
 export function errorResponse(error, context) {
-  if (typeof error?.code === 'string' && Number.isInteger(error.status)) {
+  if (isAccountError(error)) {
     if (error.status >= 500) logWarn('request_failed', { ...context, error: errorFields(error) });
     return json({ error: error.code }, error.status);
   }

@@ -6,6 +6,8 @@ export const ACCOUNT_LIMITS = Object.freeze({
 export class AccountError extends Error {
   constructor(code, status = 400) { super(code); this.code = code; this.status = status; }
 }
+/** Whether `error` is an AccountError, also one from a Durable Object's RPC (which keeps only its code and status). */
+export const isAccountError = (error) => typeof error?.code === 'string' && Number.isInteger(error.status);
 export function requireId(value) {
   if (typeof value !== 'string' || !/^[A-Za-z0-9_.:-]{1,128}$/.test(value)) throw new AccountError('INVALID_ID');
   return value;
