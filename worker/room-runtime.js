@@ -159,22 +159,6 @@ export class RoomRuntime {
       onDisconnect: (s) => {if(s.spectating){this.spectators.views.delete(s.playerId);this.spectators.presence();}else this.lobby.onDisconnect(s);},
       onExpire: (s) => {if(s.spectating)this.spectators.leave(s);else this.lobby.onExpire(s);},
     };
-    for(const key of ['onMessage','routeGame']) {
-      const original=handler[key];
-      handler[key]=(session,msg)=>{
-        if(!this.accounts || !msg.commandId) return original(session,msg);
-        if(typeof msg.commandId!=='string' || !/^[a-zA-Z0-9:-]{1,80}$/.test(msg.commandId)) return {error:ERR.BAD_MSG};
-        const {rid,commandId,...intent}=msg, fingerprint=JSON.stringify(intent);
-        const records=session.commandResults || (session.commandResults={});
-        if(Object.hasOwn(records,commandId)) {
-          const previous=records[commandId];
-          return previous.fingerprint===fingerprint ? previous.result : {error:ERR.BAD_MSG};
-        }
-        if(Object.keys(records).length>=50000) return {error:ERR.RATE};
-        const result=original(session,msg) || {ok:true};
-        records[commandId]={fingerprint,result};return result;
-      };
-    }
     this.network = new RoomNetwork({ registry: this.registry, handler, now,
       options: { autoTimers: false, trustProxy: false, maxConnections: ROOM_LIMITS.sockets,
         maxConnectionsPerAddr: ROOM_LIMITS.socketsPerIp, maxSessions: ROOM_LIMITS.sessions } });
@@ -184,7 +168,8 @@ export class RoomRuntime {
       this.reservation = null;
       this.interruptedUntil = now() + ROOM_LIMITS.reservationMs;
     } else if (snapshot) {
-      for (const data of snapshot.sessions || []) {
+      // commandResults: a former per-session command store, no longer kept.
+      for (const { commandResults, ...data } of snapshot.sessions || []) {
         const s = Object.assign(new Session(data), data, { ws: null, connected: false });
         if (s.disconnectedAt == null) s.disconnectedAt = snapshot.at;
         if (s.resyncAt == null) s.resyncAt = -Infinity;

@@ -87,8 +87,6 @@ test('real account-mode Worker resumes the same active match after full process 
   const send=async(t,fields={},rid=10)=>{host.ws.send(JSON.stringify({t,...fields,rid,commandId:'command-'+rid}));return host.wait('ok',rid);};
   await send('room.create',{mode:'coop',difficulty:'FUNNY'});
   await send('room.addBot',{},11);await send('room.addBot',{},12);
-  // An identical retry must not add a third AI, even after persistence/reconnection.
-  host.ws.send(JSON.stringify({t:'room.addBot',rid:13,commandId:'command-12'}));await host.wait('ok',13);
   assert.equal(host.frames.filter(f=>f.t==='room.state').at(-1).seats.filter(Boolean).length,3);
   const applications=[];
   for(const actor of ['b','c']) {
