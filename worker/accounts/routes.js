@@ -106,7 +106,7 @@ export async function handleAccountRoutes(request, env, deps = {}) {
     if (!validPassword(password)) throw new AccountError('INVALID_PASSWORD');
     const profile = await account.getProfile();
     if (profile.provider !== 'password') throw new AccountError('NO_PASSWORD', 409);
-    if (!(await within(env.LOGIN_LIMIT, networkKey(request))) || !(await within(env.USERNAME_LIMIT, usernameKey(profile.username)))) {
+    if (!(await within(env.LOGIN_LIMIT, networkKey(request))) || !(await within(env.USERNAME_LIMIT, usernameKey(request, profile.username)))) {
       throw new AccountError('RATE_LIMITED', 429);
     }
     const directory = directoryOf(env);

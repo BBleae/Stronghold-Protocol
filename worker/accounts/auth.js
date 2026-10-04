@@ -44,13 +44,17 @@ export async function startSession(env, accountId, now = Date.now) {
   return cookie(SESSION_COOKIE, token, ACCOUNT_LIMITS.sessionMs / 1000);
 }
 
-/** The rate limit key of a username's login attempts (any case). */
-export const usernameKey = (username) => 'username:' + username.toLowerCase();
+/**
+ * The rate limit key of a username's login attempts (any case) from the client's network. Each network counts its
+ * own attempts: a stranger's guesses never use up those of the player, so nobody can lock a player out.
+ */
+export const usernameKey = (request, username) => 'username:' + username.toLowerCase() + '@' + networkKey(request);
 
 /**
  * POST /api/auth/register {username, password, nickname} and /api/auth/login {username, password}: the account's
  * profile ({ user }) and a session cookie. POST /api/auth/logout. Credential attempts count against their own limits
- * (wrangler.jsonc ratelimits): registrations and logins per network, logins per username (RATE_LIMITED).
+ * (wrangler.jsonc ratelimits): registrations and logins per network, and logins of one username per network
+ * (RATE_LIMITED).
  */
 export async function handleAuth(request, env, { now = Date.now } = {}) {
   const url = new URL(request.url);
@@ -77,7 +81,7 @@ export async function handleAuth(request, env, { now = Date.now } = {}) {
   const { username, password } = await readJson(request, 4096);
   if (typeof username !== 'string' || typeof password !== 'string') throw new AccountError('BAD_MSG');
   const wellFormed = USERNAME_PATTERN.test(username);
-  if (wellFormed && !(await within(env.USERNAME_LIMIT, usernameKey(username)))) throw new AccountError('RATE_LIMITED', 429);
+  if (wellFormed && !(await within(env.USERNAME_LIMIT, usernameKey(request, username)))) throw new AccountError('RATE_LIMITED', 429);
   // An unknown username is answered like a wrong password, and as late: its check derives a hash all the same.
   const user = wellFormed ? await directory.localUser(username) : null;
   if (!(await verifyPassword(password, user?.password ?? null))) throw new AccountError('BAD_CREDENTIALS', 401);

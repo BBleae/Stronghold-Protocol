@@ -108,7 +108,7 @@ test('registration refuses invalid usernames, passwords and nicknames', { timeou
   assert.equal((await a.register('abc', '12345678', `a${ZERO_WIDTH_SPACE}b`)).body.user.nickname, 'ab', 'invisible characters are dropped');
 });
 
-test('credential attempts are limited per network and per username', { timeout: 120000 }, async (t) => {
+test('credential attempts are limited per network, and per username from each network', { timeout: 120000 }, async (t) => {
   const world = await createWorld(t);
   const a = accounts(world);
   await oneLimitWindow();
@@ -121,10 +121,15 @@ test('credential attempts are limited per network and per username', { timeout: 
   for (let n = 0; n < 10; n++) assert.equal((await a.login('unknown' + n, 'whatever1', { ip: network })).status, 401);
   assert.deepEqual((await a.login('limited0', 'long enough', { ip: network })).body, { error: 'RATE_LIMITED' }, 'an 11th login from one network');
 
-  for (let n = 0; n < 5; n++) assert.equal((await a.login('Limited1', 'wrong guess' + n)).status, 401);
-  const blocked = await a.login('limited1', 'long enough');
-  assert.deepEqual(blocked, { status: 429, body: { error: 'RATE_LIMITED' } }, 'a 6th login of one username, even right, from anywhere');
-  assert.equal((await a.login('limited2', 'long enough')).status, 200, 'other usernames are not affected');
+  // A stranger guessing one username's password from its network uses up that network's attempts, not the player's.
+  const stranger = freshIp();
+  for (let n = 0; n < 5; n++) assert.equal((await a.login('Limited1', 'wrong guess' + n, { ip: stranger })).status, 401);
+  assert.deepEqual(await a.login('limited1', 'long enough', { ip: stranger }), { status: 429, body: { error: 'RATE_LIMITED' } },
+    'a 6th login of one username from one network, even right');
+  const player = await a.login('limited1', 'long enough');
+  assert.equal(player.status, 200, 'the player logs in from another network');
+  assert.equal((await a.changePassword(player.session, 'long enough', 'a new password')).status, 204, 'and changes the password');
+  assert.equal((await a.login('limited2', 'long enough', { ip: stranger })).status, 200, 'other usernames are not affected');
 });
 
 test('concurrent registrations with one nickname get distinct discriminators until none is left', { timeout: 120000 }, async (t) => {
