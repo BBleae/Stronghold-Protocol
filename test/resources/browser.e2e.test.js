@@ -225,13 +225,14 @@ test('resource cache in a real browser', { skip: !enabled, timeout: 240000 }, as
     assert.equal(await page.$('.resource-dialog'), null);
     assert.ok(await page.evaluate(() => !!navigator.serviceWorker.controller));
     assert.deepEqual(resourceHits(start), [], 'the worker answered every resource request itself');
-    // A hard reload bypasses the worker: no stall and no dialog; the site has no resource files to answer with.
+    // A hard reload bypasses the worker: no stall and no dialog. The worker takes the page over at once; only what the
+    // page asked for before went to the site, which has no resource files.
     await reload(page, cdp, true);
     assert.ok(await page.evaluate(() => window.bootMs < 1000), 'boot did not wait');
     assert.equal(await page.$('.resource-dialog'), null);
-    assert.equal(await page.evaluate(() => navigator.serviceWorker.controller), null);
-    assert.equal((await fetchText(page, '/assets/b.png')).status, 404);
-    assert.deepEqual(resourceHits(start), ['/fonts/fonts.css', '/assets/b.png']);
+    await page.waitForFunction(() => navigator.serviceWorker.controller, { timeout: 5000 });
+    assert.equal((await fetchText(page, '/assets/b.png')).body, 'image');
+    assert.deepEqual(resourceHits(start), ['/fonts/fonts.css']);
     releaseManifest();
     await context.close();
   });

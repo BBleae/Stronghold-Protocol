@@ -29,11 +29,13 @@ function supported() {
 }
 
 /**
- * Resolves at once when the worker is registered already. Rejects where the browser cannot run the (module) service
- * worker: then nothing would serve stored files.
+ * Register the worker and have it serve this page. Resolves at once when the worker is registered already; a page
+ * loaded past it (a hard reload bypasses the worker) asks it to take over. Rejects where the browser cannot run the
+ * (module) service worker: then nothing would serve stored files.
  */
-function registerWorker() {
-  return navigator.serviceWorker.register('/resource-sw.js', { type: 'module', scope: '/' });
+async function registerWorker() {
+  const registration = await navigator.serviceWorker.register('/resource-sw.js', { type: 'module', scope: '/' });
+  if (!navigator.serviceWorker.controller) registration.active?.postMessage('claim');
 }
 
 function loadStore() {

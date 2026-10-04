@@ -7,6 +7,10 @@ import { cachedResponse, resourceKeys } from './js/resources/service.js';
 
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', event => event.waitUntil(self.clients.claim()));
+// A page loaded past the worker (a hard reload bypasses it) asks to be served from then on.
+self.addEventListener('message', event => {
+  if (event.data === 'claim') event.waitUntil(self.clients.claim());
+});
 
 self.addEventListener('fetch', event => {
   const keys = resourceKeys(event.request, self.location.origin);
