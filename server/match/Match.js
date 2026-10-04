@@ -1668,10 +1668,13 @@ export class Match {
 
   maybeEndPrep() {
     if (this.phase !== PHASE.PREP || this._prepEndQueued) return;
+    // Prep ends early once nobody it waits for is still choosing. A seat a bot plays (an AI, or a human on 暂离
+    // autoplay) is waited for — its bot readies when its turn is done; a disconnected human nobody plays for is not.
+    // With no human connected, only an all-ready room ends early.
     const allReady = () => {
       const alive = this.alivePlayers();
-      return alive.length > 0 && (alive.every(p => p.ready) || alive.some(p => !p.isBot && p.connected && !p.left)) &&
-        alive.every(p => p.ready || (!p.isBot && (!p.connected || p.left)));
+      if (!alive.length || alive.some((p) => !p.ready && (p.botControlled || p.connected))) return false;
+      return alive.every((p) => p.ready) || alive.some((p) => !p.isBot && p.connected);
     };
     if (!allReady()) return;
     const round = this.round;

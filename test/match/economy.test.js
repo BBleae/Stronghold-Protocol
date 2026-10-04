@@ -271,6 +271,26 @@ test('a ready human reconnecting while teammates remain offline resumes early pr
   assert.notEqual(h.m.phase,PHASE.PREP);h.m.dispose();
 });
 
+test('a disconnected teammate on autoplay gets its prep before a ready human ends it',()=>{
+  // co-op: p_1 steps away (暂离 = autoplay) and drops; p_0 readies the moment each prep starts
+  const h=makeMatch({mode:'coop',humans:2,seed:10,fake:true}).start();h.toPrep(1);
+  h.m.handle('p_1',{t:'g.autoplay',on:true});h.m.handle('p_0',{t:'g.ready',ready:true});
+  h.run(()=>h.m.phase!==PHASE.PREP);h.m.onDisconnect('p_1');
+  const off=h.ps('p_1'),pieces=()=>off.board.size+off.hand.filter(Boolean).length;
+  for(let r=2;r<=4;r++){
+    h.run(()=>{
+      if(h.m.phase===PHASE.SP_DRAFT && h.m.spTurn()==='p_0'){const idx=h.m.sp.cards.map(c=>c.idx).find(k=>h.m.sp.taken[k]==null);if(idx!=null)h.m.handle('p_0',{t:'g.choice',idx});}
+      return h.m.phase===PHASE.PREP && h.m.round===r;
+    });
+    const before=pieces();
+    h.m.handle('p_0',{t:'g.ready',ready:true});
+    h.run(()=>h.m.phase!==PHASE.PREP);
+    assert.ok(off.ready,`R${r}: the autoplay bot finished its turn and readied`);
+    if(r===4)assert.ok(pieces()>before,'the absent seat keeps building its board');
+  }
+  h.m.dispose();
+});
+
 test('offline autoplay can still complete prep once everyone is ready',()=>{
   const h=makeMatch({mode:'solo',seed:10,fake:true}).start();h.toPrep(1);
   h.m.onDisconnect('p_0');h.m.handle('p_0',{t:'g.ready',ready:true});
