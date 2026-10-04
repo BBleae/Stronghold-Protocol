@@ -96,7 +96,8 @@ html:not(.sp-in-match) .toast-host { margin-top: var(--sa-t); }
   .set-toggle, .set-seg button { height: max(.38rem, 30px); }
   /* a taller range input whose visible track stays thin: transparent borders are part of the hit area */
   .set-range { height: 30px; border: 11px solid transparent; border-left-width: 0; border-right-width: 0; background-clip: padding-box; box-shadow: inset 0 0 0 1px var(--line-2); }
-  .field--lg .field__box { height: max(.68rem, 40px); }
+  /* the title's fields: its 博士代号, or the account card's (md fields, smaller on a desktop where they need the room) */
+  .field--lg .field__box, .title-login .field__box { height: max(.68rem, 40px); }
 }
 
 /* ---- 4. misc ------------------------------------------------------------------------------------------------------ */

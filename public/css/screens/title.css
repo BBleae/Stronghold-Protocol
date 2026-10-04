@@ -134,16 +134,18 @@
 }
 
 /* ---- centre column ------------------------------------------------------------------------------- */
-/* Raised .3rem above the centre (its padding is below). A screen too short for it (a phone, with the account card's
-   forms) scrolls it rather than cutting its top and bottom off; the side padding keeps the glows uncut. */
+/* Raised .15rem above the centre, as before (its .3rem padding is below). A screen too short for it (a phone, the
+   account card with its mistakes) scrolls it like a page: the column spans the screen, so its scrollbar is the
+   window's edge, and it lies over the footer it scrolls past (whose text would take the taps meant for the card). */
 .title-main {
   position: relative;
-  z-index: 2;
+  z-index: 3;
   display: flex;
   flex-direction: column;
   align-items: center;
+  align-self: stretch;
   max-height: 100%;
-  padding: 0 .5rem .6rem;
+  padding-bottom: .3rem;
   overflow-y: auto;
 }
 /* Account mode, signed out: the account card's forms take the emblem's room. */
