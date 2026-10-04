@@ -252,9 +252,11 @@ function scriptResults(r, script) {
   };
 }
 
-test('a b.result lost with the socket is sent again when the session resumes and on an authoritative b.start of the finished battle; a refusal is final', async () => {
+test('a b.result goes out right behind a final b.progress; one lost with the socket or not sent (offline) goes out again on the next session and on an authoritative b.start of the finished battle; a refusal is final', async () => {
   const start = realStart(7305);
   const results = (r) => r.net.sent.filter((x) => x.t === 'b.result');
+  const behindProgress = (r, msg) => r.net.sent[r.net.sent.indexOf(msg) - 1]?.t === 'b.progress';
+  const forcedEnd = { battleId: start.battleId, fieldId: start.fieldId, reason: 'forced' };
   const warn = console.warn;
   console.warn = () => {};
   try {
@@ -264,27 +266,30 @@ test('a b.result lost with the socket is sent again when the session resumes and
     r.net.emit('b.start', start);
     await r.settle();
     r.advance(1500);
-    r.net.emit('b.end', { battleId: start.battleId, fieldId: start.fieldId, reason: 'forced' });
+    r.net.emit('b.end', forcedEnd);
     await r.settle();
     const e = r.runner._entries.get(start.battleId);
     assert.equal(results(r).length, 1);
+    assert.ok(behindProgress(r, results(r)[0]));
     assert.equal(e.delivery, 'undelivered');
-    r.net.emit('status', { status: 'reconnecting' });
-    await r.settle();
-    assert.equal(results(r).length, 1, 'not while reconnecting');
     r.net.emit('status', { status: 'online' });
     await r.settle();
-    assert.equal(results(r).length, 2, 're-sent on resume');
+    assert.equal(results(r).length, 1, 'a status event (every pong) is no new session');
+    r.net.emit('welcome', {});
+    await r.settle();
+    assert.equal(results(r).length, 2, 're-sent on the next session');
+    assert.ok(behindProgress(r, results(r)[1]));
     assert.deepEqual(results(r)[1].result, results(r)[0].result, 'the same result');
     assert.equal(results(r)[1].battleId, start.battleId);
     assert.equal(e.delivery, 'delivered');
-    r.net.emit('status', { status: 'online' });
+    r.net.emit('welcome', {});
     await r.settle();
-    assert.equal(results(r).length, 2, 'a delivered result is not sent again on resume');
+    assert.equal(results(r).length, 2, 'a delivered result is not sent again on the next session');
     // the server resyncs the finished field as still waiting for its authority's result: sent again
     r.net.emit('b.start', { ...start, authoritative: true, elapsed: 3 });
     await r.settle();
     assert.equal(results(r).length, 3);
+    assert.ok(behindProgress(r, results(r)[2]));
     assert.equal(r.runner._entries.get(start.battleId), e, 'no rebuild');
     // a display resend does not
     r.net.emit('b.start', { ...start, authoritative: false, watch: false, elapsed: 3 });
@@ -292,31 +297,49 @@ test('a b.result lost with the socket is sent again when the session resumes and
     assert.equal(results(r).length, 3);
     r.runner.dispose();
 
-    // two timeouts (retried once) → undelivered; OFFLINE → undelivered; both go out on resume
+    // two timeouts (retried once) → undelivered, out again on the next session
     const r2 = rig();
     scriptResults(r2, ['timeout', 'timeout']);
     r2.net.emit('b.start', start);
     await r2.settle();
-    r2.net.emit('b.end', { battleId: start.battleId, fieldId: start.fieldId, reason: 'forced' });
+    r2.net.emit('b.end', forcedEnd);
     await r2.settle();
     assert.equal(results(r2).length, 2, 'one retry on a timeout');
+    assert.ok(behindProgress(r2, results(r2)[1]));
     assert.equal(r2.runner._entries.get(start.battleId).delivery, 'undelivered');
-    r2.net.emit('status', { status: 'online' });
+    r2.net.emit('welcome', {});
     await r2.settle();
     assert.equal(results(r2).length, 3);
     r2.runner.dispose();
 
-    // the server answered with a refusal (stale battle, match over): never sent again
+    // offline when the battle ends (send() fails): the result is not even requested (a request queued while offline
+    // would reach the server ahead of the next session's reports) — it goes out on the next session
     const r3 = rig();
-    scriptResults(r3, ['refused']);
     r3.net.emit('b.start', start);
     await r3.settle();
-    r3.net.emit('b.end', { battleId: start.battleId, fieldId: start.fieldId, reason: 'forced' });
+    const send = r3.net.send;
+    r3.net.send = () => false;
+    r3.net.emit('b.end', forcedEnd);
     await r3.settle();
-    r3.net.emit('status', { status: 'online' });
+    assert.equal(results(r3).length, 0);
+    r3.net.send = send;
+    r3.net.emit('welcome', {});
     await r3.settle();
     assert.equal(results(r3).length, 1);
+    assert.ok(behindProgress(r3, results(r3)[0]));
     r3.runner.dispose();
+
+    // the server answered with a refusal (stale battle, match over): never sent again
+    const r4 = rig();
+    scriptResults(r4, ['refused']);
+    r4.net.emit('b.start', start);
+    await r4.settle();
+    r4.net.emit('b.end', forcedEnd);
+    await r4.settle();
+    r4.net.emit('welcome', {});
+    await r4.settle();
+    assert.equal(results(r4).length, 1);
+    r4.runner.dispose();
   } finally {
     console.warn = warn;
   }

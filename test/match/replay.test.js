@@ -10,9 +10,9 @@ test('server delta replay emits the initial event once and preserves renderer-in
   const r=createReplayRunner({engine:{},onFrame:frame=>{
     events.push(...frame.events.ev);if(frame.snapshot.units[0]){assert.equal(frame.snapshot.units[0][3],1);frame.snapshot.units[0][3]=999;}
   }});
-  r.select({source:'server',frameEncoding:'delta-v1',frames,spec:{},tick:12});
+  r.select({source:'server',frameEncoding:'delta-v1',frames,meta:{units:[]},spec:{},tick:12});
   r.play();r.advance(0.4);assert.deepEqual(events,[['event',0],['event',6],['event',12]]);
-  r.select({source:'server',frames:[{tick:0,snapshot:{t:0,units:[]},events:[]}],spec:{},tick:0});r.dispose();
+  r.select({source:'server',frames:[{tick:0,snapshot:{t:0,units:[]},events:[]}],meta:{units:[]},spec:{},tick:0});r.dispose();
 });
 test('recording rejects gaps, backwards ticks and foreign authorities',()=>{
   const f={authority:'alice',spec:{battleId:'b'},battleId:'b'};
@@ -53,4 +53,39 @@ test('a server battle recorded as its spec is re-simulated, with its forced end 
   assert.equal(created,1,'no frames: the engine runs the spec');
   runner.play();runner.advance(0.5);
   assert.deepEqual(ended,[9,'timeout']);assert.equal(battle.tickCount,9);
+});
+
+test('the replay clock reaches subscribers on a player action and once per whole replay second, never per frame or while paused', () => {
+  const battle = {
+    tickCount: 0, finished: false, sharedBoss: null,
+    step() { this.tickCount++; },
+    snapshot() { return { t: this.tickCount / 30, units: [] }; },
+    drainEvents() { return []; },
+    fieldMeta() { return {}; },
+    forceEnd() { this.finished = true; },
+  };
+  const runner = createReplayRunner({ engine: { createBattle: () => battle } });
+  const heard = [];
+  const off = runner.subscribe((s) => heard.push(s));
+  const frames = (n) => { for (let i = 0; i < n; i++) runner.advance(1 / 60); };
+  assert.deepEqual(heard, [{ playing: false, speed: 1, seconds: 0, duration: 0 }], 'the current clock at once');
+  runner.select({ kind: 'normal', spec: {}, tick: 100, inputs: [] });
+  assert.deepEqual(heard.at(-1), { playing: false, speed: 1, seconds: 0, duration: 4 });
+  frames(120);
+  assert.equal(heard.length, 2, 'nothing while paused');
+  runner.play();
+  assert.deepEqual(heard.at(-1), { playing: true, speed: 1, seconds: 0, duration: 4 });
+  frames(150);
+  assert.deepEqual(heard.slice(3).map((s) => s.seconds), [1, 2], 'one update per whole second of 150 frames');
+  runner.setSpeed(2);
+  frames(60);
+  assert.deepEqual(heard.slice(5).map((s) => [s.speed, s.seconds, s.playing]), [[2, 2, true], [2, 3, true], [2, 3, false]],
+    'the speed, the next second, the end');
+  frames(60);
+  runner.pause();
+  assert.equal(heard.length, 8, 'a finished replay is silent; pausing it changes nothing');
+  off();
+  runner.select({ kind: 'normal', spec: {}, tick: 100, inputs: [] });
+  assert.equal(heard.length, 8, 'unsubscribed');
+  runner.dispose();
 });
