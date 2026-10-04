@@ -4,7 +4,7 @@
 // BondDisc, SevenSeg, Countdown, Modal, confirmDialog/alertDialog + DialogHost, Tooltip +
 // TooltipLayer, ProgressBar, Tabs, Spinner, AvatarFrame, PhaseBanner, PingPill, DifficultyTag,
 // DifficultyIcon, TextField, UiHosts (mount once: dialogs + tooltips), useTicker, secondsLeft/hasDeadline,
-// roman(), doctorNo().
+// roman(), PlayerName, doctorNo().
 //
 // Look: research 06 §11–§12 — near-black green-grey panels, 1px lines, mint accents, bracket
 // corners, hexagon badges, roman tier chips, bond discs with segmented rings, 7-segment countdown
@@ -15,6 +15,7 @@ import { h, Fragment } from '../../vendor/preact.module.js';
 import { useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from '../../vendor/hooks.module.js';
 import htm from '../../vendor/htm.module.js';
 import { DIFFICULTY_NAMES, DIFFICULTY_COLORS } from '../../../shared/constants.js';
+import { nameParts } from '../../../shared/account-protocol.js';
 import { serverNow } from '../store.js';
 import { data, useData, localAsset } from '../data.js';
 import { uiUrl } from './assetUrls.js';
@@ -729,6 +730,18 @@ export function PhaseBanner({ title, sub, micro, tone = 'mint', mode = 'inline',
 }
 
 // ---- domain helpers ----------------------------------------------------------------------------
+
+/**
+ * A player's name in a one-line box. Where the box is too narrow for it, the nickname ends in an ellipsis but never
+ * the #NNNN of an account's display name (昵称#NNNN): that is what tells apart two accounts of one nickname. Any other
+ * name is plain text (its box's own ellipsis applies).
+ * @param {{ name: string }} props
+ */
+export function PlayerName({ name }) {
+  const { nickname, tag } = nameParts(name);
+  if (!tag) return name;
+  return html`<span class="pname"><span class="pname__nick">${nickname}</span><span class="pname__tag">${tag}</span></span>`;
+}
 
 /**
  * Stable 4-digit "博士 #1234" tag for a player id (FNV-1a hash; ids themselves are opaque strings).

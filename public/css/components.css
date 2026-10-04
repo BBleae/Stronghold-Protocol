@@ -928,6 +928,11 @@
 .me-chip__text { display: flex; flex-direction: column; line-height: 1.3; min-width: 0; }
 .me-chip__name { font-weight: 700; font-size: .18rem; max-width: 2.4rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* A player's name in a one-line box (components.js PlayerName): the nickname takes the ellipsis, the #NNNN stays. */
+.pname { display: inline-flex; min-width: 0; max-width: 100%; vertical-align: top; }
+.pname__nick { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.pname__tag { flex: none; }
+
 .crash { align-items: center; justify-content: center; }
 .crash__box {
   display: flex;

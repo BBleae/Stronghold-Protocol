@@ -49,3 +49,9 @@ export const validNickname = (nickname) => typeof nickname === 'string' && nickn
 
 /** The name every other player sees: the nickname and the account's discriminator (0000–9999), e.g. 晴猫#1145. */
 export const displayName = (nickname, discriminator) => `${nickname}#${discriminator}`;
+
+/** A display name's parts: { nickname, tag: '#NNNN' } for an account's; any other name is all nickname (tag ''). */
+export function nameParts(name) {
+  const tag = /#\d{4}$/.exec(name)?.[0] ?? '';
+  return { nickname: name.slice(0, name.length - tag.length), tag };
+}

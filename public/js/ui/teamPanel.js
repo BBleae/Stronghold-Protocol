@@ -16,7 +16,7 @@
 
 import { useEffect, useState } from '../../vendor/hooks.module.js';
 import { PHASE } from '../../../shared/constants.js';
-import { html, Icon, Tooltip } from './components.js';
+import { html, Icon, Tooltip, PlayerName } from './components.js';
 import { PlayerAvatar, LpTower, GIcon, LocalSprite } from './gameComponents.js';
 import { EmoteBubble } from './emotes.js';
 import { STATUS_META, sortedPlayers } from './gameLogic.js';
@@ -104,7 +104,7 @@ export function TeamPanel({ pub, myId, watching, bubbles, onWatch, compact = fal
           ${self ? html`<span class="team__you"><${Icon} name="user" /></span>` : null}
         </button>
         <div class="team__info">
-          <span class="team__name">${p.name || '博士'}</span>
+          <span class="team__name"><${PlayerName} name=${p.name || '博士'} /></span>
           <div class="team__line">
             <${LpTower} value=${lp.lp} size="sm" tone=${Number.isFinite(lp.lp) && lp.lp - lp.pending <= 5 ? 'danger' : null} pending=${lp.pending}
               tip=${rowLpTip(lp, cap)} />

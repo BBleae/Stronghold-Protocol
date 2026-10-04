@@ -14,7 +14,7 @@
 // the strip carries an amber "👁 name" tag (`owner`, the observing pill's spelling, research 09 §3.1) and amber rings,
 // the popup a "👁 name 的盟约" line; its member list reads the teammate's operators on the field (no hand: never sent).
 
-import { html, BondDisc, Icon, MicroLabel, Tooltip } from './components.js';
+import { html, BondDisc, Icon, MicroLabel, PlayerName, Tooltip } from './components.js';
 import { RichText, UnitThumb, BondGlyph, GIcon } from './gameComponents.js';
 import { sortBonds, bondMembers, nextThreshold, bondTier, harmonyMembers, HARMONY_BOND } from './gameLogic.js';
 import { formatBondEffect } from './richText.js';
@@ -26,7 +26,7 @@ const cx = (...p) => p.flat().filter(Boolean).join(' ');
 /** The "👁 name" tag of a teammate's strip (DESIGN §20.15). */
 function OwnerTag({ owner }) {
   return html`<span class="bstrip__owner" title=${`正在查看 ${owner} 的盟约`} data-owner=${owner}>
-    <${GIcon} name="eye" class="bstrip__eye" /><${MicroLabel}>${owner}</${MicroLabel}>
+    <${GIcon} name="eye" class="bstrip__eye" /><${MicroLabel}><${PlayerName} name=${owner} /></${MicroLabel}>
   </span>`;
 }
 
@@ -101,7 +101,7 @@ export function BondPopup({ bondId, entry, priv, banned = [], onClose, onMember,
       <div class=${cx('bpop__disc', active && 'is-active')}><${BondGlyph} bondId=${bondId} /></div>
       <div class="bpop__titles">
         <${MicroLabel} tone="mint">${b.isCore ? 'CORE BOND // 核心盟约' : 'ADD-ON BOND // 附加盟约'}</${MicroLabel}>
-        ${owner ? html`<span class="bpop__owner"><${GIcon} name="eye" /><b>${owner}</b> 的盟约</span>` : null}
+        ${owner ? html`<span class="bpop__owner"><${GIcon} name="eye" /><b><${PlayerName} name=${owner} /></b> 的盟约</span>` : null}
         <h3 class="bpop__name">${b.name}</h3>
         <div class="bpop__facts">
           ${off ? null : html`<span>在场 <b class="num">${count}</b>${next != null ? html`<small class="num">/${next}</small>` : null}${countsHand ? html`<small>（含整备区）</small>` : null}${harmony ? html`<small class="bpop__hnote" data-harmony=${harmony}>（含${harmonyName} +${harmony}）</small>` : null}</span>`}

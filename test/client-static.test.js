@@ -1050,6 +1050,18 @@ describe('screen helpers', () => {
     assert.match(inviteLink('ABCD'), /\?room=ABCD$/);
   });
 
+  test('components: PlayerName keeps the #NNNN of a display name out of the ellipsis', async () => {
+    const { PlayerName } = await mod('ui/components.js');
+    const { nameParts } = await import(pathToFileURL(path.join(ROOT, 'shared/account-protocol.js')).href);
+    assert.deepEqual(nameParts('十二个字的博士代号测试名#5284'), { nickname: '十二个字的博士代号测试名', tag: '#5284' });
+    for (const name of ['Amiya', 'AI · 华法琳', '博士']) assert.deepEqual(nameParts(name), { nickname: name, tag: '' });
+    assert.equal(PlayerName({ name: 'Amiya' }), 'Amiya', 'a name without a discriminator is plain text');
+    const shown = PlayerName({ name: '晴猫#1145' });
+    assert.equal(shown.props.class, 'pname');
+    assert.deepEqual(shown.props.children.map((part) => [part.props.class, part.props.children]),
+      [['pname__nick', '晴猫'], ['pname__tag', '#1145']]);
+  });
+
   test('components: roman / doctorNo / secondsLeft', async () => {
     const { roman, doctorNo, secondsLeft } = await mod('ui/components.js');
     assert.deepEqual([1, 2, 3, 4, 5, 6].map(roman), ['I', 'II', 'III', 'IV', 'V', 'VI']);

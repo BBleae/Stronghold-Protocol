@@ -19,7 +19,7 @@
 // never touches the highlighted band or the buttons.
 
 import { useEffect, useMemo, useRef, useState } from '../../vendor/hooks.module.js';
-import { html, Button, Icon, MicroLabel, useTicker, secondsLeft } from '../ui/components.js';
+import { html, Button, Icon, MicroLabel, PlayerName, useTicker, secondsLeft } from '../ui/components.js';
 import { useGameData, BandIcon, RichText, PlayerAvatar, LpTower, Sprite } from '../ui/gameComponents.js';
 import { StepHeader, ExitModal } from '../ui/matchChrome.js';
 import { MatchInfoDialog, matchInfoModel } from '../ui/matchInfo.js';
@@ -260,7 +260,7 @@ export function BandDraftScreen() {
             ${!solo ? html`<span class="dorder__idx num">${i + 1}</span>` : null}
             <${PlayerAvatar} player=${p} self=${p.playerId === myId} />
             <div class="dorder__text">
-              <b class="dorder__name">${p.name || '博士'}${p.isBot ? html`<span class="dorder__ai">AI</span>` : null}</b>
+              <b class="dorder__name"><${PlayerName} name=${p.name || '博士'} />${p.isBot ? html`<span class="dorder__ai">AI</span>` : null}</b>
               <span class="dorder__state">${picked ? html`<span class="t-mint">${pband?.name || '已选择'}</span>`
                 : cur ? html`<span class="t-gold"><${Icon} name="hourglass" />决策中${turnSecs != null ? html`<b class="num dorder__secs">${turnSecs}s</b>` : null}</span>`
                 : html`<span class="t-dim"><${Icon} name="dots" />等待中</span>`}</span>

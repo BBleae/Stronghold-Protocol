@@ -12,7 +12,7 @@
 
 import { useMemo, useState } from '../../vendor/hooks.module.js';
 import { NAME_MAX_LEN, APP_VERSION } from '../../../shared/constants.js';
-import { html, Button, Icon, MicroLabel, TextField, PingPill, AvatarFrame } from '../ui/components.js';
+import { html, Button, Icon, MicroLabel, TextField, PingPill, AvatarFrame, PlayerName } from '../ui/components.js';
 import { LogoutButton } from '../ui/accountMenu.js';
 import { AccountCard } from '../ui/accountForms.js';
 import { GuideButton } from '../ui/guide.js';
@@ -225,7 +225,7 @@ export function TitleScreen() {
         ${account.enabled && account.user ? html`
           <div class="title-login__account">
             <${AvatarFrame} size="sm" name=${account.user.name} src=${account.user.avatarUrl} />
-            <div class="title-login__identity"><span>当前登录账号</span><strong title=${account.user.name}>${account.user.name}</strong></div>
+            <div class="title-login__identity"><span>当前登录账号</span><strong title=${account.user.name}><${PlayerName} name=${account.user.name} /></strong></div>
             <${LogoutButton} />
           </div>
           <${Button} class="title-login__enter" variant="primary" size="xl" block=${true} onClick=${enterAccount}>进入大厅<//>
