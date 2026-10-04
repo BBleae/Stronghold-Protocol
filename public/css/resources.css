@@ -1,10 +1,4 @@
 /* Resource-manager layout only; shared components own their surfaces and interaction states. */
-.resource-launcher {
-  position: fixed;
-  right: max(.2rem, env(safe-area-inset-right));
-  bottom: max(.2rem, env(safe-area-inset-bottom));
-  z-index: var(--z-banner);
-}
 .resource-card { display: flex; flex-direction: column; gap: .18rem; min-width: 0; }
 .resource-intro { margin: 0; }
 .resource-summary { display: flex; align-items: center; justify-content: space-between; gap: .16rem; flex-wrap: wrap; }

@@ -14,6 +14,7 @@ import {
 } from '../ui/components.js';
 import { toast, toastError } from '../ui/toasts.js';
 import { GuideButton } from '../ui/guide.js';
+import { ResourceButton } from '../ui/resourceButton.js';
 import { LoadoutButton } from './loadout.js';
 import { net, identity } from '../net.js';
 import { account } from '../account.js';
@@ -275,6 +276,7 @@ export function LobbyScreen() {
       </div>
       <div class="topbar__right">
         <${GuideButton} class="lobby-guide" variant="secondary" />
+        <${ResourceButton} class="lobby-res" variant="secondary" />
         <${LoadoutButton} from="lobby" size="sm" class="lobby-loadout" />
         <div class="me-chip">
           <${AvatarFrame} size="sm" name=${displayName} src=${account.user?.avatarUrl} seat=${0} self=${true} />

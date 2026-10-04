@@ -5,15 +5,6 @@ import { selectRoute, useStore } from '../store.js';
 
 const mib = n => `${(n / 1048576).toFixed(1)} MiB`;
 
-export function ResourceLauncher({ onOpen }) {
-  const route = useStore(selectRoute);
-  if (route === 'game') return null;
-  return html`<div class="resource-launcher">
-    <${Button} id="resource-manager-open" size="sm" onClick=${onOpen}
-      title="导入或清理本地游戏资源">资源管理<//>
-  </div>`;
-}
-
 export function ResourceDialog({ state, firstTime, totalBytes, onClose, onImport, onClear, onCancel }) {
   const route = useStore(selectRoute);
   const input = useRef(null);

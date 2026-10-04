@@ -14,6 +14,7 @@ import {
 } from '../ui/components.js';
 import { toast, toastError } from '../ui/toasts.js';
 import { GuideButton } from '../ui/guide.js';
+import { ResourceButton } from '../ui/resourceButton.js';
 import { LoadoutButton } from './loadout.js';
 import { net } from '../net.js';
 import { account } from '../account.js';
@@ -269,6 +270,7 @@ export function RoomScreen() {
           <${MicroLabel}>当前延迟<//>
         </div>
         <${GuideButton} class="room-guide" variant="secondary" />
+        <${ResourceButton} class="room-res" variant="secondary" />
       </div>
       <div class="topbar__center">
         <${MicroLabel} tone="mint">${coop ? 'ALLIANCE LOBBY' : 'SOLO SIMULATION'}<//>

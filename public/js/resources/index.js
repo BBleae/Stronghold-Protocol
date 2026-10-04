@@ -7,7 +7,8 @@ import { html } from '../ui/components.js';
 import { toast } from '../ui/toasts.js';
 import { ResourceStore } from './store.js';
 import { importResourceZip } from './zip.js';
-import { ResourceDialog, ResourceLauncher } from './view.js';
+import { ResourceDialog } from './view.js';
+import { installResourceOpener } from '../ui/resourceButton.js';
 
 // Set (to any value) once the first visit's resource dialog has closed. Earlier releases stored the player's choice
 // ('install' / 'ondemand') under this key: those players have had their first visit.
@@ -102,13 +103,9 @@ async function checkInstallation() {
   await exclusive(() => checkStatus(store));
 }
 
-/** The launcher of the resource dialog (hidden during matches). */
+/** The screens' 资源管理 button opens the resource dialog (ui/resourceButton.js). */
 export function installResourceManager() {
-  if (!supported() || document.getElementById('resource-manager-host')) return;
-  const host = document.createElement('div');
-  host.id = 'resource-manager-host';
-  document.body.append(host);
-  render(html`<${ResourceLauncher} onOpen=${openManager} />`, host);
+  if (supported()) installResourceOpener(openManager);
 }
 
 async function openManager() {
@@ -141,7 +138,7 @@ function showManager(store, firstTime = false) {
     const host = document.createElement('div');
     host.className = 'resource-manager-dialog-host';
     document.body.append(host);
-    const background = ['app', 'resource-manager-host'].map(id => document.getElementById(id)).filter(Boolean)
+    const background = ['app'].map(id => document.getElementById(id)).filter(Boolean)
       .map(element => ({ element, inert: element.inert }));
     for (const { element } of background) element.inert = true;
 

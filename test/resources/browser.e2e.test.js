@@ -16,8 +16,8 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const chrome = process.env.CHROME_PATH || (process.platform === 'win32' ? 'C:/Program Files/Google/Chrome/Application/chrome.exe' : '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome');
 const enabled = process.env.SP_RESOURCES_E2E === '1' && existsSync(chrome);
 
-// The game's boot as main.js does it, with index.html's font stylesheet. The app, with its toast host, mounts after
-// the resources are prepared.
+// The game's boot as main.js does it, with index.html's font stylesheet. The app, with its toast host and a screen's
+// 资源管理 button, mounts after the resources are prepared.
 const PAGE = `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1" />
   <link rel="stylesheet" href="/fonts/fonts.css" />
   <link rel="stylesheet" href="/css/theme.css" /><link rel="stylesheet" href="/css/components.css" />
@@ -27,16 +27,18 @@ const PAGE = `<!doctype html><html><head><meta name="viewport" content="width=de
   import { render } from "/vendor/preact.module.js";
   import { html } from "/js/ui/components.js";
   import { ToastHost } from "/js/ui/toasts.js";
+  import { ResourceButton } from "/js/ui/resourceButton.js";
   import { prepareResources, installResourceManager } from "/js/resources/index.js";
   const start = performance.now();
   await prepareResources();
   window.bootMs = performance.now() - start;
+  installResourceManager();
   const app = document.createElement("div");
+  app.id = "app";
   document.body.append(app);
-  render(html\`<\${ToastHost} />\`, app);
+  render(html\`<\${ToastHost} /><\${ResourceButton} />\`, app);
   window.gameReady = true;
   document.querySelector("#boot").remove();
-  installResourceManager();
   </script></body></html>`;
 
 /**
@@ -311,7 +313,6 @@ test('resource cache in a real browser', { skip: !enabled, timeout: 240000 }, as
     await waitText(page, '.spinner__label', '正在导入');
     await setRoute(page, true);
     await page.waitForSelector('.resource-dialog', { hidden: true });
-    await page.waitForSelector('#resource-manager-open', { hidden: true });
     await waitText(page, '.toast__text', '已取消。已导入的文件会保留。');
     releaseManifest();
     await setRoute(page, false);
