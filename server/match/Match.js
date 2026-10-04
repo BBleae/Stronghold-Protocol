@@ -754,7 +754,8 @@ export class Match {
     const json = JSON.stringify(rest);
     if (!force && json === this._lastPubJson) return;
     this._lastPubJson = json;
-    this._lastPubAt = now;
+    // measured from the frame's own stamp: building the view takes time, and clients see serverNow
+    this._lastPubAt = serverNow;
     this.broadcast(view);
   }
 
