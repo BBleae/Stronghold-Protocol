@@ -9,7 +9,7 @@ import { ResourceDialog, ResourceLauncher } from './view.js';
 // The player's choice: 'install' (keep every resource file locally) or 'ondemand'. Unset until the first visit's
 // dialog closes; a returning player's boot never waits for the resource layer.
 const MODE_KEY = 'stronghold-resource-mode';
-let workerPromise, storePromise, openDialog;
+let storePromise, openDialog;
 
 const mib = n => `${(n / 1048576).toFixed(1)} MiB`;
 
@@ -29,9 +29,12 @@ function supported() {
   }
 }
 
-/** Rejects where the browser cannot run the (module) service worker: then nothing would serve stored files. */
+/**
+ * Resolves at once when the worker is registered already. Rejects where the browser cannot run the (module) service
+ * worker: then nothing would serve stored files.
+ */
 function registerWorker() {
-  return workerPromise ??= navigator.serviceWorker.register('/resource-sw.js', { type: 'module', scope: '/' });
+  return navigator.serviceWorker.register('/resource-sw.js', { type: 'module', scope: '/' });
 }
 
 function loadStore() {
@@ -134,8 +137,8 @@ function showManager(store, firstTime = false) {
     function update(patch) {
       Object.assign(state, patch);
       if (closed) return;
-      render(html`<${ResourceDialog} state=${state} firstTime=${firstTime} totalBytes=${store.manifest.totalBytes} onClose=${close}
-        onDownload=${download} onImport=${importZip} onClear=${clear}
+      render(html`<${ResourceDialog} state=${state} firstTime=${firstTime} totalBytes=${store.manifest.totalBytes}
+        onClose=${close} onDownload=${download} onImport=${importZip} onClear=${clear}
         onCancel=${() => { controller?.abort(); update({ message: '正在暂停…' }); }} />`, host);
     }
 
@@ -182,7 +185,8 @@ function showManager(store, firstTime = false) {
 
     function importZip(file) {
       preference('install');
-      return run('import', signal => importResourceZip(file, store, { signal, onProgress: status => update({ status }) }), status => {
+      const action = signal => importResourceZip(file, store, { signal, onProgress: status => update({ status }) });
+      return run('import', action, status => {
         if (status.complete) return '全部资源已保存，可进入游戏。';
         const rest = `点「在线下载」补齐剩下的 ${status.total - status.count} 个`;
         return status.skipped

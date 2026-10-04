@@ -14,7 +14,7 @@ const RETRY_DELAYS_MS = [1000, 3000];
 const MAX_FAILED_FILES = 20;
 
 /** The site's current resource manifest (tools/resource-pack.mjs). Revalidated, so an unchanged one costs a 304. */
-export async function fetchManifest(fetcher = globalThis.fetch.bind(globalThis), signal) {
+async function fetchManifest(fetcher = globalThis.fetch.bind(globalThis), signal) {
   const response = await fetcher(MANIFEST_URL, { cache: 'no-cache', signal });
   if (!response.ok) throw new Error(`资源清单不可用（HTTP ${response.status}）`);
   return response.json();
@@ -22,7 +22,8 @@ export async function fetchManifest(fetcher = globalThis.fetch.bind(globalThis),
 
 /**
  * How much of a site version the cache holds. `present` (the URLs) is only known after a scan.
- * @returns {{ version: string, count: number, bytes: number, total: number, totalBytes: number, complete: boolean, present?: Set<string> }}
+ * @returns {{ version: string, count: number, bytes: number, total: number, totalBytes: number, complete: boolean,
+ *   present?: Set<string> }}
  */
 function cacheStatus(manifest, count, bytes, present) {
   const total = manifest.files.length;
@@ -83,7 +84,7 @@ export class ResourceStore {
     return (await this.caches.keys()).filter(name => name.startsWith(CACHE_PREFIX));
   }
 
-  /** The cache's status for the current manifest: read from the status entry when it is of this site version, else by reconcile(). */
+  /** The cache's status for the current manifest: its status entry when that is of this site version, else reconcile(). */
   async check() {
     const names = await this.#cacheNames();
     if (!names.length) return cacheStatus(this.manifest, 0, 0);
