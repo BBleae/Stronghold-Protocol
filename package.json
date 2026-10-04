@@ -26,6 +26,7 @@
     "start": "node server/index.js",
     "dev": "node --watch server/index.js",
     "test": "node --test",
+    "test:fast": "node tools/test-fast.mjs",
     "vendor": "node tools/vendor.mjs",
     "build-data": "node tools/build-data.mjs",
     "assets": "node tools/vendor.mjs && node tools/fetch-assets.mjs",
