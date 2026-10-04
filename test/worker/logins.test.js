@@ -59,3 +59,44 @@ test('a room woken from hibernation keeps its sockets without asking the directo
   assert.equal((await player.wait('room.state', (f) => f.seats[0].ready)).seats[0].playerId, player.welcome.playerId);
   assert.equal(await world.lookups(), before);
 });
+
+test('a failed login check is logged once, closes nothing, and is retried after its backoff', { timeout: 120000 }, async (t) => {
+  const world = await createWorld(t);
+  await world.seed('a');
+  // A solo room: no lobby listing to refresh, so the room's next wake is the retry.
+  const route = (await world.api('a', '/api/rooms', { method: 'POST' })).body;
+  const player = await world.player('a', route);
+  assert.equal((await player.request('room.create', { mode: 'solo', difficulty: 'FUNNY' })).t, 'ok');
+
+  await world.failDirectory('getSession');
+  await world.room(route.code, 'logins-due');
+  const failures = async () => (await world.room(route.code, 'logs'))
+    .filter((line) => line.event === 'login_check_failed' && line.room === route.code);
+  let lines = [];
+  for (let i = 0; i < 100 && !lines.length; i++) {
+    lines = await failures();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  const [line] = lines;
+  assert.deepEqual({ level: line.level, sessions: line.sessions, attempts: line.attempts }, { level: 'warn', sessions: 1, attempts: 1 });
+  assert.ok(line.retryAt - Date.now() > 20_000 && line.retryAt - Date.now() <= 30_000, 'first retry after 30 s');
+
+  // Messages in the meantime neither ask the directory again nor close the socket. The room wakes for the retry (an
+  // alarm armed earlier, here the socket's hello timeout, wakes it first and re-arms).
+  const lookups = await world.lookups();
+  for (let i = 0; i < 3; i++) {
+    player.send({ t: 'ping', c: i + 1 });
+    await player.wait('pong', (f) => f.c === i + 1);
+  }
+  assert.equal(await world.lookups(), lookups);
+  assert.equal((await failures()).length, 1);
+  assert.equal(player.closed, null);
+  const alarm = await world.room(route.code, 'alarm');
+  assert.ok(alarm > Date.now() && alarm <= line.retryAt, `alarm ${alarm - line.retryAt} ms from the retry`);
+
+  // The directory is back, and the player logged out meanwhile: the retry closes the socket.
+  await world.failDirectory('getSession', false);
+  await world.logout('a');
+  await world.room(route.code, 'retries-due');
+  assert.deepEqual(await player.waitClosed(), { code: 4003, reason: 'login required' });
+});

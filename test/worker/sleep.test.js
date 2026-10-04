@@ -115,3 +115,42 @@ test('a room the public lobby shows wakes to refresh its listing; made private, 
   }
   assert.deepEqual(listed, []);
 });
+
+test('a failed listing is logged once and retried after its backoff, even when the room changes meanwhile', { timeout: 120000 }, async (t) => {
+  const world = await createWorld(t);
+  await world.seed('a');
+  await world.failDirectory('publishRoom');
+  const route = (await world.api('a', '/api/rooms', { method: 'POST' })).body;
+  const host = await world.player('a', route);
+  await host.request('room.create', { mode: 'coop', difficulty: 'FUNNY' });
+  const failures = async () => (await world.room(route.code, 'logs'))
+    .filter((line) => line.event === 'listing_publish_failed' && line.room === route.code);
+  let lines = [];
+  for (let i = 0; i < 100 && !lines.length; i++) {
+    lines = await failures();
+    await sleep(20);
+  }
+  const [line] = lines;
+  assert.deepEqual({ level: line.level, attempts: line.attempts }, { level: 'warn', attempts: 1 });
+  assert.ok(line.retryAt - Date.now() > 20_000 && line.retryAt - Date.now() <= 30_000, 'first retry after 30 s');
+
+  // A change of the listing (a seat taken) waits for the retry too: nothing is sent to the directory meanwhile. The
+  // room wakes for the retry (an alarm armed earlier, here the socket's hello timeout, wakes it first and re-arms).
+  const publishes = await world.publishes();
+  assert.equal((await host.request('room.addBot')).t, 'ok');
+  assert.equal((await host.request('room.ready', { ready: true })).t, 'ok');
+  assert.equal(await world.publishes(), publishes);
+  assert.equal((await failures()).length, 1);
+  const alarm = await world.room(route.code, 'alarm');
+  assert.ok(alarm > Date.now() && alarm <= line.retryAt, `alarm ${alarm - line.retryAt} ms from the retry`);
+
+  // The directory is back: the retry lists the room as it is now.
+  await world.failDirectory('publishRoom', false);
+  await world.room(route.code, 'retries-due');
+  let listed = [];
+  for (let i = 0; i < 50 && !listed.length; i++) {
+    listed = (await world.api('a', '/api/rooms')).body.items;
+    await sleep(50);
+  }
+  assert.deepEqual(listed.map((room) => [room.roomId, room.occupied]), [[route.code, 2]]);
+});

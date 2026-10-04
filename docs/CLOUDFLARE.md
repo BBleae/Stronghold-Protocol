@@ -78,7 +78,8 @@ Wrangler 执行构建、上传本地静态文件，保留 `ROOMS`（房间），
 | `room_event_failed` / `room_load_failed` | 房间 DO 处理事件 / 唤醒加载时出错，实例回到最后一次提交 |
 | `match_restored` / `match_restore_failed` | 进行中对局恢复成功 / 无法恢复而按中断结束（带规则版本、事件数、尝试次数和原因） |
 | `archive_publish_failed` | 对局归档发布失败；30 秒后重试，之后每次加倍，最多每小时一次，其他对局的归档照常发布 |
-| `listing_publish_failed` | 在线大厅列表更新失败，按同样的退避重试 |
+| `listing_publish_failed` | 在线大厅列表更新失败，按同样的退避重试（带下次重试时间 `retryAt`） |
+| `login_check_failed` | 房间向账号目录复核已连接的登录失败；不断开任何连接，按同样的退避重试（带 `retryAt`） |
 | `room_runtime` | 规则代码（大厅、连接、对局）的警告和错误；恢复时重放出的行带 `restoring: true` |
 
 ## 验证

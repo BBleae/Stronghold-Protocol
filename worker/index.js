@@ -533,7 +533,7 @@ export class RoomDurableObject {
         job.busy = false;
         job.failures += 1;
         job.retryAt = Date.now() + backoff(job.failures);
-        logWarn('listing_publish_failed', { room: rt.code, attempts: job.failures, error: errorFields(error) });
+        logWarn('listing_publish_failed', { room: rt.code, attempts: job.failures, retryAt: job.retryAt, error: errorFields(error) });
       })));
   }
 
@@ -557,7 +557,8 @@ export class RoomDurableObject {
         job.busy = false;
         job.failures += 1;
         job.retryAt = Date.now() + backoff(job.failures);
-        logWarn('login_check_failed', { room: this.runtime.code, sessions: due.length, attempts: job.failures, error: errorFields(error) });
+        logWarn('login_check_failed', { room: this.runtime.code, sessions: due.length, attempts: job.failures, retryAt: job.retryAt,
+          error: errorFields(error) });
       })));
   }
 
