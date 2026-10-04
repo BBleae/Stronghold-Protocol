@@ -177,8 +177,10 @@ export class RoomNet extends Net {
       const { items } = await accountRequest(`/api/rooms/${application.code}/applications`, undefined, this.fetch);
       item = items.find((x) => x.id === application.id) ?? { status: 'expired' };
     } catch (error) {
-      if (error.code === 'LOGIN_REQUIRED') this._lose(error);
-      if (error.code === 'LOGIN_REQUIRED' || error.code === 'ROOM_NOT_FOUND') {
+      // An invalid login or a vanished room ends the application; anything else is checked again later.
+      const lost = error.code === 'LOGIN_REQUIRED';
+      if (lost) this._lose(error);
+      if (lost || error.code === 'ROOM_NOT_FOUND') {
         item = { status: 'failed', error };
       } else {
         console.warn('[room-net] application check failed; retrying', error);

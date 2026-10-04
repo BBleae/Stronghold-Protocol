@@ -89,7 +89,7 @@ test('account preferences restore in a clean browser, survive offline reload, an
   assert.equal(switched['lobby.mode'],'coop');assert.deepEqual(switched.recentRooms,[]);
   await b.goto(base+'__test/login/a');await ready(b);
   assert.deepEqual(await read(b),{...expected,'lobby.difficulty':'HARD'});
-  // Deployment recovery must work in the already-open browser, without resumeActive() or reload().
+  // Deployment recovery must work in the already-open browser, without 继续对局 or reload().
   await b.evaluate(async()=>{
     await __SP__.net.request('room.create',{mode:'solo',difficulty:'FUNNY'});
     await __SP__.net.request('room.start');
