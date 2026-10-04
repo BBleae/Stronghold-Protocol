@@ -46,6 +46,7 @@ export function ResourceDialog({ state, firstTime, totalBytes, onClose, onImport
       }} />
       <div class="resource-note">
         <${MicroLabel}>LOCAL ONLY // 本机处理<//>
+        <p>本站不提供资源 ZIP，可以向已有的朋友索取。</p>
         <p>仅导入本站需要的资源，其余文件直接跳过，不解压、不校验。</p>
         <p>导入的资源保存在本浏览器的网站数据中；清除网站数据后，需要重新导入。</p>
       </div>

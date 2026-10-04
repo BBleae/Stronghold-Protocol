@@ -46,9 +46,9 @@ Wrangler 执行构建、上传本地静态文件，保留 `ROOMS`（房间），
 
 ## 资源包
 
-站点只发布资源清单 `/resource-manifest.json`（每个文件的路径、大小与 SHA-256），不发布文件本身。资源 ZIP 由玩家自备：
+站点只发布资源清单 `/resource-manifest.json`（每个文件的路径、大小与 SHA-256），不发布文件本身。清单只列 `data/assets.json` 引用的素材和字体，它们都能从公开来源下载；来源仓库会更新，晚些下载的个别文件可能与站点清单不一致，导入时跳过并提示数量。资源 ZIP 由玩家自备：
 
-1. **本地脚本**：Windows 双击 `scripts\make-resource-pack.bat`，macOS / Linux 运行 `scripts/make-resource-pack.sh`（或 `npm run resources:zip`）。脚本会安装依赖、从 GitHub 下载素材（中断后再次运行会续传）、在项目文件夹里生成 `stronghold-resources-<版本>.zip`。国内下载 GitHub 慢时先设置代理，例如 `set HTTPS_PROXY=http://127.0.0.1:7890`（脚本会让 Node.js 使用它）。已有完整素材时只打包：`npm run resources:pack`（输出在 `.cache/`）。
+1. **自己生成**：取与站点相同版本的本仓库，运行 `npm ci`、`npm run assets`（从 GitHub 下载素材与字体，中断后再次运行会续传），再运行 `npm run resources:pack`，ZIP 写在 `.cache/` 下。国内下载 GitHub 慢时先设置代理，例如 PowerShell 中 `$env:HTTPS_PROXY = 'http://127.0.0.1:7890'; $env:NODE_USE_ENV_PROXY = '1'`（后者让 Node.js 使用该代理）。
 2. **朋友转发**：已经有 ZIP 的玩家直接发给朋友。
 
 玩家第一次进入站点时，资源窗口提供两个选择：**导入本地 ZIP**，或**暂时跳过**（使用占位图）。之后随时可在标题页、大厅或房间顶部的「资源管理」导入或清理。导入时文件只在浏览器本地读取，**不会上传**：只取出清单内的文件，逐个校验大小与 SHA-256，其余条目直接跳过。其他版本的资源包也能导入：与本站清单一致的文件照常导入，不一致的跳过并提示数量，缺少的文件需要换一个与本站版本一致的 ZIP 补齐。
