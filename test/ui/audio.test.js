@@ -677,6 +677,22 @@ describe('operator voice', () => {
     assert.deepEqual(r.played(), [['combat', OP, 16500]]);
   });
 
+  test('a solo pause holds the battle\'s opening: 行动开始 and the wait of 作战中 go on after it', async (t) => {
+    const r = voiceRig(t);
+    const pause = (paused) => r.store.patch('match', { public: { ...r.store.get().match.public, paused } });
+    r.phase(PHASE.COMBAT, 1);
+    await r.at(500);
+    pause(true);
+    await r.at(30500);
+    pause(false);
+    await r.at(31000);
+    r.enemy();
+    await r.at(31500);
+    r.skill(2);
+    await r.at(34000);
+    assert.deepEqual(r.played(), [['start', LEADER, 33000]]);
+  });
+
   test('a re-mounted battle screen (its field entered again, spawns replayed) neither repeats nor loses 行动开始', async (t) => {
     const r = voiceRig(t);
     r.phase(PHASE.COMBAT, 1);

@@ -37,8 +37,9 @@
 //   mode is cast automatically), now and then: its 10 s cooldown runs start to start and one never cuts another.
 // - The battle voice follows the match in the store (followMatch), like the BGM. Each own battle (voiceBattleKey: phase
 //   + round) opens with the squad leader's 行动开始 (ENCOUNTER_ENEMY) at its first enemy, not before
-//   minTimeDeltaForEnemyEncounter and only within its first OPENING_MS; 作战中 waits for it meanwhile. A hidden page or
-//   a re-mounted battle screen changes nothing of that (行动开始 that came due on a hidden page is said on return).
+//   minTimeDeltaForEnemyEncounter and only within its first OPENING_MS (a solo pause holds that clock); 作战中 waits for
+//   it meanwhile. A hidden page or a re-mounted battle screen changes nothing of that (行动开始 that came due on a
+//   hidden page is said on return).
 //   Leaving the battle drops its pending lines: none reaches the result screen or the next battle. The end line
 //   (3星结束行动 without LP lost in the match / 非3星结束行动 / 行动失败), said by the latest battle's leader, plays once
 //   per match when m.result arrives. All voice timing is real time (battles run at 2x).
@@ -369,7 +370,9 @@ export class AudioManager {
     this.voiceWant = null;    // { token, priority } of the line loading (it replaces the one playing)
     this.voiceToken = 0;      // the newest line requested: bumping it drops the line loading
     this.voiceLast = new Map(); // voice type → when its last line started (cooldowns)
-    this.voiceBattle = null;  // { key, at, faced, said } the own battle the voice follows (followMatch)
+    // the own battle the voice follows (followMatch): { key, at: when it opened (moved on by its pauses), pausedAt,
+    // faced: its first enemy appeared, said: its 行动开始 is done }
+    this.voiceBattle = null;
     this.encounterTimer = null; // 行动开始 coming due (_encounter)
     this.squadLeader = null;  // charId of the leader who opened the latest battle: says the match's end line
     this.voiceLog = [];       // the lines started: { role, charId, type } (latest 200; the browser E2E reads it)
@@ -831,7 +834,8 @@ export class AudioManager {
 
   /**
    * Follow the match in the store (installAudio): another own battle (voiceBattleKey) drops the lines of the moment
-   * before and opens with 行动开始; m.result arriving says the end line, once per match.
+   * before and opens with 行动开始; a paused battle (solo pause) holds its opening; m.result arriving says the end
+   * line, once per match.
    * @param {any} s store state @param {any} prev the state before (null at first)
    */
   followMatch(s, prev) {
@@ -840,7 +844,17 @@ export class AudioManager {
       clearTimeout(this.encounterTimer);
       this.encounterTimer = null;
       this._dropLoading();
-      this.voiceBattle = key ? { key, at: performance.now(), faced: false, said: false } : null;
+      this.voiceBattle = key ? { key, at: performance.now(), pausedAt: null, faced: false, said: false } : null;
+    }
+    const b = this.voiceBattle;
+    if (b && !!s.match.public.paused !== (b.pausedAt != null)) {
+      if (b.pausedAt == null) b.pausedAt = performance.now();
+      else {
+        // the opening goes on from where the pause held it
+        b.at += performance.now() - b.pausedAt;
+        b.pausedAt = null;
+        this._encounter();
+      }
     }
     if (s.match.result && !prev?.match.result) this._matchEnd(s.match.result, s.me.playerId);
   }
@@ -853,13 +867,13 @@ export class AudioManager {
 
   /**
    * 行动开始, once it is due: the own battle has faced its first enemy and encounterDelay has passed since it opened,
-   * still within its opening, and the line can be heard — one that comes due on a hidden page waits for the return
-   * (the context's statechange calls this again).
+   * still within its opening and not paused, and the line can be heard — one that comes due on a hidden page waits
+   * for the return (the context's statechange calls this again).
    */
   _encounter() {
     const b = this.voiceBattle;
     const rules = voiceRulesOf(this.getManifest());
-    if (!b || b.said || !b.faced || !rules) return;
+    if (!b || b.said || !b.faced || b.pausedAt != null || !rules) return;
     const now = performance.now();
     if (now >= b.at + OPENING_MS) return;
     const wait = b.at + rules.encounterDelay * 1000 - now;
