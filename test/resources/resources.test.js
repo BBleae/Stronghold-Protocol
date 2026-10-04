@@ -65,7 +65,8 @@ function site(files, version = 'a'.repeat(64)) {
   server.fetcher = async url => {
     server.requests.push(url);
     if (url === '/resource-manifest.json') return Response.json(server.manifest);
-    const body = server.bodies.get(url);
+    // The extension-less audio route (shared/media.js), mp3 only here.
+    const body = server.bodies.get(url.startsWith('/media/') ? `/assets/audio/${url.slice('/media/'.length)}.mp3` : url);
     return body === undefined ? new Response('missing', { status: 404 }) : new Response(body);
   };
   return server;
@@ -188,6 +189,16 @@ test('a download retries a failing file and reports the files that keep failing 
   ], 'three attempts per file; d after c failed');
   const status = await store.check();
   assert.deepEqual([status.count, status.total], [3, 4]);
+});
+
+test('downloads fetch audio through the extension-less /media/ alias and store it under its file URL', async () => {
+  const caches = new MemoryCaches();
+  const server = site([['/assets/audio/bgm/act1.mp3', 'bgm'], ['/assets/voice/cn/a.mp3', 'voice'], ['/assets/b.png', 'image']]);
+  await new ResourceStore(server.manifest, { caches, fetcher: server.fetcher }).download({ retryDelays: NO_WAIT });
+  assert.deepEqual(server.requests.filter(url => url !== '/resource-manifest.json').sort(),
+    ['/assets/b.png', '/assets/voice/cn/a.mp3', '/media/bgm/act1'], 'the URLs public/js/media.js gives the game');
+  const { '/resource-cache-status.json': _, ...files } = await caches.contents('stronghold-resources');
+  assert.deepEqual(files, { '/assets/audio/bgm/act1.mp3': 'bgm', '/assets/voice/cn/a.mp3': 'voice', '/assets/b.png': 'image' });
 });
 
 test('corrupt or oversized downloads never enter the cache; a later download completes the rest', async () => {

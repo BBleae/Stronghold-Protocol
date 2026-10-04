@@ -92,7 +92,12 @@ test('resource cache in a real browser', { skip: !enabled, timeout: 240000 }, as
         if (server.hold.has(path)) return;
         if (server.busyOnce.delete(path)) { response.writeHead(503).end(); return; }
       }
-      if (path.startsWith('/media/')) { response.writeHead(404).end(); return; } // a host without the /media/ route
+      if (path.startsWith('/media/')) {
+        // The site's extension-less audio route (mp3 only in these fixtures).
+        response.setHeader('Content-Type', 'audio/mpeg');
+        response.end(await readFile(join(server.site.dir, 'public/assets/audio', `${path.slice('/media/'.length)}.mp3`)));
+        return;
+      }
       const resource = path === '/resource-manifest.json' || path.startsWith('/assets/') || path.startsWith('/fonts/');
       const file = path.startsWith('/shared/') ? join(root, path) : join(resource ? server.site.dir : root, 'public', decodeURIComponent(path));
       response.setHeader('Content-Type', path.endsWith('.js') ? 'text/javascript' : path.endsWith('.json') ? 'application/json' : path.endsWith('.css') ? 'text/css' : 'application/octet-stream');

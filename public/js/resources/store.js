@@ -4,6 +4,7 @@
 // its X-Resource-SHA256 and size match the manifest; reconcile() removes the others. A status entry in the same cache
 // records the site version the cache was last reconciled against and how much of it is present, so that a page load
 // of an unchanged site needs no scan of thousands of entries.
+import { mediaUrl } from '../media.js';
 import { CACHE_PREFIX, checkAbort, matchesResource, readBoundedResponse, resourceResponse, verifyBytes } from './common.js';
 
 const MANIFEST_URL = '/resource-manifest.json';
@@ -203,8 +204,9 @@ export class ResourceStore {
   async #fetchFile(file, signal, retryDelays) {
     for (let attempt = 0; ; attempt++) {
       try {
-        // no-store: the bytes go to the resource cache, not a second time into the HTTP cache
-        const response = await this.fetcher(file.url, { signal, cache: 'no-store' });
+        // Audio through the game's extension-less alias, which download managers leave alone (public/js/media.js).
+        // no-store: the bytes go to the resource cache, not a second time into the HTTP cache.
+        const response = await this.fetcher(mediaUrl(file.url), { signal, cache: 'no-store' });
         await this.put(file, await readBoundedResponse(response, file.size, signal), { signal });
         return;
       } catch (error) {
