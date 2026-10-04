@@ -107,6 +107,7 @@ test('password accounts: register, log out and in, 修改代号, 修改密码, a
   await doctor.waitForFunction(() => document.querySelector('.title-login .field.is-invalid')?.textContent.includes('用户名或密码错误'));
   await clear(login[1]);
   await login[1].type('correct horse');
+  assert.ok(await doctor.$('.title-login .field.is-invalid'), 'a mistake stays while the field is fixed, until the next send');
   await Promise.all([doctor.waitForNavigation({ waitUntil: 'load' }), send(doctor)]);
   await doctor.waitForSelector('.lobby-screen');
   assert.equal(await meName(doctor), registered);
@@ -130,6 +131,7 @@ test('password accounts: register, log out and in, 修改代号, 修改密码, a
   await device.waitForSelector('.lobby-screen');
   await click(doctor, '修改密码');
   await doctor.waitForSelector('.modal input[autocomplete="current-password"]');
+  await doctor.waitForFunction(() => document.activeElement?.autocomplete === 'current-password', { timeout: 5000 });
   const fields = await doctor.$$('.modal input:not([hidden])');
   for (const [i, value] of ['correct horse', 'battery staple', 'battery staple'].entries()) await fields[i].type(value);
   await click(doctor, '确认');
@@ -163,9 +165,16 @@ test('password accounts: register, log out and in, 修改代号, 修改密码, a
   await friend.waitForFunction(() => __SP__.net.status === 'closed', { timeout: 90000 });
   await click(friend, '重新登录');
   await card(friend);
+  assert.equal(await friend.$eval('.title-conn', (el) => el.textContent.includes('登录已失效，请重新登录')), true);
+  assert.ok(await friend.$('.title-conn .status-dot.is-warn'));
   await fill(friend, ['friend_02', 'friend password']);
   await friend.waitForFunction((code) => globalThis.__SP__?.store.get().room?.code === code && __SP__.net.status === 'online',
     { timeout: 30000 }, code);
   assert.equal(await friend.evaluate(() => __SP__.net.playerId), seat, 'the same seat');
+  // Back in the lobby, the account's chip shows its display name and no second number (the room's player id).
+  await friend.click('button[aria-label="离开同盟"]');
+  await friend.waitForSelector('.lobby-screen');
+  assert.equal(await friend.$eval('.me-chip__text .micro', (el) => el.textContent), 'DOCTOR');
+  assert.match(await meName(friend), /^好友#\d{4}$/);
   assert.deepEqual(errors, []);
 });
