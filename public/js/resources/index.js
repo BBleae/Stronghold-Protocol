@@ -41,6 +41,15 @@ function loadStore() {
   });
 }
 
+// One cache operation at a time: the boot check, and the dialog's check, download, import and clear. Interleaved, a
+// check that scans while the cache is cleared would record files that are gone.
+let operations = Promise.resolve();
+function exclusive(operation) {
+  const result = operations.then(operation);
+  operations = result.then(() => {}, () => {}); // the outcome is the caller's
+  return result;
+}
+
 function readableError(error) {
   if (error.name === 'AbortError') return '已暂停。已完成的文件会保留，可继续下载或重新导入。';
   if (error.name === 'QuotaExceededError') return '浏览器存储空间不足。请释放设备空间后重试，或选择按需加载。';
@@ -66,7 +75,8 @@ export async function prepareResources() {
 
 /** Drop what a new site version changed; remind a player who installs resources of the files still missing. */
 async function checkInstallation() {
-  const status = await (await loadStore()).check();
+  const store = await loadStore();
+  const status = await exclusive(() => store.check());
   if (preference() === 'install' && !status.complete) {
     const missing = `${status.total - status.count} 个文件（${mib(status.totalBytes - status.bytes)}）`;
     toast(`本地资源缺少 ${missing}，可在「资源管理」继续下载。`, 'info', { ttl: 8000 });
@@ -131,7 +141,7 @@ function showManager(store, firstTime = false) {
 
     async function refresh() {
       try {
-        update({ status: await store.check(), busy: false });
+        update({ status: await exclusive(() => store.check()), busy: false });
       } catch (error) {
         console.error('[resources] local resource check failed', error);
         update({ message: readableError(error), error: true, busy: false });
@@ -144,7 +154,7 @@ function showManager(store, firstTime = false) {
       update({ busy: true, phase, message: '正在准备，请稍候…', error: false });
       operation = (async () => {
         try {
-          const status = await action(controller.signal);
+          const status = await exclusive(() => action(controller.signal));
           const message = done(status);
           update({ message });
           toast(message, 'success');
