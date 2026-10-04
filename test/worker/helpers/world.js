@@ -2,8 +2,9 @@
 //
 // The fixture entry adds what tests need and production lacks: seeded GitHub accounts with session cookies (actor
 // 'a' → cookie 'aaaa…'), WebSocket upgrades on behalf of an actor, hooks on a room's Durable Object (storage
-// access, a snapshot rewrite applied at its next wake, the structured log lines it wrote, its login checks made due)
-// and on the directory (session lookups counted, a logout). Storage persists across restart(), which replaces the
+// access, a snapshot rewrite applied at its next wake, the structured log lines of the isolate (every room's), its
+// in-memory timer, its login checks made due) and on the directory (session lookups counted, a logout). Any hook
+// wakes the room it is sent to. Storage persists across restart(), which replaces the
 // runtime like a deployment does; evict() puts one room to sleep with its sockets open, as the platform does.
 
 import assert from 'node:assert/strict';
@@ -85,6 +86,7 @@ export class RoomDurableObject extends ProductionRoom {
       case '/__test/logs': await this.ready; return Response.json(logs);
       case '/__test/snapshot': await this.ready; return Response.json((await this.readSnapshot()) ?? null);
       case '/__test/alarm': await this.ready; return Response.json(await storage.getAlarm());
+      case '/__test/timer': await this.ready; return Response.json({ timerAt: this.timerAt });
       case '/__test/writes': await this.ready; return Response.json(writes.get(this.runtime.code) ?? { transactions: 0, alarms: 0 });
       case '/__test/logins-due':
         // As if the last login check of every open socket were a minute old.

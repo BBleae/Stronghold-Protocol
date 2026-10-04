@@ -174,7 +174,8 @@ const OUTBOX_TABLES = [
 const backoff = (failures) => Math.min(3600_000, 30_000 * 2 ** (failures - 1));
 // A visible lobby listing is refreshed this often (the directory hides a listing a minute after its last refresh).
 const LEASE_REFRESH_MS = 20_000;
-// Timed steps (match timers) keep the room in memory while someone is connected or the next is due within this long.
+// A room whose next timed step (a match timer) is due within this long stays in memory, and its in-memory timer never
+// waits longer than this (a pending timer keeps the platform from hibernating or evicting the object).
 const AWAKE_MS = 60_000;
 // A save compares the snapshot with liveness timestamps rounded to this: pings alone write at most this often.
 const LIVENESS_MS = 30_000;
@@ -436,18 +437,22 @@ export class RoomDurableObject {
     if (clearAttempts) this.storedAttempts = 0;
   }
 
-  // Wake-ups. Timed steps (match timers, a spectator count update) run from memory while someone is connected or the
-  // next one is close (no storage write, no restore); otherwise the room may hibernate or be evicted, and a storage
-  // alarm wakes it at the next deadline. While
-  // the room stays in memory, the alarm is written only when it must fire earlier than the armed one (an early alarm
-  // just re-arms); a room that may sleep gets its exact deadline, since waking a sleeping match costs a restore.
+  // Wake-ups. A room stays in memory, with an in-memory timer for its timed steps (match timers, a spectator count
+  // update), while someone is connected to its running match (waking a sleeping match costs a full restore, so a
+  // connected match never sleeps, even in an untimed phase or a paused battle), or while someone is connected and a
+  // step is due, or the next step is close. Otherwise it may hibernate or be evicted, and a storage alarm wakes it at
+  // its next deadline. While the room stays in memory, the alarm is written only when it must fire earlier than the
+  // armed one (an early alarm just re-arms); a room that may sleep gets its exact deadline.
   async schedule() {
     const rt = this.runtime;
     const now = Date.now();
     const due = rt.timerDue();
     const connected = rt.connected();
-    const awake = due != null && (connected || due - now < AWAKE_MS);
-    this.arm(awake ? due : null);
+    const watched = connected && !!rt.lobby.getRoom(rt.code)?.match;
+    const awake = watched || (due != null && (connected || due - now < AWAKE_MS));
+    // The timer fires at the next step or AWAKE_MS from now, whichever is first; an event with nothing to do commits
+    // nothing.
+    this.arm(awake ? Math.min(due ?? Infinity, now + AWAKE_MS) : null);
     const at = Math.min(rt.nextAlarm() ?? Infinity, awake || due == null ? Infinity : due, this.jobsDue());
     if (at === Infinity || at === this.alarmAt) return;
     const armed = this.alarmAt != null && this.alarmAt > now;
@@ -569,12 +574,15 @@ export class RoomDurableObject {
   }
 
   // When the next background job is due (Infinity: none): an archive's retry, the listing's retry or lease refresh,
-  // the next login check.
+  // the next login check. Called after arm().
   jobsDue() {
     const archive = !this.outboxSize || this.archiving ? Infinity
       : this.ctx.storage.sql.exec('SELECT MIN(retry_at) AS at FROM archive_outbox').one().at;
     const job = this.listing;
-    const listing = job.busy || !this.runtime.lobby.getRoom(this.runtime.code) ? Infinity
+    const room = this.runtime.lobby.getRoom(this.runtime.code);
+    // A match that may sleep (no in-memory timer) is never woken for its listing, since a wake costs a full restore:
+    // its lease lapses (the lobby stops showing a match nobody is playing), and the next wake publishes it again.
+    const listing = job.busy || !room || (room.match && !this.timer) ? Infinity
       : job.failures ? job.retryAt : job.refreshAt;
     const logins = this.logins.busy ? Infinity : Math.max(this.logins.retryAt, this.runtime.nextLoginCheck());
     return Math.min(archive, listing, logins);
