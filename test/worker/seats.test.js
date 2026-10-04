@@ -41,3 +41,24 @@ test('room creation goes on with an unused reservation and is never blocked by a
   assert.equal(applied.status, 201);
   assert.equal(await world.account(accounts.c, 'getActiveSeat'), null);
 });
+
+test('an approval ends with its room: the applicant is never left seated', { timeout: 120000 }, async (t) => {
+  const world = await createWorld(t);
+  const guest = (await world.seed('b')).accountId;
+  await world.seed('a');
+  const route = (await world.api('a', '/api/rooms', { method: 'POST' })).body;
+  const host = await world.player('a', route);
+  await host.request('room.create', { mode: 'coop', difficulty: 'FUNNY' });
+  const applied = await world.api('b', `/api/rooms/${route.code}/applications`, { method: 'POST', body: { action: 'apply' } });
+  const approved = await world.api('a', `/api/rooms/${route.code}/applications`, { method: 'POST', body: { action: 'approve', id: applied.body.id } });
+  assert.equal(approved.body.status, 'approved');
+  assert.equal((await world.api('b', '/api/me/active-match')).body.activeSeat.roomId, route.code);
+
+  // The host leaves before the guest joins: the room is gone, and with it the approval.
+  assert.equal((await host.request('room.leave')).t, 'ok');
+  const listed = await world.api('b', `/api/rooms/${route.code}/applications`);
+  assert.equal(listed.status, 404);
+  assert.deepEqual((await world.api('b', '/api/me/active-match')).body, { activeSeat: null });
+  assert.equal(await world.account(guest, 'getActiveSeat'), null, 'the read released the pointer');
+  assert.equal((await world.api('b', '/api/rooms', { method: 'POST' })).status, 201);
+});

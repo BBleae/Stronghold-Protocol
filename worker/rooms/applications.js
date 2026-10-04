@@ -1,11 +1,16 @@
 import { randomBytes } from 'node:crypto';
 import { ACCOUNT_LIMITS, AccountError, requireId } from '../../shared/account-protocol.js';
 export class ApplicationQueue {
-  constructor({snapshot=[],now=Date.now}={}) {this.items=structuredClone(snapshot);this.now=now;}
+  // `released`: a flag of the former eager seat release, dropped from stored items.
+  constructor({snapshot=[],now=Date.now}={}) {
+    this.items=structuredClone(snapshot).map(({released,...item})=>item);
+    this.now=now;
+  }
   expire() {
     const now=this.now();
     for(const item of this.items) if(['pending','approved'].includes(item.status) && item.expiresAt<=now) {item.status='expired';delete item.ticket;}
-    this.items=this.items.filter(item=>item.expiresAt>now-600000 || ['expired','cancelled','rejected'].includes(item.status) && !item.released);
+    // Ended applications stay listed ten minutes, so their applicant sees how they ended.
+    this.items=this.items.filter(item=>item.expiresAt>now-600000);
   }
   list(accountId=null) {this.expire();return this.items.filter(x=>!accountId || x.accountId===accountId).map(x=>({...x}));}
   snapshot() {this.expire();return structuredClone(this.items);}

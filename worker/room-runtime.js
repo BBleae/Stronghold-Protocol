@@ -269,10 +269,14 @@ export class RoomRuntime {
     });
   }
 
+  // A reservation starts a new generation of the room: nothing of the previous one (its applications, its resume
+  // tickets) carries over.
   reserve(code, accountId = null) {
     this.sweep();
     if (!validCode(code) || !this.isEmpty()) return null;
-    this.generation=randomBytes(16).toString('hex');
+    this.generation = randomBytes(16).toString('hex');
+    this.applications = new ApplicationQueue({ now: this.now });
+    this.resumeTickets.clear();
     this.code = code;
     const ticket = randomBytes(16).toString('hex');
     this.reservation = { ticket, accountId, expiresAt: this.now() + ROOM_LIMITS.reservationMs };
@@ -384,6 +388,8 @@ export class RoomRuntime {
     this.network.sweep();
     if (this.reservation && this.reservation.expiresAt <= this.now()
       && ![...this.registry.all()].some((s) => s.canCreate && s.connected)) this.reservation = null;
+    // Applications are for a room that exists: once it is gone, none can be joined.
+    if (!this.lobby.getRoom(this.code)) this.applications.invalidate();
   }
   pump(now=this.now()) {const result=this.lobby.getRoom(this.code)?.match?.pump?.(now) || 0;this.spectators.pump();return result;}
   reconcileSockets() {
@@ -397,7 +403,6 @@ export class RoomRuntime {
   }
   nextAlarm() {
     const deadlines = [...this.lobby.deadlines.values()];
-    if(this.applications.items.some(x=>['expired','cancelled','rejected'].includes(x.status) && !x.released))deadlines.push(this.now()+30000);
     for(const item of this.applications.list()) if(['approved','pending'].includes(item.status)) deadlines.push(item.expiresAt);
     if(this.accounts && this.lobby.getRoom(this.code)?.activeHumans().some(s=>s.connected)) deadlines.push(this.now()+20000);
     if (this.reservation) deadlines.push(Math.max(this.now() + 30_000, this.reservation.expiresAt));

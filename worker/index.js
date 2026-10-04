@@ -442,23 +442,10 @@ export class RoomDurableObject {
     }, Math.max(0, at - Date.now()));
   }
 
-  // Background side effects of committed state: seat claims of ended applications, the oldest finished match's
-  // archive, the public lobby listing.
+  // Background side effects of committed state: the oldest finished match's archive, the public lobby listing.
+  // (Seat pointers need none: a pointer this room no longer confirms is released by its next reader, seatOf.)
   publish() {
     const rt = this.runtime;
-    if(this.env.ACCOUNTS && !this.releasingClaims) {
-      const terminal=rt.applications.list().filter(item=>['expired','cancelled','rejected'].includes(item.status) && !item.released);
-      if(terminal.length) {
-        this.releasingClaims=true;
-        this.ctx.waitUntil(Promise.all(terminal.map(async item=>{
-          const account=accountOf(this.env,item.accountId);
-          await account.releaseSeat({claimId:item.id});await account.clearApplication(rt.code,item.id);
-        })).then(()=>this.event(()=>{
-          for(const item of terminal){const current=rt.applications.items.find(x=>x.id===item.id);if(current)current.released=true;}
-          this.releasingClaims=false;
-        })).catch(()=>{this.releasingClaims=false;}));
-      }
-    }
     if (this.env.MATCH_ARCHIVES && this.outboxSize && !this.archiving) {
       this.archiving = true;
       const sql = this.ctx.storage.sql;
