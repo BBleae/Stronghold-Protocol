@@ -7,7 +7,7 @@ import { render } from '../../vendor/preact.module.js';
 import { html } from '../ui/components.js';
 import { toast } from '../ui/toasts.js';
 import { ResourceStore } from './store.js';
-import { importResourceZip } from './zip.js';
+import { exportResourceZip, importResourceZip } from './zip.js';
 import { ResourceDialog } from './view.js';
 import { installResourceOpener } from '../ui/resourceButton.js';
 
@@ -57,7 +57,7 @@ function loadStore() {
 
 /**
  * Run `operation` holding the resource lock. Cache Storage is shared by every page of the site, so one cache
- * operation (the boot check; the dialog's check, download, import and clear) runs at a time across all of them:
+ * operation (the boot check; the dialog's check, download, import, export and clear) runs at a time across all of them:
  * interleaved, two pages reconciling at once can each keep the cache the other deletes, and a clear deletes what a
  * download is storing. `onWait` is called when another operation holds the lock; aborting `signal` stops the wait.
  */
@@ -134,6 +134,17 @@ async function openStore() {
   }
 }
 
+/** Save a Blob under 
+ame through the browser's downloads. */
+function saveBlob(blob, name) {
+  const url = URL.createObjectURL(blob);
+  const link = Object.assign(document.createElement('a'), { href: url, download: name });
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+
 /** Show the dialog; resolves with the installation's last known status when it closes. */
 function showManager(store, firstTime = false) {
   openDialog ??= new Promise(resolve => {
@@ -162,7 +173,7 @@ function showManager(store, firstTime = false) {
       Object.assign(state, patch);
       if (closed) return;
       render(html`<${ResourceDialog} state=${state} firstTime=${firstTime} totalBytes=${store.manifest.totalBytes}
-        onClose=${close} onDownload=${download} onImport=${importZip} onClear=${clear}
+        onClose=${close} onDownload=${download} onImport=${importZip} onExport=${exportZip} onClear=${clear}
         onCancel=${() => { controller?.abort(); update({ message: '正在暂停…' }); }} />`, host);
     }
 
@@ -232,6 +243,28 @@ function showManager(store, firstTime = false) {
           ? `已导入 ${imported} 个文件；${skipped} 个与本站版本不一致已跳过，${rest}。`
           : `已导入 ${imported} 个文件，${rest}。`;
       });
+    }
+
+    async function exportZip() {
+      if (operation || closing || !state.status?.complete) return;
+      // Chrome / Edge write straight to the file the player picks; elsewhere the pack is made in memory, then saved.
+      let writable = null;
+      if (typeof window.showSaveFilePicker === 'function') {
+        try {
+          const handle = await window.showSaveFilePicker({ suggestedName: `stronghold-resources-${store.manifest.version.slice(0, 12)}.zip`,
+            types: [{ description: 'ZIP', accept: { 'application/zip': ['.zip'] } }] });
+          writable = await handle.createWritable();
+        } catch (error) {
+          if (error?.name === 'AbortError') return; // the player closed the save dialog
+        }
+      }
+      // The save dialog can resolve after a match start closed this one.
+      if (closing) { await writable?.abort().catch(() => {}); return; }
+      return run('export', async signal => {
+        const { name, blob } = await exportResourceZip(store, { signal, writable, onProgress: status => update({ status }) });
+        if (blob) saveBlob(blob, name);
+        return name;
+      }, name => `已导出 ${name}（${mib(store.manifest.totalBytes)}），发给朋友后在「资源管理」点「导入本地 ZIP」即可。`);
     }
 
     function clear() {

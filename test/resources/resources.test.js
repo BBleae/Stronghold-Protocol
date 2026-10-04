@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { Zip, ZipPassThrough, zipSync, unzipSync } from 'fflate';
 import { buildResourceManifest, validateManifest, writeResourcePack } from '../../tools/resource-pack.mjs';
 import { DownloadError, ResourceStore } from '../../public/js/resources/store.js';
-import { importResourceZip } from '../../public/js/resources/zip.js';
+import { exportResourceZip, importResourceZip } from '../../public/js/resources/zip.js';
 import { cachedResponse, resourceKeys } from '../../public/js/resources/service.js';
 
 const zipjs = await import('@zip.js/zip.js');
@@ -459,6 +459,29 @@ test('streamed stored ZIP imports binary files containing ZIP signatures without
   const store = storeOf(manifest([file]));
   await importResourceZip(new Blob(parts), store, { zipjs });
   assert.equal((await store.check()).complete, true);
+});
+
+test('a complete local installation exports the pack the import accepts (Blob or a save-dialog stream)', async () => {
+  const font = { ...entry('/fonts/x.woff2', 'font'), type: 'font/woff2' };
+  const m = manifest([entry('/assets/voice/cn/a%20b.mp3', 'abc'), font]);
+  const source = storeOf(m);
+  await source.reconcile();
+  await source.put(m.files[0], bytes('abc'));
+  await assert.rejects(exportResourceZip(source, { zipjs }), /全部保存/, 'only a complete installation');
+  await source.put(font, bytes('font'));
+  const { name, blob } = await exportResourceZip(source, { zipjs });
+  assert.equal(name, `stronghold-resources-${m.version.slice(0, 12)}.zip`, 'named like the site pack');
+  assert.deepEqual(Object.keys(unzipSync(new Uint8Array(await blob.arrayBuffer()))), ['assets/voice/cn/a b.mp3', 'fonts/x.woff2'], 'the CLI pack layout');
+  assert.equal((await importResourceZip(blob, storeOf(m), { zipjs })).complete, true);
+  const chunks = [];
+  let closed = false;
+  const streamed = await exportResourceZip(source, { zipjs, writable: new WritableStream({ write(c) { chunks.push(c); }, close() { closed = true; } }) });
+  assert.ok(closed, 'the file stream is closed (committed)');
+  assert.equal(streamed.blob, undefined);
+  assert.equal((await importResourceZip(new Blob(chunks), storeOf(m), { zipjs })).complete, true);
+  // a file the browser evicted (or that changed) is never exported
+  await source.cache.put(m.files[0].url, new Response('xyz', { headers: { 'X-Resource-SHA256': m.files[0].sha256, 'Content-Length': '3' } }));
+  await assert.rejects(exportResourceZip(source, { zipjs }), /全部保存|校验失败/);
 });
 
 test('a pack of another deployment imports the files that match and skips the rest', async () => {

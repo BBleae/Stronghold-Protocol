@@ -1,4 +1,4 @@
-import { checkAbort, sha256Hex } from './common.js';
+import { checkAbort, matchesResource, readBoundedResponse, sha256Hex, verifyBytes } from './common.js';
 import { addFile } from './store.js';
 
 const MAX_READ_BYTES = 16 * 1024 * 1024;
@@ -65,5 +65,39 @@ export async function importResourceZip(blob, store, { signal, onProgress = () =
   } finally {
     await reader.close();
     await store.save(status);
+  }
+}
+
+/**
+ * Write the complete local resources as the pack `npm run resources:pack` makes (stored entries, the same names), so a
+ * player can hand it to friends straight from the site. `writable`: the save dialog's file stream; none ⇒ a Blob.
+ * Against the live manifest; every file is read back from the cache and checked against it first.
+ * @returns {Promise<{ name: string, blob?: Blob }>} the pack's file name (and the Blob without `writable`)
+ */
+export async function exportResourceZip(store, { writable = null, signal, onProgress = () => {}, zipjs } = {}) {
+  checkAbort(signal);
+  zipjs ??= await import('/vendor/zip.module.js');
+  const status = await store.reconcile(signal);
+  if (!status.complete) throw new Error('资源还没有全部保存：先在线下载或导入，再导出');
+  const writer = new zipjs.ZipWriter(writable ?? new zipjs.BlobWriter('application/zip'), {
+    level: 0, useWebWorkers: false, lastModDate: new Date('2020-01-01T00:00:00Z'), extendedTimestamp: false,
+  });
+  let count = 0, bytes = 0;
+  try {
+    for (const file of store.manifest.files) {
+      checkAbort(signal);
+      const cached = await store.cache.match(file.url);
+      if (!matchesResource(cached, file)) throw new Error(`本地资源已被浏览器清理（${file.url}），请重新下载后再导出`);
+      const data = await readBoundedResponse(cached, file.size, signal);
+      await verifyBytes(file, data);
+      await writer.add(decodeURIComponent(file.url.slice(1)), new zipjs.Uint8ArrayReader(data), { signal });
+      count++; bytes += file.size;
+      onProgress({ ...status, count, bytes, complete: false });
+    }
+    const blob = await writer.close();
+    return { name: `stronghold-resources-${store.manifest.version.slice(0, 12)}.zip`, ...(writable ? {} : { blob }) };
+  } catch (error) {
+    await writable?.abort?.(error).catch(() => {});
+    throw error;
   }
 }
