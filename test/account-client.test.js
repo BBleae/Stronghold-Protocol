@@ -33,11 +33,11 @@ test('account errors are NetErrors with the player-facing text of their code', a
 
 test('every code the account API answers in a player flow has Chinese text', () => {
   // worker/index.js, worker/accounts/*, worker/rooms/*, worker/archive/routes.js: answers to the lobby, applications,
-  // seats, history and replays
+  // seats, history and replays (APPLICANT_BUSY: the host approves an applicant who is seated elsewhere meanwhile)
   const codes = ['LOGIN_REQUIRED', 'AUTH_UNAVAILABLE', 'ACCOUNT_UNAVAILABLE', 'ALREADY_SEATED', 'APPLICATION_PENDING',
     'APPLICATION_EXPIRED', 'APPLICATION_NOT_FOUND', 'ALREADY_JOINED', 'TOO_MANY_APPLICATIONS', 'APPLICATION_FAILED',
-    'LOBBY_UNAVAILABLE', 'HISTORY_UNAVAILABLE', 'ARCHIVE_NOT_READY', 'REPLAY_INCOMPLETE', 'FORBIDDEN', 'ROOM_NOT_FOUND',
-    'ROOM_FULL', 'ROOM_STARTED', 'NOT_HOST', 'RATE', 'BAD_MSG', 'INTERNAL'];
+    'APPLICANT_BUSY', 'LOBBY_UNAVAILABLE', 'HISTORY_UNAVAILABLE', 'ARCHIVE_NOT_READY', 'REPLAY_INCOMPLETE', 'FORBIDDEN',
+    'ROOM_NOT_FOUND', 'ROOM_FULL', 'ROOM_STARTED', 'NOT_HOST', 'RATE', 'BAD_MSG', 'INTERNAL'];
   for (const code of codes) assert.match(new NetError(code).message, /[一-鿿]/, code);
 });
 

@@ -202,6 +202,8 @@ const CLOSE_REASON = {
   restart: '服务器已更新或重启，本局已结束，请重新创建房间',
   // account mode (room-net.js): 继续对局 on another page or device took this seat over
   replaced: '已在其他页面或设备继续对局',
+  // account mode: the room Worker cannot restore a match recorded by a newer deployment (a rollback)
+  rollback: '服务器版本已回退，本局无法继续',
 };
 
 function wireNet() {

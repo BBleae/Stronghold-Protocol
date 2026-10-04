@@ -62,6 +62,7 @@ export const CLIENT_ERR_TEXT = Object.freeze({
   ALREADY_JOINED: '已加入该同盟',
   TOO_MANY_APPLICATIONS: '该同盟待处理的申请过多，请稍后再试',
   APPLICATION_FAILED: '申请处理失败，请重试',
+  APPLICANT_BUSY: '对方已在其他房间，申请已失效',
   LOBBY_UNAVAILABLE: '在线大厅暂时不可用，请稍后重试',
   HISTORY_UNAVAILABLE: '对局记录暂时不可用，请重试',
   ARCHIVE_NOT_READY: '对局记录尚未生成，请稍后再试',
