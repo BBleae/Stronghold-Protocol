@@ -278,7 +278,7 @@ export function LobbyScreen() {
           <${AvatarFrame} size="sm" name=${displayName} src=${account.user?.avatarUrl} seat=${0} self=${true} />
           <div class="me-chip__text">
             <span class="me-chip__name" title=${displayName || '博士'}>${displayName || '博士'}</span>
-            <${MicroLabel}>${me.playerId != null ? `DOCTOR #${doctorNo(me.playerId)}` : 'DOCTOR'}<//>
+            <${MicroLabel}>${account.enabled || me.playerId == null ? 'DOCTOR' : `DOCTOR #${doctorNo(me.playerId)}`}<//>
           </div>
         </div>
       </div>
