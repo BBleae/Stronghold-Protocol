@@ -122,7 +122,6 @@ const keepEarly = (e) => Array.isArray(e) && (STATE_EV.has(e[0]) || fxForm(e) !=
 export function GameScreen() {
   // Only what the routing needs: a room.state that changes nothing of it (a spectator count) does not render it.
   const spectating = useStore((s) => !!s.room?.spectating);
-  const coop = useStore((s) => s.room?.mode === 'coop');
   const pub = useStore((s) => s.match.public);
   const hasResult = useStore((s) => !!s.match.result);
   const ended = useStore((s) => !!s.room && !s.room.inMatch && !!s.match.public);
@@ -143,14 +142,18 @@ export function GameScreen() {
   else if (mode === 'draft') body = html`<${BandDraftScreen} />`;
   else body = html`<${MatchScreen} />`;
   return html`${body}
-    ${coop ? html`<${SpectatorPresence} spectating=${spectating} />` : null}
+    <${SpectatorPresence} spectating=${spectating} />
     ${(away || autoplay) && !hasResult && mode !== 'result' && !ended ? html`<${AwayOverlay} />` : null}
     ${ended && !hasResult && mode !== 'result' ? html`<${MatchEnded} />` : null}`;
 }
 
-/** The spectator count of a co-op match (and a spectator's way out): the only part a count update renders. */
+/**
+ * The spectator count of a match that can be watched (the room's state has one only then): for its players while
+ * someone watches, for a spectator with its way out. The only part a count update renders.
+ */
 function SpectatorPresence({ spectating }) {
-  const count = useStore((s) => s.room?.spectatorCount || 0);
+  const count = useStore((s) => s.room?.spectatorCount);
+  if (count == null || (!count && !spectating)) return null;
   return html`<div class="spectator-presence" role="status" aria-live="polite">
     <span>${spectating ? '正在观战 · ' : ''}${count} 人观战</span>
     ${spectating ? html`<${Button} size="sm" variant="ghost" onClick=${quitMatch}>退出观战<//>` : null}

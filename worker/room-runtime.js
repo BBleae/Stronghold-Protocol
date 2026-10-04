@@ -123,8 +123,12 @@ export class RoomRuntime {
     this.lobby.sendState = (room, session) => this.spectators.state(session);
     // A browser simulates a battle with the rules its match runs on: b.start names them (battle/runner.js loads that
     // version's engine when it is not the page's own — a match restored from an older deployment).
+    // A battle ended early (b.end) reaches the spectators shown it too.
     const matchSend = this.lobby.matchSend.bind(this.lobby);
-    this.lobby.matchSend = (room, ctx, playerId, msg) => matchSend(room, ctx, playerId, withRules(msg, ctx.match));
+    this.lobby.matchSend = (room, ctx, playerId, msg) => {
+      if (msg.t === 'b.end') this.spectators.ended(msg);
+      return matchSend(room, ctx, playerId, withRules(msg, ctx.match));
+    };
     const broadcast = this.lobby.broadcastRoom.bind(this.lobby);
     this.lobby.broadcastRoom = (room, msg) => {
       const result = broadcast(room, msg);
@@ -362,8 +366,7 @@ export class RoomRuntime {
     if (!this.code || this.isEmpty()) return false;
     if (this.hasAccount(accountId)) return true;
     if ([...this.registry.all()].some((s) => s.accountId === accountId && (s.notice || s.pendingResult))) return true;
-    const room = this.lobby.getRoom(this.code);
-    return !!room?.match && this.publicRoom && room.mode === 'coop';
+    return this.spectators.watchable;
   }
 
   /**

@@ -5,27 +5,29 @@ import { withRules } from './rules.js';
 // A changed spectator count is broadcast at most this often: joins and leaves in between are coalesced.
 const PRESENCE_MS = 1000;
 
-// What spectators are sent of a match at one moment: its public view (and its key: the view without its clock) and a
-// player's prep field, each computed once however many spectators are sent it.
-class MatchView {
+// The players' prep fields (and their keys) at one moment, each read once however many spectators watch it.
+class PrepFields {
   constructor(match) {
     this.match = match;
-    this.pub = match.publicView();
-    this.publicKey = JSON.stringify({ ...this.pub, serverNow: 0 });
-    this.prepFields = new Map();
+    this.fields = new Map();
   }
 
-  prepField(player) {
-    if (!this.prepFields.has(player.playerId)) {
+  of(player) {
+    if (!this.fields.has(player.playerId)) {
       const meta = this.match.prepFieldMeta(player);
-      this.prepFields.set(player.playerId, { meta, key: JSON.stringify(meta) });
+      this.fields.set(player.playerId, { meta, key: JSON.stringify(meta) });
     }
-    return this.prepFields.get(player.playerId);
+    return this.fields.get(player.playerId);
   }
 }
 
 // Read-only views live outside Match: retained rule engines and player/checkpoint membership are unchanged. A spectator
-// never becomes a simulation authority.
+// never becomes a simulation authority, and nothing here calls into the match beyond reading it (a call that schedules
+// a timer would put it outside the recorded event log that restores the match).
+//
+// A spectator is sent what a player watching a field is: the match's broadcasts (m.public, b.pool, tickers…), the spec
+// of the battle on the field it watches (its page simulates a replica) and that battle's early end; in prep, the board
+// of the player it watches.
 //
 // Spectating is public, so what one spectator sends reaches nobody else: its hello and room.spectate are answered to it
 // alone, and the spectator count it changes reaches the room with the next presence update (at most one a second).
@@ -34,7 +36,8 @@ class MatchView {
 export class Spectators {
   constructor(runtime) {
     this.rt = runtime;
-    // What each spectator (by player id) was last sent: the public view's key, its field's key.
+    // What each spectator (by player id) was last sent of its field: `fieldKey` (a battle's id, a prep field's key),
+    // `ended` (that battle's early end).
     this.sent = new Map();
     // A count change waiting for the next presence update; when the last update went out.
     this.countChanged = false;
@@ -47,14 +50,24 @@ export class Spectators {
 
   get count() { return this.sessions().length; }
 
-  /** room.state as `session` sees it: seats with avatars, the spectator count, whether it is a spectator. */
+  /** Whether the room's match can be watched: a running match of a public co-op room. */
+  get watchable() {
+    const room = this.room;
+    return !!room?.match && this.rt.publicRoom && room.mode === 'coop';
+  }
+
+  /**
+   * room.state as `session` sees it: seats with avatars, whether it is a spectator, and the spectator count while the
+   * match can be watched.
+   */
   state(session) {
     if (!this.room) return;
     const state = this.room.toState();
     state.seats = state.seats.map((seat) => seat
       ? { ...seat, avatarUrl: seat.isBot ? null : this.rt.registry.byId(seat.playerId)?.avatarUrl ?? null }
       : null);
-    sendSession(session, { ...state, spectatorCount: this.count, ...(session.spectating ? { spectating: true } : {}) });
+    if (this.watchable) state.spectatorCount = this.count;
+    sendSession(session, { ...state, ...(session.spectating ? { spectating: true } : {}) });
   }
 
   /** The room changed (Lobby.broadcastState): members and spectators get its state at once, count included. */
@@ -76,10 +89,23 @@ export class Spectators {
     for (const session of this.sessions()) sendSession(session, msg);
   }
 
+  /**
+   * A battle the match ended early (its b.end to the players shown the field): the spectators shown that battle get it
+   * once. A takeover only stops its former authority's simulation.
+   */
+  ended(msg) {
+    if (msg.reason === 'takeover') return;
+    for (const session of this.sessions()) {
+      const sent = this.sent.get(session.playerId);
+      if (sent?.fieldKey !== msg.battleId || sent.ended) continue;
+      sent.ended = true;
+      sendSession(session, msg);
+    }
+  }
+
   /** room.spectate: watch the room's running match (a public co-op room's, and not as one of its members). */
   join(session) {
-    const room = this.room;
-    if (!this.rt.publicRoom || room?.mode !== 'coop' || !room.match) return { error: 'ROOM_NOT_FOUND' };
+    if (!this.watchable) return { error: 'ROOM_NOT_FOUND' };
     if (this.rt.lobby.roomOf(session)) return { error: 'ROOM_STARTED' };
     if (session.spectating) {
       this.state(session);
@@ -87,7 +113,6 @@ export class Spectators {
     }
     session.spectating = true;
     this.countChanged = true;
-    this.sent.delete(session.playerId);
     this.state(session);
     this.sync(session, true);
     return { ok: true };
@@ -120,7 +145,6 @@ export class Spectators {
     this.state(session);
     if (repeat) return;
     this.countChanged = true;
-    this.sent.delete(session.playerId);
     this.sync(session, true);
   }
 
@@ -133,7 +157,6 @@ export class Spectators {
       || (!match.fields.length && msg.fieldId.startsWith('n:') && match.players.get(msg.fieldId.slice(2))?.alive);
     if (!valid) return { error: 'BAD_TARGET' };
     session.watchField = msg.fieldId;
-    this.sent.delete(session.playerId);
     this.sync(session, true);
     return { ok: true };
   }
@@ -163,52 +186,53 @@ export class Spectators {
   }
 
   // Every event: spectators follow the match (or stop watching when it is over), and a changed count goes out once
-  // its presence update is due. An event's cost does not grow with the audience: the match is viewed once.
+  // its presence update is due. An event's cost does not grow with the audience: a prep field is read once.
   pump() {
-    const match = this.room?.match;
-    if (!match || !this.rt.publicRoom) {
+    if (!this.watchable) {
       this.end();
     } else {
-      const sessions = this.sessions();
-      const view = sessions.length ? new MatchView(match) : null;
-      for (const session of sessions) this.sync(session, false, view);
+      const prepFields = new PrepFields(this.room.match);
+      for (const session of this.sessions()) this.sync(session, false, prepFields);
     }
     if (this.countChanged && this.rt.now() >= this.presenceAt + PRESENCE_MS) this.broadcastState();
   }
 
-  /** Send the spectator what changed of the match since it was last sent (everything when `force`). */
-  sync(session, force = false, view = null) {
+  /**
+   * Send the spectator its field when that changed: the battle on the field it watches, in prep the board of the
+   * player it watches. `force` (it joined, came back or chose a field): the match's public view too, and its field
+   * anew. The public view's changes reach it with the match's broadcasts.
+   */
+  sync(session, force = false, prepFields = null) {
     const match = this.room?.match;
     if (!match) return;
-    view ??= new MatchView(match);
-    const previous = this.sent.get(session.playerId) || {};
-    if (force || previous.publicKey !== view.publicKey) sendSession(session, view.pub);
+    if (force) {
+      this.sent.delete(session.playerId);
+      sendSession(session, match.publicView());
+    }
+    const previous = this.sent.get(session.playerId);
     const field = match.fields.find((f) => f.fieldId === session.watchField) || match.fields.find((f) => !f.done) || match.fields[0];
-    let fieldKey = null;
     if (field?.cc) {
       session.watchField = field.fieldId;
-      fieldKey = field.battleId + ':' + field.done;
-      if (force || previous.fieldKey !== fieldKey) {
-        sendSession(session, withRules(match._startMsg(field, session.playerId, { watch: true }), match));
-        // A late join needs the current shared boss pool even if it has not changed recently enough to produce another
-        // room-wide b.pool frame.
-        if (match.bossPool) {
-          const acked = Object.fromEntries(match.fields.filter((f) => f.cc).map((f) => [f.fieldId,
-            f.mode === 'server' && f.credit ? Math.max(f.bossAcked, f.credit.cum) : f.bossAcked]));
-          sendSession(session, { t: 'b.pool', hp: Math.max(0, match.bossPool.hp), max: match.bossPool.maxHp,
-            teamLp: match.teamLp == null ? null : Math.max(0, Math.round(match.teamLp)), acked });
-        }
+      if (previous?.fieldKey === field.battleId) return;
+      sendSession(session, withRules(match._startMsg(field, session.playerId, { watch: true }), match));
+      // A late join needs the current shared boss pool even if it has not changed recently enough to produce another
+      // room-wide b.pool frame (the frame of Match._broadcastPool, read here).
+      if (match.bossPool) {
+        const acked = Object.fromEntries(match.fields.filter((f) => f.cc).map((f) => [f.fieldId,
+          f.mode === 'server' && f.credit ? Math.max(f.bossAcked, f.credit.cum) : f.bossAcked]));
+        sendSession(session, { t: 'b.pool', hp: Math.max(0, match.bossPool.hp), max: match.bossPool.maxHp,
+          teamLp: match.teamLp == null ? null : Math.max(0, Math.round(match.teamLp)), acked });
       }
+      this.sent.set(session.playerId, { fieldKey: field.battleId });
     } else if (!match.fields.length) {
       const target = match.players.get(session.watchField?.slice(2));
       const player = target?.alive ? target : match.order.find((p) => p.alive && !p.left);
-      if (player) {
-        const { meta, key } = view.prepField(player);
-        session.watchField = meta.fieldId;
-        fieldKey = key;
-        if (force || previous.fieldKey !== fieldKey) sendSession(session, meta);
-      }
+      if (!player) return;
+      const { meta, key } = (prepFields ?? new PrepFields(match)).of(player);
+      session.watchField = meta.fieldId;
+      if (previous?.fieldKey === key) return;
+      sendSession(session, meta);
+      this.sent.set(session.playerId, { fieldKey: key });
     }
-    this.sent.set(session.playerId, { publicKey: view.publicKey, fieldKey });
   }
 }

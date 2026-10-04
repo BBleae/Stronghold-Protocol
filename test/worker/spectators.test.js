@@ -99,13 +99,37 @@ test('a spectator\'s hello and room.spectate are answered to it alone; count cha
   assert.ok(viewer.frames.slice(-15).some(f=>f.t==='error' && f.code==='RATE'));
 });
 
-test('an event views the match once for its spectators, however many watch',t=>{
+test('an event reads the match once for its spectators, however many watch',t=>{
   const {rt,host}=setup(t);send(rt,host,'room.start');
   for(let i=0;i<5;i++)send(rt,connect(rt,'viewer'+i,undefined,undefined,'9.1.1.'+(i+1)),'room.spectate');
-  const match=rt.lobby.getRoom('ABCD').match, publicView=match.publicView.bind(match);
-  let views=0;match.publicView=()=>{views++;return publicView();};
+  const match=rt.lobby.getRoom('ABCD').match, publicView=match.publicView.bind(match), prepFieldMeta=match.prepFieldMeta.bind(match);
+  let views=0,fields=0;match.publicView=()=>{views++;return publicView();};match.prepFieldMeta=(p)=>{fields++;return prepFieldMeta(p);};
   rt.spectators.pump();
-  assert.equal(views,1);
+  assert.equal(views,0,"the public view reaches spectators with the match's own broadcasts");
+  assert.equal(fields,1,"the watched player's prep field, read once");
+});
+
+test("spectators get each public view once, as the players do, and a battle's early end",t=>{
+  const {rt,host}=setup(t);send(rt,host,'room.addBot');send(rt,host,'room.start');
+  const viewer=connect(rt,'viewer');send(rt,viewer,'room.spectate');
+  const joined=host.count('m.public');
+  const match=rt.lobby.getRoom('ABCD').match;
+  send(rt,host,'g.autoplay',{on:true});
+  for(let i=0;i<500 && match.round<3;i++){const at=match.sched.nextAt();if(at!=null)rt.pump(at);}
+  assert.ok(match.round>=3);
+  const pubs=viewer.frames.filter(f=>f.t==='m.public');
+  assert.equal(pubs.length,1+host.count('m.public')-joined,"the view at the join, then the match's broadcasts");
+  const key=({serverNow,...view})=>JSON.stringify(view);
+  for(let i=1;i<pubs.length;i++)assert.notEqual(key(pubs[i]),key(pubs[i-1]),'no view twice');
+  // a battle is sent once (not again when it is done); its early end reaches the spectators shown it, once
+  for(let i=0;i<100 && !match.fields.some(f=>f.cc);i++){const at=match.sched.nextAt();if(at!=null)rt.pump(at);}
+  const starts=viewer.frames.filter(f=>f.t==='b.start');
+  assert.equal(new Set(starts.map(f=>f.battleId)).size,starts.length);
+  const battle=starts.at(-1), playerId=host.take('welcome').playerId;
+  match.sendTo(playerId,{t:'b.end',battleId:battle.battleId,fieldId:battle.fieldId,reason:'takeover'});rt.pump();
+  assert.equal(viewer.count('b.end'),0,'a takeover only stops the former authority');
+  for(let i=0;i<2;i++){match.sendTo(playerId,{t:'b.end',battleId:battle.battleId,fieldId:battle.fieldId,reason:'forced'});rt.pump();}
+  assert.deepEqual(viewer.frames.filter(f=>f.t==='b.end').map(f=>[f.battleId,f.reason]),[[battle.battleId,'forced']]);
 });
 
 test('same-address spectators leave capacity for all player seats and a replacement',t=>{
@@ -193,10 +217,12 @@ test('offline spectators of an ended match learn it on their next hello and neve
     assert.equal(rt.spectators.count,1);
   }
 });
-test('waiting, private and solo rooms cannot be spectated',t=>{
+test('waiting, private and solo rooms cannot be spectated, and their players see no spectator count',t=>{
   const {rt,host}=setup(t), a=connect(rt,'viewer');
   send(rt,a,'room.spectate');assert.ok(a.take('error'));
-  send(rt,host,'room.start');rt.publicRoom=false;
+  assert.equal(host.take('room.state').spectatorCount,undefined);
+  send(rt,host,'room.start');assert.equal(host.take('room.state').spectatorCount,0);
+  rt.publicRoom=false;rt.spectators.broadcastState();assert.equal(host.take('room.state').spectatorCount,undefined);
   send(rt,a,'room.spectate');assert.equal(a.take('room.state'),undefined);
   rt.publicRoom=true;rt.lobby.getRoom('ABCD').mode='solo';
   send(rt,a,'room.spectate');assert.equal(a.take('room.state'),undefined);
