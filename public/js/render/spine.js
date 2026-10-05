@@ -585,21 +585,40 @@ export class SpineActor {
         this.skillBeginUntil = this.clock + this.dur(b);
         // nothing queued behind it: update() then plays the base of that moment (_baseName) — the skill's own idle
         // clip (community report #23: no jump attack without an attack) or its stance
-      } else if (this.mode === 'base') this._play(this._baseName(), true);
+      } else if (this.mode === 'base' && this._castsOnce()) this._cast();
+      else if (this.mode === 'base') this._play(this._baseName(), true);
       return;
     }
     // the begin clip plays out, then the end (update); a unit back in the plain idle after its last spell of attacks
-    // (_rest) played the end clip then: no second one (a skill whose loop is its idle rests in that loop: it ends again)
-    if (this.mode === 'skillBegin' || (rested && !this._loopIsIdle())) return;
+    // (_rest) played the end clip then: no second one (a skill whose loop is its idle rests in that loop: it ends again).
+    // A one-shot skill clip (_castsOnce) also plays out: the sim switches an instant skill off in the same tick and a
+    // deploy-time passive after its 0.5 s window (sim skills.js SKILL_ANIM_WINDOW), both shorter than the clip
+    if (this.mode === 'skillBegin' || this.mode === 'skillCast' || (rested && !this._loopIsIdle())) return;
     if (this.clock - this.skillOnAt < 0.05 && this.has(sk.loop) && !this._skillIsBuffOnly()) {
       // an instant skill (on and off at once): the original still plays its skill clip once
-      const c = this._down(sk.loop, this.down);
-      this.mode = 'skillCast';
-      this._play(c, false, { mix: this._m(MIX.skill), restart: true });
-      this.skillCastUntil = this.clock + Math.min(this.dur(c), 3.5);
+      this._cast();
       return;
     }
     this._skillOff();
+  }
+
+  /** The skill's clip played once (mode 'skillCast'); update() ends it (_skillOff) after the clip, at most 3.5 s. */
+  _cast() {
+    const c = this._down(this.roles.skill.loop, this.down);
+    this.mode = 'skillCast';
+    this._play(c, false, { mix: this._m(MIX.skill), restart: true });
+    this.skillCastUntil = this.clock + Math.min(this.dur(c), 3.5);
+  }
+
+  /**
+   * A skill clip with neither a Begin nor an idle of its own, which is not the attack clip, is the skill's animation
+   * itself: it plays once as the skill starts (DESIGN §25.1, upstream #160 — 德克萨斯 S2 剑雨 and the other instant
+   * skills of that shape, a deploy-time passive's window, 银灰 S3 真银斩's activation), then the base of that moment.
+   */
+  _castsOnce() {
+    const sk = this.roles.skill;
+    return !!sk && !this.has(sk.begin) && !this._ownIdle() && !this._loopIsIdle() && sk.via !== 'attack'
+      && sk.loop !== this.roles.attack?.loop && !this._skillIsBuffOnly() && this.has(sk.loop);
   }
 
   _skillOff() {
@@ -757,7 +776,11 @@ export class SpineActor {
         }
         break;
       case 'skillCast':
-        if (this.clock >= this.skillCastUntil) this._skillOff();
+        if (this.clock >= this.skillCastUntil) {
+          // an instant skill (already off): its end; a skill still running (银灰 S3) rests in the base of that moment
+          if (!this.skillOn) this._skillOff();
+          else { this.mode = 'base'; this._play(this._baseName(), true, { mix: this._m(MIX.skill) }); }
+        }
         break;
       case 'skillEnd':
         if (this.clock >= this.skillEndUntil) { this.mode = 'base'; this._play(this._baseName(), true, { mix: this._m(MIX.skill) }); }

@@ -977,22 +977,24 @@ export class Match {
   }
 
   /**
-   * UnitInfo list of a player's pieces for prep scouting: the board, and the bench / temp operators (`area` 'hand' /
-   * 'temp', rows 7 / 8 like the own prep view; items are not drawn). `side` 'L' | 'R' places them on that half of the
-   * boss field (finalAssault.js bossFieldPlacement: rows ≥ 7 shift −7, the right half mirrored); null = the own board.
+   * UnitInfo list of a player's pieces for prep scouting: the board, and the bench / temp pieces (`area` 'hand' /
+   * 'temp', rows 7 / 8 like the own prep view — hand col = hand slot, temp cols 4..8 = temp slots; bench pieces face
+   * right). Items there come as units of kind 'item' (the client draws their floating plates; user playtest #2 item 1,
+   * GitHub #44 / PR #129). `side` 'L' | 'R' places them on that half of the boss field (finalAssault.js
+   * bossFieldPlacement: rows ≥ 7 shift −7, the right half mirrored); null = the own board.
    */
   _scoutUnits(ps, side = null) {
     const units = [];
     const add = (piece, r, c, area) => {
-      if (!piece || (piece.kind !== 'chess' && piece.kind !== 'token')) return;
-      const rec = piece.kind === 'token' ? this.gd.token(piece.id) : this.gd.chess(piece.id);
+      if (!piece || (piece.kind !== 'chess' && piece.kind !== 'token' && (piece.kind !== 'item' || area === 'board'))) return;
+      const rec = piece.kind === 'item' ? this.gd.item(piece.id) : piece.kind === 'token' ? this.gd.token(piece.id) : this.gd.chess(piece.id);
       const assets = (rec && rec.assets) || {};
       // DESIGN §16: the skill / module THIS player's operator fights with (the scout's detail card shows it, like the
       // sim's UnitInfo in a shared field); moduleId only for an elite
       const lo = piece.kind === 'chess' && rec ? ps.loadoutFor(rec) : null;
       const at = side ? bossFieldPlacement(side, r, c, area === 'board' ? pieceDir(piece) : 'RIGHT') : { row: r, col: c, dir: area === 'board' ? pieceDir(piece) : 'RIGHT' };
       units.push({
-        id: piece.uid, uid: piece.uid, kind: piece.kind === 'token' ? 'token' : 'op', side: 'ally', ownerId: ps.playerId, defId: piece.id,
+        id: piece.uid, uid: piece.uid, kind: piece.kind === 'token' ? 'token' : piece.kind === 'item' ? 'item' : 'op', side: 'ally', ownerId: ps.playerId, defId: piece.id,
         name: rec ? rec.name : piece.id, tier: rec && Number.isInteger(rec.tier) ? rec.tier : 1, golden: !!(rec && rec.isGolden),
         spine: assets.spine || (rec && rec.charId) || piece.id, avatar: assets.avatar || (rec && rec.charId) || piece.id,
         x: at.col, y: at.row, dir: at.dir, facing: at.dir === 'LEFT' ? -1 : 1, maxHp: rec && rec.stats && Number.isFinite(rec.stats.maxHp) ? rec.stats.maxHp : 1,
@@ -1031,15 +1033,21 @@ export class Match {
         sides[pid] = side;
         units.push(...this._scoutUnits(member, side));
       }
+      // no `effects`: a shared boss field is no one player's (the effects column stays empty, never one's own)
       return { t: 'm.field', fieldId: `n:${ps.playerId}`, kind: 'boss', rect: { ...GEO.BOSS_RECT }, stageId: this.stageId, units, prep: true, nextEnemies,
         players: g.players.slice(), sides };
     }
-    return { t: 'm.field', fieldId: `n:${ps.playerId}`, kind: 'normal', rect: { ...GEO.NORMAL_RECT }, stageId: this.stageId, units: this._scoutUnits(ps), prep: true, nextEnemies };
+    // the scouted player's effects column (策略 / 机变 / 悬赏 …), display-ready (user playtest #2: while scouting, the
+    // right column shows the watched player's effects, not one's own)
+    return { t: 'm.field', fieldId: `n:${ps.playerId}`, kind: 'normal', rect: { ...GEO.NORMAL_RECT }, stageId: this.stageId, units: this._scoutUnits(ps),
+      effects: ps.effectsView(), prep: true, nextEnemies };
   }
 
   /**
-   * Signature of a prep scout view: the pieces prepFieldMeta shows — board, bench and temp, in a boss round those of
-   * every member of the group (units only: a shop or funds change is not a board change).
+   * Signature of a prep scout view: the pieces prepFieldMeta shows — board, bench and temp (items included), in a boss
+   * round those of every member of the group (units only: a shop or funds change is not a board change). Bench / temp
+   * entries carry their slot — prepFieldMeta draws x from it, so a piece moved to another slot is a change (review of
+   * PR #129).
    */
   _prepScoutSig(ps) {
     const g = this.bossGroupOf(ps);
@@ -1051,10 +1059,8 @@ export class Match {
         parts.push(`${piece.uid}:${piece.id}@${at}:${items}`);
       };
       for (const { r, c, piece } of boardOrder(member.board)) add(piece, `${r},${c}:${pieceDir(piece)}`);
-      // the bench / temp operators (items there are not drawn)
-      const op = (piece) => piece && (piece.kind === 'chess' || piece.kind === 'token');
-      (member.hand || []).forEach((piece, i) => { if (op(piece)) add(piece, `h${i}`); });
-      (member.temp || []).forEach((piece, i) => { if (op(piece)) add(piece, `t${i}`); });
+      (member.hand || []).forEach((piece, i) => { if (piece) add(piece, `h${i}`); });
+      (member.temp || []).forEach((piece, i) => { if (piece) add(piece, `t${i}`); });
     }
     return parts.join(';');
   }
