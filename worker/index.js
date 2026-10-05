@@ -1,7 +1,8 @@
 import { randomInt } from 'node:crypto';
-import { APP_VERSION } from '../shared/constants.js';
+import { APP_VERSION, PROTOCOL_VERSION } from '../shared/constants.js';
 import { CODE_ALPHABET } from '../server/lobby.js';
 import { RoomRuntime, validCode } from './room-runtime.js';
+import { LobbyGatewayDurableObject } from './lobby-gateway.js';
 import { prepareMatchVersion, retainedMatchVersions } from './match-versions.js';
 import { RULES_VERSION } from '../shared/rules-version.js';
 import { logInfo, logWarn, logError, errorFields } from './log.js';
@@ -52,12 +53,51 @@ function apiLimit(env, method, path) {
   return env.API_LIMIT;
 }
 
+const lobbyStub = (env) => env.LOBBY.get(env.LOBBY.idFromName('lobby'), { locationHint: 'apac' });
+
+// The node-protocol compatibility surface: as few departures from the upstream node server
+// (server/index.js) as a Workers runtime allows — /healthz answers the same shape, one /ws
+// socket carries the whole lobby, every other path is the static client. No accounts, no
+// tickets, no room DOs: a Node client names its room in a `room.*` message, exactly as it
+// does against a Node server. Uptime is per isolate, not per object; a fresh wake resets it,
+// which only affects a vanity field. (Date.now() at module top level is the runtime's frozen
+// pseudo-clock — zero; the start instant is stamped on the first request.)
+let compatStartedAt = 0;
+async function compatRoute(request, env, url, path) {
+  if (!compatStartedAt) compatStartedAt = Date.now();
+  if (path === '/healthz') {
+    if (request.method !== 'GET') return error(405, 'BAD_MSG');
+    const stats = await lobbyStub(env).fetch(new Request('https://lobby.internal/_status')).then((r) => r.json());
+    return json({ ok: true, version: PROTOCOL_VERSION, app: APP_VERSION,
+      uptimeSec: Math.round((Date.now() - compatStartedAt) / 1000), build: BUILD, ...stats });
+  }
+  if (path === '/ws') {
+    if (request.method !== 'GET') return error(405, 'BAD_MSG');
+    if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') return error(426, 'BAD_MSG', 'WebSocket required');
+    if (env.CONNECT_LIMIT && !(await within(env.CONNECT_LIMIT, networkKey(request)))) return refuseSocket(CLOSE.TRY_LATER, 'too many connections');
+    // The lobby reads the client address from the edge header, the way node reads it from the
+    // socket (trustProxy is off on the Network; the edge is the only trusted hop here).
+    return lobbyStub(env).fetch(new Request('https://lobby.internal/_ws', { headers: { Upgrade: 'websocket',
+      'X-Lobby-IP': edgeIp(request) } }));
+  }
+  if (path.startsWith('/api/')) return error(404, 'ROOM_NOT_FOUND');
+  return env.ASSETS ? env.ASSETS.fetch(request) : error(404, 'ROOM_NOT_FOUND');
+}
+
 async function route(request, env) {
   const url = new URL(request.url);
   const path = url.pathname;
   // Resource files: the complete resource ZIP and the extension-less audio alias, both read from the static assets.
+  // Kept before the compat branch so the node-protocol deployment serves them too (its web players download the
+  // resource pack and its audio uses the /media alias exactly like the account-mode deployment).
   if (path === PACK_PATH) return servePack(request, env);
   if (path.startsWith(MEDIA_PREFIX)) return serveMedia(request, env);
+  // The node-protocol compatibility deployment: the upstream lobby runs verbatim in one
+  // Durable Object (worker/lobby-gateway.js), the APK's embedded client joins with its own
+  // protocol (a /ws without a room code, hello + room.*), and /healthz answers the node shape
+  // ({version, app}) so the APK's server list treats it as a plain server: local resources,
+  // local settings, no room-scoped flag. The account system stays out of this mode.
+  if (env.NODE_COMPAT) return compatRoute(request, env, url, path);
   // Administrator routes: authorized by their own tokens, never by a player session.
   const backup = await handleBackupRoutes(request, env);
   if (backup) return backup;
