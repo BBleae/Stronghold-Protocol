@@ -1,7 +1,7 @@
 // Normative message catalogue (DESIGN §8). Used by server (validation) and client (building requests).
 // Every client→server message is `{ t, rid?, ...fields }`. Unknown `t` or invalid fields ⇒ ERR.BAD_MSG.
 
-import { DIFFICULTIES, NAME_MAX_LEN, ROOM_CODE_LEN, MAX_SEATS, EMOTES, GEO } from './constants.js';
+import { DIFFICULTIES, NAME_MAX_LEN, ROOM_CODE_LEN, MAX_SEATS, DEFAULT_SEATS, EMOTES, GEO } from './constants.js';
 
 // ---- tiny validators -------------------------------------------------------
 const isInt = (v, lo = -Infinity, hi = Infinity) => Number.isInteger(v) && v >= lo && v <= hi;
@@ -25,8 +25,12 @@ const isList = (v, max, item) => Array.isArray(v) && v.length <= max && v.every(
 
 // ---- client-side combat (DESIGN §14): b.progress / b.result payloads -------------------------------------------
 
-/** Size limits of a b.result payload (the whole frame also obeys the 64 KB inbound limit). */
-export const RESULT_LIMITS = Object.freeze({ players: 4, leaked: 400, unitsEnd: 64, unitStats: 160, layerGains: 40, mods: 16, unspawned: 400 });
+/**
+ * Size limits of a b.result payload (the whole frame also obeys the 64 KB inbound limit). `players` bounds the per-player
+ * maps (b.result perPlayer, b.progress `by` / `left`): one entry per player of a room at most, MAX_SEATS — a 联防 field's
+ * `left` has one key per leaker (up to MAX_SEATS − 1). Every payload valid for 1–4 players stays valid.
+ */
+export const RESULT_LIMITS = Object.freeze({ players: MAX_SEATS, leaked: 400, unitsEnd: 64, unitStats: 160, layerGains: 40, mods: 16, unspawned: 400 });
 const BIG = 1e13;
 const isStat = (v) => v === undefined || isNum(v, 0, BIG);
 const isModVal = (v) => v === null || isNum(v, -BIG, BIG) || isStr(v, 64) || isBool(v);
@@ -242,16 +246,28 @@ const target = (v) => {
   return false;
 };
 
+/** A co-op room's player seats (room.create / room.setCapacity): DEFAULT_SEATS..MAX_SEATS. */
+const isCapacity = (v) => isInt(v, DEFAULT_SEATS, MAX_SEATS);
+/**
+ * The most cards a 机变 draft offers: co-op max(6, alive + 2) — 6 for 1–4 players (official), 7–10 for 5–8 (owner's
+ * decision) — so `g.choice` idx is below this.
+ */
+export const SP_CARDS_MAX = Math.max(6, MAX_SEATS + 2);
+
 /** @type {Record<string, Record<string, (v:any)=>boolean> & { $optional?: string[] }>} */
 export const C2S = {
   // session & lobby
   hello: { name: (v) => isStr(v, NAME_MAX_LEN) && v.trim().length > 0, token: (v) => v == null || isStr(v, 64), version: (v) => v == null || isInt(v, 0, 1e6), $optional: ['token', 'version'] },
   ping: { c: (v) => typeof v === 'number' && Number.isFinite(v) },
-  'room.create': { mode: (v) => v === 'solo' || v === 'coop', difficulty: (v) => DIFFICULTIES.includes(v) },
+  // capacity: the co-op room's player seats, DEFAULT_SEATS..MAX_SEATS (absent ⇒ DEFAULT_SEATS, the official room; a solo
+  // room has one seat whatever it says) — 5–8 seats are a remake extension (shared/constants.js MAX_SEATS)
+  'room.create': { mode: (v) => v === 'solo' || v === 'coop', difficulty: (v) => DIFFICULTIES.includes(v), capacity: isCapacity, $optional: ['capacity'] },
   'room.join': { code: (v) => isStr(v, ROOM_CODE_LEN + 2) && /^[A-Za-z0-9]+$/.test(v) },
   'room.leave': {},
   'room.ready': { ready: isBool },
   'room.setDifficulty': { difficulty: (v) => DIFFICULTIES.includes(v) },
+  // the host resizes the co-op room in its lobby (server/lobby.js setCapacity): never below its occupied seats
+  'room.setCapacity': { capacity: isCapacity },
   'room.addBot': {},
   'room.removeBot': { seat: (v) => isInt(v, 0, MAX_SEATS - 1) },
   // the host removes another human before the match (server/lobby.js kick; community report #17); playerId = the one the
@@ -288,7 +304,7 @@ export const C2S = {
   'g.art': { itemUid: isUid, row: (v) => isInt(v, 0, GEO.ROWS - 1), col: (v) => isInt(v, 0, GEO.COLS - 1), dir: isDir, $optional: ['dir'] },
   'g.destroy': { uid: isUid },
   'g.reward': { idx: (v) => isInt(v, 0, 5) },
-  'g.choice': { idx: (v) => isInt(v, 0, 5) },
+  'g.choice': { idx: (v) => isInt(v, 0, SP_CARDS_MAX - 1) },
   'g.ready': { ready: isBool },
   'g.emote': { id: (v) => EMOTES.includes(v) },
   'g.watch': { fieldId: (v) => isStr(v, 32) },

@@ -100,3 +100,6 @@
 .brief-ready__pips i .icon { width: 100%; height: 100%; }
 .brief-ready__pips i.on { color: var(--mint-400); filter: drop-shadow(0 0 .06rem rgba(23, 249, 183, .6)); }
 .brief-ready__pips i.me { border-bottom: 2px solid var(--mint-700); }
+/* 5–8 players (a remake extension): smaller pips, so the footer does not grow over the left column */
+.brief-ready__pips--dense { gap: .03rem; }
+.brief-ready__pips--dense i { width: .22rem; height: .22rem; }

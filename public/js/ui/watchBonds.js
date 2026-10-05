@@ -6,7 +6,8 @@
 //   * a teammate's board in prep (前往查看, research 09 §3.1 "their board, read-only, including their pen and bonds"), a
 //     teammate's battle watched after the own one ended, the field an eliminated player auto-observes → THAT player's
 //     bonds (m.public players[].bonds);
-//   * a shared field (联防 'u', the Final Assault / Hidden Core pair 'b1' / 'b2') — no source shows the strip there; this
+//   * a shared field (联防 'u' — 'u2' … with more than 4 players —, the Final Assault / Hidden Core pairs 'b1' … 'b4',
+//     a lone last player on its own half) — no source shows the strip there; this
 //     rule was settled by the user (DESIGN §20.15): the player holding the half the ‹ › pill points at ("你自己" → yours, "👁 name" → theirs). On 全景 (or an
 //     empty half, "无人在家"): yourself when you fight on that field; a viewer who does not (a 联防 leaker, an eliminated
 //     spectator) never sees their own bonds there — the teammate they picked with 前往查看 (official observing targets a

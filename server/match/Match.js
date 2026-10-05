@@ -12,9 +12,12 @@
 //   opts.mode        'solo' | 'coop'
 //   opts.difficulty  'FUNNY'|'NORMAL'|'HARD'|'ABYSS'
 //   opts.modeId      string                     modeIdFor(mode, difficulty), e.g. 'mode_multi_hard'
-//   opts.seats       Array<{ seat: 0..3, playerId: string, name: string, isBot: boolean, connected: boolean,
+//   opts.seats       Array<{ seat: 0..MAX_SEATS−1, playerId: string, name: string, isBot: boolean, connected: boolean,
 //                            loadout?: { [baseChessId]: { skill: index, module: uniEquipId|'none'|null } } | null }>
-//                    sorted by seat, 1–4 entries, ≥ 1 human; solo ⇒ exactly 1 human and no bots.
+//                    sorted by seat, 1–MAX_SEATS (8) entries, ≥ 1 human; solo ⇒ exactly 1 human and no bots.
+//                    5–8 seats is the remake's large co-op room (gamedata.js DEFAULTS.largeRoom: pool copies, leader
+//                    pool, Hidden Core threshold, overtime drain, 机变 cards and the draft timers scale above 4;
+//                    1–4 seats play exactly the official rules).
 //                    Bot playerIds start with 'ai_'. Seat indexes may have gaps (e.g. seats 0 and 2).
 //                    `loadout` (DESIGN §16, optional): the human's operator loadout, already checked by the lobby
 //                    (shared/protocol.js checkLoadout); PlayerState re-checks it against opts.data and ignores it for bots.
@@ -92,6 +95,13 @@
 // uncapped, live: the authority's b.progress `left`, the server-run timeline or battle; exact once the field has its
 // result — _uniteLeft) and pendingLp = min(lpCapPerRound, uniteLeft): the counter falls as the helpers kill them (and
 // rises when one of them splits or summons — the children are billed to the same leaker).
+// 联防 above 4 alive (remake extension, unite.js): several 联防 fields 'u', 'u2', … (one per helper pair, each with its
+// own leakers' enemies). Every field runs like the single one — its own authority (lowest-seat connected helper) or the
+// server, independently — and the phase ends when every field has its result (settle(plan, results): each leaker billed
+// from its own field). A helper is shown its own field, a leaker the field holding its enemies, everyone else the first;
+// g.watch switches between them (a helper only once its own field is done, under client-side combat). m.public.unite =
+// { helpers, leakers } (the union) plus `fields: [{ fieldId, helpers, leakers }]` only with more than one field; a
+// leaker's uniteLeft / pendingLp come from its own field. 1–4 alive: one field 'u', exactly as before.
 // User playtest #4: a match with a single human (独立模拟, or a 同盟 room started alone / with AI teammates) times no
 // phase outside its battles (soloUntimed); the co-op strategy draft has ONE countdown — BAND_TURN_SECONDS per turn,
 // published as m.public.deadline — AI seats pick at once and a turn that runs out takes the highlighted strategy
@@ -143,7 +153,7 @@ import { bondList, offBondCounts } from './bondsMeta.js';
 import { EffectDispatcher, getDefaultRegistry } from './effectsMeta.js';
 import { generateDraft, applyCard, cardView, bountyBattles, isMultiRoundBounty } from './choices.js';
 import { setupMatchWaves, buildNormalWave, buildBossWave, bountySpawns, withBounties, previewOf, weightedPick } from './waves.js';
-import { planUnite, uniteBattleOpts, uniteSurvivors } from './unite.js';
+import { planUnite, uniteBattleOpts, uniteSurvivors, uniteGroups, uniteGroupOf, uniteBills, uniteResultFor } from './unite.js';
 import { pairPlayers, bossPoolHp, SharedBossPool, hiddenEligible, BOSS_HIT_STEPS, bossFieldPlacement } from './finalAssault.js';
 import {
   FieldRunner, DeadBattle, GAME_SPEED, snapFrame, runHeadless, timelineAt, HeadlessPacer, syntheticResult,
@@ -215,7 +225,8 @@ export const DELAYS = Object.freeze({
  * Seconds of one turn of the co-op strategy draft (user playtest #4 item 4: the old 12 s per turn — research 06 §724,
  * itself [ASSUMED] — inside the 50 s step was far too little and counted apart from the header's 50 s). [ASSUMED]: the
  * official data only gives the whole BAND_CHECK step (autoChessData.enterStepList: 50 s, hint 15 s); the turn clock is
- * the remake's. It is also the step's only countdown (m.public.deadline = draft.turnDeadline). × timerScale.
+ * the remake's. It is also the step's only countdown (m.public.deadline = draft.turnDeadline). × timerScale. A match of
+ * more than 4 seats (remake extension) has gamedata.js largeRoom.bandTurn (20 s) turns instead (Match.bandTurnSeconds).
  */
 export const BAND_TURN_SECONDS = 30;
 
@@ -332,7 +343,8 @@ export class Match {
     this.disabledBonds = bans.drawn;
     this.staticInactiveBonds = bans.staticOff;
     this.bannedChess = bans.banned;
-    this.pool = new SharedPool(this.gd, { banned: bans.banned });
+    // a co-op room of 5–8 seats (humans + bots) has more copies per chess (gamedata.js poolCopies; fixed for the match)
+    this.pool = new SharedPool(this.gd, { banned: bans.banned, players: this.order.length });
 
     this.phase = PHASE.LOBBY;
     this.round = 0;
@@ -377,6 +389,10 @@ export class Match {
     this.teamLp = null;
     this.bossPool = null;
     this.hiddenLayerSum = 0;
+    /** how many players' layers hiddenLayerSum adds up (the Hidden Core threshold scales above 4, gamedata.js hiddenThreshold) */
+    this.hiddenLayerPlayers = 0;
+    /** players alive at the current boss phase's start (overtime drain × max(1, alive / 4), gamedata.js bossOvertimeDue) */
+    this.bossAlive = 0;
     this.hiddenReached = false;
     this.outcome = null;
     this._turnToken = 0;
@@ -912,7 +928,12 @@ export class Match {
     };
     if (this.teamLp != null) v.teamLp = Math.max(0, Math.round(this.teamLp));
     // 最终攻势 / 隐秘核心: when the overtime drain starts (ms epoch; `deadline` is the level's 120 s countdown)
-    if ((this.phase === PHASE.FINAL_ASSAULT || this.phase === PHASE.HIDDEN_CORE) && this.overtimeAt) v.overtimeAt = this.overtimeAt;
+    if ((this.phase === PHASE.FINAL_ASSAULT || this.phase === PHASE.HIDDEN_CORE) && this.overtimeAt) {
+      v.overtimeAt = this.overtimeAt;
+      // more than 4 players alive at the boss phase's start (remake extension): the drain is faster than the config's
+      // bossOvertimeDrainPerSec — team LP per real second (omitted for 1–4, where the config value holds)
+      if (this.gd.isLargeRoom(this.bossAlive)) v.overtimeDrainPerSec = this.gd.bossOvertimeDrainFor(this.bossAlive);
+    }
     if (this.bossPool) v.bossHp = { hp: Math.max(0, Math.round(this.bossPool.hp)), max: Math.round(this.bossPool.maxHp) };
     if (this.phase === PHASE.BAND_DRAFT && this.draft) {
       const d = this.draft;
@@ -928,8 +949,17 @@ export class Match {
         family: s.family, name: s.name, desc: s.desc, eventId: s.eventId, cards: s.cards.map(cardView), order: s.order.slice(),
         turn: this.spTurn(), picks: { ...s.picks }, taken: { ...s.taken }, untimed: !!s.untimed,
       };
+      // more than 4 players alive at the draft start (remake extension): a later pick lasts largeRoom.spTurn, not the
+      // config's timers.spTurn — turnSeconds = the current turn's length, the countdown gauge's total (first pick
+      // timers.spFirst; omitted for 1–4, where the config timers hold)
+      if (!s.untimed && this.gd.isLargeRoom(s.order.length)) v.sp.turnSeconds = s.idx === 0 ? this.gd.timer('spFirst') : this.gd.spTurnSeconds(s.order.length);
     }
-    if (this.phase === PHASE.UNITE && this.unitePlan) v.unite = { helpers: this.unitePlan.helpers.map((p) => p.playerId), leakers: this.unitePlan.leakers.map((p) => p.playerId) };
+    if (this.phase === PHASE.UNITE && this.unitePlan) {
+      v.unite = { helpers: this.unitePlan.helpers.map((p) => p.playerId), leakers: this.unitePlan.leakers.map((p) => p.playerId) };
+      // several 联防 fields (more than 4 alive, unite.js): which helpers and leakers each one holds, in field order
+      const groups = uniteGroups(this.unitePlan);
+      if (groups.length > 1) v.unite.fields = groups.map((g) => ({ fieldId: g.fieldId, helpers: g.helpers.map((p) => p.playerId), leakers: g.leakers.map((p) => p.playerId) }));
+    }
     return v;
   }
 
@@ -1334,8 +1364,14 @@ export class Match {
     return d.order[d.idx] ?? null;
   }
 
-  /** Real ms of one strategy-draft turn (BAND_TURN_SECONDS × timerScale). */
-  bandTurnMs() { return this.scaled(BAND_TURN_SECONDS * 1000); }
+  /**
+   * Seconds of one strategy-draft turn: BAND_TURN_SECONDS (30); a match of more than 4 seats (humans + bots, remake
+   * extension) gamedata.js largeRoom.bandTurn (20).
+   */
+  bandTurnSeconds() { return this.gd.bandTurnSeconds(this.order.length, BAND_TURN_SECONDS); }
+
+  /** Real ms of one strategy-draft turn (bandTurnSeconds × timerScale). */
+  bandTurnMs() { return this.scaled(this.bandTurnSeconds() * 1000); }
 
   startDraftTurn() {
     const d = this.draft;
@@ -1551,13 +1587,14 @@ export class Match {
   // SP_DRAFT (机变)
 
   enterSpDraft() {
-    const draft = generateDraft(this.gd, this.rngDraft, this.round, { stageId: this.stageId, bondAvailable: (bondId) => this.bondLive(bondId) });
     const alive = this.alivePlayers();
+    // more than 4 alive (remake extension): alive + 2 cards (choices.js spDraftCardCount); 1–4 the official count
+    const draft = generateDraft(this.gd, this.rngDraft, this.round, { stageId: this.stageId, bondAvailable: (bondId) => this.bondLive(bondId), players: alive.length });
     if (!draft || !alive.length) { this.enterPrep(); return; }
     this.phase = PHASE.SP_DRAFT;
     const order = alive.map((p) => p.playerId);
     if (!this.isSolo) this.rngDraft.shuffle(order);
-    // untimed: solo and any single-human match (soloUntimed); the co-op order / 6 cards stay
+    // untimed: solo and any single-human match (soloUntimed); the co-op order / 6 cards (7–10 above 4 alive) stay
     const untimed = this.soloUntimed;
     this.sp = { ...draft, order, idx: 0, picks: {}, taken: {}, untimed, turnDeadline: 0 };
     this.setDeadline(0);
@@ -1585,7 +1622,8 @@ export class Match {
     const token = ++this._turnToken;
     if (!s.untimed) {
       const first = s.idx === 0;
-      const secs = first ? this.gd.timer('spFirst') : this.gd.timer('spTurn');
+      // a later pick: timers.spTurn (16 s); largeRoom.spTurn (12 s) when more than 4 were alive at the draft start
+      const secs = first ? this.gd.timer('spFirst') : this.gd.spTurnSeconds(s.order.length);
       this.setDeadline(secs, () => {
         if (this.phase !== PHASE.SP_DRAFT || token !== this._turnToken) return;
         const ps = this.players.get(this.spTurn());
@@ -1863,6 +1901,7 @@ export class Match {
     const r = this.round;
     if (r === this.gd.bossRound) {
       this.hiddenLayerSum = alive.reduce((s, p) => s + p.activatedLayers(), 0);
+      this.hiddenLayerPlayers = alive.length;
       this.startFinalAssault(false);
     } else if (r === this.gd.hiddenRound) {
       this.startFinalAssault(true);
@@ -1935,7 +1974,7 @@ export class Match {
     this.watchers.clear();
     for (const ps of this._viewers()) {
       const own = this.fields.find((f) => f.players.includes(ps.playerId));
-      const f = own || this.fields[0];
+      const f = own || (this.phase === PHASE.UNITE ? this._uniteHomeField(ps.playerId) : null) || this.fields[0];
       if (!f) continue;
       this.watchers.set(ps.playerId, f.fieldId);
       if (ps.connected) this._sendField(ps.playerId, f.fieldId);
@@ -2015,8 +2054,11 @@ export class Match {
     this.phase = PHASE.UNITE;
     this.unitePlan = plan;
     const limit = this.wave ? this.wave.timeLimit : 60;
-    const battle = this.newBattle(this._uniteOpts(plan, limit));
-    this.fields = [{ fieldId: 'u', kind: 'unite', players: plan.helpers.map((p) => p.playerId), battle, live: true }];
+    // one field per helper group: 'u' (and 'u2', … above 4 alive — unite.js)
+    this.fields = uniteGroups(plan).map((g) => {
+      const battle = this.newBattle(this._uniteOpts(g, limit));
+      return { fieldId: g.fieldId, kind: 'unite', players: g.helpers.map((p) => p.playerId), battle, live: true };
+    });
     this.deadline = this.sched.instant ? 0 : this.sched.now() + Math.round((limit / this.gameSpeed) * 1000);
     this._defaultWatch();
     this.markPublic();
@@ -2026,22 +2068,35 @@ export class Match {
       onTick: (runner) => this._uniteTick(runner),
       onDone: (runner) => {
         if (this.phase !== PHASE.UNITE) return;
-        const res = runner.resultOf(this.fields[0]);
-        this._collectSimErrors(this.fields[0], res);
-        this.fields[0].live = false;
+        const results = this.fields.map((f) => {
+          const res = runner.resultOf(f);
+          this._collectSimErrors(f, res);
+          f.live = false;
+          return res;
+        });
         this.deadline = 0;
         this.markPublic();
-        this.later(this.scaled(DELAYS.COMBAT_END), () => this.settle(plan, res));
+        this.later(this.scaled(DELAYS.COMBAT_END), () => this.settle(plan, results.length === 1 ? results[0] : results));
       },
     });
     this.runner.start();
   }
 
-  /** Battle options of the 联防 field (helpers' carried end state, the leakers' enemies). */
+  /**
+   * The field a viewer is shown during 联防 by default (and on a resync with no field picked): a helper's own field, the
+   * field holding a leaker's enemies, else the first 联防 field.
+   */
+  _uniteHomeField(playerId) {
+    const g = this.unitePlan ? uniteGroupOf(this.unitePlan, playerId) : null;
+    return (g && this.fields.find((f) => f.kind === 'unite' && f.fieldId === g.fieldId)) || this.fields[0] || null;
+  }
+
+  /** Battle options of a 联防 field — a plan group (helpers' carried end state, its leakers' enemies). */
   _uniteOpts(plan, limit) {
     const { wave, players } = uniteBattleOpts(this, plan, limit);
+    const fieldId = plan.fieldId || 'u';
     return {
-      seed: deriveSeed(this.seed, `u:${this.round}`),
+      seed: deriveSeed(this.seed, `${fieldId}:${this.round}`),
       kind: 'unite',
       modeId: this.modeId,
       round: this.round,
@@ -2053,7 +2108,7 @@ export class Match {
       routes: wave.routes,
       sharedBoss: null,
       flags: { layerGainsEnabled: false, ...this.gd.dp },
-      fieldId: 'u',
+      fieldId,
       // leaked enemies re-enter with the stats they had: the round template's stat overrides apply again
       enemyOverrides: this.wave && this.wave.overrides ? this.wave.overrides : {},
       waveId: wave.templateId,
@@ -2188,7 +2243,9 @@ export class Match {
     const plan = this.unitePlan;
     if (this.phase !== PHASE.UNITE || !plan || !ps || !plan.leakers.includes(ps)) return null;
     const pid = ps.playerId;
-    const f = this.fields.find((x) => x && x.kind === 'unite') || null;
+    // the leaker's own 联防 field (one field: 'u'; above 4 alive the field holding its enemies — unite.js)
+    const g = uniteGroupOf(plan, pid) || uniteGroups(plan)[0];
+    const f = this.fields.find((x) => x && x.kind === 'unite' && x.fieldId === g.fieldId) || null;
     let res = null;
     if (f && f.cc) res = f.done ? f.result : null;
     else if (f && f.battle && f.battle.finished) { try { res = f.battle.result(); } catch { res = null; } }
@@ -2196,8 +2253,8 @@ export class Match {
       const own = this.lastResults.get(pid);
       return own && Array.isArray(own.leaked) ? own.leaked.filter((l) => l && l.counted !== false).length : 0;
     }
-    if (res) return uniteSurvivors(plan, res).get(pid) || 0;
-    const sent = plan.leaked.filter((l) => l.sourcePlayerId === pid).length;
+    if (res) return uniteSurvivors(g, res).get(pid) || 0;
+    const sent = g.leaked.filter((l) => l.sourcePlayerId === pid).length;
     let live = null;
     if (f && f.cc) {
       if (f.mode === 'server' && f.timeline) {
@@ -2207,18 +2264,23 @@ export class Match {
     } else if (f && f.battle) {
       try { live = uniteLeft(f.battle); } catch { live = null; }
     }
-    if (!this._uniteBounds || this._uniteBounds.plan !== plan) this._uniteBounds = { plan, bounds: uniteBillBounds(plan.leaked, this.gd) };
+    if (!this._uniteBounds || this._uniteBounds.plan !== plan) {
+      // per field: what that field's result may bill its leakers (validateClientResult's budget on the field's own spec)
+      const bounds = new Map();
+      for (const grp of uniteGroups(plan)) for (const [id, n] of uniteBillBounds(grp.leaked, this.gd)) bounds.set(id, n);
+      this._uniteBounds = { plan, bounds };
+    }
     const bound = this._uniteBounds.bounds.get(pid) ?? sent;
     const standing = live ? Math.min(bound, Math.max(0, Math.trunc(Number(live[pid]) || 0))) : sent;
-    return standing + (plan.notReentered.get(pid) || 0);
+    return standing + (g.notReentered.get(pid) || 0);
   }
 
   /** Server-run 联防 (streaming mode): refresh m.public about once a game second when a leaker's count moved. */
   _uniteTick(runner) {
-    const f = runner && runner.fields ? runner.fields[0] : null;
-    if (!f || !f.battle || runner.ticks % 30 !== 0) return;
+    const fs = runner && runner.fields ? runner.fields.filter((f) => f && f.battle) : [];
+    if (!fs.length || runner.ticks % 30 !== 0) return;
     let key = '';
-    try { key = JSON.stringify(uniteLeft(f.battle)); } catch { key = ''; }
+    try { key = JSON.stringify(fs.length === 1 ? uniteLeft(fs[0].battle) : fs.map((f) => uniteLeft(f.battle))); } catch { key = ''; }
     if (key === this._uniteLeftKey) return;
     this._uniteLeftKey = key;
     this.markPublic();
@@ -2449,30 +2511,37 @@ export class Match {
     this.phase = PHASE.UNITE;
     this.unitePlan = plan;
     const limit = this.wave ? this.wave.timeLimit : 60;
-    const f = this._ccField({ fieldId: 'u', kind: 'unite', players: plan.helpers.map((p) => p.playerId), opts: this._uniteOpts(plan, limit) });
+    // one field per helper group: 'u' (and 'u2', … above 4 alive — unite.js); each gets its own authority or the server
+    const fields = uniteGroups(plan).map((g) => this._ccField({ fieldId: g.fieldId, kind: 'unite', players: g.helpers.map((p) => p.playerId), opts: this._uniteOpts(g, limit) }));
     this.deadline = this.sched.instant ? 0 : this.sched.now() + Math.round((limit / this.gameSpeed) * 1000);
     this.watchers.clear();
-    this._launch([f]);
-    // helpers and everyone else (as observers, spectator seats included) simulate the same 联防 spec locally
+    this._launch(fields);
+    // helpers and everyone else (as observers, spectator seats included) simulate a 联防 spec locally: a helper its own
+    // field, a leaker the field holding its enemies, anyone else the first field
     for (const ps of this._viewers()) {
-      this.watchers.set(ps.playerId, 'u');
+      const f = this._uniteHomeField(ps.playerId);
+      if (!f) continue;
+      this.watchers.set(ps.playerId, f.fieldId);
       this._sendStart(ps.playerId, f, { watch: !f.players.includes(ps.playerId) });
     }
     this.markPublic();
     this.tickerText(`联防阶段：${plan.helpers.map((p) => p.name).join('、')} 迎战突破防线的敌人`, FLOW_TICKER_PRIORITY);
   }
 
+  /** Every 联防 field has its result: SETTLE after the COMBAT_END pause (several fields: their results in field order). */
   _finishUniteClient() {
     if (this.phase !== PHASE.UNITE) return;
-    const f = this.fields[0];
-    const res = f.result;
-    this._collectSimErrors(f, res);
+    const results = this.fields.map((f) => {
+      const res = f.result;
+      this._collectSimErrors(f, res);
+      return res;
+    });
     this._stopClientCombat();
-    f.live = false;
+    for (const f of this.fields) f.live = false;
     this.deadline = 0;
     this.markPublic();
     const plan = this.unitePlan;
-    this.later(this.scaled(DELAYS.COMBAT_END), () => this.settle(plan, res));
+    this.later(this.scaled(DELAYS.COMBAT_END), () => this.settle(plan, results.length === 1 ? results[0] : results));
   }
 
   // ---- reports
@@ -2612,6 +2681,8 @@ export class Match {
     if (ps.alive) {
       if ((f.kind === 'boss' || f.kind === 'hidden') && own && own !== f) return fail(ERR.BAD_TARGET, 'other group hidden');
       if (f.kind === 'normal' && own && own !== f && own.live) return fail(ERR.WRONG_PHASE, 'own battle running');
+      // several 联防 fields (above 4 alive): a helper stays on its own field while it runs (it may be its authority)
+      if (f.kind === 'unite' && own && own !== f && own.kind === 'unite' && own.live) return fail(ERR.WRONG_PHASE, 'own battle running');
     }
     this.watchers.set(ps.playerId, f.fieldId);
     this.sendTo(ps.playerId, this._startMsg(f, ps.playerId, { watch: !f.players.includes(ps.playerId) }));
@@ -2623,7 +2694,7 @@ export class Match {
     if (!this.fields.some((f) => f.cc)) return;
     const fid = this.watchers.get(ps.playerId);
     let f = fid ? this.fields.find((x) => x.fieldId === fid) : null;
-    if (!f) f = this.fields.find((x) => x.players.includes(ps.playerId)) || (this.phase === PHASE.UNITE ? this.fields[0] : null);
+    if (!f) f = this.fields.find((x) => x.players.includes(ps.playerId)) || (this.phase === PHASE.UNITE ? this._uniteHomeField(ps.playerId) : null);
     if (!f && !ps.alive) f = this.fields[0] || null;
     if (!f) return;
     this.watchers.set(ps.playerId, f.fieldId);
@@ -2885,6 +2956,10 @@ export class Match {
   // ===================================================================================================
   // SETTLE
 
+  /**
+   * `plan`: the 联防 plan (null: none ran); `uniteResult`: its field's result — with several 联防 fields (above 4 alive)
+   * an array of the fields' results in field order (unite.js uniteFieldResults). Each leaker is billed from its own field.
+   */
   settle(plan, uniteResult) {
     this.phase = PHASE.SETTLE;
     this.runner = null;
@@ -2892,14 +2967,15 @@ export class Match {
     // the pending in-battle gains the views showed become persistent below (alive players) or lapse (DESIGN §20.15)
     for (const ps of this.order) if (ps.pendingLayerGains) { ps.pendingLayerGains = null; ps.dirty(); }
     const cap = this.gd.lpCapPerRound;
-    // a 联防 battle that could not run at all (synthetic result) must not wipe the leakers' losses: charge their own leaks
-    const uniteRan = !!(plan && uniteResult && !uniteResult.synthetic);
-    const survivors = uniteRan ? uniteSurvivors(plan, uniteResult) : null;
+    // a leaker's survivors on its own 联防 field; null when that battle could not run at all (synthetic result) — it must
+    // not wipe the leaker's loss: its own leaks are charged
+    const bills = plan ? uniteBills(plan, uniteResult) : null;
     const alive = this.alivePlayers();
     for (const ps of alive) {
       const r = this.lastResults.get(ps.playerId) || { leaked: [], perfect: true, coins: 0, layerGains: {}, killed: 0, damageDealt: 0 };
       const counted = (r.leaked || []).filter((l) => l && l.counted !== false).length;
-      const loss = uniteRan && plan.leakers.includes(ps) ? Math.min(cap, survivors.get(ps.playerId) || 0) : Math.min(cap, counted);
+      const bill = bills ? bills.get(ps.playerId) : null;
+      const loss = bill != null ? Math.min(cap, bill) : Math.min(cap, counted);
       ps.lp -= loss;
       ps.stats.lpLost += loss;
       ps.stats.leaks += counted;
@@ -2909,7 +2985,9 @@ export class Match {
       if (r.perfect !== false && counted === 0) ps.stats.perfectRounds++;
       // bounty coins (own battle + unite kills) are credited to the next prep
       let coins = Math.max(0, Math.trunc(Number(r.coins) || 0));
-      const up = uniteResult && uniteResult.perPlayer && uniteResult.perPlayer[ps.playerId];
+      // the player's own 联防 field (one field: the 联防 result)
+      const ur = uniteResultFor(plan, uniteResult, ps.playerId);
+      const up = ur && ur.perPlayer && ur.perPlayer[ps.playerId];
       if (up) {
         coins += Math.max(0, Math.trunc(Number(up.coins) || 0));
         ps.stats.dmgDealt += Number(up.damageDealt) || 0;
@@ -2931,7 +3009,7 @@ export class Match {
         this.dispatch(ps, 'onLayers', { bondId, from: before, to: ps.layers[bondId], reason: 'battle' });
       }
       this._charDamageTickers(ps, r);
-      this.dispatch(ps, 'onBattleResult', { result: r, lpLoss: loss, perfect: counted === 0 && r.perfect !== false, unite: uniteResult || null });
+      this.dispatch(ps, 'onBattleResult', { result: r, lpLoss: loss, perfect: counted === 0 && r.perfect !== false, unite: ur || null });
       ps.recompute();
     }
     for (const ps of alive) {
@@ -2984,6 +3062,8 @@ export class Match {
     if (!alive.length) { this.finish({ victory: false, reason: 'eliminated' }); return; }
     this.phase = hidden ? PHASE.HIDDEN_CORE : PHASE.FINAL_ASSAULT;
     this.lastResults = new Map();
+    // the large-room factors of this boss phase (leader pool, overtime drain: × max(1, alive / 4), remake extension)
+    this.bossAlive = alive.length;
     if (!hidden) {
       this.teamLp = alive.reduce((s, p) => s + Math.max(0, p.lp), 0);
       for (const ps of alive) ps.lpAtFinal = Math.max(0, ps.lp);
@@ -3147,10 +3227,10 @@ export class Match {
 
   /**
    * Overtime drain on the boss field clock (`gt` game seconds): 1 team LP per real second from the 150 real-second mark
-   * (bossTurnHpReduceTime, gamedata.js bossOvertimeDue).
+   * (bossTurnHpReduceTime, gamedata.js bossOvertimeDue; × alive / 4 when more than 4 were alive at the phase's start).
    */
   _applyOvertime(gt) {
-    const due = this.gd.bossOvertimeDue(gt);
+    const due = this.gd.bossOvertimeDue(gt, this.bossAlive);
     if (due > this.overtimeApplied) {
       const loss = due - this.overtimeApplied;
       this.overtimeApplied = due;
@@ -3201,7 +3281,7 @@ export class Match {
     this.markPublic();
     this.runner = null;
     if (!hidden) {
-      const eligible = victory && !!this.hiddenBossId && hiddenEligible(this.gd, { layerSum: this.hiddenLayerSum, teamLp: this.teamLp });
+      const eligible = victory && !!this.hiddenBossId && hiddenEligible(this.gd, { layerSum: this.hiddenLayerSum, teamLp: this.teamLp, players: this.hiddenLayerPlayers });
       this.later(this.scaled(DELAYS.SETTLE), () => {
         if (eligible) {
           this.hiddenReached = true;

@@ -29,7 +29,7 @@
 // Shared modules are imported relatively: in the browser '../../shared/x.js' from /js/ resolves
 // to /shared/x.js (URL resolution clamps at the root); under Node it resolves to <repo>/shared.
 
-import { PROTOCOL_VERSION, ERR_TEXT } from '../../shared/constants.js';
+import { PROTOCOL_VERSION, ERR_TEXT, MAX_SEATS } from '../../shared/constants.js';
 import { validateC2S } from '../../shared/protocol.js';
 
 export const REQUEST_TIMEOUT_MS = 8000;
@@ -692,7 +692,7 @@ const K_NAME = 'sp.name';
 const K_TOKEN = 'sp.token';      // sessionStorage: this tab's token
 const K_RECENT = 'sp.tokens';    // localStorage: this browser's recent tokens, most recent first
 const K_ENTERED = 'sp.entered';  // sessionStorage: this tab passed the title screen
-const RECENT_MAX = 4;
+const RECENT_MAX = MAX_SEATS;     // one browser may hold every seat of a room (local tests with several tabs)
 const TOKEN_MAX_LEN = 64;        // protocol limit for hello.token
 const CHANNEL_NAME = 'sp.identity';
 /** How long init() waits for other tabs to claim a candidate token (ms). */

@@ -2,6 +2,10 @@
 // data files and answers `g.*` intents with a small in-browser mock server (buy / sell / move / equip /
 // refresh / freeze / level / ready / reward / choice / band …), so drag & drop and every button can be
 // exercised. Combat phases stream b.snap / b.ev at 20 Hz through net._emit like the real socket.
+// `?players=5…8` (or the switcher's 4P / 5P / 8P): a larger room (5–8 seats, a remake extension) — P5–P8 join the
+// four default players, the draft / 机变 orders list everyone, a 机变 draft has max(6, players + 2) cards (8 → 10),
+// boss fields pair the players by seat (b1..b4; an odd last player alone), and a 联防 with more than 4 players has
+// one unite field per 4 (u, u2). Without it (or players=4) the mock is exactly the 4-player one.
 
 import '/js/ui/compat.js';
 import { render } from '/vendor/preact.module.js';
@@ -31,12 +35,20 @@ const pick = (arr) => arr[Math.floor(rnd() * arr.length)];
 const shuffle = (arr) => { const a = [...arr]; for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
 
 const ME = 'p1';
-const PLAYERS = [
+const ALL_PLAYERS = [
   { playerId: 'p1', seat: 0, name: '凯尔希', isBot: false, bandId: 'band_bldsk' },
   { playerId: 'ai_2', seat: 1, name: 'AI·华法琳', isBot: true, bandId: 'band_sarkazb' },
   { playerId: 'p3', seat: 2, name: 'Doctor·B', isBot: false, bandId: 'band_amiya' },
   { playerId: 'p4', seat: 3, name: '灰烬', isBot: false, bandId: 'band_amedic' },
+  // P5–P8 (players=5…8): a long display name (17 characters, 昵称#NNNN) and two more AI teammates (server BOT_NAMES)
+  { playerId: 'p5', seat: 4, name: '星熊', isBot: false, bandId: 'band_orchid' },
+  { playerId: 'ai_6', seat: 5, name: 'AI·阿米娅', isBot: true, bandId: 'band_justin' },
+  { playerId: 'p7', seat: 6, name: '一位名字很长的博士呀#2049', isBot: false, bandId: 'band_ermengard' },
+  { playerId: 'ai_8', seat: 7, name: 'AI·惊蛰', isBot: true, bandId: 'band_lmlee' },
 ];
+/** Players in the mock room: 4 (default), or 5–8 with ?players= / the switcher. */
+let NP = (() => { const n = parseInt(params.get('players'), 10); return n >= 5 && n <= ALL_PLAYERS.length ? n : 4; })();
+let PLAYERS = ALL_PLAYERS.slice(0, NP);
 
 let uidSeq = 100;
 const nextUid = () => ++uidSeq;
@@ -195,8 +207,8 @@ function buildState() {
   }
 
   const players = PLAYERS.map((p, i) => ({
-    ...p, connected: i !== 3 || true, alive: true, lp: [24, 31, 18, 5][i], shopLevel: [4, 5, 3, 4][i], boardCount: [7, 8, 6, 7][i],
-    ready: [false, true, false, false][i], bonds: [], fieldId: `n:${p.playerId}`, status: ['acting', 'ready', 'acting', 'acting'][i],
+    ...p, connected: i !== 3 || true, alive: true, lp: [24, 31, 18, 5, 27, 12, 9, 20][i], shopLevel: [4, 5, 3, 4, 5, 4, 3, 5][i], boardCount: [7, 8, 6, 7, 8, 7, 6, 8][i],
+    ready: [false, true, false, false, true, true, false, true][i], bonds: [], fieldId: `n:${p.playerId}`, status: ['acting', 'ready', 'acting', 'acting', 'ready', 'ready', 'acting', 'ready'][i],
   }));
   players[3].connected = false;
   // boss-round prep (最终攻势 prep on the own half of the boss field): `boss` = the left half; `bossR` = seats swapped so
@@ -298,7 +310,7 @@ function setPhase(phase, variant) {
   switch (phase) {
     case PHASE.INFO_CHECK:
       pub.round = 0; pub.deadline = Date.now() + 21000;
-      pub.players.forEach((p, i) => { p.ready = i === 1 || i === 2; p.status = p.ready ? 'ready' : 'deciding'; p.bandId = null; p.lp = 0; });
+      pub.players.forEach((p, i) => { p.ready = i === 1 || i === 2 || i === 5 || i === 7; p.status = p.ready ? 'ready' : 'deciding'; p.bandId = null; p.lp = 0; });
       S.priv.bandId = null;
       break;
     case PHASE.BAND_DRAFT:
@@ -306,7 +318,10 @@ function setPhase(phase, variant) {
       pub.players.forEach((p) => { p.bandId = null; p.status = 'deciding'; p.ready = false; });
       S.priv.bandId = null;
       if (!solo) {
-        pub.draft = { order: ['p3', 'p1', 'ai_2', 'p4'], turn: 'p1', picks: { p3: 'band_sarkazb' }, skipsLeft: { p1: 1, p3: 1, ai_2: 1, p4: 1 }, turnDeadline: Date.now() + 9000 };
+        // P5–P8 pick after the four (a room of more than 4 seats has 20 s turns: server gamedata largeRoom.bandTurn)
+        const order = ['p3', 'p1', 'ai_2', 'p4', ...PLAYERS.slice(4).map((p) => p.playerId)];
+        pub.draft = { order, turn: 'p1', picks: { p3: 'band_sarkazb' }, skipsLeft: Object.fromEntries(order.map((id) => [id, 1])), turnDeadline: Date.now() + 9000 };
+        if (NP > 4) pub.draft.turnSeconds = 20;
         pub.players.find((p) => p.playerId === 'p3').bandId = 'band_sarkazb';
       } else pub.deadline = 0;
       break;
@@ -318,14 +333,19 @@ function setPhase(phase, variant) {
       const fam = VARIANTS.has('supply') ? 'supply' : VARIANTS.has('shop') ? 'shop' : VARIANTS.has('tactic') ? 'tactic' : 'bounty';
       const ch = data.get('choices');
       let cards;
-      if (fam === 'supply') cards = shuffle(shopItems().filter((i) => i.tier >= 3)).slice(0, 6).map((i) => ({ itemId: i.id }));
+      // co-op: max(6, players + 2) cards (server/match/choices.js spDraftCardCount: 6 for 1–4 players, 8 → 10)
+      const n = Math.max(6, PLAYERS.length + 2);
+      const cycle = (names) => Array.from({ length: n }, (_, i) => names[i % names.length]);
+      if (fam === 'supply') cards = shuffle(shopItems().filter((i) => i.tier >= 3)).slice(0, n).map((i) => ({ itemId: i.id }));
       // the official 机密商店 of match 8 R11 (test/fixtures/official-bounty-drafts.json): the same item twice
-      else if (fam === 'shop') cards = ['变形同构体', '盟约之币', '商业包装方案', '变形同构体', '天马之盔', '双模机械臂'].map((n) => ({ itemId: shopItems().find((i) => i.name === n).id }));
+      else if (fam === 'shop') cards = cycle(['变形同构体', '盟约之币', '商业包装方案', '变形同构体', '天马之盔', '双模机械臂']).map((nm) => ({ itemId: shopItems().find((i) => i.name === nm).id }));
       // the official 战术决策 of match 7 R11 (test/fixtures/official-bounty-drafts.json): the same card twice
-      else if (fam === 'tactic') cards = ['补给', '补给', '谢拉格驰援', '列装', '莫斯提马的盟誓', '升华'].map((n) => ({ effectId: ch.cards.tactic.find((t) => t.name === n).effectId }));
-      else cards = shuffle(ch.cards.bounty.filter((b) => b.draft !== false)).slice(0, 6).map((b) => ({ effectId: b.effectId }));
+      else if (fam === 'tactic') cards = cycle(['补给', '补给', '谢拉格驰援', '列装', '莫斯提马的盟誓', '升华']).map((nm) => ({ effectId: ch.cards.tactic.find((t) => t.name === nm).effectId }));
+      else cards = shuffle(ch.cards.bounty.filter((b) => b.draft !== false)).slice(0, n).map((b) => ({ effectId: b.effectId }));
       if (solo) { cards = cards.slice(0, 3); pub.deadline = 0; }
-      pub.sp = { family: fam, cards, order: solo ? ['p1'] : ['p4', 'p1', 'ai_2', 'p3'], turn: solo ? 'p1' : 'p1', picks: solo ? {} : { p4: 2 }, untimed: solo };
+      pub.sp = { family: fam, cards, order: solo ? ['p1'] : ['p4', 'p1', 'ai_2', 'p3', ...PLAYERS.slice(4).map((p) => p.playerId)], turn: solo ? 'p1' : 'p1', picks: solo ? {} : { p4: 2 }, untimed: solo };
+      // more than 4 players: later picks last 12 s (server gamedata largeRoom.spTurn; m.public sp.turnSeconds)
+      if (!solo && PLAYERS.length > 4) { pub.sp.turnSeconds = 12; pub.deadline = Date.now() + 11000; }
       pub.players.forEach((p) => { p.status = p.playerId === 'p4' ? 'ready' : 'deciding'; });
       break;
     }
@@ -346,21 +366,26 @@ function setPhase(phase, variant) {
 // m.result in the exact shape of server/match/results.js buildResult (title = config.titles record, stats.gold = spent)
 function buildResult(victory) {
   const titles = (data.get('config')?.titles || []).filter((t) => victory || !t.onlyOnWin);
-  const pickTitle = (i) => { const t = titles[[0, 3, 5, 2][i] % Math.max(1, titles.length)]; return t ? { id: t.id, name: t.name, picId: t.picId, text: t.text } : null; };
+  // more than 4 players: a second pass gives the players still without a title their best one again (a title repeats)
+  const pickTitle = (i) => { const t = titles[[0, 3, 5, 2, 1, 4, 3, 0][i] % Math.max(1, titles.length)]; return t ? { id: t.id, name: t.name, picId: t.picId, text: t.text } : null; };
+  // P4 (and P7 of a larger room) was eliminated
+  const out = (i) => i === 3 || i === 6;
   return {
     victory, roundsPassed: victory ? 14 : 11, hiddenReached: false, hiddenCleared: false, reason: victory ? 'victory' : 'defeat',
     bossId: 'boss_5', hiddenBossId: 'boss_8', difficulty: 'HARD', modeId: 'mode_multi_hard', stageId: S.pub.stageId, durationMs: 52 * 60000,
     players: S.pub.players.map((p, i) => ({
-      playerId: p.playerId, seat: p.seat, name: p.name, isBot: p.isBot, left: false, alive: i !== 3, victory, lp: [12, 12, 12, 0][i], bandId: p.bandId,
-      roundsPassed: i === 3 ? 9 : victory ? 14 : 11, eliminatedRound: i === 3 ? 10 : null, title: pickTitle(i),
+      playerId: p.playerId, seat: p.seat, name: p.name, isBot: p.isBot, left: false, alive: !out(i), victory, lp: out(i) ? 0 : 12, bandId: p.bandId,
+      roundsPassed: out(i) ? 9 : victory ? 14 : 11, eliminatedRound: out(i) ? 10 : null, title: pickTitle(i),
       lineup: shuffle(S.pool).slice(0, 8 + (i % 2)).map((c, k) => ({ id: k < 3 ? c.goldenId : c.chessId, golden: k < 3, tier: c.tier, row: 9 + (k % 4), col: 2 + k, items: [] })),
       bonds: shuffle(data.list('bonds')).slice(0, 4).map((b, k) => ({ bondId: b.bondId, count: 3 - (k % 3), layers: [359, 136, 34, 12][k], active: k < 3, tier: k < 3 ? 1 : 0 })),
       stats: {
-        dmgDealt: [2310000, 1720000, 980000, 402000][i], kills: [412, 388, 301, 150][i], leaks: [3, 6, 9, 31][i], gold: [188, 164, 231, 90][i],
-        refreshes: [22, 18, 30, 8][i], merges: [7, 5, 9, 2][i], itemsEquipped: [9, 6, 11, 3][i], bossDamage: victory ? [912000, 610000, 240000, 0][i] : 0,
-        activatedLayers: [541, 402, 377, 120][i], lpLost: [16, 19, 12, 24][i], perfectRounds: [11, 12, 9, 4][i],
+        dmgDealt: [2310000, 1720000, 980000, 402000, 1510000, 1240000, 610000, 1080000][i], kills: [412, 388, 301, 150, 344, 297, 188, 320][i],
+        leaks: [3, 6, 9, 31, 7, 5, 22, 8][i], gold: [188, 164, 231, 90, 172, 150, 101, 166][i],
+        refreshes: [22, 18, 30, 8, 19, 16, 10, 21][i], merges: [7, 5, 9, 2, 6, 4, 3, 6][i], itemsEquipped: [9, 6, 11, 3, 8, 7, 4, 8][i],
+        bossDamage: victory ? [912000, 610000, 240000, 0, 520000, 430000, 0, 390000][i] : 0,
+        activatedLayers: [541, 402, 377, 120, 455, 380, 160, 410][i], lpLost: [16, 19, 12, 24, 15, 18, 24, 17][i], perfectRounds: [11, 12, 9, 4, 10, 11, 5, 10][i],
       },
-      trophies: i === 3 ? 1 : 5, reward: i === 3 ? 170 : 425,
+      trophies: out(i) ? 1 : 5, reward: out(i) ? 170 : 425,
     })),
   };
 }
@@ -390,13 +415,26 @@ function startCombat(phase) {
   // enemies still standing (uncapped: the ×N tag) falls with every kill below.
   const leakMock = phase === PHASE.UNITE && VARIANTS.has('leaker');
   const leftOf = (pid, n) => { const p = pub.players.find((x) => x.playerId === pid); if (p) { p.uniteLeft = n; p.pendingLp = Math.min(10, n) || undefined; } };
-  if (phase === PHASE.UNITE) {
+  // more than 4 players (a remake extension): one unite field per 2 helpers, at most ceil(players / 4) fields ('u',
+  // 'u2'), each with its share of the leakers (m.public unite.fields — only with more than one field)
+  let uniteFields = null;
+  if (phase === PHASE.UNITE && pub.players.length > 4) {
+    const ids = pub.players.map((p) => p.playerId);
+    const helpers = [...(leakMock ? ['ai_2', 'p3'] : ['p1', 'ai_2']), ...ids.slice(4, 6)];
+    const leakers = ids.filter((id) => !helpers.includes(id));
+    const nf = Math.min(Math.ceil(ids.length / 4), Math.ceil(helpers.length / 2));
+    uniteFields = Array.from({ length: nf }, (_, k) => ({ fieldId: k ? `u${k + 1}` : 'u', helpers: helpers.slice(2 * k, 2 * k + 2), leakers: [] }));
+    leakers.forEach((id, i) => uniteFields[i % nf].leakers.push(id));
+    pub.unite = { helpers, leakers, ...(nf > 1 ? { fields: uniteFields } : {}) };
+    for (const p of pub.players) p.status = helpers.includes(p.playerId) ? 'helping' : 'done';
+    leakers.forEach((id, i) => leftOf(id, [13, 12, 3, 7, 5, 2][i % 6]));
+  } else if (phase === PHASE.UNITE) {
     pub.unite = leakMock ? { helpers: ['ai_2', 'p3'], leakers: ['p1', 'p4'] } : { helpers: ['p1', 'ai_2'], leakers: ['p3'] };
     if (leakMock) { leftOf('p1', 13); leftOf('p4', 3); pub.players[0].status = 'done'; pub.players[2].status = 'helping'; } else leftOf('p3', 12);
   }
   const countKill = () => {
     if (phase !== PHASE.UNITE) return;
-    const pid = leakMock ? 'p1' : 'p3';
+    const pid = uniteFields ? pub.unite.leakers[0] : leakMock ? 'p1' : 'p3';
     const p = S.pub.players.find((x) => x.playerId === pid);
     if (p && p.uniteLeft > 0) { leftOf(pid, p.uniteLeft - 1); pushPublic(); }
   };
@@ -408,12 +446,18 @@ function startCombat(phase) {
     kind = phase === PHASE.HIDDEN_CORE ? 'hidden' : 'boss';
     fields = pub.players.length === 1 ? [{ fieldId: 'b1', kind, players: ['p1'], live: true }]
       : [{ fieldId: 'b1', kind, players: ['p1', 'ai_2'], live: true }, { fieldId: 'b2', kind, players: ['p3', 'p4'], live: true }];
+    // more than 4 players: the server's pairs of the alive players by seat, b1..b4 (an odd last player alone)
+    if (pub.players.length > 4) {
+      const ids = [...pub.players].filter((p) => p.alive !== false).sort((a, b) => a.seat - b.seat).map((p) => p.playerId);
+      fields = Array.from({ length: Math.ceil(ids.length / 2) }, (_, k) => ({ fieldId: `b${k + 1}`, kind, players: ids.slice(2 * k, 2 * k + 2), live: true }));
+    }
     rect = { ...GEO.BOSS_RECT };
     pub.teamLp = 61;
     pub.bossHp = { hp: 1_240_000, max: 1_990_000 };
   } else if (phase === PHASE.UNITE) {
     kind = 'unite';
-    fields = [{ fieldId: 'u', kind: 'unite', players: ['p1', 'ai_2'], live: true }];
+    fields = uniteFields ? uniteFields.map((f) => ({ fieldId: f.fieldId, kind: 'unite', players: f.helpers, live: true }))
+      : [{ fieldId: 'u', kind: 'unite', players: ['p1', 'ai_2'], live: true }];
     rect = { ...GEO.UNITE_RECT };
   } else {
     kind = 'normal';
@@ -740,9 +784,25 @@ const SWITCH = [
   ['HIDDEN_CORE', PHASE.HIDDEN_CORE, ''], ['COMBAT solo (pause)', PHASE.COMBAT, 'solo'], ['FA solo paused', PHASE.FINAL_ASSAULT, 'solo,paused'],
   ['RESULT win', PHASE.RESULT, ''], ['RESULT lose', PHASE.RESULT, 'defeat'],
 ];
+/** The mock room's seats (room.state: one per player of the room; a larger room says its capacity). */
+const mockRoom = () => ({
+  code: 'MOCK', hostId: ME, mode: 'coop', difficulty: 'HARD', inMatch: true, ...(NP > 4 ? { capacity: NP } : {}),
+  seats: PLAYERS.map((p) => ({ seat: p.seat, playerId: p.playerId, name: p.name, isBot: p.isBot, ready: true, connected: true })),
+});
+/** Switch the room size (4 = the default 4-player mock) and replay the current phase with it. */
+function setPlayers(n) {
+  NP = n;
+  PLAYERS = ALL_PLAYERS.slice(0, NP);
+  store.set({ room: mockRoom() });
+  const v = [...VARIANTS].join(',');
+  VARIANTS.clear();
+  setPhase(store.get().match.public?.phase || PHASE.PREP, v);
+  renderBar();
+}
 function Switcher() {
   const cur = store.get().match.public?.phase;
-  return html`<h4>PHASE</h4>${SWITCH.map(([label, ph, v]) => html`<button class=${cur === ph ? 'on' : ''} onClick=${() => { VARIANTS.clear(); setPhase(ph, v); renderBar(); }}>${label}</button>`)}
+  return html`<h4>PLAYERS</h4>${[4, 5, 8].map((n) => html`<button class=${NP === n ? 'on' : ''} onClick=${() => setPlayers(n)}>${n}P</button>`)}
+    <h4>PHASE</h4>${SWITCH.map(([label, ph, v]) => html`<button class=${cur === ph ? 'on' : ''} onClick=${() => { VARIANTS.clear(); setPhase(ph, v); renderBar(); }}>${label}</button>`)}
     <h4>EVENTS</h4>
     <button onClick=${() => { const now = Date.now(); store.set((s) => ({ emotes: [...s.emotes, { seq: now, playerId: pick(['p3', 'ai_2', 'p4']), id: pick(['autochess_battle_happy', 'slug_autochess_battle_thanks', 'autochess_battle_call', 'autochess_battle_fooldoctor_05', 'autochess_battle_foolamiya_03', 'autochess_battle_foolwisdel_01']), at: now }] })); }}>teammate emote</button>
     <button onClick=${() => store.set((s) => ({ ticker: [...s.ticker, { id: Date.now(), text: `<@ba.vup>${pick(['Doctor·B', '灰烬'])}博士</>将调度中心等级提升为5级`, at: Date.now() }] }))}>ticker</button>
@@ -763,7 +823,7 @@ async function boot() {
     me: { playerId: ME, name: '凯尔希', token: null },
     connection: { status: 'online', ping: 42, attempt: 0, retryAt: 0, lastError: null, everOnline: true },
     clock: { offset: 0, rtt: 20, synced: true },
-    room: { code: 'MOCK', hostId: ME, mode: 'coop', difficulty: 'HARD', inMatch: true, seats: PLAYERS.map((p) => ({ seat: p.seat, playerId: p.playerId, name: p.name, isBot: p.isBot, ready: true, connected: true })) },
+    room: mockRoom(),
   });
   await data.loadAll(GAME_FILES);
   installDeviceSupport();
@@ -773,6 +833,6 @@ async function boot() {
   render(html`<div class="app-root"><div class="app-bg" aria-hidden="true"></div><${GameScreen} /><${ConnectionBanner} /><${ToastHost} /><${UiHosts} /><${GuideHost} /></div>`, document.getElementById('app'));
   renderBar();
   store.subscribe(() => renderBar());
-  globalThis.__MOCK__ = { store, S: () => S, setPhase, mutate: (fn) => { fn(S); refreshPrivate(); }, pushPublic: () => pushPublic() };
+  globalThis.__MOCK__ = { store, S: () => S, setPhase, setPlayers, mutate: (fn) => { fn(S); refreshPrivate(); }, pushPublic: () => pushPublic() };
 }
 boot().catch((err) => console.error('[mock] boot failed', err));

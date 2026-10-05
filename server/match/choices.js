@@ -2,13 +2,16 @@
 // data/choices.json).
 //
 // Generation (generateDraft): the family is a weighted pick from choices.schedule[modeId].rounds[r].families; the card
-// count is `cards` (co-op 6, solo 3):
+// count is `cards` (co-op 6, solo 3; spDraftCardCount): a co-op room with more than 4 players alive at the draft
+// start (remake extension, gamedata.js DEFAULTS.largeRoom) gets max(cards, alive + 2) cards — 5–8 alive → 7–10 —
+// so the last picker still chooses from 3; the official structures below fill the extra cards as each one says:
 //   bounty  悬赏决策  six distinct cards.bounty entries (solo: 3 of them) built like the official draft of the round
 //                     (`bountyDraftCards`; player feedback after 0.1.0, report #2 — late bounty enemies in the early
 //                     drafts; 66 official screenshots of 22 matches, tools/build-data.mjs BOUNTY_INITIAL_SETS): schedule
 //                     `bountyDraft` names the kind and choices.json `bountyDrafts[kind]` its card lists — the event is a
 //                     fixed list and the draft shows 6 different cards of it, each drawn with its weight (1 + the
-//                     official drafts of the group it showed in):
+//                     official drafts of the group it showed in; a large room's cards beyond the structure's 6 are
+//                     other eligible cards of the same kind, the top-up of bountyDraftCards):
 //                       initial (R3, 险境 R6 [ASSUMED]): one of the 10 official sets of six "接下来两场作战" cards (all
 //                               six) — 9 seen, the 10th built by `rule` (I I I II II III) [ASSUMED];
 //                       boss (R9): one of the 6 groups (9, 9, 9, 9, 8 and 6 cards) of boss bounties / 源石虫·特训,
@@ -28,7 +31,8 @@
 //   shop    机密商店  at the rounds of choices.json `shopDraft` (R11: the 4 official 机密商店; the user: "机密商店按官方改
 //                     成可以重复吧"): six slots, each drawn on its own — with replacement, so the same item can be
 //                     offered twice (official: 盟约之币 ×2, 变形同构体 ×2): VI, VI, V, 盟约之币 and twice V / IV / III /
-//                     盟约之币, an item within its tier by `itemWeights` (solo: 3 of the 6 slots [ASSUMED]); other rounds
+//                     盟约之币, an item within its tier by `itemWeights` (solo: 3 of the 6 slots [ASSUMED]; a large room's
+//                     7th–10th cards repeat the slot pattern from its start: VI, VI, V, 盟约之币); other rounds
 //                     (标准 / 险境, no screenshot) and without `shopDraft`: random normal EQUIP shop items of any tier I–VI,
 //                     each card on its own (duplicates allowed) [ASSUMED]. FREE — the official card text is "无需消耗资金，获得装备
 //                     补给" (research 01 A4/04 addendum), so the price is 0. Two identical cards are two cards: picks,
@@ -114,6 +118,21 @@ export function bountyDraftKind(round) {
   return r < 8 ? 'initial' : r < 11 ? 'boss' : 'hunter';
 }
 
+/**
+ * The number of 机变 cards of `round` with `players` alive at the draft start: the round's schedule `cards` (co-op 6,
+ * solo 3; else choices.format), and in a co-op room with more than 4 alive (gamedata.js largeRoom, remake extension)
+ * max(that, alive + largeRoom.spCardsPlus) — 5 → 7 … 8 → 10. 1–4 alive (or `players` omitted) ⇒ the official count.
+ * @param {import('./gamedata.js').GameData} gd
+ * @param {number} round
+ * @param {number} [players]
+ */
+export function spDraftCardCount(gd, round, players) {
+  const sch = scheduleFor(gd, round);
+  const base = Number.isInteger(sch.cards) && sch.cards > 0 ? sch.cards : formatCount(gd);
+  if (!gd.isLargeRoom || !gd.isLargeRoom(players)) return base;
+  return Math.max(base, Math.floor(Number(players)) + gd.largeRoom.spCardsPlus);
+}
+
 function formatCount(gd) {
   const f = gd.choices.format || {};
   const multi = f.multi && Number.isInteger(f.multi.cards) ? f.multi.cards : 6;
@@ -133,14 +152,15 @@ function itemCard(gd, id) {
 }
 
 /**
- * Build the draft cards for an SP round.
+ * Build the draft cards for an SP round. `players`: the players alive at the draft start (spDraftCardCount; omitted ⇒
+ * the official count).
  * @returns {{ family: string, name: string, desc: string, eventId: string|null, cards: object[] } | null}
  */
-export function generateDraft(gd, rng, round, { stageId = null, bondAvailable = null } = {}) {
+export function generateDraft(gd, rng, round, { stageId = null, bondAvailable = null, players = undefined } = {}) {
   const sch = scheduleFor(gd, round);
   const fams = Array.isArray(sch.families) && sch.families.length ? sch.families.map((f) => [f.family, f.weight]) : [['supply', 1]];
   let family = weightedPick(rng, fams) || 'supply';
-  const n = Number.isInteger(sch.cards) && sch.cards > 0 ? Math.min(sch.cards, 6) : formatCount(gd);
+  const n = spDraftCardCount(gd, round, players);
   const opts = { stageId, bondAvailable, round };
   let cards = buildCards(gd, rng, family, n, sch, opts);
   if (!cards.length && family !== 'supply') { family = 'supply'; cards = buildCards(gd, rng, family, n, sch, opts); }
@@ -307,8 +327,8 @@ function structuredBounty(rng, kind, spec, byId) {
 
 /**
  * Build `n` 悬赏决策 cards for `round` (module header): the official structure of the round's kind, topped up with other
- * eligible cards of that kind when it falls short (test fixtures with a restricted card list), shuffled into place —
- * the official card positions vary — and cut to `n` (solo 3 [ASSUMED]).
+ * eligible cards of that kind when it falls short (test fixtures with a restricted card list; a large room's 7–10
+ * cards), shuffled into place — the official card positions vary — and cut to `n` (solo 3 [ASSUMED]).
  */
 function bountyDraftCards(gd, rng, n, sch, round) {
   const kind = typeof sch.bountyDraft === 'string' ? sch.bountyDraft : bountyDraftKind(round);
@@ -326,7 +346,8 @@ function bountyDraftCards(gd, rng, n, sch, round) {
  * The 机密商店 cards (choices.json `shopDraft`, module header): every slot drawn on its own — a tier (or `coin`, the
  * 盟约之币) by the slot's weights, then an item of that tier by `itemWeights` (1 when unlisted; an empty tier falls back to
  * the nearest lower one, then any) — so one item can fill two slots. Positions shuffled; `n` < the slots (solo) keeps
- * `n` of them. Null without a usable `shopDraft` or at a round its `rounds` (when given) does not list.
+ * `n` of them; `n` > the slots (a large room's 7–10 cards, remake extension) draws the slot pattern again from its
+ * start for the extra cards. Null without a usable `shopDraft` or at a round its `rounds` (when given) does not list.
  */
 export function shopDraftCards(gd, rng, n, round = null) {
   const spec = gd.choices.shopDraft;
@@ -340,7 +361,9 @@ export function shopDraftCards(gd, rng, n, round = null) {
     return eligibleItems(gd, 1, 6);
   };
   const out = [];
-  for (const slot of slots) {
+  const draws = Math.max(slots.length, Math.floor(Number(n)) || 0);
+  for (let i = 0; i < draws; i++) {
+    const slot = slots[i % slots.length];
     const kinds = Object.entries(slot).filter(([k]) => k === 'coin' ? !!coin : Number.isInteger(Number(k)));
     const kind = weightedPick(rng, kinds);
     if (kind == null) continue;

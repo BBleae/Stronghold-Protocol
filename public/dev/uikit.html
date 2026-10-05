@@ -297,6 +297,9 @@
             <${AvatarFrame} name="惊蛰" size="sm" seat=${1} self=${true} />
             <${AvatarFrame} name="艾雅法拉" size="xl" seat=${0} host=${true} />
           </div>
+          <div class="row">
+            ${['P1', 'P2', 'P3', 'P4', 'P5', 'P6', 'P7', 'P8'].map((n, i) => html`<${AvatarFrame} key=${n} name=${n} size="md" seat=${i} />`)}
+          </div>
         <//>
 
         <${Sec} n="11" title="输入 · 提示 · 对话框" micro="FIELD · TOOLTIP · MODAL · TOAST">

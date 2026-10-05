@@ -19,6 +19,7 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { MAX_SEATS, DEFAULT_SEATS } from '../shared/constants.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PUBLIC = path.join(ROOT, 'public');
@@ -830,8 +831,8 @@ describe('identity (reconnect-token selection across tabs)', () => {
     id.saveToken('');
     id.saveToken('x'.repeat(65));
     assert.equal(id.getToken(), null, 'invalid tokens ignored');
-    for (let i = 0; i < 9; i++) id.saveToken(`t${i}`);
-    assert.equal(recent(local).length, 4, 'recent list capped');
+    for (let i = 0; i < MAX_SEATS + 1; i++) id.saveToken(`t${i}`);
+    assert.equal(recent(local).length, MAX_SEATS, 'recent list capped (one browser may hold every seat of a room)');
     local.setItem('sp.tokens', '{broken');
     id.saveToken('ok');
     assert.deepEqual(recent(local), ['ok'], 'corrupt list replaced');
@@ -1070,6 +1071,43 @@ describe('screen helpers', () => {
     assert.equal(roomFacts(room, 'g').canStart, false, 'guests cannot start');
     assert.equal(roomFacts(null, 'x').mine, null);
     assert.match(inviteLink('ABCD'), /\?room=ABCD$/);
+  });
+
+  test('room: the seat cards follow the room capacity (room.state.capacity, 4–8; 5–8 a remake extension)', async () => {
+    const { normalizeSeats, roomFacts, roomCapacity } = await mod('screens/room.js');
+    const seat = (i, extra = {}) => ({ seat: i, playerId: `p${i}`, name: `P${i}`, isBot: false, ready: true, connected: true, ...extra });
+    // a 4-seat room is today's room: 4 cards
+    assert.equal(roomCapacity({ mode: 'coop', capacity: DEFAULT_SEATS, seats: [seat(0), null, null, null] }), DEFAULT_SEATS);
+    assert.equal(normalizeSeats({ mode: 'coop', capacity: 4, seats: [seat(0), null, null, null] }).length, 4);
+    assert.equal(roomCapacity({ mode: 'coop' }), DEFAULT_SEATS, 'nothing known ⇒ the default room');
+    // an 8-seat room: 8 cards, the 8th seat (index 7) addressable
+    const big = { code: 'ABCD', hostId: 'p0', mode: 'coop', difficulty: 'FUNNY', capacity: MAX_SEATS,
+      seats: [seat(0), null, seat(2, { ready: false }), null, null, null, null, seat(7, { playerId: 'ai_7', isBot: true })] };
+    assert.equal(MAX_SEATS, 8);
+    const seats = normalizeSeats(big);
+    assert.equal(seats.length, 8);
+    assert.equal(seats[7].seat, 7);
+    const f = roomFacts(big, 'p0');
+    assert.equal(f.capacity, 8);
+    assert.equal(f.emptySeats, 5);
+    assert.equal(f.humans.length, 2);
+    assert.equal(f.canStart, false, 'P3 is not ready');
+    // capacity wins over the list's length; a server without `capacity`: the list's length (a 5-seat room)
+    assert.equal(normalizeSeats({ mode: 'coop', capacity: 6, seats: [seat(0)] }).length, 6);
+    assert.equal(normalizeSeats({ mode: 'coop', seats: [seat(0), null, null, null, null] }).length, 5);
+    // out-of-range values are clamped to DEFAULT_SEATS..MAX_SEATS; solo is always one seat
+    assert.equal(roomCapacity({ mode: 'coop', capacity: 2 }), DEFAULT_SEATS);
+    assert.equal(roomCapacity({ mode: 'coop', capacity: 99 }), MAX_SEATS);
+    assert.equal(roomCapacity({ mode: 'solo', capacity: 8, seats: [seat(0)] }), 1);
+    assert.equal(normalizeSeats({ mode: 'solo', capacity: 1, seats: [seat(0)] }).length, 1);
+    // the room screen: a 5–8-seat room wraps its cards into two rows; the host picks 4–8 seats next to the difficulty
+    const src = readFileSync(path.join(PUBLIC, 'js/screens/room.js'), 'utf8');
+    assert.match(src, /seats--wide/);
+    assert.match(src, /net\.request\('room\.setCapacity', \{ capacity \}\)/);
+    const css = readFileSync(path.join(PUBLIC, 'css/screens/room.css'), 'utf8');
+    assert.match(css, /\.seats--wide \{ grid-template-rows: repeat\(2, /, 'two rows of four');
+    assert.match(css, /\.seats \{[^}]*grid-template-columns: repeat\(4, minmax\(0, 3\.8rem\)\);[^}]*grid-template-rows: minmax\(0, 6rem\);/,
+      'a 4-seat room keeps its one row of 4 cards');
   });
 
   test('room: spectator seats (community report #26) — isSpectating; roomFacts never counts a spectator as a player', async () => {

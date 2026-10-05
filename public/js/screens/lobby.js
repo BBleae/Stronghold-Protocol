@@ -11,7 +11,7 @@
 // plays 战场#01, 险境 draws one of 8, 绝境 / 终极 one of 7 (m01 excluded).
 
 import { useEffect, useRef, useState } from '../../vendor/hooks.module.js';
-import { DIFFICULTIES, DIFFICULTY_NAMES, DIFFICULTY_COLORS, ROOM_CODE_LEN, MAX_SEATS, MAX_SPECTATORS, ERR, modeIdFor } from '../../../shared/constants.js';
+import { DIFFICULTIES, DIFFICULTY_NAMES, DIFFICULTY_COLORS, ROOM_CODE_LEN, MAX_SEATS, DEFAULT_SEATS, MAX_SPECTATORS, ERR, modeIdFor } from '../../../shared/constants.js';
 import {
   html, Button, Icon, MicroLabel, Panel, TextField, PingPill, AvatarFrame, Tooltip, Spinner, DifficultyIcon, doctorNo, PlayerName,
 } from '../ui/components.js';
@@ -78,8 +78,10 @@ const MODE_CARDS = [
   },
   {
     id: 'coop', name: '同盟模拟', en: 'ALLIANCE SIMULATION', icon: 'users',
+    // up to MAX_SEATS (8) doctors: a room has DEFAULT_SEATS (4, the official room) until its host adds seats in the room
+    // (同盟席位, a remake extension)
     desc: `与至多 ${MAX_SEATS - 1} 名博士组成同盟，共享干员池，联防协作抵御敌潮。`,
-    points: [`1–${MAX_SEATS} 名博士 · 可由 AI 队友补位`, '联防阶段 · 最终攻势合并生命值'],
+    points: [`1–${MAX_SEATS} 名博士 · 可由 AI 队友补位`, `默认 ${DEFAULT_SEATS} 席 · 创建者可扩至 ${MAX_SEATS} 席`, '联防阶段 · 最终攻势合并生命值'],
   },
 ];
 

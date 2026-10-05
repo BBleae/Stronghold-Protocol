@@ -29,6 +29,21 @@
 .dorder.is-done { border-color: var(--mint-800); }
 .dorder.is-self .dorder__name { color: var(--mint-400); }
 .draft-order__tip { margin-top: auto; font-size: .13rem; line-height: 1.6; color: var(--text-dim); }
+/* 5–8 players (a remake extension; bandDraft.js draftOrderDense): dense rows — a smaller avatar and strategy box,
+   tighter padding — so 8 rows, 查看禁用盟约与干员 and the tip fit the column on desktop and on phones. 1–4 players keep
+   the rows above. */
+.draft-order--dense { gap: .06rem; }
+.draft-order--dense .brief-h { margin-bottom: .06rem; }
+.draft-order--dense .dorder { gap: .1rem; padding: .05rem .1rem .05rem .06rem; }
+.draft-order--dense .dorder .pavatar { --pa: .46rem; }
+.draft-order--dense .dorder__idx { font-size: .18rem; width: .2rem; }
+.draft-order--dense .dorder__name { font-size: .16rem; }
+.draft-order--dense .dorder__state { font-size: .13rem; }
+.draft-order--dense .dorder__box { width: .46rem; height: .46rem; }
+.draft-order--dense .dorder__box .bandicon { --bi: .36rem; }
+.draft-order--dense .dorder__check { width: .18rem; height: .18rem; right: -.05rem; bottom: -.05rem; }
+.draft-order--dense .dorder__check .icon { width: .13rem; height: .13rem; }
+.draft-order--dense .dorder__finger { width: .34rem; height: .34rem; }
 
 .draft-grid {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(1.36rem, 1fr)); grid-auto-rows: min-content; gap: .12rem;

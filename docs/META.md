@@ -46,6 +46,7 @@ LOBBY → INFO_CHECK (co-op 25 s; solo and single-human matches untimed; all hum
      (prep end)         onPrepEnd, the temp pieces due at this prep resolved (tempDue; what arrived after Ready or
                         during onPrepEnd waits for the next prep), reward offers expire, unfrozen shop cleared, funds lost
                         (band_cannot keeps them), boss round: Σ activated layers recorded for the hidden-core check
+                        (with the number of players summed: the co-op threshold × max(1, players / 4), DESIGN §24)
      COMBAT             one Battle per alive player (FieldRunner, 2× game speed; limit = 2 × maxPlayTime game s, §3)
      UNITE              co-op, ≥ 1 leaker and ≥ 1 perfect player (§4)
      SETTLE (3 s)       LP, coins, layers (the views showed them since the end of COMBAT, §5), bounties, eliminations,
@@ -71,26 +72,26 @@ legal from R14 into R15. The client mirrors it
 | Timer (real s, × `opts.timerScale`) | Value |
 |---|---|
 | INFO_CHECK | `config.timers.infoCheck` 25 |
-| band draft turn | `Match.BAND_TURN_SECONDS` 30 [ASSUMED] (= `timers.bandTurn`), the step's only countdown: `m.public.deadline` = the current turn's end, no step cap (`timers.bandDraft` 50 = the official whole step, informational) (co-op; solo / single human untimed) |
+| band draft turn | `Match.BAND_TURN_SECONDS` 30 [ASSUMED] (= `timers.bandTurn`), the step's only countdown: `m.public.deadline` = the current turn's end, no step cap (`timers.bandDraft` 50 = the official whole step, informational) (co-op; solo / single human untimed); a match of more than 4 seats: `largeRoom.bandTurn` 20 (`Match.bandTurnSeconds`, DESIGN §24) |
 | BATTLE_CHECK | `battleCheck` 3 |
-| 机变 first / other pickers | `spFirst` 30 / `spTurn` 16 (co-op; solo / single human untimed) |
+| 机变 first / other pickers | `spFirst` 30 / `spTurn` 16 (co-op; solo / single human untimed); more than 4 alive at the draft start: other pickers `largeRoom.spTurn` 12 (`gd.spTurnSeconds`, DESIGN §24) |
 | PREP | `modes[m].rounds[r].prepTime` (co-op; solo / single human untimed) |
 | COMBAT / 联防 | `modes[m].rounds[r].combatTimeLimit` (= the level's `maxPlayTime`) real seconds = 2× that in game seconds |
-| 最终攻势 / 隐秘核心 | no hard stop: countdown `rounds[r].levelMaxPlayTime` 120 real s; overtime drain from `bossOvertimeAfter` 150 real s, 1 team LP per real s (§3) |
+| 最终攻势 / 隐秘核心 | no hard stop: countdown `rounds[r].levelMaxPlayTime` 120 real s; overtime drain from `bossOvertimeAfter` 150 real s, 1 team LP per real s (× alive / 4 above 4 alive, §3) |
 | ROUND_START / after combat / SETTLE | 2 / 1.5 / 3 (presentation delays, `Match.DELAYS`) |
 | bot action delay | 0.9 s (+0.35 s per seat) |
 
 A match with a single human seat at the start (独立模拟, or a 同盟 room started alone / with AI teammates only:
 `Match.loneHuman` → `Match.soloUntimed`, user playtest #4 item 3) times nothing outside its battles: no INFO_CHECK /
 band draft / 机变 / PREP deadline, and BATTLE_CHECK / ROUND_START / SETTLE run silently (deadline 0); the co-op rules
-(draft order and skip, 6 机变 cards, 联防) stay.
+(draft order and skip, 6 机变 cards — 7–10 above 4 alive —, 联防) stay.
 `m.public.deadline` is the absolute end of the current timer (ms epoch, 0 = untimed; combat: estimated end at 2×;
 最终攻势 / 隐秘核心: the boss level's `levelMaxPlayTime` countdown, 120 real s — the battle goes on past it — with
 `m.public.overtimeAt` = when the overtime drain starts, 150 real s; both on the field clock).
 
 ### 1.1 Band draft
-Co-op: random order (all seats, bots included), one pick per turn, ONE countdown: `BAND_TURN_SECONDS` 30 s per turn,
-published as `m.public.deadline` (= `draft.turnDeadline`; `draft.turnSeconds` its length) — no step cap; AI seats pick
+Co-op: random order (all seats, bots included), one pick per turn, ONE countdown: `BAND_TURN_SECONDS` 30 s per turn (20 s
+in a match of more than 4 seats, DESIGN §24), published as `m.public.deadline` (= `draft.turnDeadline`; `draft.turnSeconds` its length) — no step cap; AI seats pick
 at once. A turn that runs out takes the strategy the player highlights in the draft screen (`g.bandFocus {bandId?}`,
 `Match.timeoutBand`) while it is allowed and no teammate holds it, else `bandDraft.timeoutBandId` 华法琳, else the first
 free strategy by sortId (`defaultBand`; a departing seat gets `defaultBand` too). One skip per player (`g.bandSkip`: the
@@ -100,7 +101,10 @@ untimed. Solo: free pick, no timer, no skip. Starting LP = `bands[id].totalHp`.
 
 ### 1.2 机变 (SP draft)
 Family = weighted pick from `choices.schedule[modeId].rounds[r].families`; cards: co-op 6 shared (each player takes 1,
-random order, 30 s first / 16 s others, timeout ⇒ a random remaining card), solo 3; solo and single-human drafts are
+random order, 30 s first / 16 s others, timeout ⇒ a random remaining card), solo 3; with more than 4 alive at the draft
+start (DESIGN §24) max(6, alive + 2) cards (`choices.js spDraftCardCount`: 7–10 for 5–8 — a 悬赏决策 tops its structure up
+with other eligible bounty cards of the kind, a 机密商店 draws its slot pattern again from the start) and 12 s for the
+later pickers; solo and single-human drafts are
 untimed. The UI picks a card with two taps (select → 确认选择, DESIGN §18.2). A 驰援 tactic card
 (`single_special_choice_gain_bond_chess`) is only offered while its bond still has chess in this match's pool
 (`Match.bondInPool`; a bond whose every member is banned would grant nothing); more generally a 驰援 or 盟誓
@@ -175,7 +179,8 @@ A `choice:<effectId>` registry handler overrides the default application (§2.4)
 * `onLeave` (quit / reconnect window expired): 中途退出 counts as elimination (research 00-INDEX §3, 01 §9, 06 §7 /
   §10.3): every copy the seat holds returns to the shared pool at once; the seat leaves the round loop and the Final
   Assault pairing (re-planned when it quits before the boss fight; the boss pool stays bloodPoint — it would shrink to
-  × alive / 4 only with config `bossHpScale.aliveScaling`, off — the user chose the fixed pool, DESIGN §20.10); its
+  × alive / 4 only with config `bossHpScale.aliveScaling`, off — the user chose the fixed pool, DESIGN §20.10; above 4
+  alive at the boss phase's start it is × alive / 4, DESIGN §24); its
   running normal battle is force-ended; a pending band pick
   becomes the default band and a 机变 turn passes on. Status `left`, LP 0, rounds passed = the rounds it had survived.
   When no human is left at all the match ends immediately (`reason: 'abandoned'`); when only eliminated spectators are
@@ -498,7 +503,8 @@ Any `choice:` handler whose EffectRef reuses its own key must guard like this (o
   base per mode, −1 each round start (floor 0), reset to the next base after upgrading; `MAX_LEVEL` at 6. One freeze
   toggle freezes every unsold slot until the next round start; a manual refresh rerolls everything (new slots stay
   frozen). Unfrozen slots are cleared at combat start. Slot positions are stable (frozen slots keep their index).
-* **Pool**: copies 12/14/18/16/8/5 (缪尔赛思 4); a normal piece holds 1 copy, an elite 3; displays never reserve copies;
+* **Pool**: copies 12/14/18/16/8/5 (缪尔赛思 4) — a match of 5–8 seats (humans + bots at the start): ceil(copies × seats / 4),
+  fixed for the match (`gamedata.js poolCopies(id, players)`, DESIGN §24); a normal piece holds 1 copy, an elite 3; displays never reserve copies;
   selling, temp resolution and elimination return exactly what a piece holds (`left + held = cap` always).
 * **Hand**: 10 slots filled right→left, 5 temp slots for passive overflow (merge results, grants, returned equipment);
   a full hand refuses buys unless the purchase completes a merge, and withdrawals unless the withdrawn summoner's own
@@ -595,12 +601,14 @@ Any `choice:` handler whose EffectRef reuses its own key must guard like this (o
   Pool (`finalAssault.js bossPoolHp` → `GameData.bossPoolShare`, DESIGN §20.10): one pool shared by every boss field
   (official tip "最终攻势中，所有人将一起对敌方领袖造成伤害"); co-op = `bloodPoint[difficulty]` whatever the number of alive
   players (notice 5114's "敌方领袖的总生命值不变" is about the mirrored copies of a pair field sharing the pool, not about that
-  number); `bossHpScale.aliveScaling` true (default false) would scale it × alive / `aliveFull` (4) — 巴哈姆特 12294
+  number) — above 4 alive at the phase's start (remake extension, DESIGN §24) × alive / 4 on top (`GameData.largeRoomFactor`,
+  the Final Assault and the Hidden Core each with their own count); `bossHpScale.aliveScaling` true (default false) would scale it × alive / `aliveFull` (4) — 巴哈姆特 12294
   "聯機隊友(撤退/死掉)變少，最後boss血條也會變少" is one community note without a proportion, kept off until the user confirms
   it (it would shorten the fight after eliminations, the opposite of the playtest report); solo = ×
   `bossHpScale.solo` (0.25 = one player of four [ASSUMED]); leaders are never scaled by `enemyScale`. The merged team LP loses leaks (`lpr`), the overtime drain
   (`bossTurnHpReduceTime` 150 counts REAL seconds, like the boss level's 120 s maxPlayTime that runs out first — the
-  battle goes on — so 1 LP per real second from 150 real s = 300 game s on the 2× field clock; `gd.bossOvertimeDue`)
+  battle goes on — so 1 LP per real second from 150 real s = 300 game s on the 2× field clock; `gd.bossOvertimeDue`; above
+  4 alive at the phase's start × alive / 4 — `gd.bossOvertimeDrainFor`, the total floored to whole LP, `m.public.overtimeDrainPerSec`)
   and leader "扣除目标生命" effects (the sim's `lpLoss` hook: boss_7 Doom, 斥退 …); after every change it is written back
   to the alive players as shares of the LP each brought in (`lpAtFinal`, largest remainder), so `lp` in m.public /
   m.private / m.result is what is left (Σ = team LP).
@@ -640,7 +648,9 @@ keeps just the result-title rules:
 The former `enemyHpMul` / `enemyAtkMul` / `enemySpeedMul` / `bossHpMul` / `flyPlaceholders` knobs were removed; a
 tuning file that still carries them is ignored (`gd.bossHpMul()` always returns 1). `tools/balance.mjs --tuning off`
 drops the file (titles only, so the numbers are the same). Titles: `rule: 'min'` ranks the players still alive by the
-smallest stat (坚若磐石 "目标生命值损失最少" = least `lpLost`). docs/BALANCE.md has the balance measurements.
+smallest stat (坚若磐石 "目标生命值损失最少" = least `lpLost`). A match of more than 4 players runs a second pass after the
+one-title-each one: a player still without a title gets its best-ranked eligible title, which may repeat a teammate's
+(results.js assignTitles, DESIGN §24). docs/BALANCE.md has the balance measurements.
 
 ---
 
@@ -674,6 +684,20 @@ in + the offspring bound). It falls as the helpers strike them down and rises wh
 carry the leaker); every client that has the 联防 field on screen shows its local replica's counts while it runs — the
 leaker's own capsule / row (`ui/hud.js uniteRemaining`) and the leakers' team rows (`ui/teamPanel.js rowLp`
 `uniteLocal`, the battle runner's `state().uniteLeft`) — else this value. The settled loss stays min(10, survivors).
+**More than 4 alive (remake extension, DESIGN §24.4).** Alive ≤ 4 keeps everything above (one field `'u'`, ≤ 2 helpers).
+Above 4, with k = min(⌈alive / 4⌉, leakers) (`uniteFieldCount`): helpers = the top 2k perfect players in `helperOrder`;
+fields = min(k, ⌈helpers / 2⌉) (never one without a helper or a leaker), ids `'u'`, `'u2'`, …, the helpers 2 per field in ranking order, each field's sides /
+template / colOffsets as above (`unite.js uniteFieldBudget` / `uniteHelperGroups` / `uniteFieldId`, seeds `u:<round>`,
+`u2:<round>` …); the leakers are spread over the fields balancing the counted leaks (`assignLeakers`: largest leaker
+first — equal counted leaks by seat —, each to the field with the fewest counted leaks so far — equal loads: the lowest
+field index), so every field gets at least one leaker. Each field fights only its own leakers' enemies and its result bills only them (survivors to their
+source; `settle(plan, results)` takes the fields' results in field order, `uniteBills`: a field whose battle could not
+run charges its leakers their own counted leaks); a leaker's `uniteLeft` / `pendingLp` come from its own field. Under
+client-side combat each field has its own authority (its lowest-seat connected helper) or the server, independently;
+a helper's `g.watch` of another 联防 field is `WRONG_PHASE 'own battle running'` while its own field runs. A 联防 b.result
+still over the frame budget after `fitResult` dropped the unit statistics and the leaks' `mods` keeps only the keys
+settlement reads per leak / never-spawned entry (a field holding up to 7 leakers' enemies). `m.public.unite` keeps the
+union `{ helpers, leakers }` and adds `fields: [{ fieldId, helpers, leakers }]` only when there is more than one field.
 
 ---
 
@@ -694,7 +718,9 @@ eliminated (nobody can watch them; the result screen reads `m.result`'s own bond
 `sp { family, name, desc, eventId, cards:[{ idx, kind:'bounty'|'item'|'tactic', id, name, desc, tier, descRaw?, coin?,
 payout?, rounds?, enemyKey?, count?, price?, team?, tacticKind? }], order, turn, picks:{pid: idx}, taken:{idx: pid}, untimed }`
 (SP_DRAFT), `teamLp` / `bossHp {hp,max}` (Final Assault on), `overtimeAt` (最终攻势 / 隐秘核心: ms epoch when the
-overtime drain starts; `deadline` = the level's 120 s countdown), `unite { helpers, leakers }` (UNITE).
+overtime drain starts; `deadline` = the level's 120 s countdown; `overtimeDrainPerSec` its rate above 4 alive), `unite { helpers,
+leakers, fields? }` (UNITE; `fields: [{ fieldId, helpers, leakers }]` only with several 联防 fields, §4), `sp.turnSeconds`
+(above 4 alive: the current 机变 turn's length).
 `players[].status`: INFO_CHECK ready/deciding · drafts ready (picked) / deciding (their turn) / acting (waiting) ·
 PREP ready/acting · COMBAT/boss combat/done · UNITE helping/done · others done · `left` / `dead` override.
 
@@ -758,7 +784,8 @@ round was over. The official 1 s `broadcastBeginDelay` is not modelled.
   `instantCombat` (default) battles run synchronously, so a full match takes milliseconds of wall time.
 * Suites: pool, board, economy, merge, bonds, draft, combat (FakeBattle), finalAssault, connection, meta, waves,
   results, fullmatch (fullmatch*.test.js, parallel files, runner fullmatchRun.js — REAL sim: solo × 4 difficulties, co-op
-  2/3/4 incl. AI, 20 seeds each; `MATCH_SEEDS=n` to change),
+  2/3/4 incl. AI, 20 seeds each; `MATCH_SEEDS=n` to change; 5 and 8 seats with min(MATCH_SEEDS, 6) seeds, the 5–8 rules
+  checked on every phase by fullmatchLarge.js),
   fuzz (random valid-shaped intents + connection churn), lobby-integration (real server + sockets), realtime (the real
   server + lobby + Match with RealScheduler and the REAL sim: 2 scripted websocket humans + 2 AI from the room to the
   prep of round 4 — drafts, 机变, buying/placing, combat snapshots `gt`, watching, 联防, throttled m.public), bot (field

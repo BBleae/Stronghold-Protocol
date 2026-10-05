@@ -677,7 +677,17 @@ export function Spinner({ size = 'md', label, tone = 'mint', class: cls }) {
 
 // ---- Avatar frame ------------------------------------------------------------------------------
 
-const SEAT_HUES = [162, 196, 38, 280];
+/**
+ * Seat colours (the hue of the avatar frame / PlayerAvatar backdrop, `--seat-hue`): one per seat of the largest room
+ * (shared/constants.js MAX_SEATS = 8). P1–P4 keep the four hues of the official 4-seat room (mint, cyan, amber,
+ * violet); P5–P8 (a remake extension) add rose, blue, lime and magenta between them.
+ */
+export const SEAT_HUES = Object.freeze([162, 196, 38, 280, 350, 225, 95, 320]);
+/** The seat colour's hue of a seat index (0-based; wraps past the palette). */
+export function seatHue(seat) {
+  const n = SEAT_HUES.length;
+  return SEAT_HUES[(((seat | 0) % n) + n) % n];
+}
 /**
  * Square avatar frame with bracket corners. Falls back to a glyph (first letter / robot).
  * @param {{ name?: string, src?: string, size?: 'sm'|'md'|'lg'|'xl', seat?: number, host?: boolean, bot?: boolean,
@@ -686,7 +696,7 @@ const SEAT_HUES = [162, 196, 38, 280];
 export function AvatarFrame({ name = '', src, size = 'md', seat = 0, host, bot, self, ready, offline, dead, empty, class: cls }) {
   const [badSrc, setBadSrc] = useState(null);
   const imgOk = !!src && badSrc !== src;
-  const hue = SEAT_HUES[((seat | 0) % 4 + 4) % 4];
+  const hue = seatHue(seat);
   const glyph = [...(name || '').trim()][0] || '?';
   return html`<div class=${cx('avatar', `avatar--${size}`, 'brackets', host && 'is-host', bot && 'is-bot', self && 'is-self',
       ready && 'is-ready', offline && 'is-offline', dead && 'is-dead', empty && 'is-empty', cls)} style=${`--seat-hue:${hue}`}>

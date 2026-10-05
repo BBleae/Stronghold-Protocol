@@ -1,6 +1,7 @@
-// Room screen (同盟等待室): 4 seat cards (avatar frame, name, ready state, AI badge, host crown),
-// host controls (difficulty picker, add/remove AI in co-op, start), invite code with copy code /
-// copy link, ready toggle and leave.
+// Room screen (同盟等待室): one seat card per seat of the room (avatar frame, name, ready state, AI badge, host crown) —
+// the room's capacity (room.state.capacity): 4 cards in one row as in the official room, 5–8 (a remake extension) in two
+// rows of 4 smaller cards —, host controls (difficulty picker, 同盟席位 picker 4–8 in co-op, add/remove AI in co-op,
+// start), invite code with copy code / copy link, ready toggle and leave.
 //
 // Start rule (server/lobby.js): room.start needs every *other* human connected and ready; the
 // host's start counts as the host's ready. So 开始模拟 is enabled exactly then and sends room.start
@@ -11,7 +12,7 @@
 // button for 观战中 and offers 入座 (room.join of the room) while a player seat is free.
 
 import { useEffect, useRef, useState } from '../../vendor/hooks.module.js';
-import { DIFFICULTIES, DIFFICULTY_NAMES, DIFFICULTY_COLORS, MAX_SEATS, MAX_SPECTATORS } from '../../../shared/constants.js';
+import { DIFFICULTIES, DIFFICULTY_NAMES, DIFFICULTY_COLORS, MAX_SEATS, DEFAULT_SEATS, MAX_SPECTATORS } from '../../../shared/constants.js';
 import {
   html, Button, Icon, MicroLabel, PingPill, AvatarFrame, DifficultyTag, DifficultyIcon, Tooltip, confirmDialog, doctorNo, PlayerName,
 } from '../ui/components.js';
@@ -29,12 +30,23 @@ import { store, useStore, shallowEqual, emptyMatch, isSpectating } from '../stor
 import { difficultyInfo } from './lobby.js';
 
 /**
- * Seats padded to the room's capacity (co-op 4, solo 1), each null or a seat record.
+ * The room's player seats: solo 1; co-op room.state `capacity` (else its seat list's length), DEFAULT_SEATS..MAX_SEATS.
+ * @param {any} room room.state payload
+ * @returns {number}
+ */
+export function roomCapacity(room) {
+  if (room?.mode === 'solo') return 1;
+  const n = Number.isInteger(room?.capacity) ? room.capacity : Array.isArray(room?.seats) ? room.seats.length : 0;
+  return Math.min(MAX_SEATS, Math.max(DEFAULT_SEATS, n));
+}
+
+/**
+ * Seats padded to the room's capacity (roomCapacity: co-op 4–8, solo 1), each null or a seat record.
  * @param {any} room room.state payload
  * @returns {(null | {seat:number, playerId:any, name:string, isBot:boolean, ready:boolean, connected:boolean})[]}
  */
 export function normalizeSeats(room) {
-  const cap = room?.mode === 'solo' ? 1 : MAX_SEATS;
+  const cap = roomCapacity(room);
   const src = Array.isArray(room?.seats) ? room.seats : [];
   const out = [];
   for (let i = 0; i < cap; i++) {
@@ -63,6 +75,7 @@ export function roomFacts(room, myId) {
   const othersReady = others.every((s) => s.ready && s.connected !== false);
   return {
     seats, occupied, humans, mine, isHost, readyHumans, isReady,
+    capacity: seats.length,
     emptySeats: seats.filter((s) => !s).length,
     canStart: isHost && othersReady && !!mine,
     othersReady,
@@ -194,6 +207,21 @@ function DifficultyPicker({ room, isHost, busy, onPick }) {
   </div>`;
 }
 
+/**
+ * 同盟席位 (host, co-op): the room's seat count, DEFAULT_SEATS..MAX_SEATS (above 4 a remake extension). A size below the
+ * occupied seats is disabled (the server refuses it too).
+ */
+function CapacityPicker({ facts, busy, onPick }) {
+  const sizes = [];
+  for (let n = DEFAULT_SEATS; n <= MAX_SEATS; n++) sizes.push(n);
+  return html`<div class="dpick cpick" role="radiogroup" aria-label="同盟席位">
+    ${sizes.map((n) => html`<button key=${n} type="button" role="radio" aria-checked=${facts.capacity === n ? 'true' : 'false'}
+        class=${`dpick__opt cpick__opt num${facts.capacity === n ? ' is-active' : ''}`}
+        title=${n < facts.occupied.length ? '席位不能少于已入座的博士与 AI 队友' : `${n} 席${n > DEFAULT_SEATS ? '（扩展：超过官方 4 人上限）' : ''}`}
+        disabled=${!!busy || n < facts.occupied.length} onClick=${() => facts.capacity !== n && onPick(n)}>${n}</button>`)}
+  </div>`;
+}
+
 /** Room screen component. */
 export function RoomScreen() {
   const room = useStore((s) => s.room);
@@ -234,6 +262,7 @@ export function RoomScreen() {
     if (ok) run(`kick${seat}`, () => net.request('room.kick', { seat, playerId }));
   };
   const setDifficulty = (difficulty) => run('diff', () => net.request('room.setDifficulty', { difficulty }));
+  const setCapacity = (capacity) => run('cap', () => net.request('room.setCapacity', { capacity }));
   // spectator seats: the host frees one; a spectator takes a free player seat with room.join of this room
   const removeSpectator = (playerId) => run(`rs${playerId}`, () => net.request('room.removeSpectator', { playerId }));
   const sit = () => run('sit', () => net.request('room.join', { code: room.code }));
@@ -294,7 +323,7 @@ export function RoomScreen() {
       </div>
     </header>
 
-    <main class=${`seats${coop ? '' : ' seats--solo'}`}>
+    <main class=${`seats${coop ? '' : ' seats--solo'}${facts.capacity > DEFAULT_SEATS ? ' seats--wide' : ''}`}>
       ${facts.seats.map((s, i) => html`<${SeatCard} key=${s ? `p${s.playerId}` : `e${i}`} seat=${s} index=${i} room=${room} facts=${facts}
         myId=${me.playerId} busy=${busy} onAddBot=${addBot} onRemoveBot=${removeBot} onKick=${kick} />`)}
       ${coop ? null : html`<aside class="solo-brief brackets">
@@ -312,15 +341,17 @@ export function RoomScreen() {
 
     ${account.enabled && coop && facts.isHost?html`<${Applications} code=${room.code} />`:null}
     <footer class="room-bar">
-      <div class="room-bar__left">
+      <div class=${`room-bar__left${coop && facts.isHost ? ' has-seats' : ''}`}>
         <span class="room-bar__label">模拟难度<${MicroLabel}>DIFFICULTY<//></span>
         <${DifficultyPicker} room=${room} isHost=${facts.isHost} busy=${busy} onPick=${setDifficulty} />
+        ${coop && facts.isHost ? html`<span class="room-bar__label">同盟席位<${MicroLabel}>SEATS<//></span>
+          <${CapacityPicker} facts=${facts} busy=${busy} onPick=${setCapacity} />` : null}
       </div>
       <div class="room-bar__center">
         <div class="ready-count" hidden=${!coop}>
           <span class="t-lo">已就绪</span>
           <b class="num">${facts.readyHumans}</b><span class="num t-dim">/${facts.humans.length}</span>
-          <span class="ready-count__icons" aria-hidden="true">
+          <span class=${`ready-count__icons${facts.humans.length > DEFAULT_SEATS ? ' is-many' : ''}`} aria-hidden="true">
             ${facts.humans.map((s) => html`<${Icon} key=${s.playerId} name="user" class=${facts.isReady(s) ? 'is-on' : ''} />`)}
           </span>
         </div>

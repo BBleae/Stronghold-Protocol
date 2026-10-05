@@ -6,7 +6,7 @@
 //   node tools/botbench.mjs [--configs solo:FUNNY,solo:HARD,coop4:FUNNY,coop4:HARD] [--seeds N] [--seed S]
 //                           [--rehearsal N] [--json out.json] [--quiet]
 //   node tools/botbench.mjs --compare old.json new.json      A/B tables (markdown) of two --json runs
-//   --configs   comma list of <solo|coopN>:<FUNNY|NORMAL|HARD|ABYSS> (coopN = N bot seats, 1–4)
+//   --configs   comma list of <solo|coopN>:<FUNNY|NORMAL|HARD|ABYSS> (coopN = N bot seats, 1–8; 5–8 is the remake's large room)
 //   --seeds N   matches per config (seeds S..S+N−1, default 10)
 //   --rehearsal layouts each bot rehearses per prep (default: the Match default)
 //   --json F    write the raw per-match records to F (the input of --compare)
@@ -34,6 +34,7 @@ import { Match } from '../server/match/Match.js';
 import * as bot from '../server/match/bot.js';
 import { VirtualScheduler } from '../server/match/scheduler.js';
 import { getData } from '../server/data.js';
+import { MAX_SEATS } from '../shared/constants.js';
 
 const argv = isMainThread ? process.argv.slice(2) : workerData.argv;
 const opt = {};
@@ -62,7 +63,7 @@ const data = getData({ log: { warn() {}, error() {}, info() {} } });
 const configs = String(opt.configs || 'solo:FUNNY,solo:HARD,coop4:FUNNY,coop4:HARD').split(',').map((s) => {
   const [m, d] = s.split(':');
   const solo = m === 'solo';
-  return { name: s, mode: solo ? 'solo' : 'coop', players: solo ? 1 : Math.max(1, Math.min(4, Number(m.replace('coop', '')) || 4)), difficulty: String(d || 'NORMAL').toUpperCase() };
+  return { name: s, mode: solo ? 'solo' : 'coop', players: solo ? 1 : Math.max(1, Math.min(MAX_SEATS, Number(m.replace('coop', '')) || 4)), difficulty: String(d || 'NORMAL').toUpperCase() };
 });
 const seeds = Math.max(1, Number(opt.seeds) || 10);
 const seed0 = Number(opt.seed) || 1;

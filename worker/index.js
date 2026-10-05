@@ -1,5 +1,5 @@
 import { randomInt } from 'node:crypto';
-import { APP_VERSION } from '../shared/constants.js';
+import { APP_VERSION, DEFAULT_SEATS } from '../shared/constants.js';
 import { CODE_ALPHABET } from '../server/lobby.js';
 import { RoomRuntime, validCode } from './room-runtime.js';
 import { prepareMatchVersion, retainedMatchVersions } from './match-versions.js';
@@ -537,7 +537,7 @@ export class RoomDurableObject {
       public: false,
       connectedHumans: 0,
       occupied: 0,
-      capacity: 4,
+      capacity: DEFAULT_SEATS,
       inMatch: false,
       spectatorCount: 0,
       hostName: '',
@@ -548,7 +548,8 @@ export class RoomDurableObject {
       public: rt.publicRoom && room.mode === 'coop',
       connectedHumans: room.activeHumans().filter((s) => s.connected).length,
       occupied: room.seats.filter(Boolean).length,
-      capacity: 4,
+      // the room's seats (its capacity, chosen by the host: 4–8; a room saved before rooms had one has 4)
+      capacity: room.seats.length,
       inMatch: !!room.match,
       spectatorCount: rt.spectators.count,
       hostName: room.seatOf(room.hostId)?.name || '博士',

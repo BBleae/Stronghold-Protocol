@@ -5,7 +5,7 @@ import { Buffer } from 'node:buffer';
 import { randomBytes } from 'node:crypto';
 import { Lobby, Room, CODE_ALPHABET } from '../server/lobby.js';
 import { Network, Session, SessionRegistry, TokenBucket, encode, newToken, normalizeIp, limitKeyOf, sendSession } from '../server/net.js';
-import { ERR, MAX_SEATS } from '../shared/constants.js';
+import { ERR, MAX_SEATS, DEFAULT_SEATS } from '../shared/constants.js';
 import { RecordedMatch, exportMatch, restoreMatch } from '../server/match/checkpoint.js';
 import { ApplicationQueue } from './rooms/applications.js';
 import { retainedMatchVersions } from './match-versions.js';
@@ -19,9 +19,22 @@ import { CLOSE } from './close-codes.js';
 // account has one session there: the socket watching and its replacement), each with at most observerPerSec messages
 // a second (burst observerBurst) instead of a player's 40; a stranger's socket that has more than observerBurst
 // messages refused within a second is closed (1008).
+// sockets / socketsPerIp are those of a room of DEFAULT_SEATS (4) player seats: a larger room has more (socketLimits).
 export const ROOM_LIMITS = Object.freeze({ sockets: 16, socketsPerIp: 8, sessions: 32, messageBytes: 65_536,
   reservationMs: 120_000, idleSocketMs: 90_000, loginCheckMs: 60_000,
   spectatorsPerAccount: 2, observerPerSec: 2, observerBurst: 10 });
+
+/**
+ * Socket limits of a room with `seats` player seats (its capacity; a solo room and a room not created yet count as
+ * DEFAULT_SEATS): the members keep `reserve` sockets — every player seat plus one overlap during a reconnect — and
+ * strangers share the rest, 11 in all and 3 per address, whatever the room's size. A 4-seat room: 16 / 8 (ROOM_LIMITS).
+ * @param {number} seats @returns {{ reserve: number, sockets: number, socketsPerIp: number }}
+ */
+export function socketLimits(seats) {
+  const reserve = Math.min(MAX_SEATS, Math.max(DEFAULT_SEATS, seats | 0)) + 1;
+  return { reserve, sockets: reserve + ROOM_LIMITS.sockets - (DEFAULT_SEATS + 1),
+    socketsPerIp: reserve + ROOM_LIMITS.socketsPerIp - (DEFAULT_SEATS + 1) };
+}
 export const validCode = (s) => typeof s === 'string' && s.length === 4 && [...s].every((c) => CODE_ALPHABET.includes(c));
 
 class RoomNetwork extends Network {
@@ -202,9 +215,14 @@ export class RoomRuntime {
           if (!result.error) this.applications.consume(s.accountId, ticket);
           return result;
         }
-        // Approved applicants keep their seats free.
+        // Approved applicants keep their seats free: no AI teammate takes one, and the host cannot shrink the room below
+        // its members and approved applicants.
         if (msg.t === 'room.addBot' && room && room.seats.filter((x) => !x).length <= this.applications.reservedCount()) {
           return { error: ERR.ROOM_FULL };
+        }
+        if (msg.t === 'room.setCapacity' && room && room.hostId === s.playerId && !room.match && Number.isInteger(msg.capacity)
+          && msg.capacity < room.seats.length && msg.capacity < room.seats.filter(Boolean).length + this.applications.reservedCount()) {
+          return { error: ERR.BAD_TARGET, detail: 'approved applicants keep their seats' };
         }
         if (msg.t === 'room.create') {
           if (!s.canCreate || !this.reservation) return { error: ERR.NOT_HOST, detail: 'reservation required' };
@@ -223,9 +241,10 @@ export class RoomRuntime {
       onDisconnect: (s) => (s.spectating ? this.spectators.disconnect(s) : this.lobby.onDisconnect(s)),
       onExpire: (s) => (s.spectating ? this.spectators.leave(s) : this.lobby.onExpire(s)),
     };
+    // (The Network's own connection caps are never consulted here — admission() is — and are those of the largest room.)
     this.network = new RoomNetwork({ registry: this.registry, handler, now, log,
-      options: { autoTimers: false, trustProxy: false, maxConnections: ROOM_LIMITS.sockets,
-        maxConnectionsPerAddr: ROOM_LIMITS.socketsPerIp, maxSessions: ROOM_LIMITS.sessions } });
+      options: { autoTimers: false, trustProxy: false, maxConnections: socketLimits(MAX_SEATS).sockets,
+        maxConnectionsPerAddr: socketLimits(MAX_SEATS).socketsPerIp, maxSessions: ROOM_LIMITS.sessions } });
     this.network.roomRuntime = this;
     // interruptedUntil, running: fields of the former anonymous rooms, no longer read (the next save drops them).
     if (snapshot) {
@@ -374,21 +393,28 @@ export class RoomRuntime {
     return this.spectators.watchable;
   }
 
+  /** The socket limits of this room (socketLimits of its capacity; DEFAULT_SEATS before the room exists, and for solo). */
+  socketLimits() {
+    const room = this.lobby.getRoom(this.code);
+    return socketLimits(room && room.mode !== 'solo' ? room.seats.length : DEFAULT_SEATS);
+  }
+
   /**
    * Why a new socket from `ip` of `accountId` is refused (null: admitted). Accounts with no place in the room
    * (strangers: spectators, accounts collecting why their room closed) share what the members do not need: every
-   * player seat plus one overlap during a reconnect stays free for the members, in the lobby as in a match. Sockets
-   * still awaiting hello count, so connection churn cannot take the members' share.
+   * player seat of the room (its capacity) plus one overlap during a reconnect stays free for the members, in the lobby
+   * as in a match. Sockets still awaiting hello count, so connection churn cannot take the members' share.
    */
   admission(ip, accountId) {
-    if (this.network.connectionCount >= ROOM_LIMITS.sockets) return 'full';
+    const limits = this.socketLimits();
+    if (this.network.connectionCount >= limits.sockets) return 'full';
     const key = limitKeyOf(normalizeIp(ip) || '0.0.0.0');
-    if ([...this.socketMeta.values()].filter((m) => m.key === key).length >= ROOM_LIMITS.socketsPerIp) return 'per-address';
+    if ([...this.socketMeta.values()].filter((m) => m.key === key).length >= limits.socketsPerIp) return 'per-address';
     if (this.hasAccount(accountId)) return null;
     const strangers = [...this.socketMeta.values()].filter((m) => !this.hasAccount(m.accountId));
-    const reserve = MAX_SEATS + 1;
-    if (strangers.length >= ROOM_LIMITS.sockets - reserve) return 'spectators-full';
-    if (strangers.filter((m) => m.key === key).length >= ROOM_LIMITS.socketsPerIp - reserve) return 'spectators-per-address';
+    const { reserve } = limits;
+    if (strangers.length >= limits.sockets - reserve) return 'spectators-full';
+    if (strangers.filter((m) => m.key === key).length >= limits.socketsPerIp - reserve) return 'spectators-per-address';
     if (strangers.filter((m) => m.accountId === accountId).length >= ROOM_LIMITS.spectatorsPerAccount) return 'spectators-per-account';
     return null;
   }

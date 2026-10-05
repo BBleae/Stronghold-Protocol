@@ -74,6 +74,10 @@ html:not(.sp-in-match) .toast-host { margin-top: var(--sa-t); }
    the bottom-left / bottom-right emotes (a tap there turned the page or hit the disabled ‹), and 28 px dot areas 0.21rem
    apart covered the neighbouring dot (a tap on dot N opened page N+1). ‹ / › grow outwards (away from the dots), the
    dots only up to half the gap. Selectors ≥ the specificity of the generic hit-area rule above. */
+/* The compact team rows of a 5–8-player room (css/screens/game.css .team--compact: ≈ 19–24 px apart on phones): a
+   row's 44 px area would cover the centre of the row above (a tap on P7 opened P8), so each one is only as tall as its
+   row plus the gap — still 44 px wide. */
+.sp-coarse .team--compact .team__btn::before { height: calc(100% + .05rem); }
 .sp-coarse .ewheel__panel .ewheel__nav::before { top: .03rem; bottom: -.15rem; height: auto; transform: none; }
 .sp-coarse .ewheel__panel .ewheel__nav.is-prev::before { left: auto; right: 0; }
 .sp-coarse .ewheel__panel .ewheel__nav.is-next::before { left: 0; right: auto; }

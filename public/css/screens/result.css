@@ -39,6 +39,8 @@
   border-left: 3px solid var(--line-3); animation: card-in var(--t-slow) var(--ease-out) backwards;
 }
 .rcard:nth-child(3) { animation-delay: 80ms; } .rcard:nth-child(4) { animation-delay: 160ms; } .rcard:nth-child(5) { animation-delay: 240ms; }
+/* P5–P8 of a larger room (a remake extension) continue the stagger */
+.rcard:nth-child(6) { animation-delay: 320ms; } .rcard:nth-child(7) { animation-delay: 400ms; } .rcard:nth-child(8) { animation-delay: 480ms; } .rcard:nth-child(9) { animation-delay: 560ms; }
 @keyframes card-in { from { opacity: 0; transform: translateX(.3rem); } }
 .rcard.is-self { border-left-color: var(--mint-500); background: linear-gradient(90deg, rgba(78, 216, 175, .08), rgba(11, 15, 13, .9) 40%); }
 .rcard.is-dead { opacity: .8; }

@@ -3,10 +3,10 @@
 // balancing summary: LP over time, shop level, deployed units, kills/leaks, 联防, Final Assault outcome.
 //
 // Usage:
-//   node tools/matchrun.mjs [--mode solo|coop] [--difficulty FUNNY|NORMAL|HARD|ABYSS|ALL] [--players 1..4] [--seed 1]
+//   node tools/matchrun.mjs [--mode solo|coop] [--difficulty FUNNY|NORMAL|HARD|ABYSS|ALL] [--players 1..8] [--seed 1]
 //                           [--seeds N] [--lp N] [--humans N] [--content full|generic|none] [--check] [--errors]
 //                           [--odds] [--json] [--quiet] [--rehearsal N]
-//   --players   co-op seats (default 2; solo is always 1)
+//   --players   co-op seats (default 2; solo is always 1; 5–8 is the remake's large room, DESIGN §24)
 //   --humans N  the first N seats are human seats on "AI 托管" (exercises the human views / m.private paths)
 //   --seeds N   run N consecutive seeds and print an aggregate (rounds survived, LP by round, outcomes)
 //   --lp N      override every player's starting LP (reach later rounds / the Final Assault while balancing)
@@ -36,7 +36,7 @@ import { VirtualScheduler } from '../server/match/scheduler.js';
 import { attachAudit } from '../server/match/audit.js';
 import { Battle } from '../server/sim/Battle.js';
 import { getData } from '../server/data.js';
-import { layerGainRoom } from '../shared/constants.js';
+import { layerGainRoom, MAX_SEATS } from '../shared/constants.js';
 
 const argv = process.argv.slice(2);
 const opt = {};
@@ -56,7 +56,7 @@ const DIFFS = ['FUNNY', 'NORMAL', 'HARD', 'ABYSS'];
 const mode = opt.mode === 'solo' ? 'solo' : 'coop';
 const diffArg = String(opt.difficulty || 'NORMAL').toUpperCase();
 const difficulties = diffArg === 'ALL' ? DIFFS : [DIFFS.includes(diffArg) ? diffArg : 'NORMAL'];
-const players = mode === 'solo' ? 1 : Math.max(1, Math.min(4, Number(opt.players) || 2));
+const players = mode === 'solo' ? 1 : Math.max(1, Math.min(MAX_SEATS, Number(opt.players) || 2));
 const humans = mode === 'solo' ? (opt.humans != null ? 1 : 0) : Math.max(0, Math.min(players, Number(opt.humans) || 0));
 const seed0 = Number(opt.seed) || 1;
 const seeds = Math.max(1, Number(opt.seeds) || 1);

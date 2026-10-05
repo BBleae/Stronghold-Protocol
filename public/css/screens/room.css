@@ -1,5 +1,6 @@
 /* ==========================================================================================
-   screens/room.css — room/waiting screen: invite key, 4 seat cards, bottom action bar.
+   screens/room.css — room/waiting screen: invite key, the seat cards (4 in one row; a room of 5–8 seats, a remake
+   extension: two rows of 4 smaller cards), bottom action bar (the host's difficulty + 同盟席位 pickers).
    ========================================================================================== */
 
 .room-screen .topbar { height: 1.36rem; }
@@ -49,6 +50,32 @@
   padding: .3rem .6rem .24rem;
 }
 .seats--solo { grid-template-columns: 3.8rem minmax(0, 6.4rem); }
+/* 5–8 seats (room.state.capacity > 4): two rows of 4 compact cards — the seat labels (SEAT 0N / DOCTOR) and the stripes
+   go, the portrait and the radar shrink; every name, state and button stays. A 4-seat room keeps the rules above. */
+.seats--wide { grid-template-rows: repeat(2, minmax(0, 3.3rem)); gap: .16rem .3rem; padding-top: .16rem; padding-bottom: .14rem; }
+.seats--wide .seat { --bk-l: .12rem; gap: .03rem; padding: .08rem .14rem .06rem; }
+.seats--wide .seat .micro, .seats--wide .seat__stripes { display: none; }
+.seats--wide .seat__no { font-size: .18rem; }
+.seats--wide .seat__host { font-size: .11rem; padding: .01rem .07rem; }
+.seats--wide .seat__art { gap: .04rem; margin: .03rem 0 .02rem; }
+.seats--wide .seat__art .avatar { --av: 1.4rem; }
+.seats--wide .seat__bot-label { position: absolute; left: .04rem; bottom: .04rem; font-size: .11rem; padding: .01rem .06rem; }
+.seats--wide .seat__bot-label .icon { width: .13rem; height: .13rem; }
+.seats--wide .seat__name { font-size: .2rem; max-width: 2.6rem; }
+.seats--wide .seat__foot { min-height: .36rem; margin-top: .02rem; padding-top: .05rem; }
+.seats--wide .seat__state { font-size: .15rem; }
+.seats--wide .seat__state .icon { width: .18rem; height: .18rem; }
+.seats--wide .seat__foot .tt-anchor { right: .08rem; bottom: .05rem; }
+.seats--wide .seat__radar { width: .8rem; height: .8rem; }
+.seats--wide .seat__wait { font-size: .16rem; }
+/* short screens (landscape phones, ≤ 460 CSS px tall: 1rem = 40 px, the screen is only ~9rem high): the empty seats' radar
+   goes and the portraits shrink further so both rows keep their names and buttons */
+@media (max-height: 460px) {
+  .seats--wide { gap: .1rem .24rem; padding-top: .1rem; padding-bottom: .08rem; }
+  .seats--wide .seat__art .avatar { --av: .8rem; }
+  .seats--wide .seat__radar { display: none; }
+  .seats--wide .seat__foot { min-height: .32rem; }
+}
 
 .seat {
   --bk-c: var(--line-3);
@@ -260,6 +287,9 @@
   background: linear-gradient(90deg, var(--mint-700), transparent 30%, transparent 70%, var(--mint-700));
 }
 .room-bar__left { display: flex; align-items: center; gap: .22rem; min-width: 0; }
+/* the host of a co-op room: 模拟难度 and 同盟席位 in two rows (labels, then pickers, aligned) */
+.room-bar__left.has-seats { display: grid; grid-template-columns: auto auto; justify-content: start; align-content: center; gap: .06rem .22rem; }
+.room-bar__left.has-seats .dpick { justify-self: start; }
 .room-bar__label { display: flex; flex-direction: column; font-size: .17rem; font-weight: 700; color: var(--text-md); line-height: 1.35; }
 .room-bar__center { display: flex; flex-direction: column; align-items: center; gap: .06rem; }
 .room-bar__right { justify-self: end; display: flex; align-items: center; gap: .16rem; }
@@ -282,6 +312,9 @@
   font-size: .18rem;
   font-weight: 700;
   letter-spacing: .08em;
+  /* a label never breaks onto a second line (标/准 under the active underline) when the bar's left column is squeezed */
+  flex: none;
+  white-space: nowrap;
   transition: color var(--t-fast), background-color var(--t-med), box-shadow var(--t-med);
 }
 .dpick__opt:last-child { border-right: 0; }
@@ -296,6 +329,9 @@
 }
 .dpick__opt.is-active .icon { opacity: 1; filter: drop-shadow(0 0 5px var(--d-color)); }
 .dpick--ro { border: 0; background: none; gap: .18rem; align-items: center; font-size: .14rem; }
+/* 同盟席位 (4–8): the difficulty picker's look, one digit per option */
+.cpick__opt { --d-color: var(--mint-400); justify-content: center; min-width: .5rem; padding: 0 .14rem; font-size: .2rem; letter-spacing: 0; }
+.cpick__opt:disabled:not(.is-active) { color: var(--text-dim); opacity: .55; }
 
 .ready-count[hidden] { display: none; }
 .ready-count { display: flex; align-items: baseline; gap: .06rem; font-size: .16rem; }
@@ -304,5 +340,7 @@
 .ready-count__icons { display: flex; gap: .02rem; margin-left: .12rem; align-self: center; }
 .ready-count__icons .icon { width: .28rem; height: .28rem; color: var(--line-3); transition: color var(--t-med); }
 .ready-count__icons .icon.is-on { color: var(--mint-400); filter: drop-shadow(0 0 4px var(--mint-glow)); }
+/* more than 4 humans (a 5–8-seat room): smaller icons, so 8 of them leave the host's pickers their room */
+.ready-count__icons.is-many .icon { width: .2rem; height: .2rem; }
 
 .room-bar .btn--xl { min-width: 3.2rem; letter-spacing: .2em; }

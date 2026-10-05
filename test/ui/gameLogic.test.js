@@ -17,6 +17,7 @@ import {
 } from '../../public/js/ui/gameLogic.js';
 import { pairPlayers } from '../../server/match/finalAssault.js';
 import { PHASE, GEO } from '../../shared/constants.js';
+import { SP_CARDS_MAX } from '../../shared/protocol.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const load = (f) => JSON.parse(readFileSync(path.join(ROOT, 'data', f), 'utf8'));
@@ -412,7 +413,8 @@ describe('drafts', () => {
     const sp2 = normalizeSp({ cards: [{}, {}], order: ['b', 'a'], turn: 0, picks: [{ playerId: 'b', idx: 1 }, { playerId: 'x', idx: 9 }] }, players);
     assert.equal(sp2.turnPid, 'b'); assert.equal(sp2.cards[1].takenBy, 'b'); assert.equal(sp2.pickOf.has('x'), false);
     assert.equal(normalizeSp(null), null);
-    assert.equal(normalizeSp({ cards: new Array(9).fill({}) }).cards.length, 6, 'at most 6 cards');
+    // at most the server's most cards: co-op max(6, alive + 2) — 6 for 1–4 players, 10 for 8 (shared/protocol.js)
+    assert.equal(normalizeSp({ cards: new Array(SP_CARDS_MAX + 3).fill({}) }).cards.length, SP_CARDS_MAX, 'at most SP_CARDS_MAX cards');
   });
 });
 
