@@ -18,13 +18,16 @@ async function requestPreferences(body) {
 export function createPreferences({storage = () => globalThis.localStorage, request = requestPreferences,
   timers = globalThis, events = globalThis, onError = () => {}} = {}) {
   let accountId = null, values = {}, pending = {}, hydrated = false, blocked = false;
+  // this browser's old local values of keys this account's cache has never held (a key that joined the synced set later,
+  // e.g. the 甄选 picks): uploaded at hydration where the cloud has nothing for them — never over a cloud value
+  let lateLegacy = {};
   let timer = null, flight = null, status = 'local', disposed = false, generation = 0, errorNotified = false;
   const listeners = new Set();
   const read = (key, fallback = null) => { try { const raw = storage()?.getItem(key); return raw == null ? fallback : JSON.parse(raw); } catch { return fallback; } };
   const write = (key, value) => { try { storage()?.setItem(key, JSON.stringify(value)); } catch { /* storage may be disabled */ } };
   const emit = key => { for (const listener of listeners) listener(key); };
   const state = next => { if (status !== next) { status = next; emit(null); } };
-  const persist = () => write(`sp.accountPrefs.${accountId}`, {values, pending});
+  const persist = () => write(`sp.accountPrefs.${accountId}`, {values, pending, ...(Object.keys(lateLegacy).length ? {legacy: lateLegacy} : {})});
   const apply = next => {
     const previous = values; values = next; persist();
     for (const key of PREFERENCE_KEYS) if (!same(previous[key], values[key])) emit(key);
@@ -51,7 +54,9 @@ export function createPreferences({storage = () => globalThis.localStorage, requ
           remote = checkAccount(result);
         }
         hydrated = true;
-        apply({...cleanPreferences(remote), ...pending});
+        for (const [key, value] of Object.entries(lateLegacy)) if (remote[key] === undefined && pending[key] === undefined) pending[key] = value;
+        lateLegacy = {};
+        apply({...cleanPreferences(remote), ...pending}); // persists without the legacy values (they are pending or dropped)
       }
       while (Object.keys(pending).length) {
         const patch = {...pending}; state('saving');
@@ -80,19 +85,24 @@ export function createPreferences({storage = () => globalThis.localStorage, requ
   }
   async function start(id) {
     generation++; timers.clearTimeout(timer); flight = null;
-    accountId = id || null; hydrated = false; blocked = false; errorNotified = false;
+    accountId = id || null; hydrated = false; blocked = false; errorNotified = false; lateLegacy = {};
     if (!accountId) { values = {}; pending = {}; state('local'); for (const key of PREFERENCE_KEYS) emit(key); return; }
     const cached = read(`sp.accountPrefs.${accountId}`);
-    values = cleanPreferences(cached?.values); pending = cleanPreferences(cached?.pending);
+    values = cleanPreferences(cached?.values); pending = cleanPreferences(cached?.pending); lateLegacy = cleanPreferences(cached?.legacy);
     // Unscoped values from older builds can belong to only the first account using this browser.
     const owner = read('sp.accountPrefs.legacyOwner');
     if (!owner) write('sp.accountPrefs.legacyOwner', accountId);
-    if (!cached && (!owner || owner === accountId)) {
+    if (!owner || owner === accountId) {
+      const known = {...values, ...pending};
       for (const key of PREFERENCE_KEYS) {
+        if (cached && (key in known || key in lateLegacy)) continue;
         let value = read(`sp.pref.${key}`);
         if (key === 'loadout' && value != null) value = toStored(parseStored(value));
-        if (validPreference(key, value)) values[key] = value;
+        if (!validPreference(key, value)) continue;
+        if (cached) lateLegacy[key] = value; // a first login migrates everything below; a cached account only fills gaps
+        else values[key] = value;
       }
+      if (cached) for (const [key, value] of Object.entries(lateLegacy)) if (values[key] === undefined) values[key] = value;
     }
     values = {...values, ...pending}; persist();
     for (const key of PREFERENCE_KEYS) emit(key);

@@ -8,7 +8,10 @@
 //                  fallback (docs/research/03-operators.json, 05-enemies.json, 05-maps.json), loaded by ./nodeData.js
 //                  so the sim and its tests work before/without generated data;
 //        browser — whatever the page injected with `setSimData(data)` (the fetched /data/*.json, DESIGN §14).
-// Both the research record shapes and the build-data shapes (docs/DATA.md) are accepted.
+// Both the research record shapes and the build-data shapes (docs/DATA.md) are accepted. A source built from data that
+// carries `waiguan` (data/waiguan.json) also resolves the 外援 / 甄选 operators (DESIGN §27): every Match (dataSourceFor),
+// the browser runner (SIM_DATA_FILES) and the Worker's replay / recovery engines. The default source does not (it is the
+// shop pool's: tests and tools; a battle fielding a 外援 is always given its match's source).
 //
 // Operator loadouts (DESIGN §16, DATA.md §2.2): `getChess(id, { skillIndex, moduleId })` resolves the def of a chess
 // with the selected skill (def.skill / its blackboard / trigger) and — elite only — module (stats = statsBase + attr,
@@ -25,6 +28,7 @@
 //   getSimData()      the injected data (browser) or the generated data (Node), or null.
 
 import { resolveRecordLoadout, composeStats, composeTalents, loadoutRecord } from '../../shared/loadoutRecord.js';
+import { waiguanRecords } from '../../shared/waiguan.js';
 import { normHitArea } from './body.js';
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -512,9 +516,19 @@ export function freezeDef(d) {
  * A DataSource resolves ids to normalised defs. `raw` is `{ chess, enemies, tokens, stages, waves }`.
  */
 export class DataSource {
+  /**
+   * @param {object} raw `{ chess, enemies, tokens, stages, waves, waiguan? }` — with `waiguan` (data/waiguan.json) the
+   *   外援 / 甄选 records (tier V and VI, normal and elite: shared/waiguan.js waiguanRecords) resolve like any chess:
+   *   a battle fields whatever operator a player picked (DESIGN §27). They are the same records for every player, so
+   *   one source (and its cached frozen defs) serves every match.
+   * @param {DataSource|null} [fallback]
+   */
   constructor(raw = {}, fallback = null) {
+    const chess = asMap(unwrap(raw.chess, 'chess'), 'chessId') ?? {};
+    const diy = raw.waiguan && typeof raw.waiguan === 'object' ? waiguanRecords(raw.waiguan) : null;
     this.raw = {
-      chess: asMap(unwrap(raw.chess, 'chess'), 'chessId') ?? {},
+      // the pool's own records win over a 甄选 record of the same id (the ids never overlap: chess_char_diy_*)
+      chess: diy && Object.keys(diy).length ? { ...diy, ...chess } : chess,
       enemies: asMap(unwrap(raw.enemies, 'enemies'), 'key') ?? {},
       tokens: asMap(unwrap(raw.tokens, 'tokens'), 'tokenId') ?? {},
       stages: asMap(unwrap(raw.stages, 'stages'), 'id') ?? {},
@@ -646,7 +660,13 @@ export function hasGeneratedData() {
  * (no fallback: server and client battles must resolve every id identically), empty before that.
  */
 export function getDefaultSource() {
-  if (!defaultSource) defaultSource = injected || !nodeLoader ? new DataSource(generatedCache ?? {}, null) : new DataSource(generatedCache ?? {}, getResearchSource());
+  if (!defaultSource) {
+    // the shop pool's data: the 外援 / 甄选 records (waiguan) join only the sources built for a match's battles —
+    // Match.ds, the browser runner, the Worker's replay / recovery engines —, so the pool's coverage tests and tools see
+    // the pool (the 外援 kits have their own: test/content/waiguan/)
+    const raw = generatedCache && generatedCache.waiguan ? { ...generatedCache, waiguan: undefined } : (generatedCache ?? {});
+    defaultSource = injected || !nodeLoader ? new DataSource(raw, null) : new DataSource(raw, getResearchSource());
+  }
   return defaultSource;
 }
 

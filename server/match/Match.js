@@ -256,24 +256,35 @@ function collectWaiguanPicks(seats) {
   return out;
 }
 
-/** The 甄选 records every pick of the match needs, merged into the match's chess table. `{ [chessId]: record }`. */
+/**
+ * The 甄选 records every pick of the match needs, merged into the match's chess table: the normal piece AND its elite
+ * (`_b`) — without the elite a 外援 could never merge (gd.goldenIdOf needs the record). `{ [chessId]: record }`.
+ */
 function waiguanChessPatch(roster, picks, records, warn = null) {
   const out = {};
   for (const sel of Object.values(picks || {})) {
     for (const [slotId, charId] of Object.entries(sel)) {
-      const slot = WAIGUAN_SLOTS.find((s) => s.slot === slotId);
-      const rec = slot ? records[`chess_char_diy_${slot.tier}_${charId}_a`] : null;
+      const rec = waiguanRecordFor(roster, records, slotId, charId);
       if (!rec) { if (warn) warn(`甄选 ${slotId}=${charId}: no record in data/waiguan.json`); continue; }
-      out[rec.chessId] = rec;
+      for (const r of rec.records) out[r.chessId] = r;
     }
   }
   return out;
 }
 
-/** The bonds this match plays with: every bond the mode does not switch off and the draw did not disable. */
-function gdActiveBonds(gd) {
-  const off = new Set([...(gd.disabledBonds || []), ...(gd.modeInactiveBonds || [])]);
+/**
+ * The bonds this match plays with: every bond of the data that is neither switched off by the mode
+ * (`gd.modeInactiveBonds`) nor disabled by this match's draw (`Match.disabledBonds`, pool.js drawDisabledBonds).
+ * @param {import('./gamedata.js').GameData} gd
+ * @param {Set<string>} off the switched-off bonds (`waiguanOffBonds`)
+ */
+function activeBondsOf(gd, off) {
   return (gd.bondIds || []).filter((b) => !off.has(b));
+}
+
+/** The bonds switched off in this match: the draw's (`Match.disabledBonds`) plus the mode's (`gd.modeInactiveBonds`). */
+function waiguanOffBonds(m) {
+  return new Set([...(m.disabledBonds || []), ...(m.gd.modeInactiveBonds || [])]);
 }
 
 /**
@@ -321,12 +332,18 @@ export function botWaiguanPicks(gd, roster, preferBonds, allow = null) {
  */
 function waiguanRecordFor(roster, records, slotId, charId) {
   const slot = WAIGUAN_SLOTS.find((s) => s.slot === slotId);
-  if (!slot) return null;
+  if (!slot || typeof charId !== 'string') return null;
   const base = records[`chess_char_diy_${slot.tier}_${charId}_a`];
-  const gold = records[`chess_char_diy_${slot.tier}_${charId}_b`];
   if (!base) return null;
-  return { record: base, chessId: base.chessId, tier: base.tier, golden: !!gold, candidate: waiguanPickOf(roster?.candidates, base.chessId)?.candidate || null };
+  const gold = (base.goldenId && records[base.goldenId]) || records[`chess_char_diy_${slot.tier}_${charId}_b`] || null;
+  return {
+    record: base, goldenRecord: gold, records: gold ? [base, gold] : [base], chessId: base.chessId, tier: base.tier, golden: !!gold,
+    candidate: waiguanPickOf(roster?.candidates, base.chessId)?.candidate || null,
+  };
 }
+
+/** Match phases in which a player's 甄选 picks may still change (DESIGN §27): before BATTLE_CHECK opens the shop. */
+const WAIGUAN_PICK_PHASES = new Set([PHASE.LOBBY, PHASE.INFO_CHECK, PHASE.BAND_DRAFT]);
 
 export class Match {
   /** @param {object} opts see MATCH INTERFACE above */
@@ -447,11 +464,12 @@ export class Match {
     // Bots bring their own 甄选 picks too (botWaiguanPicks): their pool is private like a human's, so an AI seat that
     // skipped the slots would play with fewer options than the human beside it. The bands are drafted later, so the binds
     // the bot aims at here are the ones this match did NOT switch off.
+    // the bonds switched off this match: the draw's (this.disabledBonds) and the mode's (gd.modeInactiveBonds)
+    const off = waiguanOffBonds(this);
     for (const s of opts.seats) {
       if (!s || typeof s.playerId !== 'string' || !s.isBot || poolPicks[s.playerId]) continue;
-      const off = new Set([...(this.disabledBonds || []), ...(this.modeInactiveBonds || [])]);
-      // skip a candidate whose every bond is switched off this match: its record would be in the pool but unbuyable
-      const picks = botWaiguanPicks(this.gd, this.waiguanRoster, gdActiveBonds(this.gd),
+      // skip a candidate whose every bond is switched off this match: its record would be in the pool, its bond dead
+      const picks = botWaiguanPicks(this.gd, this.waiguanRoster, activeBondsOf(this.gd, off),
         (charId) => {
           const cand = this.waiguanRoster?.candidates?.find((c) => c.charId === charId);
           const bonds = Array.isArray(cand?.bonds) ? cand.bonds : [];
@@ -465,9 +483,9 @@ export class Match {
       for (const [slotId, charId] of Object.entries(picks)) {
         const rec = waiguanRecordFor(this.waiguanRoster, this.waiguanRecords, slotId, charId);
         if (!rec) continue;
-        // a bot's picks are made here, after the chess table was built from the humans' picks: its records join this
-        // match's table first (as Match.setPicks does), else gd.tierOf / price / the engine would not know the chess
-        this.gd.addChess(rec.record);
+        // a bot's picks are made here, after the chess table was built from the humans' picks: its records (normal and
+        // elite) join this match's table first (as Match.setPicks does), else gd.tierOf / price / merges would not know them
+        for (const r of rec.records) this.gd.addChess(r);
         const cap = WAIGUAN_POOL_COPIES[rec.tier] ?? 0;
         if (!this.pool.addOwned(playerId, rec.chessId, cap)) {
           this.log.warn(`[match] 甄选 ${slotId}=${charId}: pool entry refused (${rec.chessId})`);
@@ -594,9 +612,11 @@ export class Match {
 
   /**
    * room.pick during the match (DESIGN §27, 外援 / 甄选): the lobby already checked the selection against
-   * data/waiguan.json (checkWaiguanPicks). Accepted only while the shop pool can still take the entries — the pool is
-   * built at construction and only grows, so a pick may be added or replaced during LOBBY / INFO_CHECK / BAND_CHECK and
-   * is refused once BATTLE_CHECK starts (WRONG_PHASE, the pool is frozen for the match).
+   * data/waiguan.json (checkWaiguanPicks). Accepted while no shop has opened yet — LOBBY / INFO_CHECK / BAND_DRAFT (the
+   * strategy draft, the official BAND_CHECK step) — and refused from BATTLE_CHECK on (WRONG_PHASE: the shops open at the
+   * first round start). The whole selection is resolved first, so a bad slot changes nothing. A slot that changes gives
+   * back the copies its old pick's pieces held and drops that private entry: a pick the player no longer has never shows
+   * in its shop again. A RecordedMatch logs the call (checkpoint.js), so a restored match keeps the picks.
    * @param {string} playerId
    * @param {Record<string, string>} picks `{ slotId: charId }`
    * @returns {{ ok: true } | { error: string, detail?: string }}
@@ -605,34 +625,34 @@ export class Match {
     const ps = this.players.get(playerId);
     if (!ps || ps.isBot || ps.left) return fail(ERR.NOT_IN_ROOM);
     if (this.disposed || this.ended) return fail(ERR.WRONG_PHASE);
-    if (this.phase !== PHASE.LOBBY && this.phase !== PHASE.INFO_CHECK && this.phase !== PHASE.BAND_CHECK) {
-      return fail(ERR.WRONG_PHASE, '甄选 locked for this match');
-    }
+    if (!WAIGUAN_PICK_PHASES.has(this.phase)) return fail(ERR.WRONG_PHASE, '甄选 locked for this match');
     let res = OK;
     this.guard(() => {
-      const before = this.waiguanPicks[playerId] || {};
-      // copies already taken from a slot the player is dropping go back before the new entries are added, so a
-      // replacement never leaks pool copies (the entries themselves stay: the pool only ever grows)
-      for (const [slotId, charId] of Object.entries(before)) {
-        // a slot the new selection keeps keeps its copies; every other one (changed or dropped) gives them back
-        if (charId && picks && picks[slotId] === charId) continue;
-        const rec = waiguanRecordFor(this.waiguanRoster, this.waiguanRecords, slotId, charId);
-        if (rec) this.releaseWaiguanCopies(playerId, rec.chessId);
-      }
       const next = {};
-      for (const [slotId, charId] of Object.entries(picks || {})) {
+      const recs = [];
+      for (const [slotId, charId] of Object.entries(picks && typeof picks === 'object' ? picks : {})) {
         if (typeof charId !== 'string' || !charId) continue;
         const rec = waiguanRecordFor(this.waiguanRoster, this.waiguanRecords, slotId, charId);
         if (!rec) { res = fail(ERR.BAD_TARGET, `${charId} is not a 甄选 candidate`); return; }
-        // the record must be in THIS match's chess table before the pool entry points at it (the engine resolves every
-        // chess id through gd.chess): the lobby passes the picks at construction, this path is a pick taken later
-        this.gd.addChess(rec.record);
-        this.pool.addOwned(playerId, rec.chessId, WAIGUAN_POOL_COPIES[rec.tier] ?? 0);
         next[slotId] = charId;
+        recs.push(rec);
+      }
+      const keep = new Set(recs.map((r) => r.chessId));
+      for (const [slotId, charId] of Object.entries(this.waiguanPicks[playerId] || {})) {
+        const rec = waiguanRecordFor(this.waiguanRoster, this.waiguanRecords, slotId, charId);
+        if (!rec || keep.has(rec.chessId)) continue; // a pick the new selection keeps (any slot of its tier) keeps its copies
+        this.releaseWaiguanCopies(playerId, rec.chessId);
+        this.pool.removeOwned(playerId, rec.chessId);
+      }
+      for (const rec of recs) {
+        // the records (normal and elite) must be in THIS match's chess table before the pool entry points at them (the
+        // engine resolves every chess id through gd.chess): the lobby passes the picks at construction, this path is a
+        // pick taken later
+        for (const r of rec.records) this.gd.addChess(r);
+        this.pool.addOwned(playerId, rec.chessId, WAIGUAN_POOL_COPIES[rec.tier] ?? 0);
       }
       if (Object.keys(next).length) this.waiguanPicks[playerId] = next;
       else delete this.waiguanPicks[playerId];
-      ps.picks = Object.keys(next).length ? Object.freeze({ ...next }) : null;
       this.markPrivate(ps);
     });
     return res;
@@ -878,7 +898,11 @@ export class Match {
 
   alivePlayers() { return this.order.filter((p) => p.alive); }
 
-  /** Whether any chess of a bond is in this match's pool (a 驰援 card of a fully banned bond is never offered). */
+  /**
+   * Whether any chess of a bond is in this match's SHARED pool (a 驰援 card of a fully banned bond is never offered). A
+   * player's own 甄选 entries (pool.owned) do not count: the card is offered to everybody, and one player's private pick
+   * must neither keep a bond alive for the team nor be inferable from the cards (DESIGN §27).
+   */
   bondInPool(bondId) {
     for (const id of this.pool.entries.keys()) {
       const c = this.gd.chess(id);
@@ -1925,9 +1949,10 @@ export class Match {
    * Roll a choices.json pool (ctx.rollPool). Equip pools → rollItemId. Chess pools: an `items` (uniform) or `weighted`
    * list — only chess with a free pool copy (or outside the pool) qualify — else a copy-weighted draw from the shared
    * pool filtered by `tier` / `minTier` / `maxTier` (number or 'shopLevel') / `bond`; `golden: true` yields the elite id.
+   * `playerId`: the player the roll is for — its own 甄选 picks are part of its pool, a teammate's never are (DESIGN §27).
    * @returns {{ kind: 'item'|'chess', id: string, golden?: boolean } | null}
    */
-  rollPool(poolId, { shopLevel = 6 } = {}) {
+  rollPool(poolId, { shopLevel = 6, playerId = null } = {}) {
     const pools = this.gd.choices.pools && typeof this.gd.choices.pools === 'object' ? this.gd.choices.pools : {};
     const p = typeof poolId === 'string' && Object.hasOwn(pools, poolId) ? pools[poolId] : null;
     if (!p || typeof p !== 'object') return null;
@@ -1941,7 +1966,7 @@ export class Match {
     const free = (id) => {
       if (typeof id !== 'string' || !this.gd.chess(id)) return false;
       const base = this.gd.baseIdOf(id);
-      return !this.pool.has(base) || this.pool.left(base) > 0;
+      return !this.pool.has(base, playerId) || this.pool.left(base, playerId) > 0;
     };
     let id = null;
     if (Array.isArray(p.weighted) && p.weighted.length) {
@@ -1957,6 +1982,7 @@ export class Match {
       id = this.pool.roll(rng, {
         tier: Number.isInteger(p.tier) ? p.tier : null,
         maxTier,
+        playerId,
         filter: (cid, e) => e.tier >= minTier && (!bond || (Array.isArray(this.gd.chess(cid)?.bonds) && this.gd.chess(cid).bonds.includes(bond))),
       });
     }

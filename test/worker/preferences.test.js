@@ -28,6 +28,8 @@ export default {async fetch(req,env) {
 
 const choices = {
   loadout: { v: 1, entries: { chess_test: { skill: 0, module: 'none' } } },
+  // the 外援 / 甄选 picks follow the account like the loadout (DESIGN §27)
+  waiguan: { v: 1, picks: { diy5a: 'char_003_kalts', diy6a: 'char_003_kalts', diy6b: 'char_180_amgoat' } },
   'lobby.mode': 'solo',
   'lobby.difficulty': 'HARD',
   recentRooms: ['ABCD', 'EFGH'],
@@ -62,6 +64,9 @@ test(
     assert.equal((await (await h.fetch({ actor: 'b' })).json()).preferences, null);
     await write({ patch: { loadout: { v: 1, entries: {} }, recentRooms: [] } });
     assert.deepEqual((await (await h.fetch({})).json()).preferences.loadout, { v: 1, entries: {} });
+    // clearing every 甄选 slot is a value of its own (the room is then told to forget the picks)
+    await write({ patch: { waiguan: { v: 1, picks: {} } } });
+    assert.deepEqual((await (await h.fetch({})).json()).preferences.waiguan, { v: 1, picks: {} });
     assert.equal(
       (await write({ patch: { recentRooms: ['A1B2'] } })).status,
       200,
@@ -93,6 +98,14 @@ test(
       { emoteTheme: 'unknown' },
       { loadout: { v: 1, entries: { chess_test: { skill: 99 } } } },
       { loadout: { v: 2, entries: {} } },
+      { waiguan: { v: 1, picks: { diy5a: 'char_003_kalts', diy5b: 'char_003_kalts' } } },
+      { waiguan: { v: 1, picks: { diy9z: 'char_003_kalts' } } },
+      { waiguan: { v: 1, picks: { diy5a: 'not an id' } } },
+      { waiguan: { v: 1, picks: { diy5a: null } } },
+      { waiguan: { v: 2, picks: {} } },
+      { waiguan: { v: 1, picks: {}, extra: 1 } },
+      { waiguan: { diy5a: 'char_003_kalts' } },
+      JSON.parse('{"waiguan":{"v":1,"picks":{"__proto__":"char_003_kalts"}}}'),
       JSON.parse('{"__proto__":{}}'),
     ]) {
       assert.equal((await post({ accountId: 'a', patch })).status, 400, JSON.stringify(patch));

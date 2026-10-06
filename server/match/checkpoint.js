@@ -4,7 +4,10 @@ import { appendReplayReport, recordServerBattle, recordServerSpec } from './reco
 
 import { RULES_VERSION } from '../../shared/rules-version.js';
 export { RULES_VERSION };
-const METHODS = new Set(['start', 'handle', 'onDisconnect', 'onReconnect', 'onLeave', 'setLoadout']);
+// Every input that changes the match is logged, so a restore (and a replay) re-applies it: setPicks included — a 甄选
+// pick taken during INFO_CHECK / BAND_DRAFT adds the player's private pool entries (DESIGN §27), and a restore without
+// it would deal that player's shop from another pool.
+const METHODS = new Set(['start', 'handle', 'onDisconnect', 'onReconnect', 'onLeave', 'setLoadout', 'setPicks']);
 const copy = (value) => JSON.parse(JSON.stringify(value));
 const OPTION_KEYS = [
   'roomCode',
@@ -122,6 +125,9 @@ export class RecordedMatch extends Match {
   setLoadout(...args) {
     return this._input('setLoadout', args);
   }
+  setPicks(...args) {
+    return this._input('setPicks', args);
+  }
   _ccField(options) {
     const field = super._ccField(options);
     for (const player of field.spec.players) {
@@ -196,6 +202,8 @@ export function exportMatch(match, { referenceEvents = false } = {}) {
     ...(referenceEvents ? match.recording : copy(match.recording)),
     view: copy(match.publicView()),
     rng: ['Setup', 'Shop', 'Waves', 'Draft', 'Bots', 'Meta'].map((n) => match['rng' + n].state()),
+    // the players' 甄选 picks (private: in no public view) — a restore must reproduce them too
+    picks: copy(match.waiguanPicks || {}),
   };
 }
 export function restoreMatch(checkpoint, deps) {
@@ -208,7 +216,8 @@ export function restoreMatch(checkpoint, deps) {
     const current = exportMatch(match, { referenceEvents: true });
     if (
       JSON.stringify(current.view) !== JSON.stringify(checkpoint.view) ||
-      JSON.stringify(current.rng) !== JSON.stringify(checkpoint.rng)
+      JSON.stringify(current.rng) !== JSON.stringify(checkpoint.rng) ||
+      JSON.stringify(current.picks) !== JSON.stringify(checkpoint.picks ?? {})
     )
       throw new Error('CHECKPOINT_STATE_DIVERGED');
     match._recordOutput.muted = false;
