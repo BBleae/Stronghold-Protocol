@@ -37,7 +37,7 @@ import { ConnectionBanner } from './ui/connBanner.js';
 import { ToastHost, toast, toastError, describeError } from './ui/toasts.js';
 import { net, identity, NetError, CLIENT_ERR_TEXT } from './net.js';
 import { store, useStore, emptyMatch, selectRoute, sessionResetNotice, isSpectator } from './store.js';
-import { data, getChess } from './data.js';
+import { data } from './data.js';
 import { GAME_FILES } from './ui/gameComponents.js';
 import { TitleScreen } from './screens/title.js';
 import { sanitizeName } from './names.js';
@@ -398,7 +398,7 @@ async function boot() {
   installLoadoutSync({ net });
   net.attachBrowserHooks();
   // Audio: unlock on first gesture, BGM and the battle voice follow the route / match (js/audio.js).
-  installAudio({ getManifest: () => data.get('assets'), getChess, subscribe: store.subscribe, getState: store.get, selectRoute, settings: settingsStore.get() });
+  installAudio({ getManifest: () => data.get('assets'), subscribe: store.subscribe, getState: store.get, selectRoute, settings: settingsStore.get() });
   data.load('assets').catch(() => {});
   // Warm the data cache in the background (missing files are tolerated).
   data.loadAll('config').catch(() => {});

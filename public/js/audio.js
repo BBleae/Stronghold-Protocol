@@ -45,29 +45,45 @@
 // - Operator voice (audio.voice.<lang>.<charId>, tools/assets/voice.mjs) on its own channel and volume, one line at a
 //   time, by the official battle voice rules (audio_data.json `battleVoice` → data/assets.json audio.voiceRules): every
 //   line has a voice type with a priority, a cooldown (from the start of a line that plays) and whether a line of the
-//   same priority replaces the one playing (`overlap`); a lower priority never cuts in; lines cross-fade (0.1 s).
-//   The moments follow the official mode (a recording of 卫戍协议): buying or dragging a bench operator says nothing;
-//   部署 (PLACE_CHAR) — an operator successfully deployed from the bench (prep); 选中干员 (FOCUS_CHAR) — tapping an own
-//   operator during a battle phase; 作战中 (SKILL_PASSIVE_IMP) — an own operator's skill starts (every skill of this
-//   mode is cast automatically), now and then: its 10 s cooldown runs start to start and one never cuts another.
-// - The battle voice follows the match in the store (followMatch), like the BGM. Each own battle (voiceBattleKey: phase
-//   + round) opens with the squad leader's 行动开始 (ENCOUNTER_ENEMY) at its first enemy, not before
-//   minTimeDeltaForEnemyEncounter and only within its first OPENING_MS (a solo pause holds that clock); 作战中 waits for
-//   it meanwhile. A hidden page, a re-mounted battle screen or a reconnect that takes the match off the screen for a
-//   moment changes nothing of that (行动开始 that came due on a hidden page is said on return). Leaving the battle
-//   drops its pending lines: none reaches the result screen or the next battle. The end line
-//   (3星结束行动 without LP lost in the match / 非3星结束行动 / 行动失败), said by the latest battle's leader, plays once
-//   per match when m.result arrives. All voice timing is real time (battles run at 2x).
+//   same priority replaces the one playing (`overlap`); a lower priority never cuts in; a line still loading counts as
+//   playing; lines cross-fade (0.1 s). The moments are upstream #73's (DESIGN §21.30), on this engine:
+//   · 行动出发 (depart, BATTLE_START) — the first operator of a battle's first deployment (the sim emits 'spawn' right
+//     before 'deploy' only for a unit's first deployment: the pair in one batch), once per battle on the field on screen
+//     and within its opening; a voiceless operator is skipped by the next one. The initial deployment usually comes in
+//     the field's early buffer (the runner's first frames race the render that enters the field): replayEarly says it
+//     from there, and nothing else of that buffer;
+//   · 部署 (deploy, PLACE_CHAR) — an operator deployed later in a battle (redeploy, 突袭 jump, 不屈 / 阿戈尔 revive);
+//     the 整备期 says nothing (buying, dragging or placing a bench operator);
+//   · 行动开始 (start, ENCOUNTER_ENEMY) — an operator's first engage (the sim's ['engage', id], once per unit), with
+//     minTimeDeltaForEnemyEncounter (3 s) between two such lines and one never cutting another: a wave says one;
+//   · 作战中N (combat, SKILL_PASSIVE_IMP) — an operator's skill N starts (the positional `combat` array, combatSlot);
+//     it waits for the battle's first 行动开始 (or the end of its OPENING_MS opening; a solo pause holds that clock), has
+//     a 10 s cooldown start to start and never cuts another;
+//   · 选中干员 (select, FOCUS_CHAR) — a tap on an operator in a battle phase, or its detail card opening: the two share a
+//     key (unit), and one key within SELECT_SAME_MS is one line;
+//   · 结算 (win4 / win3 / win / fail, RESULT: ours) — after every own battle (settle, once per battleId), said by an
+//     operator of THAT battle (settlementVoice: its unitsEnd, survivors first, one that has the line) whatever field is
+//     on screen (upstream's speaker): 3星 when perfect (完成高难行动 on 绝境 / 终极), 非3星 after a leak, 行动失败
+//     when nothing was killed or a boss survived.
+// - Which field speaks: every line but the settlement comes from the battle events this manager is given — the field on
+//   screen, like every battle sound (render/app.js heardEvents, screens/game.js) — so a watched teammate's, a 联防 or a
+//   spectated field's operators speak; enemies, summons and devices never do. A field switch (setFieldUnits: another
+//   field or battle) drops the line still loading — never a settlement — and the opening's pending 行动开始; the line
+//   playing finishes, like any sound in flight.
+// - The battle voice follows the match in the store (followMatch), like the BGM: each battle (voiceBattleKey: phase +
+//   round; 联防 is a battle of its own) has its own opening. A hidden page, a re-mounted battle screen or a reconnect
+//   that takes the match off the screen for a moment changes nothing of that (the opening's first 行动开始 that came on
+//   a hidden page is said on return, within the opening). A new battle drops the lines still loading for the one before
+//   — a settlement only by the rules (the next 行动出发 cuts it); leaving the match drops everything. The match end
+//   (m.result) says nothing. All voice timing is real time (battles run at 2x).
 // - Nothing is said on a hidden page (the context is suspended): the line playing stops and the one loading is
-//   dropped; voice off, at 0 or muted does the same. Teammates' operators (a shared or watched field) never speak on
-//   this client.
+//   dropped; voice off, at 0 or muted does the same.
 //
 // `bgmKeyFor(route, pub)` picks the track for the current screen/phase (main.js calls `audio.install()`,
 // which follows the store).
 
 import { PHASE } from '../../shared/constants.js';
 import { mediaUrl } from './media.js';
-import { voiceLeader } from './ui/gameLogic.js';
 
 const MAX_VOICES = 8;
 const UNIT_COOLDOWN_MS = 160;
@@ -97,7 +113,11 @@ const IMPACT_WINDOW_MS = 2500;
 const SKILL_MODE_FILE = /_(d|h|s)\d*\.mp3$/i;
 /** A failed fetch / decode is remembered this long; the next request after that fetches the file again. */
 const RETRY_MS = 10000;
-/** The end-of-operation lines (played when the match result arrives): not a battle voice type of the official rules. */
+/**
+ * The settlement lines (结算, after every own battle — settle): not a battle voice type of the official rules. Above
+ * everything but the next battle's 行动出发 (BATTLE_START 100, which overlaps), so a battle's last word is cut only by
+ * the next battle's first one.
+ */
 const RESULT_VOICE = Object.freeze({ priority: 100, overlap: true, cooldown: 0 });
 /**
  * The voice type of each role. 作战中 is SKILL_PASSIVE_IMP: every skill of this mode is cast automatically, and the
@@ -105,39 +125,61 @@ const RESULT_VOICE = Object.freeze({ priority: 100, overlap: true, cooldown: 0 }
  * between two 作战中 lines (one never cuts another).
  */
 const ROLE_VOICE_TYPE = Object.freeze({
-  select: 'FOCUS_CHAR', deploy: 'PLACE_CHAR', combat: 'SKILL_PASSIVE_IMP', start: 'ENCOUNTER_ENEMY',
-  win3: 'RESULT', win: 'RESULT', fail: 'RESULT',
+  select: 'FOCUS_CHAR', deploy: 'PLACE_CHAR', combat: 'SKILL_PASSIVE_IMP', start: 'ENCOUNTER_ENEMY', depart: 'BATTLE_START',
+  win4: 'RESULT', win3: 'RESULT', win: 'RESULT', fail: 'RESULT',
 });
-/** The phases of a battle that opens with 行动开始 (联防 goes on with the round's battle). */
-const OPENING_PHASES = new Set([PHASE.COMBAT, PHASE.FINAL_ASSAULT, PHASE.HIDDEN_CORE]);
-/** 行动开始 belongs to a battle's opening: never said later; 作战中 waits for it that long at most. */
+/** The phases of a battle with an opening of its own (行动出发, the first 行动开始); 联防 is a battle of its own. */
+const OPENING_PHASES = new Set([PHASE.COMBAT, PHASE.UNITE, PHASE.FINAL_ASSAULT, PHASE.HIDDEN_CORE]);
+/**
+ * A battle's opening: 行动出发 belongs to it (a first deployment later is a plain 部署), and 作战中 waits for the battle's
+ * first 行动开始 that long at most.
+ */
 const OPENING_MS = 15000;
+/** 选中干员: the same key (a unit of a field) within this long is one line — the tap and the detail card it opens. */
+const SELECT_SAME_MS = 1000;
+/** Settled battles remembered (settle: one settlement line per battle across re-mounts and replays). */
+const SETTLED_CAP = 64;
 /** Voice languages the settings offer, in order (tools/assets/voice.mjs VOICE_LANGS). */
 export const VOICE_LANGS = Object.freeze([['cn', '中文'], ['jp', '日文'], ['en', '英文'], ['kr', '韩文']]);
 
 // ---- pure helpers (unit-tested) -----------------------------------------------------------------------
 
 /**
- * URL of an operator voice line (audio.voice.<lang>.<charId>.<role>; array roles pick at random).
+ * URL of an operator voice line (audio.voice.<lang>.<charId>.<role>; array roles pick at random). `combat` is
+ * positional (tools/assets/voice.mjs: entry k-1 is 作战中k): with an integer `index` and an array of exactly 4 lines,
+ * that entry is the line; any other array (an older manifest) is drawn at random.
  * @param {any} manifest data/assets.json
  * @param {string} lang 'cn' | 'jp' | 'en' | 'kr' | 'off'
  * @param {string} charId
- * @param {string} role select | deploy | combat | start | win3 | win | fail
+ * @param {string} role select | deploy | combat | start | depart | win4 | win3 | win | fail
  * @param {() => number} [rand]
+ * @param {number|null} [index] 0-based line of a positional role (作战中N: N - 1)
  * @returns {string|null}
  */
-export function voiceUrl(manifest, lang, charId, role, rand = Math.random) {
+export function voiceUrl(manifest, lang, charId, role, rand = Math.random, index = null) {
   const v = manifest?.audio?.voice?.[lang]?.[charId]?.[role];
   if (typeof v === 'string') return v;
   if (!Array.isArray(v)) return null;
+  if (Number.isInteger(index) && index >= 0 && index < 4 && v.length === 4 && v.every((x) => typeof x === 'string')) return v[index];
   const list = v.filter((x) => typeof x === 'string');
   return list.length ? list[Math.min(list.length - 1, Math.floor(rand() * list.length))] : null;
 }
 
 /**
+ * The 作战中 line of a skill: UnitInfo.skillIndex is the official 0-based index of the operator's equipped skill
+ * (sim/snapshot.js, def.skill.index), so S1 → 作战中1, S2 → 作战中2, S3 → 作战中3; unknown → 作战中1.
+ * @param {number|null|undefined} skillIndex
+ * @returns {1|2|3|4}
+ */
+export function combatSlot(skillIndex) {
+  return Number.isInteger(skillIndex) && skillIndex >= 0 ? Math.min(4, skillIndex + 1) : 1;
+}
+
+/**
  * The battle voice rules of the manifest (audio.voiceRules: the official audio_data battleVoice, written next to the
- * voice lines by tools/fetch-assets.mjs) as { crossfade (s), encounterDelay (s), types: { [voiceType]: { priority,
- * overlap, cooldown (s) } } } plus RESULT; null when the manifest has none.
+ * voice lines by tools/fetch-assets.mjs) as { crossfade (s), types: { [voiceType]: { priority, overlap, cooldown (s) } } }
+ * plus RESULT; null when the manifest has none. minTimeDeltaForEnemyEncounter (3 s) is read as the least time between
+ * two 行动开始 lines, start to start: ENCOUNTER_ENEMY's cooldown.
  */
 export function voiceRulesOf(manifest) {
   const raw = manifest?.audio?.voiceRules;
@@ -146,7 +188,10 @@ export function voiceRulesOf(manifest) {
   for (const o of raw.voiceTypeOptions) {
     types[o.voiceType] = { priority: o.priority, overlap: o.overlapIfSamePriority, cooldown: o.cooldown };
   }
-  return { crossfade: raw.crossfade, encounterDelay: raw.minTimeDeltaForEnemyEncounter, types };
+  const enc = types.ENCOUNTER_ENEMY;
+  const gap = Number(raw.minTimeDeltaForEnemyEncounter);
+  if (enc && Number.isFinite(gap)) types.ENCOUNTER_ENEMY = { ...enc, cooldown: Math.max(Number(enc.cooldown) || 0, gap) };
+  return { crossfade: raw.crossfade, types };
 }
 
 /**
@@ -163,28 +208,78 @@ export function voiceMayStart(opt, current, lastAt, now) {
 }
 
 /**
- * The end-of-operation line of a match result (m.result): 行动失败 when lost, else 3星结束行动 only when the player lost
- * no LP over the match.
- * @param {any} result m.result @param {string|null} playerId
- * @returns {'fail'|'win'|'win3'}
+ * The settlement line (结算) of a finished own battle — upstream #73's mapping (resultVoiceSlot) with this fork's role
+ * names: a 完美作战 says 3星结束行动 (完成高难行动 on 绝境 / 终极), a battle that killed nothing at all 行动失败, a leak
+ * 非3星结束行动, anything else the 3星 line. [ASSUMED] beside upstream: a boss battle whose boss survived says 行动失败.
+ * @param {{ perfect?: boolean, leaked?: number, killed?: number, total?: number, hard?: boolean, boss?: boolean,
+ *   bossDown?: boolean|null }} [o] leaked: the counted leaks; hard: 绝境 / 终极
+ * @returns {'win4'|'win3'|'win'|'fail'}
  */
-export function endVoiceRole(result, playerId) {
-  if (!result.victory) return 'fail';
-  const me = result.players.find((p) => p.playerId === playerId);
-  return me?.stats.lpLost > 0 ? 'win' : 'win3';
+export function resultVoiceRole(o = {}) {
+  const { perfect = false, leaked = 0, killed = 0, total = 0, hard = false, boss = false, bossDown = true } = o || {};
+  const n = (x) => (Number.isFinite(x) ? x : 0);
+  if (boss && !bossDown) return 'fail';
+  if (perfect) return hard ? 'win4' : 'win3';
+  if (n(total) > 0 && n(killed) <= 0) return 'fail';
+  if (n(leaked) > 0) return 'win';
+  return hard ? 'win4' : 'win3';
 }
 
 /**
- * The own battle the voice follows: `${phase}:${round}` while this player fights a battle that opens with 行动开始
- * (OPENING_PHASES; not eliminated, not a spectator), else null.
+ * Who says a battle's settlement line: an operator of THAT battle (upstream #73 + 9d56342), never one of the field on
+ * screen — the line is the player's own battle's, also while a teammate's field is watched.
+ * `pp` is that battle's own perPlayer entry (BattleResult, sim/Battle.js; battle/runner.js settlement): `unitsEnd`
+ * lists what stood on its field when it ended, `defId` naming the CHESS (`chess_char_*`) or a summon piece (`token_*`,
+ * which does not talk); `charOf` maps a chess id to the operator whose voice bank speaks (the chess record's charId) —
+ * without it only ids that already are a charId count, and a real result has no speaker (upstream's 0.1.4 bug).
+ * `canSpeak` skips an operator without the line (预备干员, 盟约·辅助干员) instead of drawing silence.
+ * Survivors speak first: only a wiped-out squad is spoken for by a fallen operator. Ties are drawn.
+ * @param {{ unitsEnd?: Array<{ defId?: string|null, alive?: boolean }> } | null | undefined} pp
+ * @param {() => number} [random]
+ * @param {((defId: string) => string|null|undefined) | null} [charOf] chess id → charId
+ * @param {((charId: string) => boolean) | null} [canSpeak]
+ * @returns {string|null} charId, or null when that battle fielded no operator that can say it
+ */
+export function resultSpeaker(pp, random = Math.random, charOf = null, canSpeak = null) {
+  const ops = [];
+  for (const u of Array.isArray(pp?.unitsEnd) ? pp.unitsEnd : []) {
+    if (!u || typeof u.defId !== 'string') continue;
+    const id = u.defId.startsWith('char_') ? u.defId : typeof charOf === 'function' ? charOf(u.defId) : null;
+    if (typeof id !== 'string' || !id.startsWith('char_')) continue;
+    if (typeof canSpeak === 'function' && !canSpeak(id)) continue;
+    ops.push({ id, alive: !!u.alive });
+  }
+  const standing = ops.filter((o) => o.alive);
+  const pool = standing.length ? standing : ops;
+  if (!pool.length) return null;
+  return pool[Math.min(pool.length - 1, Math.floor(random() * pool.length))].id;
+}
+
+/**
+ * The settlement line of a finished own battle: { charId, role } or null (no settlement, or nobody who can say it).
+ * @param {{ perfect?: boolean, leaked?: number, killed?: number, total?: number, boss?: boolean, bossDown?: boolean|null,
+ *   unitsEnd?: Array<{ defId?: string|null, alive?: boolean }> } | null | undefined} st battle/runner.js settlement()
+ * @param {{ hard?: boolean, charOf?: ((defId: string) => string|null|undefined) | null,
+ *   canSpeak?: ((charId: string, role: string) => boolean) | null, random?: () => number }} [o]
+ * @returns {{ charId: string, role: 'win4'|'win3'|'win'|'fail' } | null}
+ */
+export function settlementVoice(st, { hard = false, charOf = null, canSpeak = null, random = Math.random } = {}) {
+  if (!st) return null;
+  const role = resultVoiceRole({ ...st, hard });
+  const charId = resultSpeaker(st, random, charOf, typeof canSpeak === 'function' ? (id) => canSpeak(id, role) : null);
+  return charId ? { charId, role } : null;
+}
+
+/**
+ * The battle the voice follows: `${phase}:${round}` in a battle phase (OPENING_PHASES; 联防 is a battle of its own),
+ * else null. Everyone in the match has it — an eliminated player or a spectator hears the field they watch.
  * @param {any} s store state
  * @returns {string|null}
  */
 export function voiceBattleKey(s) {
-  const pub = s.match.public;
+  const pub = s?.match?.public;
   if (!pub || !OPENING_PHASES.has(pub.phase)) return null;
-  const me = pub.players.find((p) => p.playerId === s.me.playerId);
-  return me?.alive ? `${pub.phase}:${pub.round}` : null;
+  return `${pub.phase}:${pub.round}`;
 }
 
 /**
@@ -430,15 +525,10 @@ function isAudioResponse(res) {
 }
 export class AudioManager {
   /**
-   * @param {{ getManifest?: () => any, getPlayerId?: () => string|null, getLeader?: () => string|null,
-   *   random?: () => number, win?: any }} [opts]
-   *   getPlayerId: the own player (only own operators speak); getLeader: the charId of the squad leader now (the
-   *   rarest operator on the own board, gameLogic voiceLeader) — both from the store (installAudio)
+   * @param {{ getManifest?: () => any, random?: () => number, win?: any }} [opts]
    */
   constructor(opts = {}) {
     this.getManifest = typeof opts.getManifest === 'function' ? opts.getManifest : () => null;
-    this.getPlayerId = typeof opts.getPlayerId === 'function' ? opts.getPlayerId : () => null;
-    this.getLeader = typeof opts.getLeader === 'function' ? opts.getLeader : () => null;
     this.random = typeof opts.random === 'function' ? opts.random : Math.random;   // a unit sound's chance (mix.p)
     this.win = opts.win ?? (typeof window !== 'undefined' ? window : null);
     this.ctx = null;
@@ -447,16 +537,21 @@ export class AudioManager {
     this.sfxGain = null;
     this.voiceGain = null;
     this.volumes = { bgm: 0.6, sfx: 0.8, voice: 0.8, voiceLang: 'cn', muted: false };
-    this.voiceNow = null;     // { src, gain, priority } of the line playing
-    this.voiceWant = null;    // { token, priority } of the line loading (it replaces the one playing)
+    this.voiceNow = null;     // { src, gain, priority, type } of the line playing
+    this.voiceWant = null;    // { token, priority, type } of the line loading (it replaces the one playing)
     this.voiceToken = 0;      // the newest line requested: bumping it drops the line loading
     this.voiceLast = new Map(); // voice type → when its last line started (cooldowns)
-    // the own battle the voice follows (followMatch): { key, at: when it opened (moved on by its pauses), pausedAt,
-    // faced: its first enemy appeared, said: its 行动开始 is done }
+    // the battle the voice follows (followMatch): { key, at: when it opened (moved on by its pauses), pausedAt,
+    // said: its first 行动开始 was requested, pending: the charId of an opening 行动开始 that came while unheard }
     this.voiceBattle = null;
-    this.encounterTimer = null; // 行动开始 coming due (_encounter)
-    this.squadLeader = null;  // charId of the leader who opened the latest battle: says the match's end line
-    this.voiceLog = [];       // the lines started: { role, charId, type } (latest 200; the browser E2E reads it)
+    // the field on screen (setFieldUnits): { key: `${fieldId}:${battleId}`, departed: its 行动出发 was requested,
+    // at: when it was entered }
+    this.voiceField = { key: null, departed: false, at: -Infinity };
+    this.lastSelect = null;   // { key, at } of the latest 选中干员 requested (SELECT_SAME_MS)
+    this.settled = new Set(); // battleIds whose settlement line was requested (settle; SETTLED_CAP)
+    // the lines started: { role, charId, type, slot (combat only), battle: the voiceBattle key, t: ms into it }
+    // (latest 200; the browser E2E reads it)
+    this.voiceLog = [];
     this.buffers = new Map(); // url → Promise<AudioBuffer|null> (insertion order = LRU)
     this.bufBytes = new Map(); // url → decoded PCM bytes (the byte budget of the LRU, see _buffer)
     this.warned = new Set();
@@ -521,11 +616,11 @@ export class AudioManager {
       this.master.connect(this.ctx.destination);
       // iOS / iPadOS: a call, Siri or another app's audio moves a running context to 'interrupted' (or 'suspended');
       // a resume without a gesture may then be refused — listen for the next gesture again (dropped once it runs).
-      // Running again (the page shown again): 行动开始 that came due meanwhile is said now.
+      // Running again (the page shown again): the opening's first 行动开始 that came meanwhile is said now.
       try {
         this.ctx.addEventListener?.('statechange', () => {
           const s = this.ctx?.state;
-          if (s === 'running') this._encounter();
+          if (s === 'running') this._engageOnReturn();
           else if (s && s !== 'closed' && !this.win?.document?.hidden) this._armUnlock();
         });
       } catch { /* ignore */ }
@@ -585,7 +680,7 @@ export class AudioManager {
     try {
       if (!this.ctx) return;
       // hidden: the voice stops — no line plays on a page the player does not see (the battle voice goes on: see
-      // _encounter)
+      // _engageOnReturn)
       if (this.win?.document?.hidden) {
         this._silenceVoice(0);
         this.ctx.suspend().catch(() => {});
@@ -857,19 +952,43 @@ export class AudioManager {
     return !!this.ctx && this.ctx.state === 'running' && !this.win?.document?.hidden;
   }
 
+  /** The voice language to play: the setting, or the first language the site has when it lacks that one. */
+  _lang(m) {
+    // a saved language this site lacks (voice downloaded with --voice=jp only): the first one it has
+    return m?.audio?.voice?.[this.volumes.voiceLang] ? this.volumes.voiceLang : (voiceLangsIn(m)[0]?.[0] ?? null);
+  }
+
+  /**
+   * Whether an operator has a line of this role in the language played (a voiceless operator — 预备干员, 盟约·辅助干员 —
+   * has none): the settlement speaker and the opening's pending 行动开始 skip those.
+   * @param {string} charId @param {string} role see voiceUrl
+   */
+  hasVoice(charId, role) {
+    try {
+      const m = this.getManifest();
+      const lang = this._lang(m);
+      return !!lang && voiceUrl(m, lang, charId, role) != null;
+    } catch { return false; }
+  }
+
   /**
    * Play an operator voice line by the battle voice rules (see the header).
    * @param {string} charId
    * @param {string} role see voiceUrl
+   * @param {{ slot?: number|null, key?: string|null }} [o] slot: 作战中N (combat; combatSlot); key: the unit a 选中干员
+   *   is for (gameLogic selectVoiceKey) — the same key within SELECT_SAME_MS is one line (the tap and the detail card)
    * @returns {boolean} whether the line was requested (it starts once loaded, unless dropped meanwhile)
    */
-  voice(charId, role) {
+  voice(charId, role, { slot = null, key = null } = {}) {
     try {
       if (!this._voiceOn() || !this._heard()) return false;
+      const now = performance.now();
+      const sel = role === 'select' && key != null;
+      if (sel && this.lastSelect?.key === key && now - this.lastSelect.at < SELECT_SAME_MS) return false;
       const m = this.getManifest();
-      // a saved language this site lacks (voice downloaded with --voice=jp only): the first one it has
-      const lang = m?.audio?.voice?.[this.volumes.voiceLang] ? this.volumes.voiceLang : voiceLangsIn(m)[0]?.[0];
-      const url = lang ? voiceUrl(m, lang, charId, role) : null;
+      const lang = this._lang(m);
+      const index = role === 'combat' && Number.isInteger(slot) && slot >= 1 ? slot - 1 : null;
+      const url = lang ? voiceUrl(m, lang, charId, role, Math.random, index) : null;
       if (!url) return false;
       const rules = voiceRulesOf(m);
       if (!rules) {
@@ -877,18 +996,25 @@ export class AudioManager {
         return false;
       }
       const type = ROLE_VOICE_TYPE[role];
-      const opt = rules.types[type];
-      if (!voiceMayStart(opt, this.voiceWant ?? this.voiceNow, this.voiceLast.get(type), performance.now())) return false;
+      const opt = type ? rules.types[type] : null;
+      if (!opt || !voiceMayStart(opt, this.voiceWant ?? this.voiceNow, this.voiceLast.get(type), now)) return false;
+      if (sel) this.lastSelect = { key, at: now };
       const token = ++this.voiceToken;
-      this.voiceWant = { token, priority: opt.priority };
+      this.voiceWant = { token, priority: opt.priority, type };
       this._buffer(url).then((buf) => {
-        // dropped meanwhile: a newer line, a hidden page, voice turned off, the battle over
+        // dropped meanwhile: a newer line, a hidden page, voice turned off, another field or battle, the match left
         if (token !== this.voiceToken) return;
         this.voiceWant = null;
-        if (!buf || this.ctx.state !== 'running' || !this._startVoice(buf, opt.priority, rules.crossfade)) return;
+        if (!buf || this.ctx.state !== 'running' || !this._startVoice(buf, opt.priority, type, rules.crossfade)) return;
         // the cooldown runs from the start of a line that plays: a failed load starts none
-        this.voiceLast.set(type, performance.now());
-        this.voiceLog.push({ role, charId, type });
+        const at = performance.now();
+        this.voiceLast.set(type, at);
+        const b = this.voiceBattle;
+        const entry = { role, charId, type };
+        if (role === 'combat') entry.slot = index == null ? null : index + 1;
+        entry.battle = b?.key ?? null;
+        entry.t = b ? Math.round(at - b.at) : null;
+        this.voiceLog.push(entry);
         if (this.voiceLog.length > 200) this.voiceLog.shift();
       });
       return true;
@@ -898,8 +1024,22 @@ export class AudioManager {
     }
   }
 
+  /**
+   * The settlement line (结算) of an own battle, once per battleId — across re-mounts, replays and the two moments that
+   * may ask (its drawn end on screen, or its end in the runner while another field is on screen). The battle counts as
+   * settled even when nothing can be heard now (a hidden page): its line is never said late.
+   * @param {string} battleId @param {string} charId (settlementVoice) @param {string} role win4 | win3 | win | fail
+   * @returns {boolean} whether the line was requested
+   */
+  settle(battleId, charId, role) {
+    if (typeof battleId !== 'string' || this.settled.has(battleId)) return false;
+    this.settled.add(battleId);
+    if (this.settled.size > SETTLED_CAP) this.settled.delete(this.settled.values().next().value);
+    return this.voice(charId, role);
+  }
+
   /** Start a decoded line, cross-fading out the one playing. @returns {boolean} whether it started */
-  _startVoice(buf, priority, crossfade) {
+  _startVoice(buf, priority, type, crossfade) {
     const fade = this.voiceNow ? crossfade : 0;
     this.stopVoice(fade);
     try {
@@ -913,7 +1053,7 @@ export class AudioManager {
       }
       src.connect(gain);
       gain.connect(this.voiceGain);
-      const cur = { src, gain, priority };
+      const cur = { src, gain, priority, type };
       // the line ended, or stopVoice stopped it
       src.onended = () => {
         if (this.voiceNow === cur) this.voiceNow = null;
@@ -941,8 +1081,15 @@ export class AudioManager {
     cur.src.stop(t + fade + 0.02);
   }
 
-  /** The line loading never starts: the moment it belongs to is over. */
-  _dropLoading() {
+  /**
+   * The line loading never starts: the moment it belongs to is over. `keepResult`: a settlement line still loading is
+   * kept (another field on screen, the next phase or battle) — only the rules cut it. `keepDepart`: a 行动出发 still
+   * loading is kept (a battle starting: its first deployment may come before m.public names the battle).
+   * @param {{ keepResult?: boolean, keepDepart?: boolean }} [o]
+   */
+  _dropLoading({ keepResult = false, keepDepart = false } = {}) {
+    const type = this.voiceWant?.type;
+    if ((keepResult && type === 'RESULT') || (keepDepart && type === 'BATTLE_START')) return;
     this.voiceToken += 1;
     this.voiceWant = null;
   }
@@ -953,33 +1100,34 @@ export class AudioManager {
     this.stopVoice(fade);
   }
 
-  /** The moment changed: a pending 行动开始 and a line still loading belong to the one before. */
-  _dropPending() {
-    clearTimeout(this.encounterTimer);
-    this.encounterTimer = null;
-    this._dropLoading();
-  }
-
   /**
-   * Follow the match in the store (installAudio): another own battle (voiceBattleKey) drops the lines of the moment
-   * before and opens with 行动开始; a paused battle (solo pause) holds its opening; m.result arriving says the end
-   * line, once per match.
+   * Follow the match in the store (installAudio): another battle (voiceBattleKey) opens with its own opening and drops
+   * the lines still loading for the moment before (a settlement only by the rules; the new battle's 行动出发 is its
+   * own); a paused battle (solo pause) holds its opening; leaving the match drops everything loading. m.result says
+   * nothing.
    * @param {any} s store state @param {any} prev the state before (null at first)
    */
   followMatch(s, prev) {
-    if (!s.match.public) {
-      // no match on screen (the lobby, or a reconnect that went past the restore grace): its battle is kept for the
-      // match's return, so 行动开始 is still said once — after its first enemy is seen again
-      if (prev?.match.public) {
-        this._dropPending();
-        if (this.voiceBattle) this.voiceBattle.faced = false;
+    if (!s?.match?.public) {
+      // no match on screen (the lobby, the room, or a reconnect that went past the restore grace): nothing loading
+      // reaches it. The battle is kept for the match's return (its opening, whether its 行动开始 was said)
+      if (prev?.match?.public) {
+        this._dropLoading();
+        if (this.voiceBattle) this.voiceBattle.pending = null;
       }
       return;
     }
     const key = voiceBattleKey(s);
     if (key !== (this.voiceBattle?.key ?? null)) {
-      this._dropPending();
-      this.voiceBattle = key ? { key, at: performance.now(), pausedAt: null, faced: false, said: false } : null;
+      // the battle's start message (its field, its first deployment) may come before the throttled m.public: a
+      // 行动出发 already asked for belongs to the battle starting now
+      this._dropLoading({ keepResult: true, keepDepart: key != null });
+      const now = performance.now();
+      this.voiceBattle = key ? { key, at: now, pausedAt: null, said: false, pending: null } : null;
+      // a battle has one 行动出发: a field without a battleId (server-run combat) keeps its key across battles, so a new
+      // battle opens it again — unless the field was entered for this battle (within OPENING_MS): its 行动出发 may have
+      // come before m.public named the battle, and is not said twice
+      if (key && !(now - this.voiceField.at < OPENING_MS)) this.voiceField.departed = false;
     }
     const b = this.voiceBattle;
     if (b && !!s.match.public.paused !== (b.pausedAt != null)) {
@@ -988,56 +1136,66 @@ export class AudioManager {
         // the opening goes on from where the pause held it
         b.at += performance.now() - b.pausedAt;
         b.pausedAt = null;
-        this._encounter();
+        this._engageOnReturn();
       }
     }
-    if (s.match.result && !prev?.match.result) this._matchEnd(s.match.result, s.me.playerId);
   }
 
-  /** The own battle is opening: its 行动开始 is still to come, and 作战中 waits for it. */
+  /** The battle's opening is still on (a solo pause holds it); outside a battle there is none to be over. */
+  _withinOpening(now) {
+    const b = this.voiceBattle;
+    return !b || (b.pausedAt == null ? now : b.pausedAt) < b.at + OPENING_MS;
+  }
+
+  /** The battle is opening: its first 行动开始 is still to come, and 作战中 waits for it. */
   _opening(now) {
     const b = this.voiceBattle;
-    return !!b && !b.said && now < b.at + OPENING_MS;
+    return !!b && !b.said && this._withinOpening(now);
   }
 
   /**
-   * 行动开始, once it is due: the own battle has faced its first enemy and encounterDelay has passed since it opened,
-   * still within its opening and not paused, and the line can be heard — one that comes due on a hidden page waits
-   * for the return (the context's statechange calls this again).
+   * 行动出发 may still come: within the battle's opening, or the field on screen was entered within OPENING_MS (a 联防
+   * field's first deployment may be drawn before m.public names the 联防 — the 作战's opening is long over by then).
    */
-  _encounter() {
-    const b = this.voiceBattle;
-    const rules = voiceRulesOf(this.getManifest());
-    if (!b || b.said || !b.faced || b.pausedAt != null || !rules) return;
-    const now = performance.now();
-    if (now >= b.at + OPENING_MS) return;
-    const wait = b.at + rules.encounterDelay * 1000 - now;
-    if (wait > 0) {
-      clearTimeout(this.encounterTimer);
-      this.encounterTimer = setTimeout(() => this._encounter(), wait);
-      return;
-    }
-    if (!this._heard()) return;
-    b.said = true;
-    this.squadLeader = this.getLeader();
-    if (this.squadLeader) this.voice(this.squadLeader, 'start');
+  _departOpen(now) {
+    return this._withinOpening(now) || now - this.voiceField.at < OPENING_MS;
   }
 
-  /** The match is over (m.result): the leader who opened its latest battle says the end line, once per match. */
-  _matchEnd(result, playerId) {
-    const leader = this.squadLeader;
-    this.squadLeader = null;
-    if (leader) this.voice(leader, endVoiceRole(result, playerId));
+  /**
+   * The opening's first 行动开始 that came while the page was hidden (voiceBattle.pending), said once the page is heard
+   * again — still within the opening and not paused (the context's statechange, a solo pause ending). Later engages on
+   * a hidden page are simply not heard, like every sound.
+   */
+  _engageOnReturn() {
+    const b = this.voiceBattle;
+    if (!b || b.said || !b.pending || b.pausedAt != null) return;
+    if (!this._withinOpening(performance.now()) || !this._heard()) return;
+    const def = b.pending;
+    b.pending = null;
+    if (this.voice(def, 'start')) b.said = true;
   }
 
   // ---- battle events ------------------------------------------------------------------------------------------
 
-  /** Reset the unit map for a new field (m.field.units = UnitInfo[]). */
-  setFieldUnits(units) {
+  /**
+   * Reset the unit map for the field entered (m.field.units = UnitInfo[]). Another field or battle on screen
+   * (`${fieldId}:${battleId}`) is another voice field: the line still loading for the one before never starts (a
+   * settlement does: it is the player's own battle's, whatever is on screen), the opening's pending 行动开始 is
+   * forgotten, and the new field has its own 行动出发 and 选中 de-dup. The same field entered again (a re-mount, a
+   * resync) changes nothing of that; a call without opts is the field ':'.
+   * @param {any[]} units @param {{ fieldId?: string|null, battleId?: string|null }} [opts]
+   */
+  setFieldUnits(units, opts = {}) {
     this.units.clear();
     this.lastAttacker.clear();
     this.consumed.clear();
     for (const u of Array.isArray(units) ? units : []) this._track(u);
+    const key = `${opts?.fieldId ?? ''}:${opts?.battleId ?? ''}`;
+    if (key === this.voiceField.key) return;
+    this._dropLoading({ keepResult: true });
+    this.voiceField = { key, departed: false, at: typeof performance !== 'undefined' ? performance.now() : Date.now() };
+    this.lastSelect = null;
+    if (this.voiceBattle) this.voiceBattle.pending = null;
   }
 
   _track(u) {
@@ -1045,19 +1203,52 @@ export class AudioManager {
     // UnitInfo.spine is the model id (charId / tokenId / enemyId) — the key of sfx.units; kind/defId pick the
     // official class sounds (operator vs summon vs device)
     this.units.set(u.id, { def: u.spine || u.defId, defId: u.defId ?? null, kind: u.kind ?? null, side: u.side, boss: !!u.boss,
-      ownerId: u.ownerId ?? null,
       skillIndex: Number.isInteger(u.skillIndex) ? u.skillIndex : null });
-  }
-
-  /** An own unit (its owner is this player; units without an owner count as own: single-player tools, tests). */
-  _own(u) {
-    const me = this.getPlayerId();
-    return !me || u.ownerId == null || u.ownerId === me;
   }
 
   /** Play a resolved battle sound for a unit event, limited like unit sounds. */
   _playUnitUrl(url, unitKey, volume = 0.8) {
     if (typeof url === 'string') this._play(url, { volume, limited: true, unitKey });
+  }
+
+  /**
+   * The voice of an operator's deployment. 行动出发: the first operator of the battle's first deployment on this field
+   * (`first`: its 'spawn' + 'deploy' pair), within its opening (_departOpen) — a voiceless or refused one leaves it to
+   * the next; every other deployment says 部署 (a redeploy, a 突袭 jump, a 不屈 / 阿戈尔 revive; inside the opening burst
+   * the 部署 lines lose to 行动出发 by the rules) unless `replay` (replayEarly: what came before the field was entered
+   * is not said late).
+   */
+  _deployVoice(u, first, now, replay = false) {
+    if (first && !this.voiceField.departed && this._departOpen(now)) {
+      if (this.voice(u.def, 'depart')) this.voiceField.departed = true;
+    } else if (!replay) this.voice(u.def, 'deploy');
+  }
+
+  /**
+   * The early buffer of the field just entered (screens/game.js: the state-bearing tuples of its frames that came before
+   * the UI entered it, which the view replays quietly — a field shown again after a catch-up must not replay the deaths,
+   * deploys and 漏怪 alarm it skipped). Its spawns fill the unit map, and nothing is heard but one thing: a battle's
+   * initial deployment usually comes in that buffer (the runner's first frames race the render that enters the field),
+   * so its first operator's 行动出发 is said from it, as handleBattleEvents would (a 'spawn' + 'deploy' pair, within the
+   * opening, once per field). No sound effect, no 部署.
+   * @param {any[]} ev
+   */
+  replayEarly(ev) {
+    if (!Array.isArray(ev)) return;
+    try {
+      const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+      const fresh = new Set();
+      for (const e of ev) {
+        if (!Array.isArray(e)) continue;
+        if (e[0] === 'spawn') {
+          this._track(e[1]);
+          if (e[1] && typeof e[1] === 'object' && e[1].id != null && e[1].side !== 'enemy') fresh.add(e[1].id);
+        } else if (e[0] === 'deploy' && fresh.has(e[1]) && this.ctx) {
+          const u = this.units.get(e[1]);
+          if (u && u.side !== 'enemy' && unitSoundClass(u) === 'char') this._deployVoice(u, true, now, true);
+        }
+      }
+    } catch (err) { this._warn('events', err); }
   }
 
   /**
@@ -1068,17 +1259,33 @@ export class AudioManager {
     if (!this.ctx || !Array.isArray(ev)) return;
     try {
       const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+      // allies whose 'spawn' came in this batch: the sim emits it right before 'deploy' only for a unit's FIRST
+      // deployment (Battle._deploy), so the pair marks a first deployment (行动出发); a replayed spawn has no deploy
+      const fresh = new Set();
       for (const e of ev) {
         if (!Array.isArray(e)) continue;
         const kind = e[0];
         if (kind === 'spawn') {
           this._track(e[1]);
-          // the own battle faces its first enemy: 行动开始 comes due
+          if (e[1] && typeof e[1] === 'object' && e[1].id != null && e[1].side !== 'enemy') fresh.add(e[1].id);
+          continue;
+        }
+        if (kind === 'engage') {
+          // 行动开始: an operator's first engage (sim ai.js performAttack, once per unit) — summons, devices and enemies
+          // never speak. The rules keep it to one per wave (ENCOUNTER_ENEMY: the same priority never cuts in, 3 s
+          // between two). The battle's first one ends the wait of 作战中; one that came on a hidden page within the
+          // opening is said on return (_engageOnReturn)
+          const u = this.units.get(e[1]);
+          if (!u || u.side === 'enemy' || unitSoundClass(u) !== 'char') continue;
           const b = this.voiceBattle;
-          if (b && !b.faced && e[1]?.side === 'enemy') {
-            b.faced = true;
-            this._encounter();
-          }
+          if (b && !b.said) {
+            if (!this._heard()) {
+              if (this._withinOpening(now) && !b.pending && this.hasVoice(u.def, 'start')) b.pending = u.def;
+            } else if (this.voice(u.def, 'start')) {
+              b.said = true;
+              b.pending = null;
+            }
+          } else this.voice(u.def, 'start');
           continue;
         }
         if (kind === 'atk') {
@@ -1100,10 +1307,10 @@ export class AudioManager {
         } else if (kind === 'skill' && e[2]) {
           const u = this.units.get(e[1]);
           if (u) this.unit(u.def, 'skill', e[1], u.skillIndex ?? undefined);
-          // 作战中: an own operator (not a summon, an enemy or a teammate's) starting a skill, once the battle's
-          // 行动开始 is said (or its opening is over)
-          if (u && u.side !== 'enemy' && unitSoundClass(u) === 'char' && this._own(u) && !this._opening(now)) {
-            this.voice(u.def, 'combat');
+          // 作战中N: an operator of the field on screen (not a summon or an enemy) starting its skill N, once the
+          // battle's first 行动开始 was asked for (or its opening is over)
+          if (u && u.side !== 'enemy' && unitSoundClass(u) === 'char' && !this._opening(now)) {
+            this.voice(u.def, 'combat', { slot: combatSlot(u.skillIndex) });
           }
         } else if (kind === 'die') {
           const u = this.units.get(e[1]);
@@ -1129,6 +1336,8 @@ export class AudioManager {
         } else if (kind === 'deploy') {
           const u = this.units.get(e[1]);
           if (!u || u.side === 'enemy') continue;
+          // 行动出发 for the battle's first deployed operator, else 部署 (_deployVoice)
+          if (unitSoundClass(u) === 'char') this._deployVoice(u, fresh.has(e[1]), now);
           const m = this.getManifest();
           const url = deploySfxUrl(m, u);
           if (!url) continue;
@@ -1159,18 +1368,15 @@ export const audio = new AudioManager({ getManifest: () => manifestGetter() });
 
 /**
  * Wire the singleton to the app (called once by main.js): manifest source, settings, and the store-driven BGM and
- * battle voice (followMatch; the squad leader is gameLogic voiceLeader of the own board).
- * @param {{ getManifest: () => any, getChess: (id: string) => any, subscribe: (fn: (s:any, prev:any) => void) => () => void,
+ * battle voice (followMatch). A passed `getChess` is ignored: the settlement speaker's chess → charId step is the
+ * caller's (settlementVoice charOf).
+ * @param {{ getManifest: () => any, subscribe: (fn: (s:any, prev:any) => void) => () => void,
  *   getState: () => any, selectRoute: (s:any) => string,
  *   settings?: { bgm:number, sfx:number, voice?:number, voiceLang?:string, muted:boolean } }} deps
  */
 export function installAudio(deps) {
   try {
     manifestGetter = typeof deps?.getManifest === 'function' ? deps.getManifest : manifestGetter;
-    if (typeof deps?.getState === 'function') {
-      audio.getPlayerId = () => deps.getState()?.me?.playerId ?? null;
-      audio.getLeader = () => voiceLeader(deps.getState().match.private, deps.getChess);
-    }
     audio.install();
     if (deps?.settings) audio.setVolumes(deps.settings);
     if (typeof deps?.subscribe === 'function' && typeof deps?.getState === 'function') {

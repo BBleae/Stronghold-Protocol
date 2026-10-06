@@ -208,3 +208,33 @@ test('end to end (real runner → real FxSystem): after a hidden stretch no stat
     r.runner.dispose();
   } finally { fake.restore(); }
 });
+
+test('every batch of a span the view did not see is marked handOver (a catch-up frame, the hidden-tab backlog); a smoothly drawn frame never is — the DOM fallback hears only its spawns (screens/game.js onEv)', async () => {
+  const r = await rig();
+  await r.start();
+  r.advance(3000);
+  assert.ok(r.feed.evs.length > 0 && r.feed.evs.every((b) => b.handOver === undefined), 'smooth frames: no flag');
+  // a stalled frame (3 s real at 2x = 180 ticks behind, more than 4 frames' cap): one catch-up frame
+  let n = r.feed.evs.length;
+  const c0 = r.runner.stats().catchups;
+  r.advance(3000, 3000);
+  assert.equal(r.runner.stats().catchups, c0 + 1, 'one catch-up frame');
+  const caught = r.feed.evs.slice(n);
+  assert.ok(caught.length > 1, `the catch-up frame's slices (${caught.length})`);
+  assert.ok(caught.every((b) => b.handOver === true && b.ev.every(keepsState)), 'state-bearing tuples only, every batch marked');
+  n = r.feed.evs.length;
+  r.advance(500);
+  assert.ok(r.feed.evs.length > n && r.feed.evs.slice(n).every((b) => b.handOver === undefined), 'smooth again');
+  // a hidden tab: the backlog the first frame back delivers (stamped before that frame's snapshot)
+  n = r.feed.evs.length;
+  const nSnaps = r.feed.snaps.length;
+  r.doc.hidden = true;
+  r.advance(5000, 250);
+  assert.equal(r.feed.evs.length, n, 'nothing while hidden');
+  r.doc.hidden = false;
+  r.advance(1000 / 60);
+  const firstSnap = r.feed.snaps[nSnaps];
+  const backlog = r.feed.evs.slice(n).filter((b) => b.gt < firstSnap.gt - 1e-9);
+  assert.ok(backlog.length > 0 && backlog.every((b) => b.handOver === true), `the backlog (${backlog.length} batches)`);
+  r.runner.dispose();
+});

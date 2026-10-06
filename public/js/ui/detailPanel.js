@@ -33,6 +33,7 @@
 // The header's HP bar follows the drawn picture (the snapshot's HP, released 0.5 s behind the sim like the unit's own
 // bar: hpOf); the other live numbers are a direct sim read.
 
+import { useEffect } from '../../vendor/hooks.module.js';
 import { html, Icon, TierChip, MicroLabel, Button, confirmDialog, useTicker } from './components.js';
 import { Img, RichText, UnitThumb, BondGlyph, GIcon } from './gameComponents.js';
 import { attackInterval, rangeGridBox, fmtNum, tileKey, chessLoadout, nextThreshold, bondTier, briefingBondTip, pieceBondIds, grantedBonds, morphPairings } from './gameLogic.js';
@@ -42,6 +43,7 @@ import { data } from '../data.js';
 import { attackRangeGrid } from '../../../shared/loadoutRecord.js';
 import { SKILL_SUMMON_START_DEPLOY } from '../../../shared/constants.js';
 import { moduleBadge } from './loadoutModel.js';
+import { audio } from '../audio.js';
 
 const cx = (...p) => p.flat().filter(Boolean).join(' ');
 
@@ -680,10 +682,22 @@ export function resolveDetail(target, pieces) {
  *   = the defaults
  *   live: the unit's live stats (unitStatsEntry + src 'battle' | 'prep') — an object, or a getter the panel re-reads 4×
  *   a second (the battle's own sim, battle/runner.js unitStats); null ⇒ the record's numbers
+ *   voice: { charId, key } | null — the 选中干员 line (audio.voice 'select') the card says when it opens on an operator of
+ *   the battle on screen, or is retargeted to another one (the game screen passes gameLogic detailSelectVoice: battle
+ *   phases only, battle units only — never a prep scouting board's piece —, any operator of the field on screen, a card
+ *   opened in a battle: one left open from the 整备期 stays silent — DESIGN §21.30); null ⇒ silent. A tap on the unit
+ *   asks for the same line with the same key first (screens/game.js pieceClick), and audio.voice drops a repeat select of
+ *   one key within a second, so a tap says one line; a long-press / right-click (no tap line) is voiced by the card.
  */
-export function DetailPanel({ detail, editable, snapHp, onClose, onSell, onDestroy, bonds = [], offBonds = null, loadout = null, onBond = null, side = 'left', shopOpen = false, live = null }) {
+export function DetailPanel({ detail, editable, snapHp, onClose, onSell, onDestroy, bonds = [], offBonds = null, loadout = null, onBond = null, side = 'left', shopOpen = false, live = null, voice = null }) {
   const getter = typeof live === 'function' ? live : null;
   useTicker(detail && getter ? 250 : 0);
+  // 选中干员: once per key — the panel stays mounted while its target changes, so the key names the field and the unit
+  const vKey = voice?.key ?? null;
+  const vChar = voice?.charId ?? null;
+  useEffect(() => {
+    if (vKey && vChar) audio.voice(vChar, 'select', { key: vKey });
+  }, [vKey, vChar]);
   if (!detail) return null;
   let liveNow = null;
   try { liveNow = getter ? getter() : live && typeof live === 'object' ? live : null; } catch { liveNow = null; }

@@ -1148,40 +1148,35 @@ export function indexPieces(priv) {
   return map;
 }
 
-// ---- operator voice (js/audio.js AudioManager.voice) ---------------------------------------------------------------
-
-/** charId of an own chess piece (its 精锐 shares it), else null. */
-export function pieceCharId(piece, getChess) {
-  if (!isObj(piece) || piece.kind !== 'chess') return null;
-  const c = typeof getChess === 'function' ? getChess(piece.id) : null;
-  return typeof c?.charId === 'string' ? c.charId : null;
-}
-
-/** The operators deployed on the own board: [{ charId, rarity, tier, golden }] in board order. */
-export function boardOperators(priv, getChess) {
-  const out = [];
-  for (const p of Array.isArray(priv?.board) ? priv.board : []) {
-    const charId = pieceCharId(p, getChess);
-    if (!charId) continue;
-    const c = getChess(p.id);
-    out.push({ charId, rarity: Number(c?.rarity) || 0, tier: Number(c?.tier) || 0, golden: !!(p.golden || c?.isGolden) });
-  }
-  return out;
-}
+// ---- operator voice (js/audio.js AudioManager.voice, DESIGN §21.30) ------------------------------------------------
 
 /**
- * The operator who speaks for the squad (行动开始, the end-of-operation lines — the squad leader 队长 of a normal
- * stage, who has no slot in this mode): the rarest deployed operator (then 精锐, then the highest tier; the first on
- * the board breaks a tie).
- * @returns {string|null} charId
+ * The 选中干员 de-dup key of a battle unit: the field on screen and the unit's id there. A tap on a unit (screens/game.js
+ * pieceClick) and the detail card it opens (detailSelectVoice → ui/detailPanel.js `voice`) ask for the line with the same
+ * key, and audio.voice drops a repeat select of one key within a second (SELECT_SAME_MS) — so one tap says one line.
+ * @param {string|null|undefined} fieldId @param {number|string} unitId
  */
-export function voiceLeader(priv, getChess) {
-  let best = null;
-  for (const o of boardOperators(priv, getChess)) {
-    if (!best || o.rarity > best.rarity || (o.rarity === best.rarity && (o.golden && !best.golden
-      || (o.golden === best.golden && o.tier > best.tier)))) best = o;
-  }
-  return best ? best.charId : null;
+export const selectVoiceKey = (fieldId, unitId) => `${fieldId ?? ''}:${unitId}`;
+
+/**
+ * What the detail card says when it opens on an operator of the battle on screen (选中干员): { charId, key } — the chess
+ * record's charId (an elite `_b` record shares it) and selectVoiceKey(fieldId, unitId) — or null. Only in a battle phase
+ * (never in the 整备期, nor in 结算), only for a battle unit's card (`target.kind === 'unit'`: an own operator, a
+ * teammate's, a 联防 / spectated field's) that resolved to a chess record; a bench / shop / bond-member card never speaks.
+ * The card speaks because it was opened (or retargeted) in a battle, never because the phase changed under it: a target
+ * opened outside a battle phase (`target.inBattle` not true — screens/game.js pieceClick sets it from the phase of the
+ * tap) stays silent, so a unit card left open on a scouted prep board says nothing when the battle starts; and a prep
+ * scouting board's piece (`target.unit.area` set — 'board' / 'hand' / 'temp', Match._scoutUnits: a teammate's or a
+ * spectated board in the 整备期, its bench included) is no battle unit in any phase.
+ * @param {{ phase?: string|null, fieldId?: string|null, target?: any, resolved?: any }} o
+ *   target: the screen's detail target ({ kind: 'unit', unit, inBattle, … }); resolved: ui/detailPanel.js resolveDetail(target)
+ * @returns {{ charId: string, key: string }|null}
+ */
+export function detailSelectVoice({ phase, fieldId, target, resolved } = {}) {
+  if (!isCombatPhase(phase) || target?.kind !== 'unit' || target.inBattle !== true || target.unit?.area != null) return null;
+  if (resolved?.type !== 'chess' || resolved.unitId == null) return null;
+  const charId = resolved.chess?.charId;
+  return typeof charId === 'string' && charId ? { charId, key: selectVoiceKey(fieldId, resolved.unitId) } : null;
 }
 
 /**

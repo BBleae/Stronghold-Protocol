@@ -158,8 +158,8 @@ export function performAttack(b, u, prof, targets, opts = null) {
   const attackId = ++b._attackSeq; // every damage instance of this attack (all targets, splash, chain) carries it
   const isHeal = !!(prof.heal && prof.dmgType === 'heal');
   // 首次接敌 (official voice type ENCOUNTER_ENEMY, ≥ 3 s between two such lines): one event the first time a unit
-  // attacks an enemy, whatever the attack is. Upstream's client says that operator's 行动开始 there; this fork's client
-  // ignores the event (its 行动开始 is the squad leader's, at the battle's first enemy — DESIGN §21.30).
+  // attacks an enemy, whatever the attack is. The client says that operator's 行动开始 there (public/js/audio.js
+  // handleBattleEvents; the official rules drop the rest of a wave's engages — DESIGN §21.30).
   if (!isHeal && u.side === 'ally' && !u.mem.engaged && targets.some((t) => t && t.side === 'enemy')) {
     u.mem.engaged = true;
     b._ev(['engage', u.id]);

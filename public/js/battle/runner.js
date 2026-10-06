@@ -46,18 +46,35 @@
 // { [playerId]: { [bondId]: n } } (every battle of the round: the own one, the teammates' replicas) whenever one grows;
 // the bond strip of the player on screen — the own one, or a watched teammate's — shows them live (ui/watchBonds.js).
 //
-// What such a backlog / catch-up frame hands over (keepsState, handOver) also keeps 影哨 placed / recalled, never a skill
-// START (the snapshot's SKILL flag turns a running skill on; replayed, it flashed its activation and played its voice long
-// after), and marks a status that is on and a 影哨 event as late: the view makes the lasting look the status names
-// (render/fxsustain.js) and no stale one-shot (review of the animation / effects PR, point 8).
+// What such a backlog / catch-up frame hands over (keepsState, handOver) also keeps 影哨 placed / recalled — the backlog
+// never a skill START (the snapshot's SKILL flag turns a running skill on; replayed, it flashed its activation and played
+// its voice long after; a catch-up frame still passes them on) — and marks a status that is on and a 影哨 event as late:
+// the view makes the lasting look the status names (render/fxsustain.js) and no stale one-shot (review of the animation /
+// effects PR, point 8). Every such 'ev' batch (the backlog's, a catch-up frame's) carries `handOver: true`: the render
+// engine tells a late tuple by its game time (render/app.js heardEvents), the DOM fallback, which hears the frames as they
+// come, by that flag — it gives the sound only the batch's spawns (screens/game.js onEv: no late 作战中 / 部署 voice).
 //
 // The sim (≈ 0.2–1 ms per tick) runs on the main thread: one battle at a time is stepped for display (plus an
 // authoritative one if it is not the one on screen). stats() exposes the measured cost.
 //
 //   import { battleRunner } from './battle/runner.js'     (browser singleton wired to net.js + store.js; null in Node)
-//   battleRunner.on('snap' | 'ev' | 'field' | 'state', fn) → off
+//   battleRunner.on('snap' | 'ev' | 'field' | 'state' | 'ownDone', fn) → off
+//     'ev' { t: 'b.ev', fieldId, gt, ev, handOver? }: `handOver` true on a batch of a catch-up frame or of the hidden-tab
+//               backlog (the span the view did not see: state-bearing tuples only, see above)
+//     'ownDone' { battleId, fieldId, late }: one of the player's own battles (an entry that is no display replica of
+//               someone else's field — authoritative or not) just finished here, once per entry, whichever field is on
+//               screen. `late`: it was already over when it reached this client (it finished in the silent catch-up
+//               before it was first shown: a reload / resync after its end). The game screen speaks that battle's
+//               settlement line from it when the own field is not on screen (screens/game.js sayResult, DESIGN §21.30).
 //   battleRunner.state()  → { battleId, fieldId, kind, authoritative, watch, done, own, members, loading, paused, leaks,
 //                              uniteLeft, bondLayers } | null
+//   battleRunner.settlement(battleId, playerId) → how that player's part of a finished own battle went — { perfect,
+//                           leaked (counted leaks), killed, total, unitsEnd: [{ defId (chess id), alive }], boss,
+//                           bossDown } — or null (unknown battle, still running, a display replica, no such player).
+//                           Read from the battle's own result (authoritative or not: every own battle is simulated
+//                           here); bossDown (boss / hidden fields only, else null): the pool was emptied — the battle
+//                           ended 'cleared' here, the server's b.end said 'cleared', or the result's bossHpLeft is 0.
+//                           The settlement voice line (audio.js settlementVoice) is picked from it.
 //   battleRunner.stats()  → { ticks, stepMs, avgTickMs, maxFrameMs, catchups, errors, battles }
 //   battleRunner.unitStats(unitId, fieldId?) → the live stats of a unit of the battle on screen (shared/protocol.js
 //                           unitStatsEntry: current HP, effective max HP / ATK / DEF / RES / interval / block / move
@@ -453,13 +470,14 @@ export function createBattleRunner(deps) {
     let run = null;
     for (const x of held) {
       const at = heldAt.get(x) ?? gt;
-      if (!run || run.gt !== at) { if (run) emit('ev', run); run = { t: 'b.ev', fieldId: e.fieldId, gt: at, ev: [] }; }
+      if (!run || run.gt !== at) { if (run) emit('ev', run); run = { t: 'b.ev', fieldId: e.fieldId, gt: at, ev: [], handOver: true }; }
       run.ev.push(handOver(x));
     }
     if (run) emit('ev', run);
     for (const s of drainSlices(e, gt)) {
-      const list = catchingUp ? s.ev.filter(keepsState).map(handOver) : s.ev;
-      if (list.length) emit('ev', { t: 'b.ev', fieldId: e.fieldId, gt: s.gt, ev: list });
+      if (!catchingUp) { if (s.ev.length) emit('ev', { t: 'b.ev', fieldId: e.fieldId, gt: s.gt, ev: s.ev }); continue; }
+      const list = s.ev.filter(keepsState).map(handOver);
+      if (list.length) emit('ev', { t: 'b.ev', fieldId: e.fieldId, gt: s.gt, ev: list, handOver: true });
     }
     try { emit('snap', frameOf(e)); } catch (err) { console.warn('[runner] snapshot failed', err); }
   }
@@ -556,6 +574,11 @@ export function createBattleRunner(deps) {
     }
     if (e === cur) publishState();
     else flushLeaks();
+    // the player's own battle is over (see 'ownDone' in the header): once per entry — a handover re-runs finished()
+    if (e.own && !e.watch && !e.ownDoneSent) {
+      e.ownDoneSent = true;
+      emit('ownDone', { battleId: e.battleId, fieldId: e.fieldId, late: !!e.lateEnd });
+    }
   }
 
   /**
@@ -754,6 +777,9 @@ export function createBattleRunner(deps) {
       // heldAt = the game time each was drained at), and whether that backlog overflowed (the next frame re-enters the
       // view from the field meta); the event batches of the current sliced step (stepEntry)
       held: [], stale: false, slices: [],
+      // the server's b.end reason (settlement() bossDown: 'cleared' = the boss pool was emptied); whether 'ownDone' went
+      // out, and whether the battle was already over when it was first shown (its `late`)
+      endReason: null, ownDoneSent: false, lateEnd: false,
     };
     if (lastPool && battle.sharedBoss) syncPool(e, lastPool);
     // silent catch-up to the field's clock before it is shown (a reconnect / observing a running field)
@@ -775,7 +801,8 @@ export function createBattleRunner(deps) {
     loading = null;
     noteLeaks(e);
     show(e);
-    if (battle.finished) finished(e);
+    // over before it was ever shown (a reload / resync after its end): finished now, but `late` for 'ownDone'
+    if (battle.finished) { e.lateEnd = true; finished(e); }
   }
 
   /** A b.pool into a boss battle's shared pool, logged at this tick while the battle runs (the replay re-applies it). */
@@ -801,6 +828,9 @@ export function createBattleRunner(deps) {
       schedule();
       return;
     }
+    // as the server sent it (a boss field: 'cleared' = the pool was emptied, 'forced' = the team LP ran out — Match
+    // _endFinal); the local battle only knows 'timeout' / 'forced' (settlement() bossDown reads it)
+    e.endReason = typeof msg.reason === 'string' ? msg.reason : null;
     if (!e.battle.finished) {
       const reason = msg.reason === 'timeout' ? 'timeout' : 'forced';
       e.inputs.push({ tick: e.battle.tickCount, kind: 'end', reason });
@@ -911,6 +941,35 @@ export function createBattleRunner(deps) {
       const list = Array.isArray(e.battle.allyUnits) ? e.battle.allyUnits : [];
       return list.filter((u) => u && u.kind === 'op' && u.ownerId === ownerId && typeof u.defId === 'string')
         .map((u) => (Array.isArray(u.items) && u.items.length ? { kind: 'op', ownerId, defId: u.defId, items: [...u.items] } : { kind: 'op', ownerId, defId: u.defId }));
+    },
+    /**
+     * How `playerId`'s part of the finished own battle `battleId` went (see the header) — the settlement voice line is
+     * picked from it (audio.js settlementVoice; screens/game.js sayResult). null: no such entry (unknown, or dropped
+     * with the round), still running, a display replica of someone else's field, or the player has no part in it. Own
+     * entries are never evicted, so this stays valid until the next prep drops the round's battles.
+     * @param {string} battleId @param {string} playerId
+     * @returns {{ perfect: boolean, leaked: number, killed: number, total: number,
+     *   unitsEnd: { defId: string, alive: boolean }[], boss: boolean, bossDown: boolean|null }|null}
+     */
+    settlement(battleId, playerId) {
+      const e = typeof battleId === 'string' ? entries.get(battleId) : null;
+      if (!e || !e.done || !e.own || e.watch || typeof playerId !== 'string' || !playerId) return null;
+      try {
+        const res = e.battle.result();
+        const pp = res && res.perPlayer ? res.perPlayer[playerId] : null;
+        if (!pp || typeof pp !== 'object') return null;
+        const boss = bossLike(e);
+        return {
+          perfect: !!pp.perfect,
+          // the settle rule's count (Match.settle / /sim/spec.js battleProgress: counted !== false)
+          leaked: (Array.isArray(pp.leaked) ? pp.leaked : []).filter((l) => l && l.counted !== false).length,
+          killed: pp.killed ?? res.killed,
+          total: pp.total ?? res.total,
+          unitsEnd: (Array.isArray(pp.unitsEnd) ? pp.unitsEnd : []).filter(Boolean).map((u) => ({ defId: u.defId, alive: !!u.alive })),
+          boss,
+          bossDown: boss ? (e.battle.reason === 'cleared' || e.endReason === 'cleared' || (Number.isFinite(res.bossHpLeft) && res.bossHpLeft <= 0)) : null,
+        };
+      } catch { return null; }
     },
     /** Re-show the current battle (the game screen remounted). */
     reshow() { if (cur) show(cur); },

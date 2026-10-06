@@ -34,6 +34,19 @@ test('droppedEntries: leaves of the old manifest the new one lacks; build fields
   assert.deepEqual(droppedEntries(null, next), [], 'no current manifest: nothing to lose');
 });
 
+test('operator voice roles added (行动出发 depart, 完成高难行动 win4) are growth, not a shrink; a renamed array role would be one (DESIGN §21.30)', () => {
+  const u = (n) => `/assets/voice/cn/char_1012_skadi2/cn_0${n}.mp3`;
+  const old = { select: [u(21), u(22)], deploy: [u(23), u(24)], combat: [u(25), u(26), u(27), u(28)], start: u(20), win3: u(30), win: u(31), fail: u(32) };
+  const prev = { audio: { voice: { cn: { char_1012_skadi2: old } } } };
+  const next = { audio: { voice: { cn: { char_1012_skadi2: { ...old, depart: u(19), win4: u(29) } } } } };
+  assert.deepEqual(droppedEntries(prev, next), [], 'two new keys per operator: the manifest only grows');
+  assert.deepEqual(droppedEntries(next, prev), ['audio.voice.cn.char_1012_skadi2.depart', 'audio.voice.cn.char_1012_skadi2.win4']);
+  // why tools/assets/voice.mjs keeps the key `combat` (positional 作战中1–4): an array is one leaf, so a rename drops it
+  const { combat, ...rest } = next.audio.voice.cn.char_1012_skadi2;
+  const renamed = { audio: { voice: { cn: { char_1012_skadi2: { ...rest, skill: combat } } } } };
+  assert.deepEqual(droppedEntries(next, renamed), ['audio.voice.cn.char_1012_skadi2.combat']);
+});
+
 test('fetch-assets shrink guard: the committed manifest minus some audio entries (PR #7) is refused unless --allow-shrink / --prune', async () => {
   const { shrinkGuard, parseArgs } = await import('../tools/fetch-assets.mjs');
   const before = statSync(MANIFEST).mtimeMs;

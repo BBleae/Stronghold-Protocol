@@ -17,7 +17,7 @@ import { normalizeAtlas, atlasInfo, parseAtlas } from '../tools/assets/atlas.mjs
 import { pngSize, isCompletePng, isMp3, validate } from '../tools/assets/formats.mjs';
 import { encodeWoff2, decodeWoff2Tables, readSfnt, uintBase128 } from '../tools/assets/woff2.mjs';
 import { assetToPath, pickUnitSfx, indexAudio } from '../tools/assets/audio.mjs';
-import { parseVoiceLangs, indexCharWords, voiceLines, VOICE_ROLES } from '../tools/assets/voice.mjs';
+import { parseVoiceLangs, indexCharWords, voiceLines, VOICE_ROLES, POSITIONAL_ROLES } from '../tools/assets/voice.mjs';
 import { mirrorUrl, safeName, encodePath, downloadUrls } from '../tools/assets/sources.mjs';
 import { collectEnemyIds, skillIndicesByChar, buildPlan, entryUrls, GUIDE_PAGES, UI_EXTRAS } from '../tools/assets/plan.mjs';
 import { resolveTemplate, collectLeaves } from '../tools/assets/manifest.mjs';
@@ -781,22 +781,53 @@ describe('operator voice lines (tools/assets/voice.mjs)', () => {
   };
   const idx = indexCharWords(table);
 
-  test('only the in-battle lines, by their official placeType, from the language folder', () => {
+  test('the battle lines, by their official placeType, from the language folder (upstream #73\'s moments, DESIGN §21.30)', () => {
     const cn = voiceLines(idx, 'char_002_amiya', 'cn');
     assert.deepEqual(Object.keys(cn).sort(), Object.keys(VOICE_ROLES).sort());
-    assert.deepEqual(Object.keys(cn).sort(), ['combat', 'deploy', 'fail', 'select', 'start', 'win', 'win3']);
+    assert.deepEqual(Object.keys(cn).sort(), ['combat', 'depart', 'deploy', 'fail', 'select', 'start', 'win', 'win3', 'win4']);
     assert.equal(cn.start, 'voice_cn/char_002_amiya/cn_020.mp3', '行动开始 (BATTLE_FACE_ENEMY), not 行动出发');
+    assert.equal(cn.depart, 'voice_cn/char_002_amiya/cn_019.mp3', '行动出发 (BATTLE_START), a role of its own');
+    assert.equal(cn.win4, 'voice_cn/char_002_amiya/cn_029.mp3', '完成高难行动 (FOUR_STAR)');
     assert.deepEqual(cn.select, ['voice_cn/char_002_amiya/cn_021.mp3', 'voice_cn/char_002_amiya/cn_022.mp3']);
-    assert.deepEqual(cn.combat.map((p) => p.slice(-7, -4)), ['025', '026', '027', '028']);
+    assert.deepEqual(cn.deploy, ['voice_cn/char_002_amiya/cn_023.mp3', 'voice_cn/char_002_amiya/cn_024.mp3']);
+    assert.deepEqual(cn.combat.map((p) => p.slice(-7, -4)), ['025', '026', '027', '028'], '作战中1–4 in order');
     assert.equal(cn.win3, 'voice_cn/char_002_amiya/cn_030.mp3');
     assert.equal(cn.win, 'voice_cn/char_002_amiya/cn_031.mp3');
     assert.equal(cn.fail, 'voice_cn/char_002_amiya/cn_032.mp3');
-    assert.equal(voiceLines(idx, 'char_002_amiya', 'jp').start, 'voice/char_002_amiya/cn_020.mp3');
+    const jp = voiceLines(idx, 'char_002_amiya', 'jp');
+    assert.equal(jp.start, 'voice/char_002_amiya/cn_020.mp3');
+    assert.equal(jp.depart, 'voice/char_002_amiya/cn_019.mp3');
+    assert.equal(jp.win4, 'voice/char_002_amiya/cn_029.mp3');
+    for (const t of ['编入队伍', '精英化晋升1', '交谈1']) {
+      const n = ALL.find((l) => l[0] === t)[2];
+      assert.ok(!Object.values(cn).flat().some((p) => p.endsWith(`cn_${n}.mp3`)), `${t} is not a battle line`);
+    }
+  });
+
+  test('combat is positional: combat[k-1] is the first line of BATTLE_SKILL_k, in place order (the client plays 作战中N for skill N)', () => {
+    assert.deepEqual([...POSITIONAL_ROLES], ['combat'], 'select / deploy stay random draws');
+    // a place with two lines still gives one entry per place, in place order
+    const extra = words('char_002_amiya', [['作战中2b', 'BATTLE_SKILL_2', '040'], ['选中干员3', 'BATTLE_SELECT', '041']]);
+    const two = indexCharWords({ ...table, charWords: { ...extra, ...table.charWords } });
+    const cn = voiceLines(two, 'char_002_amiya', 'cn');
+    assert.deepEqual(cn.combat.map((p) => p.slice(-7, -4)), ['025', '026', '027', '028'], '4 entries: the 2nd is 作战中2, not 作战中2b');
+    assert.deepEqual(cn.select.map((p) => p.slice(-7, -4)), ['021', '022', '041'], 'a random role keeps every line');
+    // a missing place shortens the array (the client then draws at random instead of by index)
+    const noS3 = indexCharWords({ ...table, charWords: Object.fromEntries(Object.entries(table.charWords).filter(([, w]) => w.placeType !== 'BATTLE_SKILL_3')) });
+    assert.deepEqual(voiceLines(noS3, 'char_002_amiya', 'cn').combat.map((p) => p.slice(-7, -4)), ['025', '026', '028']);
   });
 
   test('a linkage operator uses its own voice everywhere; no voice entry ⇒ null', () => {
     assert.deepEqual(voiceLines(idx, 'char_459_tachak', 'cn'), { select: ['voice/char_459_tachak/cn_021.mp3'] });
     assert.deepEqual(voiceLines(idx, 'char_459_tachak', 'jp'), { select: ['voice/char_459_tachak/cn_021.mp3'] });
+    // with 行动出发 / 完成高难行动 lines: from its own folder (voice/) in every dub
+    const linked = indexCharWords({ ...table, charWords: { ...table.charWords,
+      ...words('char_459_tachak', [['行动出发', 'BATTLE_START', '019'], ['完成高难行动', 'FOUR_STAR', '029']]) } });
+    for (const lang of ['cn', 'jp', 'en', 'kr']) {
+      const l = voiceLines(linked, 'char_459_tachak', lang);
+      assert.equal(l.depart, 'voice/char_459_tachak/cn_019.mp3', lang);
+      assert.equal(l.win4, 'voice/char_459_tachak/cn_029.mp3', lang);
+    }
     assert.equal(voiceLines(idx, 'char_600_cpione', 'cn'), null, 'reserve operators have no voice');
     assert.equal(voiceLines(idx, 'char_002_amiya', 'kr'), null, 'no KR dub listed for her');
   });
@@ -805,6 +836,8 @@ describe('operator voice lines (tools/assets/voice.mjs)', () => {
     const en = voiceLines(idx, 'char_002_amiya', 'en');
     assert.deepEqual(Object.keys(en).sort(), Object.keys(VOICE_ROLES).sort());
     assert.equal(en.start, 'voice_en/char_002_amiya/cn_020.mp3');
+    assert.equal(en.depart, 'voice_en/char_002_amiya/cn_019.mp3');
+    assert.equal(en.win4, 'voice_en/char_002_amiya/cn_029.mp3');
     assert.deepEqual(en.combat.map((p) => p.slice(-7, -4)), ['025', '026', '027', '028']);
     const kr = indexCharWords({ ...table, voiceLangDict: { char_002_amiya: { charId: 'char_002_amiya', dict: { KR: { wordkey: 'char_002_amiya', voicePath: null } } } } });
     assert.equal(voiceLines(kr, 'char_002_amiya', 'kr').win3, 'voice_kr/char_002_amiya/cn_030.mp3');
@@ -823,14 +856,25 @@ describe('operator voice lines (tools/assets/voice.mjs)', () => {
     assert.throws(() => parseVoiceLangs('fr'), /unknown voice language/);
   });
 
-  test('data/assets.json: both languages, the same 7 roles per operator, files on disk', () => {
+  test('data/assets.json: every operator of every language has the 9 roles (depart, win4, combat ×4 in order), files on disk', () => {
     const v = readJson('data/assets.json').audio?.voice;
     const onDisk = existsSync(join(ROOT, 'public', 'assets', 'voice'));
     if (!v) return; // assets fetched with --voice=none
+    // the 外援 / 甄选 operators (tools/assets/waiguan-operators.json, DESIGN §27) have no battle voice
+    const waiguan = Object.keys(readJson('tools/assets/waiguan-operators.json').operators || {});
+    assert.ok(waiguan.length > 0);
     for (const [lang, per] of Object.entries(v)) {
       assert.ok(['cn', 'jp', 'en', 'kr'].includes(lang), lang);
+      for (const id of waiguan) assert.equal(per[id], undefined, `${lang}.${id}: a 外援 operator has no voice`);
       for (const [charId, roles] of Object.entries(per)) {
         assert.ok(/^char_/.test(charId), charId);
+        assert.deepEqual(Object.keys(roles).sort(), Object.keys(VOICE_ROLES).sort(), `${lang}.${charId} roles`);
+        assert.equal(typeof roles.depart, 'string', `${lang}.${charId}.depart`);
+        assert.match(roles.depart, /\/cn_019\.mp3$/, `${lang}.${charId}.depart is 行动出发`);
+        assert.equal(typeof roles.win4, 'string', `${lang}.${charId}.win4`);
+        assert.match(roles.win4, /\/cn_029\.mp3$/, `${lang}.${charId}.win4 is 完成高难行动`);
+        assert.ok(Array.isArray(roles.combat) && roles.combat.length === 4, `${lang}.${charId}.combat has 4 entries`);
+        roles.combat.forEach((u, k) => assert.ok(u.endsWith(`/cn_02${5 + k}.mp3`), `${lang}.${charId}.combat[${k}] is 作战中${k + 1}: ${u}`));
         for (const [role, urls] of Object.entries(roles)) {
           assert.ok(VOICE_ROLES[role], `${lang}.${charId}.${role}`);
           for (const u of [].concat(urls)) {

@@ -72,6 +72,13 @@
 // A public match's spectator (account mode: the room Worker's, worker/rooms/spectators.js; no seat) is treated alike
 // (store.js isSpectator) but goes straight to this screen, is pushed the field it watches (a team row switches it at
 // once), sees no 机变 cards, and also leaves with the spectator count's 退出观战 (SpectatorPresence).
+// Operator voice (DESIGN §21.30: upstream #73's moments on this fork's engine, js/audio.js): the battle lines (行动出发,
+// 部署, 行动开始, 作战中N) come with the battle events of the field on screen, like every battle sound, so a watched
+// teammate's / 联防 / spectated field's operators speak too; a tap on any operator of that field in a battle phase, and
+// the detail card it opens, say 选中干员 — one line per tap (gameLogic selectVoiceKey / detailSelectVoice); the 整备期 is
+// silent, and a card opened there (a scouted board) stays silent when the battle starts under it. The settlement line after each own battle (sayResult) is that battle's own, spoken by one of its operators
+// whatever field is on screen: at its drawn end (the 作战结束 pill) when it is on screen, else as soon as the runner
+// finishes it (battle/runner.js 'ownDone').
 
 import { useCallback, useEffect, useMemo, useRef, useState } from '../../vendor/hooks.module.js';
 import { PHASE, GEO } from '../../../shared/constants.js';
@@ -107,7 +114,7 @@ import {
   terrainInfo,
   countdownState, shopBlockReason, stageOverrides, effectiveStage, watchTarget, dropFailureReason,
   previewEnemyKey, prepCamera, prepCameraFor, foldCamera, deployFieldOf, fieldTile, panelSide, panelSlots, bondPopupPlace, chessLoadout, unitLoadout,
-  mergeTarget, modeOffBonds, pieceCharId, readyFundsPrompt, ownerBandId,
+  mergeTarget, modeOffBonds, readyFundsPrompt, ownerBandId, selectVoiceKey, detailSelectVoice,
 } from '../ui/gameLogic.js';
 import { toast } from '../ui/toasts.js';
 import { BriefingScreen } from './briefing.js';
@@ -120,7 +127,7 @@ import { isLastingFxEvent } from '../render/fxsustain.js';
 import { isClientCombat, observeTarget, teammateProgress, cameraLayers, layerCamera, sidesOf, resumedWatch, uniteLocalFor, uniteSwitchFields, uniteHomeField, backTarget } from '../battle/observe.js';
 import { screenStrip, playerBonds, playerLayer, detailBondOwner, toggleBond, popupView } from '../ui/watchBonds.js';
 import { data, localAsset, getChess, getMode } from '../data.js';
-import { audio, unitSoundClass } from '../audio.js';
+import { audio, unitSoundClass, settlementVoice } from '../audio.js';
 import { useDocClass, useWakeLock, FullscreenButton } from '../ui/device.js';
 
 const cx = (...p) => p.flat().filter(Boolean).join(' ');
@@ -134,6 +141,27 @@ const STATE_EV = new Set(['spawn', 'die', 'deploy', 'status', 'skill', 'leak']);
  *  form (shared/protocol.js fxForm — the field meta's UnitInfo `form` predates them) and the lasting fx (render/fxsustain.js
  *  isLastingFxEvent: a wall, a link, drones, 影哨 … that began in that span). */
 const keepEarly = (e) => Array.isArray(e) && (STATE_EV.has(e[0]) || fxForm(e) !== undefined || isLastingFxEvent(e));
+
+/**
+ * 结算 voice (DESIGN §21.30): the settlement line after one of the player's own battles — picked from how THAT battle
+ * went (battle/runner.js settlement: perfect → 3星结束行动, on 绝境 / 终极 完成高难行动; a leak → 非3星结束行动; nothing
+ * killed, or a boss that survived → 行动失败) and spoken by an operator of that battle (its unitsEnd, chess id → charId
+ * through the chess record, survivors first, one that has the line: audio.js settlementVoice), whatever field is on
+ * screen. audio.settle says it once per battle (re-mounts, replays, the drawn end and the runner's 'ownDone' alike).
+ * Nothing for a battle still running, a display replica, or server-run combat (no runner).
+ * @param {string} battleId @param {string|null} myId @param {string|null|undefined} difficulty m.public.difficulty
+ */
+function sayResult(battleId, myId, difficulty) {
+  try {
+    const st = battleRunner?.settlement?.(battleId, myId) ?? null;
+    const v = settlementVoice(st, {
+      hard: difficulty === 'HARD' || difficulty === 'ABYSS',
+      charOf: (id) => getChess(id)?.charId ?? null,
+      canSpeak: (c, r) => audio.hasVoice(c, r),
+    });
+    if (v) audio.settle(battleId, v.charId, v.role);
+  } catch { /* the line is cosmetic */ }
+}
 
 /** Router for the in-match screens. */
 export function GameScreen() {
@@ -458,6 +486,10 @@ function MatchScreen() {
     if (!wanted || !field || !field.fieldId || field === staleFieldRef.current || field === enteredFieldRef.current) return;
     if (watchingOther && !combat && field.fieldId !== watching) return; // an older push while switching
     if (lastFieldRef.current && lastFieldRef.current !== field.fieldId) setDetail((d) => (d?.kind === 'unit' ? null : d));
+    // the own battle drawn until now whose end was not drawn yet (the view moves to another field, or re-enters this one
+    // and starts its picture at the end): its settlement line goes now if it is over (sayResult; once per battle) — else
+    // the runner's 'ownDone' says it when it ends off screen, or its drawn end when it is back on screen
+    const leaving = drawnRef.current;
     enteredFieldRef.current = field;
     lastFieldRef.current = field.fieldId;
     reentryRef.current = null;
@@ -488,15 +520,17 @@ function MatchScreen() {
     // scouting board is the pair's boss field (Match.prepFieldMeta) on 全景
     if (field.prep && kind === 'normal') setCam('prep', { rect: field.rect, side: 'L', shop: false });
     else setCam(kind, lone ? { rect: field.rect, side, half: true } : { rect: field.rect, side });
-    audio.setFieldUnits(field.units);
+    // the voice follows the field on screen (DESIGN §21.30): a new field / battle drops a line still loading for the old one
+    audio.setFieldUnits(field.units, { fieldId: field.fieldId, battleId: field.battleId ?? null });
     if (early && early.length) {
       // replay state-bearing events and lasting fx only (a burst of stale hit sparks / damage numbers would look wrong);
       // stamped with the snapshot's game time, so the render clock does not drop a lasting fx as a stale cosmetic one —
       // and `quiet`, so the engine draws them without handing them to the sound ('battleEvents'): that stamp makes them
       // look fresh, and a field shown again after a catch-up would replay the deaths, deploys and 漏怪 alarm of the
-      // seconds it skipped. The sound gets the buffer's spawns (its unit map), here
+      // seconds it skipped. The sound gets the buffer's spawns (its unit map), here — and the voice the battle's
+      // initial deployment, which usually comes in this buffer: its 行动出发 (audio.replayEarly; nothing else is heard)
       view.pushEvents({ ev: early, gt: earlySnap?.gt, quiet: true });
-      audio.handleBattleEvents(early.filter((e) => e[0] === 'spawn'));
+      audio.replayEarly(early);
     }
     if (!earlySnap && (field.prep || !combat) && Array.isArray(field.units)) {
       // prep scouting: no battle snapshots follow. A later m.field for this board (the teammate moved) re-enters
@@ -516,6 +550,8 @@ function MatchScreen() {
     const seed = pickDrawn(battleRunner ? battleRunner.state() : null);
     drawnRef.current = seed && seed.fieldId === field.fieldId ? seed : null;
     setDrawn(drawnRef.current);
+    // (a field entered after its end is seeded done: its end is never drawn, and its line went when it ended)
+    if (leaving && leaving.own && !leaving.watch && !leaving.done && leaving.battleId) sayResult(leaving.battleId, myId, pub?.difficulty);
   }, [view, showPrep, priv, editable, field, combat, mode, watchingOther, watching, holdSeq]);
 
   // battle frames straight from the socket (server-run combat, 20 Hz) or from the local simulation (client-side combat,
@@ -530,7 +566,9 @@ function MatchScreen() {
     // DP, boss HP, leaks / LP −N, 联防 ×N, bond layers, the 作战结束 pill, the unit card's HP — are released through one
     // queue at the time their frame is drawn; the capsule's kills and everything of the battle slice skip the 5 Hz
     // throttle (DP alone keeps it) so a count never trails its drawn event or the pill. NOT queued, by design (the
-    // original relays them on the server clock): teammates' rows, team LP, the boss pool, settlement, phase banners
+    // original relays them on the server clock): teammates' rows, team LP, the boss pool, settlement, phase banners.
+    // The settlement VOICE line of an own battle on screen goes with its drawn end (the 作战结束 pill, onBattle); of one
+    // that ends off screen, when the runner finishes it ('ownDone') — sayResult, once per battle
     const engine = view?.kind === 'engine';
     const lagMs = () => (engine ? (Number(view.raw?.renderLag?.()) || 0) * 1000 : 0);
     const hudDelay = createHudDelay({
@@ -544,11 +582,18 @@ function MatchScreen() {
         else if (!pending) pending = setTimeout(flush, HUD_HZ_MS - dt);
       },
       onBattle: (b) => {
+        const prev = drawnRef.current;
         const changed = drawnChanged(drawnRef.current, b);
         drawnRef.current = b;
         if (!changed) return;
         setDrawn(b);
         flush();
+        // 结算: the own battle on screen ends in the drawn picture (the 作战结束 pill) — onState only pushes the field on
+        // screen (a done slice after a running one always differs). A field entered after its end is seeded done: silent
+        if (b.done && b.own && !b.watch && b.battleId && !(prev && prev.done && prev.battleId === b.battleId)) {
+          const L = live.current;
+          sayResult(b.battleId, L.myId, L.pub?.difficulty);
+        }
       },
     });
     hudDelayRef.current = hudDelay;
@@ -590,10 +635,23 @@ function MatchScreen() {
         return;
       }
       view?.pushEvents(msg);
-      if (!engine) audio.handleBattleEvents(msg.ev);
+      // the DOM fallback hears the frames as they come, with no render clock to drop a late tuple (render/app.js
+      // heardEvents): a hand-over batch — a catch-up frame, the hidden-tab backlog (battle/runner.js `handOver`) —
+      // gives the sound only its spawns (the unit map), so a field shown again after a catch-up never says a 作战中 /
+      // 部署 or plays a death of the seconds it skipped
+      if (!engine) audio.handleBattleEvents(msg.handOver ? msg.ev.filter((x) => Array.isArray(x) && x[0] === 'spawn') : msg.ev);
+    };
+    // 结算 off screen: one of the player's own battles finished in the runner while another field (a teammate's, 联防, a
+    // spectated one) or none is on screen → its line now. On screen, its drawn end says it (onBattle; a field switch
+    // before that: the enter effect). `late`: it was over before this client first showed it (a reload) — nothing
+    const onOwnDone = (msg) => {
+      if (!msg || typeof msg.battleId !== 'string' || msg.late) return;
+      if (viewModeRef.current === 'battle' && lastFieldRef.current === msg.fieldId) return;
+      const L = live.current;
+      sayResult(msg.battleId, L.myId, L.pub?.difficulty);
     };
     const offs = [net.on('m.field', onFieldMeta), net.on('b.snap', onSnap), net.on('b.ev', onEv)];
-    if (battleRunner) offs.push(battleRunner.on('field', onFieldMeta), battleRunner.on('snap', onSnap), battleRunner.on('ev', onEv), battleRunner.on('state', onState));
+    if (battleRunner) offs.push(battleRunner.on('field', onFieldMeta), battleRunner.on('snap', onSnap), battleRunner.on('ev', onEv), battleRunner.on('state', onState), battleRunner.on('ownDone', onOwnDone));
     if (engine) offs.push(view.on('battleEvents', (evs) => audio.handleBattleEvents(evs)));
     return () => { for (const off of offs) { try { off(); } catch { /* ignore */ } } clearTimeout(pending); hudDelay.dispose(); if (hudDelayRef.current === hudDelay) hudDelayRef.current = null; };
   }, [view]);
@@ -972,10 +1030,18 @@ function MatchScreen() {
         const penKey = previewEnemyKey(e);
         if (penKey) { setDetail({ kind: 'enemy', id: penKey }); return; }
         if (e.unitId != null || e.unit) {
-          // 选中干员 (FOCUS_CHAR): tapping an own deployed operator during a battle (not a teammate's, not in 结算)
-          const own = e.unit && e.unit.side !== 'enemy' && unitSoundClass(e.unit) === 'char' && (e.unit.ownerId == null || e.unit.ownerId === live.current.myId);
-          if (!e.detail && e.button !== 2 && own && isCombatPhase(live.current.pub?.phase)) audio.voice(e.unit.spine || e.unit.defId, 'select');
-          setDetail({ kind: 'unit', unit: e.unit || null, unitId: e.unitId, uid: e.uid });
+          // 选中干员 (FOCUS_CHAR, DESIGN §21.30): tapping any operator of the field on screen during a battle (own, a
+          // teammate's, a 联防 / spectated field's; not in 结算) — a finger's tap at its release (render/app.js
+          // battlePress). The card it opens asks with the same key (detailSelectVoice), which audio.voice drops: one line.
+          // A prep scouting board's piece (`area`: board / bench / temp, Match._scoutUnits — still on screen in the
+          // moment a battle phase begins, before that battle's field arrives) is no battle unit. `inBattle`: the card was
+          // opened in a battle phase — one opened in the 整备期 stays silent when the battle starts under it
+          const inBattle = isCombatPhase(live.current.pub?.phase);
+          const op = e.unit && e.unit.side !== 'enemy' && e.unit.area == null && unitSoundClass(e.unit) === 'char';
+          if (!e.detail && e.button !== 2 && op && inBattle) {
+            audio.voice(e.unit.spine || e.unit.defId, 'select', { key: selectVoiceKey(lastFieldRef.current, e.unit.id ?? e.unitId) });
+          }
+          setDetail({ kind: 'unit', unit: e.unit || null, unitId: e.unitId, uid: e.uid, inBattle });
           return;
         }
         if (!Number.isInteger(e.uid)) return;
@@ -1101,9 +1167,7 @@ function MatchScreen() {
       releaseHold(f.uid);
       return;
     }
-    // 部署 (PLACE_CHAR): an operator successfully deployed from the bench / temporary area — as in the official mode;
-    // buying or dragging one says nothing, and moving one already on the board neither
-    if (f.from !== 'board') { const ch = pieceCharId(f.piece, getChess); if (ch) audio.voice(ch, 'deploy'); }
+    // (the 整备期 says nothing: 部署 is an in-battle line, DESIGN §21.30)
     // accepted: the piece stays on the tile until m.private shows it there (or a short grace passes)
     setTimeout(() => { if (heldRef.current.has(f.uid)) releaseHold(f.uid); }, 1500);
   }, [view, releaseHold]);
@@ -1475,6 +1539,7 @@ function MatchScreen() {
         onClose=${() => setBondOpen(null)} onMember=${(id, items) => setDetail({ kind: 'chess', id, owner: bondPop.ownerId, items: items || null })} />` : null}
 
       ${resolved ? html`<${DetailPanel} detail=${resolved} snapHp=${snapHp} onClose=${() => { setDetail(null); setSel(null); }}
+        voice=${detailSelectVoice({ phase, fieldId: lastFieldRef.current, target: detailTarget, resolved })}
         bonds=${detailBonds} offBonds=${offBonds} loadout=${detailLoadout} side=${dSide} shopOpen=${shopOpen} live=${liveStats}
         onBond=${(id) => openBond(id, detailOwner, 'detail')} />` : null}
 

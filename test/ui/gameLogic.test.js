@@ -13,7 +13,7 @@ import {
   boardTargets, dropIntent, normalizeDraft, normalizeSp, groupEnemies, factionTypes, snapHud, bossFrac, attackInterval, fmtNum,
   rangeGridBox, shortcutFor, sanitizeSettings, defaultQuality, DEFAULT_SETTINGS, normalizeResult, cycleField, fieldLabel, homeFieldId,
   activeBubbles, sortedPlayers, tileKey, prepCapsuleLabel, prepCamera, dropFailureReason, terrainInfo,
-  pieceCharId, boardOperators, voiceLeader, createHudDelay, pickDrawn, drawnChanged, hudChanged, drawnOf, ownFieldGate, snapUnits,
+  selectVoiceKey, detailSelectVoice, createHudDelay, pickDrawn, drawnChanged, hudChanged, drawnOf, ownFieldGate, snapUnits,
 } from '../../public/js/ui/gameLogic.js';
 import { pairPlayers } from '../../server/match/finalAssault.js';
 import { PHASE, GEO } from '../../shared/constants.js';
@@ -604,29 +604,93 @@ describe('equipment dropped on a tile goes to the unit on it', () => {
   });
 });
 
-describe('operator voice', () => {
-  const CHESS = {
-    a: { charId: 'char_a', rarity: 4, tier: 2 }, a_b: { charId: 'char_a', rarity: 4, tier: 2, isGolden: true },
-    b: { charId: 'char_b', rarity: 5, tier: 3 }, c: { charId: 'char_c', rarity: 5, tier: 4 },
-  };
-  const getChess = (id) => CHESS[id] || null;
-  const priv = (board, hand = [], temp = []) => ({ board, hand, temp });
-  const chess = (uid, id, o = {}) => ({ uid, kind: 'chess', id, ...o });
+describe('operator voice (选中干员, DESIGN §21.30)', () => {
+  // a battle unit's detail card as screens/game.js builds it: the target ({ kind: 'unit', unit }) and ui/detailPanel.js
+  // resolveDetail's answer ({ type: 'chess', chess, unitId, … })
+  // (`inBattle`: screens/game.js pieceClick opened it in a battle phase)
+  const unit = (id, defId, o = {}, inBattle = true) => ({ kind: 'unit', unit: { id, defId, side: 'ally', ...o }, unitId: id, uid: o.uid ?? null, inBattle });
+  const card = (target) => ({ type: 'chess', chess: chess[target.unit.defId], piece: null, unitId: target.unit.id, unitItems: null });
+  const A = 'chess_char_1_01_a';
+  const B = 'chess_char_1_01_b';
 
-  test('pieceCharId / boardOperators: own chess pieces only', () => {
-    assert.equal(pieceCharId(chess(1, 'a'), getChess), 'char_a');
-    assert.equal(pieceCharId({ uid: 2, kind: 'item', id: 'a' }, getChess), null);
-    assert.equal(pieceCharId(chess(3, 'zzz'), getChess), null);
-    assert.deepEqual(boardOperators(priv([chess(1, 'a', { row: 1, col: 1 }), { uid: 9, kind: 'token', id: 't' }]), getChess).map((o) => o.charId), ['char_a']);
+  test('selectVoiceKey: the field on screen and the unit id', () => {
+    assert.equal(selectVoiceKey('n:p_0', 7), 'n:p_0:7');
+    assert.equal(selectVoiceKey('u:1', 12), 'u:1:12');
+    assert.equal(selectVoiceKey(null, 7), ':7');
+    assert.equal(selectVoiceKey(undefined, 7), ':7');
+    assert.notEqual(selectVoiceKey('n:p_0', 7), selectVoiceKey('n:p_1', 7), 'the same unit id on another field is another unit');
   });
 
-  test('voiceLeader: rarest, then 精锐, then highest tier, then board order', () => {
-    assert.equal(voiceLeader(priv([]), getChess), null);
-    assert.equal(voiceLeader(priv([chess(1, 'a'), chess(2, 'b'), chess(3, 'c')]), getChess), 'char_c');
-    assert.equal(voiceLeader(priv([chess(1, 'b'), chess(2, 'c', { golden: false }), chess(3, 'b', { golden: true })]), getChess), 'char_b');
-    assert.equal(voiceLeader(priv([chess(1, 'a'), chess(2, 'a_b')]), getChess), 'char_a');
+  test('detailSelectVoice: an operator of the battle on screen, in a battle phase only — the key the tap uses', () => {
+    const t = unit(7, A);
+    const want = { charId: chess[A].charId, key: 'n:p_0:7' };
+    for (const phase of [PHASE.COMBAT, PHASE.UNITE, PHASE.FINAL_ASSAULT, PHASE.HIDDEN_CORE]) {
+      assert.deepEqual(detailSelectVoice({ phase, fieldId: 'n:p_0', target: t, resolved: card(t) }), want, phase);
+    }
+    // the tap (screens/game.js pieceClick) asks with selectVoiceKey(field on screen, unit.id): the same key, so
+    // audio.voice drops the card's repeat and one tap says one line
+    assert.equal(detailSelectVoice({ phase: PHASE.COMBAT, fieldId: 'n:p_0', target: t, resolved: card(t) }).key, selectVoiceKey('n:p_0', t.unit.id));
+    // the 整备期, 结算, the result screen, no match: silent
+    for (const phase of [PHASE.PREP, PHASE.ROUND_START, PHASE.SP_DRAFT, PHASE.SETTLE, PHASE.RESULT, PHASE.INFO_CHECK, null, undefined]) {
+      assert.equal(detailSelectVoice({ phase, fieldId: 'n:p_0', target: t, resolved: card(t) }), null, String(phase));
+    }
   });
 
+  test('detailSelectVoice: battle units that resolved to a chess record only; an elite shares its charId', () => {
+    const t = unit(7, A);
+    const ok = (o) => detailSelectVoice({ phase: PHASE.COMBAT, fieldId: 'n:p_0', target: t, resolved: card(t), ...o });
+    // a teammate's / 联防 / spectated field's operator speaks too (no owner check): the key names that field
+    const mate = unit(3, A, { ownerId: 'p_1' });
+    assert.deepEqual(detailSelectVoice({ phase: PHASE.UNITE, fieldId: 'u:1', target: mate, resolved: card(mate) }), { charId: chess[A].charId, key: 'u:1:3' });
+    // an elite (`_b`) record: the same operator, the same voice
+    const elite = unit(9, B);
+    assert.equal(chess[B].charId, chess[A].charId);
+    assert.deepEqual(detailSelectVoice({ phase: PHASE.COMBAT, fieldId: 'n:p_0', target: elite, resolved: card(elite) }), { charId: chess[A].charId, key: 'n:p_0:9' });
+    // a bench / board piece's card, a shop card, a bond member's card: never
+    assert.equal(ok({ target: { kind: 'piece', uid: 4 } }), null, 'a piece card');
+    assert.equal(ok({ target: { kind: 'chess', id: A } }), null, 'a shop / bond-member card');
+    assert.equal(ok({ target: null }), null);
+    // a summon, an enemy, an item: no operator line
+    assert.equal(ok({ resolved: { type: 'token', token: { id: 'token_x' }, unitId: 7 } }), null, 'a summon');
+    assert.equal(ok({ resolved: { type: 'enemy', enemy: { key: 'enemy_x' }, unitId: 7 } }), null, 'an enemy');
+    assert.equal(ok({ resolved: null }), null);
+    // no unit id (nothing to key it on) or no charId: silent
+    assert.equal(ok({ resolved: { ...card(t), unitId: undefined } }), null);
+    assert.equal(ok({ resolved: { ...card(t), unitId: null } }), null);
+    assert.equal(ok({ resolved: { ...card(t), chess: { ...chess[A], charId: undefined } } }), null);
+    assert.equal(ok({ resolved: { ...card(t), chess: null } }), null);
+    assert.equal(detailSelectVoice(), null);
+    // key stability: the same unit gives the same key render after render; another unit or field another key
+    assert.equal(ok().key, ok().key);
+    assert.notEqual(ok().key, detailSelectVoice({ phase: PHASE.COMBAT, fieldId: 'n:p_0', target: elite, resolved: card(elite) }).key);
+    assert.notEqual(ok().key, ok({ fieldId: 'n:p_1' }).key);
+    assert.equal(ok({ fieldId: null }).key, ':7');
+  });
+
+  test('detailSelectVoice: a card opened outside a battle phase stays silent when the battle starts under it; a prep scouting board piece never speaks', () => {
+    // a unit card opened in the 整备期 on a teammate's / spectated scouted board (Match._scoutUnits: id = the piece's uid,
+    // `area` board / hand / temp) is kept open into the battle (screens/game.js closes only chess / item cards then):
+    // the render that brings COMBAT must not make it say 选中干员 with no tap
+    for (const area of ['board', 'hand', 'temp']) {
+      const prep = unit(41, A, { area, uid: 41, ownerId: 'mate' }, false);
+      for (const phase of [PHASE.PREP, PHASE.COMBAT, PHASE.FINAL_ASSAULT]) {
+        assert.equal(detailSelectVoice({ phase, fieldId: 'n:mate', target: prep, resolved: card(prep) }), null, `${area} ${phase}`);
+      }
+      // tapped in a battle phase while that board is still on screen (before the battle's field arrives): still no
+      // battle unit
+      const tapped = unit(41, A, { area, uid: 41, ownerId: 'mate' }, true);
+      assert.equal(detailSelectVoice({ phase: PHASE.COMBAT, fieldId: 'n:mate', target: tapped, resolved: card(tapped) }), null, `${area} tapped`);
+    }
+    // a battle unit's card opened in the 整备期 (the battle's field came before m.public named the phase) stays silent
+    // too; opened — or retargeted — in the battle it speaks
+    const early = unit(7, A, {}, false);
+    assert.equal(detailSelectVoice({ phase: PHASE.COMBAT, fieldId: 'n:p_0', target: early, resolved: card(early) }), null, 'opened in prep');
+    const { inBattle, ...noFlag } = unit(7, A);
+    assert.equal(inBattle, true);
+    assert.equal(detailSelectVoice({ phase: PHASE.COMBAT, fieldId: 'n:p_0', target: noFlag, resolved: card(noFlag) }), null, 'no flag: not opened by a battle tap');
+    assert.deepEqual(detailSelectVoice({ phase: PHASE.COMBAT, fieldId: 'n:p_0', target: unit(7, A), resolved: card(unit(7, A)) }),
+      { charId: chess[A].charId, key: 'n:p_0:7' });
+  });
 });
 
 describe('createHudDelay: own-field HUD values follow the drawn battle (render 0.5 s behind its frames)', () => {

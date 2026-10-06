@@ -21,7 +21,7 @@ npm run assets       # = node tools/vendor.mjs && node tools/fetch-assets.mjs
 | `--offline` | No network. Re-runs post-processing (atlas fixes, skeleton parsing, WOFF2) on what is already on disk, then rebuilds `data/assets.json`. |
 | `--dry-run` | Print the plan (file and model counts, alias notes) and exit. |
 | `--refresh-index` | Re-download the upstream indexes: `audio_data.json`, `models_data.json` and (with voice) `charword_table.json`. |
-| `--voice=LANGS` | Operator battle voice: `cn,jp` (default: 中文 and 日文, ~73 MB), `cn` (~32 MB), `jp` (~41 MB), any comma list of `cn`, `jp`, `en`, `kr` (the English / Korean dubs are opt-in), or `none`. See [Operator voice](#operator-voice). |
+| `--voice=LANGS` | Operator battle voice: `cn,jp` (default: 中文 and 日文, ~92 MB), `cn` (~40 MB), `jp` (~52 MB), any comma list of `cn`, `jp`, `en`, `kr` (the English / Korean dubs are opt-in), or `none`. See [Operator voice](#operator-voice). |
 | `--voice-lang=L` | One dub only — upstream's spelling of `--voice=L` (`cn`, `jp`, `en` or `kr`). |
 | `--prune` | Delete files under `public/assets/` that the manifest no longer references, for example after a mapping change. Without this flag they are only listed in the report. `public/assets/local/` (written by `tools/local-extract`) is never pruned. Implies `--allow-shrink`. |
 | `--allow-shrink` | Write `data/assets.json` even when it loses entries the current one has (see "The manifest never shrinks by accident" below). |
@@ -54,8 +54,8 @@ How downloads are fetched:
 - A manifest entry with fallbacks (for example an enemy icon that falls back to its base enemy's icon) only moves on to the next alternative after a **definitive 404**. When the primary fails transiently (network error, 5xx or an invalid payload after all retries), no fallback is fetched. The path is listed under `downloadErrors` in the report, and the next run retries the primary.
 - A skeleton that fails to parse is deleted and removed from the ledger, so the next online run downloads it again.
 
-The first run downloads about **475 MiB in about 8,000 files** (`data/assets.json` `stats`; of which the operator voice,
-both languages: ~73 MB in 2,880 files, the 55 emote and 玩法说明 files, 21.3 MiB, and the 78 外援 / 甄选 operators of
+The first run downloads about **494 MiB in about 8,500 files** (`data/assets.json` `stats`; of which the operator voice,
+both languages: ~92 MB in 3,360 files, the 55 emote and 玩法说明 files, 21.3 MiB, and the 78 外援 / 甄选 operators of
 DESIGN §27, 126 MiB in 1,082 files). Without voice, emotes and 外援 it was 242 MiB in about 3,700 files, 134 s on a
 ~3 MB/s link. A re-run takes about 1 s.
 
@@ -122,24 +122,26 @@ The `stem` of a Spine model is the upstream file name. Two examples: `char_107_l
 
 ## Operator voice
 
-`tools/assets/voice.mjs` takes each pool operator's **in-battle lines** from the official `excel/charword_table.json`
+`tools/assets/voice.mjs` takes each pool operator's **battle lines** from the official `excel/charword_table.json`
 (Kengxxiao/ArknightsGameData, cached under `.cache/gamedata/excel/`), picked by the official `placeType` — the moment the
-game plays a line — and downloads them from the ArknightsAssets2 `voice` branch:
+game plays a line — and downloads them from the ArknightsAssets2 `voice` branch. The client plays them at upstream #73's
+moments (PR #73, @Convey123), ported onto this fork's voice engine (DESIGN §21.30):
 
 | Role | Line (placeType) | Played by the client (`public/js/audio.js`) — voice type |
 |---|---|---|
-| `select` | 选中干员1 / 2 (`BATTLE_SELECT`) | tapping an own operator during a battle phase (not in 结算) — `FOCUS_CHAR` |
-| `deploy` | 部署1 / 2 (`BATTLE_PLACE`) | an operator successfully deployed from the bench in prep, once its direction is confirmed (buying or dragging one says nothing) — `PLACE_CHAR` |
-| `combat` | 作战中1–4 (`BATTLE_SKILL_1..4`) | an own operator's skill starts, after the battle's 行动开始 — `SKILL_PASSIVE_IMP` |
-| `start` | 行动开始 (`BATTLE_FACE_ENEMY`) | once per battle: the squad leader, when its first enemy appears — `ENCOUNTER_ENEMY` |
-| `win3` / `win` / `fail` | 3星结束行动 / 非3星结束行动 / 行动失败 (`THREE_STAR` / `TWO_STAR` / `LOSE`) | once per match, on the result screen once `m.result` has arrived: the squad leader — won without LP lost / won / lost |
+| `select` | 选中干员1 / 2 (`BATTLE_SELECT`), drawn at random | tapping an operator of the battle on screen (any player's) during a battle phase (not in 结算), or opening its detail card; one line per tap (the same unit asked for again within 1 s is the same line) — `FOCUS_CHAR` |
+| `deploy` | 部署1 / 2 (`BATTLE_PLACE`), drawn at random | an operator deployed in a battle after its start: a redeploy, a 突袭 jump, a 不屈 / 阿戈尔 revive. Nothing in prep — `PLACE_CHAR` |
+| `combat` | 作战中1–4 (`BATTLE_SKILL_1..4`), **positional**: `combat[N-1]` is 作战中N | an operator's skill N starts → 作战中N (skill 1 / 2 / 3 → 作战中1 / 2 / 3), once the battle's first 行动开始 was said or its 15 s opening is over — `SKILL_PASSIVE_IMP` |
+| `start` | 行动开始 (`BATTLE_FACE_ENEMY`) | each operator's first engage: the sim's `['engage', id]`, its first attack that hits an enemy, once per unit (docs/SIM.md) — `ENCOUNTER_ENEMY` |
+| `depart` | 行动出发 (`BATTLE_START`) | once per battle: the first operator deployed when the battle starts (its first deployment, within the opening); one without voice is skipped for the next — `BATTLE_START` |
+| `win4` / `win3` / `win` / `fail` | 完成高难行动 / 3星结束行动 / 非3星结束行动 / 行动失败 (`FOUR_STAR` / `THREE_STAR` / `TWO_STAR` / `LOSE`) | once after **every own battle**, by an operator of that battle (see the settlement below): no enemy leaked (perfect) → 3星结束行动, on 绝境 / 终极 完成高难行动; a leak → 非3星结束行动; nothing killed → 行动失败; a boss battle whose boss survived → 行动失败 ([ASSUMED], beyond upstream's mapping, DESIGN §21.30) — ours (`RESULT`) |
 
 - **When a line may play** follows the official battle voice rules, `audio_data.json` `battleVoice`, which
   `tools/fetch-assets.mjs` copies next to the lines (`data/assets.json` `audio.voiceRules`; the client has no other
   copy, and plays no line without it): each voice type has a priority, a cooldown and `overlapIfSamePriority`. One line
   plays at a time; a line of a higher priority cuts in (0.1 s cross-fade), one of the same priority only when its type
-  overlaps, a lower one is dropped. A tap (`FOCUS_CHAR`, priority 10) never cuts a skill line. A cooldown runs from the
-  start of a line that plays.
+  overlaps, a lower one is dropped; a line still loading counts as playing. A tap (`FOCUS_CHAR`, priority 10) never
+  cuts a skill line. A cooldown runs from the start of a line that plays.
 - **作战中 stays occasional, with clear gaps**: every 作战中 is `SKILL_PASSIVE_IMP`, so its 10 s cooldown runs start to
   start and one 作战中 never cuts another — about 2–4 per battle, never two in a row. The official split by SP cost
   (`minSpCostForImportantPassiveSkill`: `SKILL_PASSIVE_IMP` / `SKILL_PASSIVE_NOR`, each with its own 10 s, the important
@@ -147,8 +149,8 @@ game plays a line — and downloads them from the ArknightsAssets2 `voice` branc
 
   | Voice type | Priority | Same priority replaces | Cooldown |
   |---|---|---|---|
-  | `BATTLE_START` (行动出发, not used) | 100 | yes | 0 |
-  | `ENCOUNTER_ENEMY` (行动开始) | 90 | no | 0 (`minTimeDeltaForEnemyEncounter` 3 s after the battle starts) |
+  | `BATTLE_START` (行动出发) | 100 | yes | 0 |
+  | `ENCOUNTER_ENEMY` (行动开始) | 90 | no | 3 s between two lines (`minTimeDeltaForEnemyEncounter`) |
   | `SKILL_ACTIVE` (a skill the player activates — none in this mode) | 70 | yes | 0 |
   | `SKILL_PASSIVE_IMP` (作战中) | 60 | no | 10 s |
   | `SKILL_PASSIVE_NOR` (not used) | 50 | no | 10 s |
@@ -156,38 +158,61 @@ game plays a line — and downloads them from the ArknightsAssets2 `voice` branc
   | `FOCUS_CHAR` (选中干员) | 10 | yes | 0 |
   | `NORMAL_ATTACK` (not used) | 5 | no | 36000 s |
 
-  The end-of-operation lines are ours (not a battle voice type): priority 100, replace anything, no cooldown.
+  The settlement lines are ours (`RESULT`, not a battle voice type): priority 100, replace anything, no cooldown.
 
-- **The moments follow a recording of the official mode** (卫戍协议 gameplay): buying or dragging a bench operator says
-  nothing; a successful deployment says 部署; every battle opens with the leader's 行动开始; 作战中 now and then, with
-  clear gaps; the end line only once, when the match is settled.
+- **Several operators engaging at once say one 行动开始**, the first engager's: the others are the same priority and
+  `ENCOUNTER_ENEMY` does not overlap, and for 3 s after a 行动开始 starts the next is dropped. The sim emits an
+  operator's engage only once, so one dropped then says none; later first engagers speak once 3 s have passed and no
+  line of priority 90 or more is playing. An engage while 行动出发 plays is dropped. 行动开始 cuts a playing 作战中;
+  an in-battle 部署 (20) is dropped under anything but 选中干员, which it cuts.
 - Every skill of this mode is cast automatically (技能策略), so 作战中 uses a passive type. Skills are cast from the
-  first second of a battle; no 作战中 is said before the battle's 行动开始, and 行动开始 (priority 90) is never cut by one.
-- The battle voice follows the match state, like the BGM: a battle is its phase and round (`COMBAT` /
-  `FINAL_ASSAULT` / `HIDDEN_CORE` while the player is still in the match; 联防 goes on with the round's battle).
-  行动开始 belongs to the battle's first 15 s (a solo pause holds that clock): said once, at its first enemy; a battle
-  that faces none in that time has none, and 作战中 waits for it that long at most. Hiding the page, a battle screen
-  that re-mounts or a reconnect that takes the match off the screen for a moment changes nothing of that: 行动开始 is
-  still said once, and one that comes due while the page is hidden is said on return (still within the 15 s).
-  Leaving a battle drops its pending lines, so none reaches the settlement, the result screen or the next battle. The
-  end line is said once per match, when the result arrives, by the leader who opened the latest battle.
+  first second of a battle; no 作战中 is said before the battle's first 行动开始, and 行动开始 (priority 90) is never
+  cut by one.
+- **The battle voice follows the match state**, like the BGM: a battle is its phase and round (`COMBAT` / `UNITE` /
+  `FINAL_ASSAULT` / `HIDDEN_CORE`), for everyone in the match — spectators and eliminated players included. **联防 is a
+  battle of its own**: its own 行动出发, opening and settlement. A battle's first 15 s are its opening (a solo pause
+  holds that clock): 行动出发 belongs to it, and 作战中 waits in it for the battle's first 行动开始 at most that long.
+  Hiding the page, a battle screen that re-mounts or a reconnect that takes the match off the screen for a moment
+  changes nothing of that: 行动出发 is not said again, and the battle's first 行动开始 that came due while the page was
+  hidden is said on return (still within the 15 s). A new battle drops the line still loading for the one before (not
+  the new battle's own 行动出发, whose deployment may come before `m.public` names the battle), so none reaches the next
+  battle; a settlement line still loading goes on into 结算, the result screen and the next battle (only the rules cut
+  it: the next 行动出发 may). Leaving the match drops every line still loading, a settlement line too.
+- **The lines of a battle come from the field on screen**: 行动出发, 部署, 行动开始, 作战中N and 选中干员 follow the
+  field the player is looking at, like every battle sound — as upstream's own engine does. Watching a teammate's field
+  (前往查看), a 联防 field or spectating plays that field's operators, whoever owns them. Switching fields drops a line
+  still loading for the old one, never a settlement line (a line already playing finishes, like a sound effect in
+  flight).
+- **The settlement is the player's own battle's**, whatever field is on screen: after each own battle, one line by an
+  operator of that battle — a survivor first, else a fallen one, drawn among those that have the line in the chosen
+  language (its `unitsEnd`, chess id → charId; summons and operators without voice never). When the own field is on
+  screen, it is said at the battle's drawn end (the 作战结束 pill); when another field is on screen (a teammate's, 联防,
+  前往查看), as soon as the own battle finishes on this client (`public/js/battle/runner.js` `'ownDone'`). Once per
+  battle, across re-mounts and replays; a field switch never drops it. A battle that was already over when this client
+  first saw it (a reload) says nothing. The match end (the result screen) says nothing
+  of its own. Server-run combat (`SP_COMBAT=server`, no client runner) has no settlement line.
+- **选中干员 is one line per tap**: the tap and the detail card it opens ask for the same unit, and the same unit asked
+  for again within 1 s is dropped. Each later tap on the open card speaks; a long-press or right-click (no tap line) is
+  spoken by the card. Bench, shop and bond-member cards say nothing, and so does a piece of a teammate's board scouted in
+  prep; a card opened in prep that is still open when the battle starts stays silent (a card speaks when it is opened or
+  retargeted in a battle, not when the phase changes under it).
+- **The 整备期 (prep) is silent**: buying, dragging and deploying operators from the bench say nothing.
 - All voice timing is real time (battles run at 2x, so 10 s is 20 s of battle time). Nothing plays while the page is
   hidden: the line playing stops and the one still loading is dropped. Turning voice off, to 0 or muting does the same.
 - A voice file that fails to load plays nothing (logged once) and starts no cooldown; it is fetched again by a request
   10 s or more after the failure (BGM and sound effects alike), never on every use meanwhile.
-- Only own operators speak: a teammate's operator on a shared field (最终攻势) or a watched one (前往查看) says nothing
-  on this client.
-- The squad leader (队长) of a normal stage has no slot in this mode: it is the rarest operator on the board (then 精锐,
-  then the highest tier) when the battle's 行动开始 is said (the end line keeps that leader). A leader without voice
-  lines (盟约·辅助干员) says none, and 作战中 waits for it only until it was due.
-- Voice has its own channel (设置 → 角色语音, 语音语言 中文 / 日文 / 关闭, plus 英文 / 韩文 when the site has them). Summons, enemies and the reserve operators
-  (预备干员, no voice in the game) say nothing.
-- Lines outside a battle (编入队伍, 任命队长, 行动出发, 精英化晋升, home and base lines) and 完成高难行动 (`FOUR_STAR`, 突袭
-  clears) are not downloaded.
+- Voice has its own channel (设置 → 角色语音, 语音语言 中文 / 日文 / 关闭, plus 英文 / 韩文 when the site has them).
+  Summons, enemies, the reserve operators (预备干员, no voice in the game) and the 外援 / 甄选 operators (DESIGN §27;
+  no voice is planned for them) say nothing.
+- Lines outside a battle (编入队伍, 任命队长, 干员报到, 精英化晋升, home and base lines) are not downloaded.
 - Languages: `cn` = `CN_MANDARIN` (folder `voice_cn/`), `jp` = `JP` (`voice/`); a linkage operator with only its own
-  `LINKAGE` voice uses it in both. 120 of the 138 pool operators have voice: 12 lines each, ~0.26 MB (中文) and
-  ~0.34 MB (日文). On request (`--voice=…,en,kr`, from upstream #73): `en` = `EN` (`voice_en/`), `kr` = `KR`
-  (`voice_kr/`), the same file names; an operator without that dub has no line in it, a linkage operator keeps its own.
+  `LINKAGE` voice uses it in both. 120 of the 138 pool operators have voice: 14 lines each (1,680 files per language),
+  ~0.33 MB per operator in 中文 (~40 MB in all) and ~0.43 MB in 日文 (~52 MB). On request (`--voice=…,en,kr`, from
+  upstream #73): `en` = `EN` (`voice_en/`), `kr` = `KR` (`voice_kr/`), the same file names; an operator without that
+  dub has no line in it, a linkage operator keeps its own.
+- `combat` keeps its key although it is positional now: `tools/assets/manifest.mjs droppedEntries` takes an array as
+  one entry, so a renamed key would read as every operator's `combat` dropped and trip the shrink guard. Adding
+  `depart` and `win4` only grew the manifest (+240 files per language: +8.4 MB 中文, +10.9 MB 日文).
 
 ### 外援 / 甄选 operator entries (`tools/assets/waiguan-operators.json`)
 
@@ -287,8 +312,10 @@ All paths are URL paths relative to the site root, for example `/assets/char/ava
       units:  { [charId|tokenId|enemyId]: { attack?, hit?, skill?, skills?: {[skillIndex]: url}, die?, born?,
                 mix?: { [attack|hit|die|born]: { p?, vol? } } } }
     },
-    // operator battle voice (tools/assets/voice.mjs; absent with --voice=none); arrays are played at random
-    voice?: { [cn|jp|en|kr]: { [charId]: { select: [url], deploy: [url], combat: [url], start, win3, win, fail } } },
+    // operator battle voice (tools/assets/voice.mjs; absent with --voice=none): select / deploy are drawn at random;
+    // combat is positional — combat[N-1] = 作战中N, played for skill N (audio.js voiceUrl index / combatSlot)
+    voice?: { [cn|jp|en|kr]: { [charId]: { select: [url], deploy: [url], combat: [url ×4, 作战中1–4 in order],
+                                           start, depart, win4, win3, win, fail } } },
     // with voice: the official battle voice rules (audio_data.json battleVoice, see Operator voice)
     voiceRules?: { crossfade, minTimeDeltaForEnemyEncounter, minSpCostForImportantPassiveSkill,
                    voiceTypeOptions: [{ voiceType, priority, overlapIfSamePriority, cooldown, delay }] }

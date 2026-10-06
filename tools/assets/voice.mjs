@@ -5,11 +5,16 @@
 //   the moment the official client plays it).
 // - Files live on the ArknightsAssets2 `voice` branch under sound_beta_2/<lang dir>/<voiceAsset lower-cased>.mp3:
 //   voice_cn/ (中文-普通话), voice/ (日文 and the linkage operators' own voices), voice_en/, voice_kr/.
-// - Only the in-battle lines are taken (VOICE_ROLES, by official placeType): BATTLE_SELECT 选中干员, BATTLE_PLACE 部署,
-//   BATTLE_SKILL_1..4 作战中, BATTLE_FACE_ENEMY 行动开始, THREE_STAR / TWO_STAR / LOSE 3星结束行动 / 非3星结束行动 /
-//   行动失败 — 12 lines, about 0.26 MB (中文) / 0.34 MB (日文) per operator. Lines outside a battle (编入队伍, 任命队长,
-//   行动出发 on the squad screen, 精英化晋升, …) and 完成高难行动 (突袭 clears, which this mode has not) are not used.
-// - Operators without voice (the reserve operators 预备干员) have no voiceLangDict entry and get no voice.
+// - Only the battle lines are taken (VOICE_ROLES, by official placeType) — 14 per operator: BATTLE_SELECT 选中干员 ×2,
+//   BATTLE_PLACE 部署 ×2, BATTLE_SKILL_1..4 作战中1–4, BATTLE_FACE_ENEMY 行动开始, BATTLE_START 行动出发, FOUR_STAR
+//   完成高难行动, THREE_STAR / TWO_STAR / LOSE 3星结束行动 / 非3星结束行动 / 行动失败 — about 0.33 MB (中文) /
+//   0.43 MB (日文) per operator. The client (public/js/audio.js, DESIGN §21.30) plays upstream #73's moments: 行动出发
+//   for a battle's first deployed operator, 部署 for later in-battle deploys, 行动开始 at each operator's first engage,
+//   作战中N for skill N, 选中干员 on a tap or its detail card, and one settlement line after every own battle
+//   (完成高难行动 for a perfect 绝境 / 终极 battle). Not taken: 编入队伍, 任命队长, 干员报到, 精英化晋升, the home and
+//   base lines.
+// - Operators without voice (the reserve operators 预备干员) have no voiceLangDict entry and get no voice; the 外援 /
+//   甄选 operators (tools/assets/waiguan-operators.json) are not planned for voice at all (tools/assets/plan.mjs).
 
 /** Voice languages offered by the client: key → official voiceLangType preference (first present wins) + folder. */
 export const VOICE_LANGS = Object.freeze({
@@ -23,16 +28,29 @@ export const VOICE_LANGS = Object.freeze({
 /** Folder under sound_beta_2 of a voiceLangType (an entry's own voicePath wins). */
 const LANG_DIRS = Object.freeze({ CN_MANDARIN: 'voice_cn', JP: 'voice', LINKAGE: 'voice', EN: 'voice_en', KR: 'voice_kr' });
 
-/** Client role → official placeType(s) (charWords[].placeType). Array roles are played at random. */
+/**
+ * Client role → official placeType(s) (charWords[].placeType). A string role is one line. An array role of ONE place is
+ * that place's lines, played at random (select, deploy). An array role of several places is POSITIONAL (POSITIONAL_ROLES):
+ * entry k-1 is the first line of the k-th place, in order, so `combat`[k-1] is 作战中k and the client plays 作战中N
+ * for skill N (public/js/audio.js voiceUrl with an index, combatSlot). A missing place is left out, which shortens the
+ * array (the client then draws at random); all 120 voiced pool operators have the four.
+ * The key stays `combat` (not renamed to a slot name) on purpose: tools/assets/manifest.mjs droppedEntries treats an
+ * array as one leaf, so a renamed key would read as audio.voice.*.*.combat dropped and trip the shrink guard.
+ */
 export const VOICE_ROLES = Object.freeze({
-  select: ['BATTLE_SELECT'],                                                       // 选中干员1 / 2
-  deploy: ['BATTLE_PLACE'],                                                        // 部署1 / 2
-  combat: ['BATTLE_SKILL_1', 'BATTLE_SKILL_2', 'BATTLE_SKILL_3', 'BATTLE_SKILL_4'], // 作战中1–4
-  start: 'BATTLE_FACE_ENEMY',                                                      // 行动开始
+  select: ['BATTLE_SELECT'],                                                       // 选中干员1 / 2 (random)
+  deploy: ['BATTLE_PLACE'],                                                        // 部署1 / 2 (random)
+  combat: ['BATTLE_SKILL_1', 'BATTLE_SKILL_2', 'BATTLE_SKILL_3', 'BATTLE_SKILL_4'], // 作战中1–4, in this order
+  start: 'BATTLE_FACE_ENEMY',                                                      // 行动开始 (each operator's first engage)
+  depart: 'BATTLE_START',                                                          // 行动出发 (a battle's first deployment)
+  win4: 'FOUR_STAR',                                                               // 完成高难行动
   win3: 'THREE_STAR',                                                              // 3星结束行动
   win: 'TWO_STAR',                                                                 // 非3星结束行动
   fail: 'LOSE',                                                                    // 行动失败
 });
+
+/** Array roles whose entries are positional (one line per place, in place order) rather than drawn at random. */
+export const POSITIONAL_ROLES = new Set(['combat']);
 
 /** Languages downloaded by default (`--voice` absent); en / kr only when asked for. */
 export const DEFAULT_VOICE_LANGS = Object.freeze(['cn', 'jp']);
@@ -95,7 +113,11 @@ export function voiceLines(index, charId, lang) {
   const paths = (place) => (words.get(place) || []).filter((a) => !a.includes('..')).map((a) => `${dir}/${a.toLowerCase()}.mp3`);
   const out = {};
   for (const [role, places] of Object.entries(VOICE_ROLES)) {
-    if (Array.isArray(places)) { const list = places.flatMap(paths); if (list.length) out[role] = list; }
+    if (Array.isArray(places)) {
+      // positional: the first line of each place, in place order (combat[k-1] = 作战中k); else every line, at random
+      const list = POSITIONAL_ROLES.has(role) ? places.map((p) => paths(p)[0]).filter(Boolean) : places.flatMap(paths);
+      if (list.length) out[role] = list;
+    }
     else { const p = paths(places)[0]; if (p) out[role] = p; }
   }
   return Object.keys(out).length ? out : null;

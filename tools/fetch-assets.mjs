@@ -72,7 +72,7 @@ const HELP = `Usage: node tools/fetch-assets.mjs [options]
                     (without it such a run keeps the current manifest, lists the entries and exits 1)
   --local-spines    rewrite ${LOCAL_ENEMY_SPINES_FILE} from the enemy models extracted
                     by tools/local-extract/extract.py (public/assets/local/spine/enemy/)
-  --voice=LANGS     operator battle voice: cn,jp (default, ~73 MB), cn (~32 MB), jp (~41 MB), any comma list
+  --voice=LANGS     operator battle voice: cn,jp (default, ~92 MB), cn (~40 MB), jp (~52 MB), any comma list
                     of cn, jp, en, kr (English / Korean dubs: opt-in), or none
   --voice-lang=L    one dub only (upstream's spelling): the same as --voice=L
   --help            this text

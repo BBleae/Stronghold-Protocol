@@ -728,14 +728,39 @@ async function observeAfterFinish(c) {
   assert.ok(await c.exists('.chud__progress'), "teammates' progress under the pill");
   await c.shot('combat-waiting');
   await c.click('.team__row:not(.is-self) .team__btn', null, { nth: other.nth });
+  const voice0 = await c.page.evaluate(() => globalThis.__SP__.audio.voiceLog.length);
   if (!(await c.click('.team__ob', '前往查看', { optional: true, timeout: 3000 }))) return false;
   const ok = await c.page.waitForFunction((fid) => { const s = globalThis.__SP_RUNNER__?.state(); return !!s && s.fieldId === fid && s.watch; }, { timeout: 15000 }, other.fieldId).then(() => true, () => false);
   if (!ok) return false; // the phase moved on
   const st = await waitUnits(c, 8000);
   assert.ok(st && st.units > 0, 'the observed battle renders units');
   assert.ok(await c.exists('.chud__observe'), 'observing pill');
+  // operator voice (DESIGN §21.30): the field on screen speaks — the lines started while observing are the observed
+  // teammate's operators' (a settlement line excepted: the own battle's, whatever is on screen). Its battle lines come
+  // when they come (its 行动出发 went in the silent catch-up, most units have engaged, 作战中 has a 10 s cooldown), so
+  // silence there proves nothing: a tap on one of its operators must say 选中干员 by an operator of that field — what an
+  // own-operators-only voice (before upstream #73's moments) would not. The tap goes first, while that battle runs.
+  const voiced = await c.page.evaluate(() => !!globalThis.__SP__.data.get('assets')?.audio?.voice?.cn);
+  const sel = voiced ? await tapSelect(c, other.fieldId) : null;
   await sleep(800);
   await c.shot('combat-observe');
+  if (voiced) {
+    await sleep(2200);
+    const v = await c.page.evaluate((n) => ({
+      lines: globalThis.__SP__.audio.voiceLog.slice(n).map((l) => ({ ...l })),
+      ops: [...globalThis.__SP__.audio.units.values()].filter((u) => u.side !== 'enemy').map((u) => u.def),
+    }), voice0);
+    for (const l of v.lines) {
+      if (!['win4', 'win3', 'win', 'fail'].includes(l.role)) assert.ok(v.ops.includes(l.charId), `observing ${other.fieldId}: ${l.role} by an operator of that field (${l.charId})`);
+    }
+    c.note(`voice while observing ${other.fieldId}: ${v.lines.map((l) => `${l.role}${l.slot ?? ''}:${l.charId}`).join(' ') || 'none'}`);
+    if (sel.line) {
+      assert.ok(v.ops.includes(sel.line.charId), `observing ${other.fieldId}: 选中干员 by an operator of that field (${sel.line.charId})`);
+      c.note(`voice: a tap on an operator of ${other.fieldId} said 选中干员 (${sel.line.charId}, ${sel.tries} tap${sel.tries > 1 ? 's' : ''})`);
+    } else if (sel.tries && sel.combat) {
+      assert.fail(`observing ${other.fieldId}: ${sel.tries} taps on its operators said no 选中干员`);
+    } else c.note(`voice: no 选中干员 tap check while observing (${sel.tries} taps of ${sel.candidates} voiced operators; ${sel.combat ? 'none drawn uncovered' : `stopped: phase ${sel.at.phase}, field ${sel.at.field}`})`);
+  }
   if ((await c.st()).phase === 'COMBAT') {
     await c.click('.team__back, .chud__back', '返回战场', { optional: true, timeout: 3000 });
     await c.page.waitForFunction(() => { const s = globalThis.__SP_RUNNER__?.state(); return !s || (s.own && !s.watch); }, { timeout: 10000 }).catch(() => {});
@@ -758,6 +783,72 @@ async function observeAfterFinish(c) {
   }
   c.note(`observed ${other.fieldId} after the own battle (${st.units} views) and went back`);
   return true;
+}
+
+/**
+ * 选中干员 on the battle field on screen (DESIGN §21.30): tap its voiced operators (audio's unit map: the field's own units)
+ * one by one — each when no line plays or loads (FOCUS_CHAR, priority 10, never cuts in above itself) and where the
+ * canvas is not covered — until a 选中干员 line starts; the detail card the tap opens is closed again. → { line (the
+ * voiceLog entry) | null, tries, candidates, combat: whether the round was still in that battle `phase` with that field
+ * on screen at the end, at: { phase, field } then }. `mates`: only teammates' operators (their views' UnitInfo ownerId
+ * is not the player's).
+ */
+async function tapSelect(c, fieldId, { phase = 'COMBAT', mates = false, maxTries = 5 } = {}) {
+  const ids = await c.page.evaluate((mates) => {
+    const a = globalThis.__SP__.audio;
+    const me = globalThis.__SP__.store.get().me.playerId;
+    const views = globalThis.__SP_VIEW__?.raw?.debug?.views;
+    return [...a.units.entries()].filter(([id, u]) => u && u.side !== 'enemy' && u.kind !== 'token' && u.kind !== 'device'
+      && typeof u.def === 'string' && a.hasVoice(u.def, 'select')
+      && (!mates || (views?.get(id)?.info?.ownerId != null && views.get(id).info.ownerId !== me))).map(([id]) => id);
+  }, mates);
+  let at = null;
+  const onField = async () => { const s = await c.st(); at = { phase: s.phase, field: s.field }; return s.phase === phase && s.field === fieldId; };
+  let tries = 0;
+  for (const id of ids) {
+    if (tries >= maxTries || !(await onField())) break;
+    await c.page.waitForFunction(() => { const a = globalThis.__SP__.audio; return !a.voiceWant && !a.voiceNow; }, { timeout: 4000 }).catch(() => {});
+    const pt = await c.page.evaluate((uid) => {
+      const raw = globalThis.__SP_VIEW__?.raw;
+      const v = raw?.debug?.views?.get(uid);
+      if (!v || v.destroyed || typeof v.bounds !== 'function') return null;
+      const b = v.bounds();
+      const canvas = raw.debug.app.view;
+      const r = canvas.getBoundingClientRect();
+      if (!b || !(b.width > 0)) return null;
+      const p = { x: r.left + b.x + b.width / 2, y: r.top + b.y + b.height * 0.72 };
+      return document.elementFromPoint(p.x, p.y) === canvas ? p : null;
+    }, id);
+    if (!pt) continue;
+    tries++;
+    const n = await c.page.evaluate(() => globalThis.__SP__.audio.voiceLog.length);
+    await c.page.mouse.click(pt.x, pt.y);
+    const line = await c.page.waitForFunction((k) => globalThis.__SP__.audio.voiceLog.slice(k).find((l) => l.role === 'select') || null,
+      { timeout: 3000 }, n).then((h) => h.jsonValue(), () => null);
+    await c.click('.dpanel__close', null, { optional: true, timeout: 800 });
+    if (line) return { line, tries, candidates: ids.length, combat: true, at };
+  }
+  const combat = await onField();
+  return { line: null, tries, candidates: ids.length, combat, at };
+}
+
+/** 选中干员 on the 联防 field on screen, by a teammate's operator (tapSelect `mates`) → whether one was said. */
+async function uniteSelect(c) {
+  if (!(await c.page.evaluate(() => !!globalThis.__SP__.data.get('assets')?.audio?.voice?.cn))) return false;
+  const s = await c.st();
+  if (s.phase !== 'UNITE' || !s.field) return false;
+  // the 联防 field on screen holds the helpers' operators: a teammate's (or an AI's) says 选中干员 when tapped, like the
+  // player's own (DESIGN §21.30: the field on screen speaks)
+  const sel = await tapSelect(c, s.field, { phase: 'UNITE', mates: true });
+  if (sel.line) {
+    const ops = await c.page.evaluate(() => [...globalThis.__SP__.audio.units.values()].filter((u) => u.side !== 'enemy').map((u) => u.def));
+    assert.ok(ops.includes(sel.line.charId), `联防 ${s.field}: 选中干员 by an operator of that field (${sel.line.charId})`);
+    c.note(`voice: a tap on a teammate's operator on the 联防 field ${s.field} said 选中干员 (${sel.line.charId}, ${sel.tries} tap${sel.tries > 1 ? 's' : ''})`);
+    return true;
+  }
+  if (sel.tries && sel.combat) assert.fail(`联防 ${s.field}: ${sel.tries} taps on teammates' operators said no 选中干员`);
+  c.note(`voice: no 选中干员 tap check on the 联防 field (${sel.tries} taps of ${sel.candidates} teammates' voiced operators; ${sel.combat ? 'none drawn uncovered' : `stopped: phase ${sel.at?.phase}, field ${sel.at?.field}`})`);
+  return false;
 }
 
 /** Drag hand piece `uid` onto `tile` and stop there (the wheel opens); returns the tile's point. */
@@ -787,6 +878,17 @@ async function facingTour(c, did) {
   await c.hookRequests();
   if (!did.clear) did.clear = await checkTilesClear(c, 'facing tour');
   const s0 = await c.st();
+  // operator voice (data/assets.json audio.voice, when downloaded; DESIGN §21.30): the 整备期 says nothing — buying,
+  // picking up and deploying a bench operator are silent; 部署 is an in-battle line now (js/audio.js voiceLog: the lines
+  // started). Only what this prep adds counts — from before its first purchase: the previous battle's settlement line
+  // may still start after its end (the role filter).
+  const voiceOf = (id) => c.page.evaluate((cid) => {
+    const charId = globalThis.__SP__.data.lookup('chess', cid)?.charId;
+    return charId ? globalThis.__SP__.data.get('assets')?.audio?.voice?.cn?.[charId] || null : null;
+  }, id);
+  const voiceLog = () => c.page.evaluate(() => globalThis.__SP__.audio.voiceLog.map((l) => l.role));
+  const log0 = (await voiceLog()).length;
+  const prepVoice = async () => (await voiceLog()).slice(log0).filter((r) => !['win4', 'win3', 'win', 'fail'].includes(r));
   // two-tap buy
   if (!did.buy) did.buy = await buyOne(c, BUYABLE, { shot: 'buy-confirm' });
   for (let k = 0; k < 2; k++) if (!(await buyOne(c))) break;
@@ -795,14 +897,7 @@ async function facingTour(c, did) {
   const units = () => c.handPieces().then((h) => h.filter((p) => p.kind === 'chess'));
   let hand = await units();
   assert.ok(hand.length >= 1, 'bought operators');
-  // operator voice (data/assets.json audio.voice, when downloaded) as in the official mode: buying or picking up a
-  // bench operator says nothing, a successful deployment says 部署 (js/audio.js voiceLog: the lines started)
-  const voiceOf = (id) => c.page.evaluate((cid) => {
-    const charId = globalThis.__SP__.data.lookup('chess', cid)?.charId;
-    return charId ? globalThis.__SP__.data.get('assets')?.audio?.voice?.cn?.[charId] || null : null;
-  }, id);
-  const voiceLog = () => c.page.evaluate(() => globalThis.__SP__.audio.voiceLog.map((l) => l.role));
-  if (!did.place) assert.deepEqual(await voiceLog(), [], 'buying operators says nothing');
+  if (!did.place) assert.deepEqual(await prepVoice(), [], 'buying operators says nothing');
   // place + choose a direction (UP: striped rotated range + 拖回中心区域取消 while held) — the unit with the widest range
   // grid shows it best (a defender's grid is its own tile only)
   if (!did.place) {
@@ -829,12 +924,10 @@ async function facingTour(c, did) {
     assert.deepEqual(sent[1], { uid: p.uid, to: { area: 'board', row: tile.row, col: tile.col, dir: 'UP' }, dir: 'UP' }, 'g.move {uid, to {…, dir}, dir: UP}');
     await c.waitFor((x) => x.board > s0.board, 'placed', 6000);
     await checkStoredDir(c, p.uid, 'UP');
-    if (await voiceOf(p.id)) {
-      // the log lists the lines that started playing: the 部署 line once it has loaded
-      await c.page.waitForFunction(() => globalThis.__SP__.audio.voiceLog.length > 0, { timeout: 4000 });
-      assert.deepEqual(await voiceLog(), ['deploy'], 'picked up: nothing; deployed: 部署');
-      c.note(`voice: ${c.voiceUrls.join(', ')}`);
-    }
+    // a line would have loaded and started by now (the log lists the lines that started playing): none did
+    await sleep(1500);
+    assert.deepEqual(await prepVoice(), [], '整备期不说话：购买和部署都没有语音');
+    if (await voiceOf(p.id)) c.note(`voice: ${p.id} has voice lines, none in prep (requested: ${c.voiceUrls.join(', ') || 'none'})`);
     await sleep(700);
     await c.shot('placed');
     did.place = true;
@@ -1210,6 +1303,8 @@ describe('browser E2E against the real server', { skip: !ENABLED && 'needs Chrom
           } else if (hs.phase === 'UNITE') {
             const rs = await runnerState(host);
             assert.ok(rs && rs.kind === 'unite', 'every human simulates the 联防 field locally');
+            // operator voice: a teammate's operator on the 联防 field on screen says 选中干员 when tapped (once per run)
+            for (const c of both) if (!did.uniteSelect) did.uniteSelect = await uniteSelect(c);
           }
           if (hs.round >= ROUNDS && hs.phase === 'COMBAT') { await sleep(2000); break; }
         } else if (hs.phase === 'SETTLE' && !seen.has(`settle-${hs.round}`)) {
@@ -1232,6 +1327,11 @@ describe('browser E2E against the real server', { skip: !ENABLED && 'needs Chrom
       host.note(`did: ${JSON.stringify({ ...did, combatRounds: [...did.combatRounds] })}; phases: ${[...seen].filter((x) => !x.includes('-')).join(',')}`);
       const rstats = await host.page.evaluate(() => globalThis.__SP_RUNNER__?.stats());
       host.note(`runner: ${JSON.stringify(rstats)}; lp/kills/leaks: ${JSON.stringify([...lps])}; LP changed: ${did.lpChanged}`);
+      // the operator voice each browser played (DESIGN §21.30; the solo test checks the moments)
+      for (const c of both) {
+        const log = await c.page.evaluate(() => (globalThis.__SP__.audio.voiceLog || []).map((l) => ({ ...l })));
+        if (log.length) c.note(`voice: ${log.map((l) => `${l.role}${l.slot ?? ''}:${l.charId.replace(/^char_/, '')}@${l.battle ?? '-'}`).join(' ')}`);
+      }
       assert.ok(did.combatRounds.size >= ROUNDS, `combat rendered in ${ROUNDS} rounds (${[...did.combatRounds]})`);
       assert.ok(did.takeover, 'a forced disconnect mid-combat was taken over by the server');
       assert.deepEqual([...did.settledBy].sort(), ['guest', 'host'], 'both browsers\' reported results were settled (kills / leaks reached m.private.stats)');
@@ -1275,6 +1375,9 @@ describe('browser E2E against the real server', { skip: !ENABLED && 'needs Chrom
       await solo.shot('draft');
       await solo.click('.dband', null, { nth: 1 });
       await solo.click('.draft-detail__btns .btn--primary', '确认选择');
+      // each battle's own operators as fielded (charId → { n: its units — two copies of one operator, or a normal and an
+      // elite copy, are two units of one charId; skills: their equipped skills, 0-based }) — the voice check below
+      const fielded = new Map();
       for (let round = 1; round <= 3; round++) {
         const s0 = await solo.waitFor((s) => (s.phase === 'PREP' && s.round === round && !s.ready) || (s.phase === 'SP_DRAFT' && s.round === round), `prep ${round}`, 90000);
         if (s0.phase === 'SP_DRAFT') {
@@ -1297,20 +1400,67 @@ describe('browser E2E against the real server', { skip: !ENABLED && 'needs Chrom
         await solo.waitFor((s) => s.phase === 'COMBAT', `combat ${round}`, 30000);
         const st = await waitUnits(solo);
         assert.ok(st?.units > 0, 'solo battle renders units');
+        // (the sound's unit map: the spawns' UnitInfo — m.field lists no unit yet when a battle is entered at its start)
+        fielded.set(`COMBAT:${round}`, await solo.page.evaluate(() => {
+          const out = {};
+          for (const u of globalThis.__SP__.audio.units.values()) {
+            if (!u || u.side === 'enemy' || typeof u.def !== 'string' || !u.def.startsWith('char_')) continue;
+            const o = out[u.def] || (out[u.def] = { n: 0, skills: [] });
+            o.n += 1;
+            if (!o.skills.includes(u.skillIndex ?? null)) o.skills.push(u.skillIndex ?? null);
+          }
+          return out;
+        }));
         await sleep(1500);
         await solo.shot(`combat-r${round}`);
       }
-      // operator voice (when downloaded), as in the official mode: 部署 for deployments in prep, the squad leader's
-      // 行动开始 every battle (rounds 1–2 surely, round 3 may still be before its first enemy), 作战中 only after it, no
-      // 结束行动 before the result screen (js/audio.js voiceLog: the lines started, in order)
+      // operator voice (when downloaded; DESIGN §21.30, upstream #73's moments on the fork's engine), read during round
+      // 3: every battle opens with 行动出发 (round 3's too: its deployment is past), nothing is said outside a battle but
+      // the settlement lines, 作战中 waits for the battle's first 行动开始 or the end of its 15 s opening, and the own
+      // battles of rounds 1–2 each end with a settlement line (完成高难行动 on a perfect 绝境 battle). js/audio.js
+      // voiceLog: the lines started, in order — { role, charId, type, slot, battle: `${phase}:${round}`, t: ms into it }
+      // (a settlement line said while m.public is still in COMBAT carries that battle's key, one said in SETTLE none).
+      // 行动出发 comes from the field's early buffer most of the time: the runner's first frames — the initial deployment
+      // — race the render that enters the field (audio.replayEarly).
       if (await solo.page.evaluate(() => !!globalThis.__SP__.data.get('assets')?.audio?.voice?.cn)) {
-        const log = await solo.page.evaluate(() => globalThis.__SP__.audio.voiceLog.map((l) => l.role));
-        const count = (role) => log.filter((r) => r === role).length;
-        assert.ok(count('start') >= 2 && count('start') <= 3, `行动开始 every battle: ${log.join(' ')}`);
-        assert.ok(count('deploy') >= 1, '部署 in prep');
-        assert.equal(count('win3') + count('win') + count('fail'), 0, 'no end line during the match');
-        assert.ok(log.indexOf('combat') === -1 || log.indexOf('start') < log.indexOf('combat'), '作战中 only after 行动开始');
-        solo.note(`voice: ${log.join(' ')}`);
+        const log = await solo.page.evaluate(() => globalThis.__SP__.audio.voiceLog.map((l) => ({ ...l })));
+        const SETTLE = ['win4', 'win3', 'win', 'fail'];
+        const roles = log.map((l) => l.role + (l.slot ? l.slot : ''));
+        const count = (role) => log.filter((l) => l.role === role).length;
+        assert.ok(count('depart') >= 2 && count('depart') <= 3, `行动出发 every battle: ${roles.join(' ')}`);
+        assert.deepEqual(log.filter((l) => l.battle == null && !SETTLE.includes(l.role)).map((l) => l.role), [],
+          'nothing outside a battle but the settlement lines (the 整备期 says nothing)');
+        const battles = new Map();
+        for (const l of log) if (!SETTLE.includes(l.role)) battles.set(l.battle, [...(battles.get(l.battle) || []), l]);
+        for (const [key, lines] of battles) {
+          const seq = lines.map((l) => l.role).join(' ');
+          if (lines.some((l) => l.role === 'depart')) assert.equal(lines[0].role, 'depart', `${key}: 行动出发 opens the battle (${seq})`);
+          const firstStart = lines.findIndex((l) => l.role === 'start');
+          const early = lines.filter((l, i) => l.role === 'combat' && (firstStart < 0 || i < firstStart) && !(l.t >= 15000));
+          assert.deepEqual(early.map((l) => l.t), [], `${key}: 作战中 only after 行动开始 or the 15 s opening (${seq})`);
+          // 行动开始 is each unit's own first engage (once per unit): an operator never says it more often in a battle than
+          // it has units there (two copies of one operator are two units of one charId)
+          const ops = fielded.get(key) || {};
+          const starters = lines.filter((l) => l.role === 'start').map((l) => l.charId);
+          for (const cid of new Set(starters)) {
+            const k = starters.filter((x) => x === cid).length;
+            assert.ok(k <= (ops[cid]?.n ?? 1), `${key}: 行动开始 once per unit — ${cid} ${k}× with ${ops[cid]?.n ?? 1} on the field (${starters.join(' ')})`);
+          }
+          // 作战中N is the operator's equipped skill N (UnitInfo.skillIndex + 1; a copy of it, if any, may fight with another)
+          for (const l of lines.filter((x) => x.role === 'combat')) {
+            assert.ok(l.slot >= 1 && l.slot <= 4, `${key}: 作战中 names its slot (${JSON.stringify(l)})`);
+            const sk = ops[l.charId]?.skills || [];
+            if (sk.length && sk.every(Number.isInteger)) assert.ok(sk.some((s) => l.slot === Math.min(4, s + 1)), `${key}: ${l.charId} 作战中${l.slot} is its skill (${sk.map((s) => s + 1).join(' / ')})`);
+          }
+          for (const l of lines) assert.ok(!fielded.has(key) || l.charId in ops, `${key}: ${l.role} by an operator of the field on screen (${l.charId})`);
+        }
+        // one settlement line per own battle that ended (rounds 1–2; round 3 is still running), by an operator of it
+        const settled = log.filter((l) => SETTLE.includes(l.role));
+        assert.ok(settled.length >= 2, `a settlement line after each own battle of rounds 1–2: ${roles.join(' ')}`);
+        const fieldedOps = new Set([...fielded.values()].flatMap((o) => Object.keys(o)));
+        for (const l of settled) assert.ok(fieldedOps.has(l.charId), `the settlement line is said by an own operator (${l.charId})`);
+        solo.note(`voice: ${log.map((l) => `${l.role}${l.slot ? l.slot : ''}:${l.charId.replace(/^char_/, '')}@${l.battle ?? '-'}${l.t != null ? `+${l.t}` : ''}`).join(' ')}`);
+        solo.note(`voice fielded (charId → { n: units, skills: skillIndex }): ${[...fielded].map(([k, o]) => `${k} ${JSON.stringify(o)}`).join(' · ')}`);
       }
       // leave for good: exit → 放弃模拟 → lobby
       await solo.click('.gtop__exit');

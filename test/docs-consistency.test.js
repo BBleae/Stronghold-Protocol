@@ -20,8 +20,9 @@
 // fenced tiles, knocked-out bodies, the dispatcher snapshot and the manifest shrink guard credited to PR #2 / PR #7) and
 // the 突变细胞 bench rule (§21.1: the carrier destroyed, its new operator gained into the 整备区 — official footage, PR #2),
 // the closing additions §21.26–§21.28 (GitHub issues #1 / #5 / #8), the owner's deliberate trigger deviation for six
-// 重装 skills (§21.29, GitHub issue #4 / PR #12) and upstream's operator battle voice (§21.30, #73),
-// merged onto the fork's own voice pipeline.
+// 重装 skills (§21.29, GitHub issue #4 / PR #12) and upstream's operator battle voice (§21.30, #73): its moments
+// ported onto the fork's own voice engine (行动出发 / 部署 / 行动开始 / 作战中N / 选中干员 from the field on screen, a
+// settlement line after every own battle whatever field is on screen).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -847,34 +848,84 @@ test('the deliberate trigger deviation (DESIGN §21.29): six 重装 skills DEFAU
   assert.match(doc('CHANGELOG.md'), /深巡、雷蛇的二技能，号角的二、三技能，灰毫的一、二技能改为攻击范围内有敌人时就释放/);
 });
 
-test('干员战斗语音 (DESIGN §21.30): upstream #73 merged onto the fork\'s voice pipeline — one engine, one manifest shape', () => {
+test('干员战斗语音 (DESIGN §21.30): upstream #73\'s moments on the fork\'s voice engine — one engine, one manifest shape', () => {
   const manifest = JSON.parse(readFileSync(join(ROOT, 'data/assets.json'), 'utf8'));
   const voice = manifest.audio?.voice ?? {};
-  // the fork's shape: audio.voice.<lang>.<charId>.<role> (tools/assets/voice.mjs), with the official rules beside it
+  // the fork's shape: audio.voice.<lang>.<charId>.<role> (tools/assets/voice.mjs), with the official rules beside it;
+  // the port adds depart (行动出发, BATTLE_START) and win4 (完成高难行动, FOUR_STAR); combat is positional (作战中1–4)
+  const ROLES = ['select', 'deploy', 'combat', 'start', 'depart', 'win4', 'win3', 'win', 'fail'];
   for (const lang of Object.keys(voice)) {
     assert.ok(['cn', 'jp', 'en', 'kr'].includes(lang), `voice language ${lang}`);
     const ids = Object.keys(voice[lang]);
     assert.ok(ids.length >= 100, `${lang}: ${ids.length} operators carry battle voice`);
     for (const id of ids) {
       assert.match(id, /^char_/);
-      for (const role of Object.keys(voice[lang][id])) {
-        assert.ok(['select', 'deploy', 'combat', 'start', 'win3', 'win', 'fail'].includes(role), `${lang}.${id}.${role}`);
+      const lines = voice[lang][id];
+      for (const role of Object.keys(lines)) assert.ok(ROLES.includes(role), `${lang}.${id}.${role}`);
+      if (lines.depart != null) assert.match(lines.depart, /\/cn_019\.mp3$/, `${lang}.${id}.depart is 行动出发`);
+      if (lines.win4 != null) assert.match(lines.win4, /\/cn_029\.mp3$/, `${lang}.${id}.win4 is 完成高难行动`);
+      if (Array.isArray(lines.combat) && lines.combat.length === 4) {
+        lines.combat.forEach((f, k) => assert.ok(f.endsWith(`/cn_02${5 + k}.mp3`), `${lang}.${id}.combat[${k}] is 作战中${k + 1}: ${f}`));
       }
     }
+    assert.ok(ids.some((id) => voice[lang][id].depart && voice[lang][id].win4), `${lang}: the new roles depart / win4 are downloaded`);
   }
   if (Object.keys(voice).length) assert.ok(Array.isArray(manifest.audio.voiceRules?.voiceTypeOptions), 'audio.voiceRules');
-  // upstream's parallel pipeline was not taken: no second engine, no per-battle 结算 hook, no panel voice
+  assert.match(doc('tools/assets/voice.mjs'), /depart: 'BATTLE_START'/);
+  assert.match(doc('tools/assets/voice.mjs'), /win4: 'FOUR_STAR'/);
+  // one engine: the fork's (official battleVoice rules), with upstream's settlement speaker and mapping ported into it;
+  // no squad leader, no match-end line, no second gate
   const audioSrc = doc('public/js/audio.js');
-  assert.ok(!/class VoiceGate|VOICE_PRIORITY|resultSpeaker/.test(audioSrc), 'audio.js has one voice engine');
+  assert.ok(!/class VoiceGate|VOICE_PRIORITY/.test(audioSrc), 'audio.js has one voice engine');
+  assert.ok(!/endVoiceRole|getLeader|squadLeader|voiceLeader/.test(audioSrc), 'no squad leader, no match-end line');
+  for (const fn of ['resultSpeaker', 'resultVoiceRole', 'settlementVoice']) assert.ok(audioSrc.includes(`export function ${fn}(`) || audioSrc.includes(`export const ${fn} =`), fn);
   assert.ok(/_trimBuffers\(\)/.test(audioSrc) && /BUFFER_BYTES = 64 \* 1024 \* 1024/.test(audioSrc), 'the decoded-PCM budget');
-  assert.ok(!/audio\.voice\(/.test(doc('public/js/ui/detailPanel.js')), 'the detail panel says nothing (选中干员 is the board tap)');
-  assert.ok(!/resultVoiceSlot|battleRunner\.on\('result'/.test(doc('public/js/screens/game.js')));
+  // 选中干员 from the detail card too (de-duplicated with the tap by its key)
+  const panel = doc('public/js/ui/detailPanel.js');
+  assert.match(panel, /audio\.voice\(/);
+  assert.match(panel, /'select'/);
+  const gameLogic = doc('public/js/ui/gameLogic.js');
+  assert.match(gameLogic, /export (?:function|const) selectVoiceKey\b/);
+  assert.match(gameLogic, /export (?:function|const) detailSelectVoice\b/);
+  assert.ok(!/export (?:function|const) (?:voiceLeader|boardOperators|pieceCharId)\b/.test(gameLogic), 'the squad leader and the prep 部署 helpers are gone');
+  // the settlement after every own battle: read from the finished battle (runner.settlement), said once per battle at its
+  // drawn end — or at once ('ownDone') when the own field is not on screen; the 整备期 says nothing (no prep 部署)
+  const game = doc('public/js/screens/game.js');
+  assert.match(game, /settlementVoice\(/);
+  assert.match(game, /audio\.settle\(/);
+  assert.match(game, /'ownDone'/);
+  assert.ok(!/pieceCharId\(/.test(game), 'no 部署 line in the 整备期');
+  assert.ok(!/resultVoiceSlot|battleRunner\.on\('result'/.test(game), 'upstream\'s result hook is not taken');
+  const runner = doc('public/js/battle/runner.js');
+  assert.match(runner, /\bsettlement\(battleId, playerId\)/);
+  assert.match(runner, /emit\('ownDone'/);
+  assert.ok(!/emit\('result'/.test(runner));
   assert.ok(!/indexVoice|VOICE_SLOTS/.test(doc('tools/assets/plan.mjs')), 'one voice plan (tools/assets/voice.mjs)');
   // the docs
-  assert.match(DESIGN, /### 21\.30 干员战斗语音 \(upstream #73\) on this fork/);
-  assert.match(DESIGN, /\*\*Upstream behaviour the fork does not have\*\*/);
+  assert.match(DESIGN, /### 21\.30 干员战斗语音 \(upstream #73\) on this fork: upstream's moments on the fork's engine/);
+  assert.ok(!/Upstream behaviour the fork does not have/.test(DESIGN), 'the open list of upstream behaviour is resolved');
+  assert.match(DESIGN, /The per-field lines \(行动出发, 部署, 行动开始, 作战中N, 选中干员\) come from the field on screen like every battle sound/);
+  assert.match(DESIGN, /\*\*The settlement line is the player's own battle's\*\*, whatever field is on screen/);
+  assert.match(DESIGN, /the boss guard: a 最终攻势 \/ 隐秘核心 battle whose boss survived/);
+  // the settlement does not wait for the own field to be on screen (only its timing does)
+  for (const [name, text] of [['DESIGN', DESIGN], ['ASSETS', doc('docs/ASSETS.md')], ['PLAYING', PLAYING]]) {
+    assert.ok(!/only when (?:your|the) own field is on screen|自己的战场在画面上才/.test(text), `${name}: the own settlement is said whatever field is on screen`);
+  }
   assert.match(doc('docs/ASSETS.md'), /## Operator voice/);
+  assert.match(doc('docs/ASSETS.md'), /`depart`/);
+  assert.match(doc('docs/ASSETS.md'), /`win4`/);
+  assert.ok(!/Only own operators speak/.test(doc('docs/ASSETS.md')));
   assert.match(SIM, /\['engage', id\]/);
+  assert.match(SIM, /the client says that operator's\s+行动开始 there/);
+  assert.ok(!/this fork's client ignores it/.test(SIM));
+  assert.ok(!/ignores the event/.test(doc('server/sim/ai.js')), 'the sim comment says the client uses engage');
+  assert.match(PLAYING, /干员语音也只播你正在看的战场/);
+  assert.match(PLAYING, /自己的每场战斗结束后都有一句结算语音/);
+  assert.match(PLAYING, /整备期不说话/);
+  assert.match(README, /自己每场战斗后的结算；结算以外只播正在看的战场/);
+  const log = doc('CHANGELOG.md');
+  assert.ok(log.indexOf('### 干员战斗语音（PR #73 的触发时机，感谢 @Convey123）') > log.indexOf('## 未发布')
+    && log.indexOf('### 干员战斗语音（PR #73 的触发时机，感谢 @Convey123）') < log.indexOf('## 0.1.4'), 'CHANGELOG 未发布 credits PR #73');
   // upstream's EN / KR dubs and its --voice-lang spelling, on the fork's pipeline (opt-in)
   assert.match(DESIGN, /The EN \/ KR dubs, on the fork's pipeline/);
   assert.match(doc('docs/ASSETS.md'), /`--voice-lang=L`/);
