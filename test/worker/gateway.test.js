@@ -179,3 +179,30 @@ test('a spectator takes a seat, rides the snapshot, and its grace expires like a
   rt.lobby.expireGrace();
   assert.equal(room.spectators.length, 0, 'the spectator seat is freed after the grace');
 });
+
+test('匹配 through the gateway: the queue ticks as a deadline (the sweep), and a snapshot keeps who waits', async (t) => {
+  const { rt, advance } = setup();
+  t.after(() => rt.lobby.shutdown());
+  const a = join(rt, '博士A');
+  const b = join(rt, '博士B', '9.9.9.9');
+  send(rt, a, { t: 'queue.join', difficulty: 'NORMAL' });
+  send(rt, b, { t: 'queue.join', difficulty: 'NORMAL' });
+  assert.equal(rt.lobby.queueTimer, null, 'no interval: the base clock is replaced');
+  assert.ok(rt.timerDue() != null, 'the next tick is a deadline the object wakes for');
+  assert.ok(rt.snapshot().queue.length === 2 && !('queueDue' in rt.snapshot()), 'the snapshot keeps the queue, not its tick time');
+
+  // a revived lobby (an eviction) re-examines the same queue at once
+  const revived = new LobbyRuntime({ snapshot: rt.snapshot(), now: () => Date.now() });
+  t.after(() => revived.lobby.shutdown());
+  assert.deepEqual(revived.lobby.queue.map((e) => [e.playerId, e.difficulty, e.session === revived.registry.byId(e.playerId)]),
+    rt.lobby.queue.map((e) => [e.playerId, 'NORMAL', true]));
+  assert.ok(revived.lobby.queueDue != null);
+
+  // nobody sends anything: the grace passes and the deadline forms the group
+  advance(rt.lobby.opts.queueGraceMs + rt.lobby.opts.queueTickMs);
+  rt.sweep();
+  assert.equal(a.take('queue.matched')?.seated, true, 'the first player is told');
+  assert.equal(b.take('queue.matched')?.code, a.take('queue.matched').code, 'both in one room');
+  assert.equal(rt.lobby.queue.length, 0);
+  assert.equal(rt.lobby.queueDue, null, 'nobody waits: the clock stops');
+});
