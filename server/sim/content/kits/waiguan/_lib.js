@@ -125,6 +125,37 @@ export function bstate(battle, key) {
   return (s[key] ??= {});
 }
 
+// ---- 部署费用下限 (DP floor) ledger: 可露希尔's 极限调度 lowers it, 老鲤's trait pays into it ------------------------------
+
+/**
+ * The battle's 部署费用下限 ledger (one per battle, bstate): `floor` = player id → how far below 0 that player's DP may go
+ * when it is spent (0 when absent), `debt` = player id → the part below 0 that player owes. The engine clamps DP at 0
+ * (Battle.addDp), so a pool below 0 is kept as debt: the player's real DP is `dp − debt`; the DP gained afterwards pays
+ * the debt first (char_4228_closur.js installs that repayment). Kits that spend DP into the floor read it here.
+ */
+export function dpLedger(battle) {
+  const L = bstate(battle, 'waiguan:costLowerBound');
+  if (!L.floor) { L.floor = new Map(); L.debt = new Map(); }
+  return L;
+}
+
+/**
+ * Spend `n` DP of player `pid`: from the pool first, the rest as debt in the ledger (the caller has checked that the
+ * floor allows it). Returns `{ fromDp, owed }` (both 0 for an unknown player or n ≤ 0).
+ */
+export function spendDp(battle, pid, n) {
+  const ps = battle.getPlayer(pid);
+  if (!ps || !(n > 0)) return { fromDp: 0, owed: 0 };
+  const fromDp = Math.min(ps.dp, n);
+  if (fromDp > 0) battle.addDp(pid, -fromDp);
+  const owed = n - fromDp;
+  if (owed > 1e-9) {
+    const L = dpLedger(battle);
+    L.debt.set(pid, (L.debt.get(pid) ?? 0) + owed);
+  }
+  return { fromDp, owed: owed > 1e-9 ? owed : 0 };
+}
+
 /**
  * "每N秒…" counted from each deployment (伊芙利特 莱茵回路 "每6秒额外回复2点技力"): `fn()` every `sec` s while `unit` stands on
  * the field. The count restarts at every (re)deployment and stops when the unit leaves (knock-out, retreat); a hidden

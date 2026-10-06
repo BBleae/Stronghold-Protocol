@@ -9,7 +9,9 @@
 // 援军 (her reinforcements) — closur_tr / closur_ourbase_aura: her 指挥中心 (talent 1 token, tokenKey of talent index 0)
 //   and every friendly unit standing in its 效果范围 = the token skill's range of her loadout ("战术点效果范围随携带技能变化":
 //   S1 x-5 plus, S2 x-4 3×3, S3 x-6 cross of radius 2 — the token variant's skill rangeGrid). [ASSUMED: on a shared field
-//   (联防 / boss) only her own player's units count — KIT_CONVENTIONS 5; the official mode has one player.]
+//   (联防 / boss) only her own player's units count — KIT_CONVENTIONS 5; the official mode has one player.] [ASSUMED: she
+//   counts as her own 援军 when she stands in that range — closur_ourbase_aura gives closur_friend to every friendly unit
+//   of the range and nothing in the templates leaves her out.]
 // Trait (战术家, data profile WRONG for her: the engine's tactician install summons a generic 援军): replaced — her 援军
 //   are the above; "自身攻击援军阻挡的敌人时攻击力提升至150%" = dmgMul trait atk_scale on a target blocked by a 援军 (closur_tr
 //   AtkScaleUp: blocked by her token, or by a unit holding her closur_friend). TAC-X (uniequip_002_closur, dispatched by
@@ -21,7 +23,8 @@
 //   entirely, no generic summon rule applies), blocks 2 (data). Knocked out ⇒
 //   back on its tile after the token's hidden talent `interval` (15 s, "被击败后会在15秒后自动刷新"; closur_ourbase_t_1),
 //   paying its deploy cost (0 — a 外援 summon's return pays). She leaves the field ⇒ it is withdrawn ('retreat': no
-//   destruction) [ASSUMED: the pool's tactician rule — a 援军 leaves with its tactician (tokens.js, 伺夜)], and her
+//   destruction) [ASSUMED: no closur template withdraws it (there is no ON_OWNER_FINISH / WithdrawTokens node); this
+//   follows the pool's tactician rule — a 援军 leaves with its tactician (tokens.js, the 伺夜 kit)], and her
 //   (re)deployment brings it back at once (closur_passive RallyPointReborn at her start).
 // T2 极限调度 ("携带可露希尔时"): for the whole battle, her player's 【罗德岛】 operators (nationId rhodes, herself included)
 //   ATK +atk (persist; two copies: the stronger holds) and her player's 部署费用下限 −|cost| (two copies: the larger): the
@@ -29,7 +32,7 @@
 //   paying their cost) as soon as DP − cost ≥ −|cost|, and 老鲤's trait may pay into it (char_322_lmlee.js reads the same
 //   ledger). [ASSUMED: 部署费用下限 (ba.costlowerbound, no glossary text in the data here) read as the lowest value the
 //   player's DP may reach by spending it — 0 by default; lmlee_tr's CheckCost `_considerNegativeCost` supports it. The
-//   engine clamps DP at 0: the negative part is kept as a per-player debt (bstate LEDGER) that the DP gained afterwards
+//   engine clamps DP at 0: the negative part is kept as a per-player debt (_lib dpLedger) that the DP gained afterwards
 //   pays first; the DP shown is 0 meanwhile. Other content's own DP payments (a summon's paid return) do not see it.]
 // S1 递归策略 (AUTO, duration): her 援军 get 1 layer of 护盾 (shieldHits shield_cnt, "不叠加": replaced, never added; lasts
 //   until broken or the unit leaves the field [ASSUMED: no duration in the text / template]); DP over the skill:
@@ -46,56 +49,39 @@
 //   attack@atk_scale × ATK physical and 迟钝 (slow_down template: ASPD and move speed −slow_down per stack, ≤ max_stack_cnt,
 //   ≤ slow_down_max, slow_down_time s refreshed by each stack; two copies share the stacks, the stronger value holds)
 //   [ASSUMED: the engine has no ASPD multiplier — the ASPD part is −v·n × the enemy's base ASPD, pool precedent
-//   items/battle.js]; one target at first, +1 after every attack_trigger_cnt attacks, at most max_trigger_cnt times
-//   (closur_s_3[data]); cost_attack_add DP per attack (0 in the records).
+//   items/battle.js]; one target at first, +1 after every attack_trigger_cnt attacks, at most max_trigger_cnt times —
+//   1 → 1 + max_trigger_cnt (7) targets (closur_s_3[data]) [ASSUMED: the selector starts at her single target; read
+//   literally, the template's max_target starts from a blackboard value that is absent (0), which would give 0 → 6];
+//   cost_attack_add DP per attack (0 in the records).
 // fx: 'dp', 'shield', 'summon'.
 
 import {
-  num, tal, talRec, traitBb, hiddenBb, selectedId, lazySkills, mods, live, summonsOf, whileOn, bstate, inFaction, batMod,
-  keyOf,
+  num, tal, talRec, traitBb, hiddenBb, selectedId, lazySkills, mods, live, summonsOf, whileOn, inFaction, batMod, keyOf,
+  dpLedger, spendDp,
 } from './_lib.js';
 import { absoluteRangeKeys } from '../../../targeting.js';
 import { bodyKeys } from '../../../body.js';
 import { COLS } from '../../../constants.js';
 
 const S1 = 'skchr_closur_1', S2 = 'skchr_closur_2', S3 = 'skchr_closur_3';
-/** Per-battle 部署费用下限 ledger shared with 老鲤's kit (char_322_lmlee.js uses the same key and shape). */
-const LEDGER = 'waiguan:costLowerBound';
 /** closur_s_1[cost]: the first DP trigger comes after interval / "two". */
 const S1_FIRST_SHARE = 0.5;
 /** closur_s_1[cost]: DP per trigger (template default cost_per_add_trigger). */
 const S1_DP_PER_TRIGGER = 1;
-/** closur_s_3[data]: the attack selector starts at one target (no max_target in the blackboard). */
+/** closur_s_3[data]: the attack selector starts at one target (no max_target in the blackboard) [ASSUMED, header]. */
 const S3_BASE_TARGETS = 1;
 /** Period of the S2 援军 aura (DEF / block) and of the 指挥中心 return check (s). */
 const AURA_IV = 0.1;
 const CC_POLL = 0.25;
 const EPS = 1e-6;
 
-/** The ledger: floor (DP the pool may go below 0) and debt per player id. */
-function ledger(battle) {
-  const L = bstate(battle, LEDGER);
-  if (!L.floor) { L.floor = new Map(); L.debt = new Map(); }
-  return L;
-}
-/** Spend `n` DP of player `pid`: from the pool first, the rest as debt (only when the floor allows it — caller checks). */
-function spendDp(battle, pid, n) {
-  const ps = battle.getPlayer(pid);
-  if (!ps || !(n > 0)) return { fromDp: 0, owed: 0 };
-  const L = ledger(battle);
-  const fromDp = Math.min(ps.dp, n);
-  if (fromDp > 0) battle.addDp(pid, -fromDp);
-  const owed = n - fromDp;
-  if (owed > 1e-9) L.debt.set(pid, (L.debt.get(pid) ?? 0) + owed);
-  return { fromDp, owed };
-}
 /**
  * Once per battle: every tick, the DP gained pays the debts first, then each knocked-out operator of a player with a
  * lowered floor whose timer is done redeploys as soon as (DP − debt) − cost ≥ −floor (the engine itself redeploys those
  * the plain DP pays for).
  */
 function installLedger(battle) {
-  const L = ledger(battle);
+  const L = dpLedger(battle);
   if (L.installed) return;
   L.installed = true;
   battle.on('tick', () => {
@@ -370,7 +356,7 @@ export default function closur(bb, chess, def) {
         }
         const floor = Math.abs(num(t1.cost));
         if (floor > 0) {
-          const L = ledger(battle);
+          const L = dpLedger(battle);
           L.floor.set(unit.ownerId, Math.max(L.floor.get(unit.ownerId) ?? 0, floor));
           installLedger(battle);
         }
@@ -400,7 +386,8 @@ export default function closur(bb, chess, def) {
         if (ret > 0) {
           battle.on('deploy', (c) => {
             const a = c.unit;
-            if (c.initial || c.move || !a || a.kind !== 'op' || a.ownerId !== unit.ownerId || !unit.skill?.active || !live(unit)) return;
+            // (a battle-start deployment never meets a running S2: skills cast only once the battle steps)
+            if (c.move || !a || a.kind !== 'op' || a.ownerId !== unit.ownerId || !unit.skill?.active || !live(unit)) return;
             if (!inField(battle, unit, a) || a.mem.closurRefund === a.deploySeq) return;
             a.mem.closurRefund = a.deploySeq;
             const n = Math.ceil(num(a.base.cost) * ret - 1e-9);

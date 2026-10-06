@@ -11,7 +11,7 @@
 //   * holding no 有备无患 charge and DP ≥ |extra_cost| (the plain DP — CheckCost without the negative floor): pay
 //     |extra_cost| instead and gain the charge (lmlee_t_2[bounce], one at most);
 //   * else DP − |cost| ≥ the player's 部署费用下限 (0, or −N with 可露希尔's 极限调度 — CheckCost _considerNegativeCost,
-//     the ledger of char_4228_closur.js): pay |cost|;
+//     _lib dpLedger, lowered by char_4228_closur.js): pay |cost| (into a debt below 0, _lib spendDp);
 //   * else he is withdrawn ('merchant': down, back after his redeploy time when the DP allows).
 //   `merchantPay` { unit, cost, cancel } is emitted before each payment, as the engine's merchant does.
 //   The charge (lmlee_t_2[bounce]: CheckAndBlockBuffByAbnormalFlags STUNNED / FROZEN) cancels the next 晕眩 / 冻结 put on
@@ -37,34 +37,19 @@
 //   dodgeable) from a source outside his range is evaded with probability prob (lmlee_s_3[evade], its own roll).
 // fx: 'dodge', 'aoe', 'talent', 'push'.
 
-import { num, tal, traitBb, hiddenBb, selectedId, lazySkills, mods, live, ANY, bstate, everyDeployed, statBuff, attackCandidates } from './_lib.js';
+import {
+  num, tal, traitBb, hiddenBb, selectedId, lazySkills, mods, live, ANY, everyDeployed, statBuff, attackCandidates, dpLedger, spendDp,
+} from './_lib.js';
 import { absoluteRangeKeys } from '../../../targeting.js';
 import { bodyInKeys } from '../../../body.js';
 import { COLS } from '../../../constants.js';
 
 const S1 = 'skchr_lmlee_1', S2 = 'skchr_lmlee_2', S3 = 'skchr_lmlee_3';
-/** Per-battle 部署费用下限 ledger shared with 可露希尔's kit (char_4228_closur.js keeps it; same key and shape). */
-const LEDGER = 'waiguan:costLowerBound';
 /** lmlee_t_1 CheckHasEnemyInRange `x-4`: his tile and the eight around it. */
 const GRID_X4 = Object.freeze([[1, -1], [1, 0], [1, 1], [0, -1], [0, 0], [0, 1], [-1, -1], [-1, 0], [-1, 1]]);
 /** S2 blast radius around the marked target (tiles) [ASSUMED, see the header]. */
 const BLAST_RADIUS = 1.5;
 const BOUNCE = 'lmlee:bounce';
-
-function ledger(battle) {
-  const L = bstate(battle, LEDGER);
-  if (!L.floor) { L.floor = new Map(); L.debt = new Map(); }
-  return L;
-}
-/** Spend `n` DP of player `pid`: from the pool first, the rest as debt (the caller checked the floor). */
-function spendDp(battle, pid, n) {
-  const ps = battle.getPlayer(pid);
-  if (!ps || !(n > 0)) return;
-  const fromDp = Math.min(ps.dp, n);
-  if (fromDp > 0) battle.addDp(pid, -fromDp);
-  const owed = n - fromDp;
-  if (owed > 1e-9) { const L = ledger(battle); L.debt.set(pid, (L.debt.get(pid) ?? 0) + owed); }
-}
 
 export default function lmlee(bb, chess, def) {
   const sid = selectedId(chess, def);
@@ -78,7 +63,7 @@ export default function lmlee(bb, chess, def) {
     const pid = unit.ownerId;
     const ps = battle.getPlayer(pid);
     if (!ps || !live(unit)) return;
-    const L = ledger(battle);
+    const L = dpLedger(battle);
     const avail = ps.dp - (L.debt.get(pid) ?? 0);
     const floor = L.floor.get(pid) ?? 0;
     const base = Math.abs(num(tb.cost)), extra = Math.abs(num(t1.extra_cost));

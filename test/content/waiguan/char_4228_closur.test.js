@@ -44,8 +44,8 @@ const op = (id, nation, o = {}) => ({
 });
 const dummy = (key, o = {}) => enemyRec({ key, hp: 1e7, speed: 0, ...o });
 const DEFS = {
-  chess: { ...REC, test_rhodes_a: op('test_rhodes_a', 'rhodes'), test_lungmen_a: op('test_lungmen_a', 'lungmen'), test_odd_a: op('test_odd_a', 'rhodes', { stats: { cost: 11 } }), test_armour_a: op('test_armour_a', 'rhodes', { stats: { def: 300 } }) },
-  enemies: { enemy_dummy: dummy('enemy_dummy'), enemy_hitter: dummy('enemy_hitter', { atk: 3000 }), enemy_shooter: dummy('enemy_shooter', { atk: 1500, range: 9 }) },
+  chess: { ...REC, test_rhodes_a: op('test_rhodes_a', 'rhodes'), test_lungmen_a: op('test_lungmen_a', 'lungmen'), test_odd_a: op('test_odd_a', 'rhodes', { stats: { cost: 11 } }), test_armour_a: op('test_armour_a', 'rhodes', { stats: { def: 300 } }), test_cheap_a: op('test_cheap_a', 'rhodes', { stats: { cost: 3 } }) },
+  enemies: { enemy_dummy: dummy('enemy_dummy'), enemy_hitter: dummy('enemy_hitter', { atk: 3000 }), enemy_shooter: dummy('enemy_shooter', { atk: 1500, range: 9 }), enemy_walker: dummy('enemy_walker', { speed: 0.6 }) },
 };
 const HOOKS = ['damaged', 'skillStart', 'skillEnd', 'death', 'deploy', 'kill', 'attack'];
 const run = (o) => makeBattle({ defs: DEFS, seed: 7, timeLimit: 400, autoFinish: false, hooks: HOOKS, captureNoisy: true, ...o });
@@ -325,6 +325,71 @@ test('可露希尔 极限调度: her player\'s DP may go down to −|cost| — a
   done(h);
 });
 
+test('可露希尔 极限调度 ledger: one floor for all her player\'s redeploys (the debt adds up), after the respawn timer only, never with another player\'s DP', () => {
+  const id = EL6, floor = Math.abs(talOf(id, 1).cost);
+  // (her S3: no DP of hers before its first cast, long after these checks)
+  const mk = (units, o = {}) => run({ units: [C(id, S3, 10, 3), ...units], flags: FROZEN_DP(0), ...o });
+  {
+    // two down at DP = cost − floor: the first takes the whole floor, the second waits
+    const h = mk([A(3, 'test_rhodes_a', 11, 4), A(4, 'test_rhodes_a', 12, 4)]);
+    h.run(0.5);
+    const a = h.unit(3), b = h.unit(4);
+    h.b.kill(a);
+    h.b.kill(b);
+    h.b.getPlayer('p1').dp = a.base.cost - floor;
+    h.run(a.base.respawnTime + 0.2);
+    assert.ok(a.alive, 'the first');
+    assert.equal(b.alive, false, 'the second waits');
+    h.run(3);
+    assert.equal(b.alive, false);
+    assert.equal(dpOf(h), 0);
+    done(h);
+  }
+  {
+    // cheap ones (cost < floor): after the first, the plain pool (0) would still let the second in — the debt does not
+    const h = mk([A(3, 'test_cheap_a', 11, 4), A(4, 'test_cheap_a', 12, 4)]);
+    h.run(0.5);
+    const a = h.unit(3), b = h.unit(4);
+    assert.ok(a.base.cost < floor && 2 * a.base.cost > floor);
+    h.b.kill(a);
+    h.b.kill(b);
+    h.run(a.base.respawnTime + 0.2);
+    assert.ok(a.alive, 'the first, into the floor');
+    assert.equal(b.alive, false, 'the second: the debt counts');
+    done(h);
+  }
+  {
+    // the respawn timer first, whatever the DP
+    const h = mk([A(3, 'test_rhodes_a', 11, 4)]);
+    h.run(0.5);
+    const a = h.unit(3);
+    const t0 = h.b.time;
+    h.b.kill(a);
+    h.b.getPlayer('p1').dp = a.base.cost - floor;
+    h.runUntil(() => h.b.time >= t0 + a.base.respawnTime - 0.1, a.base.respawnTime);
+    assert.equal(a.alive, false, 'not before its timer');
+    assert.ok(h.runUntil(() => a.alive, 0.5));
+    close(h.b.time, t0 + a.base.respawnTime, 2 * h.TICK, 'at its timer');
+    done(h);
+  }
+  {
+    // p1 (hers) holds the DP, p2's operator is down with none: it stays down, p1 pays nothing
+    const players = [
+      { playerId: 'p1', seat: 0, side: 'L', colOffset: 0, bonds: {}, units: [C(id, S3, 10, 3, { kind: 'chess' })] },
+      { playerId: 'p2', seat: 1, side: 'L', colOffset: 0, bonds: {}, units: [A(5, 'test_rhodes_a', 9, 8, { kind: 'chess' })] },
+    ];
+    const h = run({ kind: 'unite', players, flags: FROZEN_DP(0) });
+    h.run(0.5);
+    const b = h.unit(5);
+    h.b.kill(b);
+    h.b.getPlayer('p1').dp = b.base.cost - floor;
+    h.run(b.base.respawnTime + 2);
+    assert.equal(b.alive, false, 'another player\'s operator');
+    assert.equal(dpOf(h, 'p1'), b.base.cost - floor, 'her player\'s DP untouched');
+    done(h);
+  }
+});
+
 test('可露希尔 S1: SP_FULL (record DEFAULT, AUTO with no target); 援军 1 layer of 护盾, never stacked; DP over the skill grows per cast up to cost_add_max', () => {
   for (const id of [ID6, EL6]) {
     const bb = sbb(id, S1), dur = skillOf(id, S1).duration;
@@ -362,7 +427,8 @@ test('可露希尔 S1: SP_FULL (record DEFAULT, AUTO with no target); 援军 1 l
     // DP: cast i gives want(i) DP, 1 each, at (j + ½) × duration / want(i) after its start
     casts.unshift(h.hooksOf('skillStart')[0].t);
     casts.length = n;
-    for (let i = 0; i < n - 1; i++) {
+    assert.ok(bb.cost + bb.cost_per_add * (n - 1) > bb.cost_add_max, 'the last cast checked is a capped one');
+    for (let i = 0; i < n; i++) {
       const total = want(i), iv = dur / total;
       const got = log.filter((x) => x.t > casts[i] && x.t <= casts[i] + dur + 1e-6);
       assert.equal(got.length, total, `${id} cast ${i}: ${total} grants`);
@@ -489,6 +555,38 @@ test('可露希尔 S2: her operator redeployed on the 效果范围 while it runs
   done(h);
 });
 
+test('可露希尔 S2 refund guards: one refund per deployment with two copies; none for a 【移动】 nor for a summon', () => {
+  const bb = sbb(EL6, S2);
+  // the ally at (10,5) is in both 效果范围 (指挥中心 at (9,5) and (11,5))
+  const h = run({
+    units: [C(EL6, S2, 9, 3, { carryState: READY }), { ...C(ID6, S2, 11, 3, { carryState: READY }), uid: 2 }, ...pieces(EL6, S2, [[9, 5]], { uid: 3 }), ...pieces(ID6, S2, [[11, 5]], { ownerUid: 2, uid: 4 }),
+      A(5, 'test_odd_a', 10, 5), A(6, 'test_rhodes_a', 12, 7)],
+    flags: FROZEN_DP(99),
+  });
+  const a = h.unit(5), mover = h.unit(6);
+  h.step(1);
+  assert.ok(h.unit(1).skill.active && h.unit(2).skill.active);
+  const t0 = h.b.time;
+  h.runUntil(() => h.b.time >= t0 + 0.5, 1);
+  h.b.kill(a);
+  let before = dpOf(h);
+  h.runUntil(() => { const ok = a.alive; if (!ok) before = dpOf(h); return ok; }, 10);
+  const ret = Math.max(bb.cost_return, sbb(ID6, S2).cost_return);
+  close(dpOf(h) - before, -a.base.cost + Math.ceil(a.base.cost * ret), 1e-9, 'one refund for two copies');
+  // a 【移动】 into the 效果范围 (Battle.moveRedeploy: deploy `move`) — no refund
+  h.step(1);
+  const d0 = dpOf(h);
+  assert.ok(h.b.moveRedeploy(mover, 10, 6));
+  assert.equal(h.hooksOf('deploy').at(-1).unit, mover);
+  assert.ok(h.hooksOf('deploy').at(-1).move);
+  assert.equal(dpOf(h), d0, 'no refund for a move');
+  // a summon (no operator) deployed into the 效果范围 with a cost: no refund
+  const tk = h.b.spawnToken('p1', 'token_10002_kalts_mon3tr', 9, 6, { stats: { cost: 11 } });
+  assert.ok(tk && tk.base.cost === 11);
+  assert.equal(dpOf(h), d0, 'no refund for a summon');
+  done(h);
+});
+
 test('可露希尔 S3: period DP to cost_period; interval base_attack_time; ATK × attack@atk_scale; 1 target +1 every attack_trigger_cnt attacks (≤ max_trigger_cnt)', () => {
   for (const id of [ID6, EL6]) {
     const bb = sbb(id, S3), r = skillOf(id, S3), dur = r.duration;
@@ -560,6 +658,28 @@ test('可露希尔 S3: 迟钝 per hit (slow_down per stack, ≤ max_stack_cnt / 
   }
 });
 
+test('可露希尔 S3: 迟钝 on a walking enemy — move speed ×(1 − slow_down × stacks) and ASPD alike, from the first hit', () => {
+  for (const id of [ID6, EL6]) {
+    const v = sbb(id, S3)['attack@slow_down'];
+    const h = run({ units: [C(id, S3, 10, 3, { carryState: READY }), ...pieces(id, S3, [[12, 3]])], enemies: [{ key: 'enemy_walker', route: 0 }], flags: FROZEN_DP(0) });
+    const u = h.unit(1);
+    h.step(1);
+    const e = h.enemies()[0];
+    assert.ok(e.base.moveSpeed > 0 && e.s.moveSpeed === e.base.moveSpeed, 'a walker');
+    const hits = () => h.hooksOf('damaged').filter((c) => c.source === u && c.target === e && c.dmg.isAttack).length;
+    assert.ok(h.runUntil(() => hits() >= 1, 30), 'she reaches it');
+    const n = e.findBuff('closur:slowdown').data.n;
+    assert.equal(n, hits());
+    close(e.s.moveSpeed, e.base.moveSpeed * (1 - v * n), 1e-9, `${id} move speed`);
+    close(e.s.aspd, e.base.aspd * (1 - v * n), 1e-9, 'ASPD');
+    h.runUntil(() => hits() >= 3, 5);
+    const m = e.findBuff('closur:slowdown').data.n;
+    assert.ok(m >= 3);
+    close(e.s.moveSpeed, e.base.moveSpeed * (1 - v * m), 1e-9, `${id} ${m} stacks`);
+    done(h);
+  }
+});
+
 test('可露希尔 modules × skills (both tiers\' elites): casts by SP_FULL, DP at the start, 极限调度 ATK, TAC-X cut, 部署费用下限 per loadout', () => {
   for (const id of [EL5, EL6]) for (const moduleId of [null, 'none', TACX]) for (const sid of [S1, S2, S3]) {
     const bb = sbb(id, sid), t1 = talOf(id, 1, moduleId), cut = cutOf(id, moduleId);
@@ -607,6 +727,9 @@ test('可露希尔: two copies — 极限调度 floor the larger, whichever is s
     const x = h.unit(5);
     h.b.kill(x);
     h.run(x.base.respawnTime + 0.2);
+    h.b.getPlayer('p1').dp = x.base.cost - floor - 0.5;
+    h.step(1);
+    assert.equal(x.alive, false, `${a} then ${b}: the larger floor, not the sum`);
     h.b.getPlayer('p1').dp = x.base.cost - floor;
     h.step(1);
     assert.ok(x.alive, `${a} then ${b}`);

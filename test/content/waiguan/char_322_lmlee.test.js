@@ -37,7 +37,7 @@ const DEFS = {
   chess: { ...REC, test_guard_a: chessRec({ id: 'test_guard_a', profession: 'WARRIOR', skill: null, stats: { maxHp: 1e5, atk: 1, def: 0, blockCnt: 1, cost: 10, respawnTime: 5 } }) },
   enemies: {
     enemy_dummy: dummy('enemy_dummy'), enemy_hitter: dummy('enemy_hitter', { atk: 400 }), enemy_shooter: dummy('enemy_shooter', { atk: 400, range: 9 }),
-    enemy_flyer: dummy('enemy_flyer', { motion: 'FLY' }), enemy_res0: dummy('enemy_res0', { res: 0, def: 0 }),
+    enemy_flyer: dummy('enemy_flyer', { motion: 'FLY' }), enemy_res0: dummy('enemy_res0', { res: 0, def: 0 }), enemy_taunt: dummy('enemy_taunt', { taunt: 1 }),
   },
 };
 const HOOKS = ['damaged', 'hit', 'skillStart', 'skillEnd', 'death', 'deploy', 'statusApplied', 'merchantPay', 'attack'];
@@ -112,14 +112,40 @@ test('老鲤 trait + 有备无患: every interval from his deployment — |extra
   done(h);
 });
 
+test('老鲤 trait: `merchantPay` before each payment — a cancel skips it (no withdrawal), a new cost is what he pays', () => {
+  const p = payOf(ID6);
+  {
+    // cancelled: nothing paid, no charge, and DP 0 does not withdraw him
+    const h = run({ units: [L(ID6, S1, 10, 4)], flags: FROZEN_DP(0), setup(b) { b.on('merchantPay', (c) => { c.cancel = true; }); } });
+    const u = h.unit(1);
+    const log = dpLog(h, 3 * p.iv + 0.2);
+    assert.equal(log.length, 0);
+    assert.equal(h.hooksOf('merchantPay').length, 3);
+    assert.ok(u.alive, 'not withdrawn');
+    assert.equal(u.findBuff('lmlee:bounce'), null);
+    done(h);
+  }
+  {
+    // a cost of 1: he pays 1 every time (the first still buys the charge)
+    const h = run({ units: [L(ID6, S1, 10, 4)], flags: FROZEN_DP(p.extra), setup(b) { b.on('merchantPay', (c) => { c.cost = 1; }); } });
+    const u = h.unit(1);
+    const log = dpLog(h, 3 * p.iv + 0.2);
+    assert.deepEqual(log.map((x) => +x.d.toFixed(9)), [-1, -1, -1]);
+    assert.deepEqual(h.hooksOf('merchantPay').map((c) => c.cost), [1, 1, 1], '(the captured ctx after the handler)');
+    assert.ok(u.alive && u.findBuff('lmlee:bounce'));
+    done(h);
+  }
+});
+
 test('老鲤 有备无患: the charge cancels the next 晕眩 / 冻结 and stuns an enemy source `stun` s; used up either way; cold untouched', () => {
   for (const [id, moduleId] of [[ID6, null], [EL6, null], [EL5, null]]) {
     const p = payOf(id, moduleId);
-    const h = run({ units: [L(id, S1, 10, 4, { moduleId })], enemies: [{ key: 'enemy_dummy', pos: [10, 6] }], flags: FROZEN_DP(99) });
+    const h = run({ units: [L(id, S1, 10, 4, { moduleId }), { uid: 2, chessId: 'test_guard_a', row: 12, col: 6 }], enemies: [{ key: 'enemy_dummy', pos: [10, 6] }], flags: FROZEN_DP(99) });
     const u = h.unit(1);
     h.run(p.iv + 0.1);
     const e = h.enemies()[0];
     assert.ok(u.findBuff('lmlee:bounce'), 'charged');
+    assert.ok(h.unit(2).alive);
     assert.equal(h.b.applyStatus(u, 'stun', { duration: 5, source: e }), false, 'stun cancelled');
     assert.ok(!u.s.flags.stun);
     assert.ok(e.s.flags.stun, 'the source is stunned');
@@ -135,6 +161,13 @@ test('老鲤 有备无患: the charge cancels the next 晕眩 / 冻结 and stuns
     h.runUntil(() => !!u.findBuff('lmlee:bounce'), p.iv + 0.2);
     assert.equal(h.b.applyStatus(u, 'cold', { duration: 3, source: e }), true, 'cold is no 晕眩 / 冻结');
     assert.ok(u.findBuff('lmlee:bounce'), 'kept');
+    // a stun from an ally (friendly fire): cancelled, the ally is not stunned back
+    h.runUntil(() => !!u.findBuff('lmlee:bounce'), p.iv + 0.2);
+    const ally = h.unit(2);
+    assert.ok(u.findBuff('lmlee:bounce') && ally.alive);
+    assert.equal(h.b.applyStatus(u, 'stun', { duration: 2, source: ally }), false, 'cancelled');
+    assert.ok(!ally.s.flags.stun, 'never an ally');
+    assert.equal(u.findBuff('lmlee:bounce'), null, 'used up');
     done(h);
   }
 });
@@ -209,6 +242,11 @@ test('老鲤 T1 和气生财: while he blocks, ASPD +[self] and the blocked enem
     assert.equal(t0.cnt, 1);
     assert.equal(u.s.aspd, u.base.aspd + 2 * self, `${tag} self ×2`);
     assert.equal(e.s.aspd, e.base.aspd + 2 * foe, `${tag} enemy ×2`);
+    // an enemy two tiles away is not on his 3×3: still ×2
+    const far = h.spawn('enemy_dummy', { pos: [10, 6] });
+    h.step(1);
+    assert.equal(u.s.aspd, u.base.aspd + 2 * self, `${tag} +2 tiles: not 周围八格`);
+    h.b.kill(far);
     // a second enemy on his 3×3 (not blocked: his block is 1) ⇒ ×1
     h.spawn('enemy_dummy', { pos: [10, 5] });
     h.step(1);
@@ -352,6 +390,71 @@ test('老鲤 S3: range 3×3, ATK / DEF +, taunt +; pushes the other ground enemi
   h.run(20);
   assert.ok(h.hooksOf('hit').filter((c) => c.target === h.unit(1)).every((c) => !c.dmg.cancel));
   done(h);
+});
+
+test('老鲤 S2: the mark goes to the attack target — the enemy he blocks before a taunting one', () => {
+  for (const id of [ID6, EL6]) {
+    const h = run({ units: [L(id, S2, 10, 4, { carryState: READY })], flags: FROZEN_DP(99) });
+    const u = h.unit(1);
+    h.step(1);
+    const taunt = h.spawn('enemy_taunt', { pos: [10, 5] }), blocked = h.spawn('enemy_res0', { pos: [10, 4] });
+    assert.ok(h.runUntil(() => u.skill.activations > 0, 3));
+    assert.equal(blocked.blockedBy, u);
+    assert.ok(taunt.base.tauntLevel > blocked.base.tauntLevel, 'the other one taunts');
+    assert.ok(blocked.findBuff(`lmlee:paper:${u.id}`), `${id}: the blocked one`);
+    assert.equal(taunt.findBuff(`lmlee:paper:${u.id}`), null);
+    done(h);
+  }
+});
+
+test('老鲤 S3: each push is exactly the 力度 attack@force distance (radial, away from him)', () => {
+  for (const id of [ID6, EL6]) {
+    const force = sbb(id, S3)['attack@force'];
+    const h = run({ units: [L(id, S3, 10, 4, { carryState: READY })], enemies: [{ key: 'enemy_hitter', pos: [10, 4] }], flags: FROZEN_DP(99) });
+    const u = h.unit(1);
+    assert.ok(h.runUntil(() => u.skill.active, 2));
+    const g = h.spawn('enemy_dummy', { pos: [10, 5] });
+    h.step(1);
+    const want = h.b.pushDistance(g, force);
+    assert.ok(want > 0 && want < h.b.pushDistance(g, force + 1));
+    const attacks = () => h.hooksOf('attack').filter((c) => c.attacker === u).length;
+    const n0 = attacks(), x0 = g.x, y0 = g.y;
+    h.runUntil(() => attacks() > n0, 3);
+    close(g.x - x0, want, 1e-9, `${id} pushed by 力度 ${force}`);
+    close(g.y, y0, 1e-12, 'radial: along the line from him');
+    done(h);
+  }
+});
+
+test('老鲤 S3 evade: only while S3 runs, only physical / arts dodgeable damage from outside his range, at rate prob', () => {
+  for (const id of [ID6, EL6]) {
+    const prob = sbb(id, S3).prob;
+    // no carry: S3 comes at the first attack once its SP is full (the blocked hitter)
+    const h = run({ units: [L(id, S3, 10, 4)], enemies: [{ key: 'enemy_hitter', pos: [10, 4] }, { key: 'enemy_dummy', pos: [12, 9] }], flags: FROZEN_DP(99) });
+    const u = h.unit(1);
+    h.step(2);
+    const [inside, outside] = [h.enemies().find((e) => e.blockedBy === u), h.enemies().find((e) => !e.blockedBy)];
+    /** `n` hits on him: how many were cancelled (dealDamage 0), his HP refilled after each. */
+    const evaded = (src, n, o = {}) => {
+      let k = 0;
+      for (let i = 0; i < n; i++) {
+        if (!(h.b.dealDamage(src, u, { amount: 1500, type: 'phys', isAttack: true, ...o }) > 0)) k++;
+        u.hp = u.s.maxHp;
+      }
+      return k;
+    };
+    assert.equal(u.skill.active, false);
+    assert.equal(evaded(outside, 60), 0, 'S3 not running: nothing evaded');
+    assert.ok(h.runUntil(() => u.skill.active, 20), 'S3 cast');
+    const N = 600;
+    const rate = evaded(outside, N) / N;
+    assert.ok(Math.abs(rate - prob) < 0.05, `${id} rate ${rate} vs prob ${prob}`);
+    assert.equal(evaded(outside, 60, { type: 'true' }), 0, 'true damage is never evaded');
+    assert.equal(evaded(outside, 60, { canDodge: false }), 0, 'undodgeable damage is never evaded');
+    assert.equal(evaded(inside, 60), 0, 'never from inside his range');
+    assert.ok(evaded(outside, 60, { type: 'arts' }) > 0, 'arts damage is');
+    done(h);
+  }
 });
 
 test('老鲤 modules × skills (both tiers\' elites): casts, the payments and MER-Y stacks of the loadout', () => {
