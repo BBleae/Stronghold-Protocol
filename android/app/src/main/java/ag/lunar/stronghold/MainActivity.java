@@ -37,7 +37,7 @@ public class MainActivity extends Activity {
     /** The servers offered by default: [label, origin]. The first is the default. */
     private static final String[][] SERVERS = {
         { "晴猫的服务器（stronghold.lunar.ag）", "https://stronghold.lunar.ag" },
-        { "卫.rinko.ai", "https://xn--rlr.rinko.ai" },
+        { "卫.slapq.top", "https://xn--rlr.slapq.top" },
     };
     private static final String PREF_SERVER = "server";
     /** Marks the WebView's user agent: the client skips its own resource download (public/js/appShell.js). */
