@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- the site's maskable icon (public/icons/icon-maskable-512.png) on the game's background; inset so its ring (69% of
+     the image) fits the launcher's mask (the middle 72 of 108 dp) -->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/bg" />
+    <foreground>
+        <inset android:drawable="@mipmap/ic_launcher_foreground" android:inset="6%" />
+    </foreground>
+</adaptive-icon>

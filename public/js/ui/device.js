@@ -21,6 +21,7 @@
 
 import { useEffect, useState } from '../../vendor/hooks.module.js';
 import { html, Icon } from './components.js';
+import { inApp } from '../appShell.js';
 
 /** A touch held this long without moving opens the detail (contextmenu) on DOM controls. */
 export const LONG_PRESS_MS = 520;
@@ -57,7 +58,9 @@ export function detectFeatures(win = globalThis) {
   const fine = mq(win, '(any-pointer: fine)');
   const hover = mq(win, '(any-hover: hover)') || mq(win, '(hover: hover)');
   const el = doc?.documentElement;
-  const fsEnabled = !!(doc && (doc.fullscreenEnabled || doc.webkitFullscreenEnabled))
+  // the Android app is full screen already, and its WebView hosts no element fullscreen (appShell.js)
+  const app = inApp(nav.userAgent || '');
+  const fsEnabled = !app && !!(doc && (doc.fullscreenEnabled || doc.webkitFullscreenEnabled))
     && !!(el && (typeof el.requestFullscreen === 'function' || typeof el.webkitRequestFullscreen === 'function'));
   let importMaps = false;
   try { importMaps = typeof win.HTMLScriptElement?.supports === 'function' && win.HTMLScriptElement.supports('importmap'); } catch { importMaps = false; }
@@ -67,7 +70,7 @@ export function detectFeatures(win = globalThis) {
     fine,
     hover,
     fullscreen: fsEnabled,
-    standalone: mq(win, '(display-mode: standalone)') || mq(win, '(display-mode: fullscreen)') || nav.standalone === true,
+    standalone: app || mq(win, '(display-mode: standalone)') || mq(win, '(display-mode: fullscreen)') || nav.standalone === true,
     reducedMotion: mq(win, '(prefers-reduced-motion: reduce)'),
     screenLandscape: screenLandscape(win),
     importMaps,

@@ -25,3 +25,6 @@
 *.ttf binary
 *.mp3 binary
 *.ogg binary
+# Android app (android/): the Gradle wrapper script runs under sh, its jar is binary
+android/gradlew text eol=lf
+*.jar binary

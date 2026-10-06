@@ -10,6 +10,7 @@ import { ResourceStore } from './store.js';
 import { exportResourceZip, importResourceZip } from './zip.js';
 import { ResourceDialog } from './view.js';
 import { installResourceOpener } from '../ui/resourceButton.js';
+import { appBundled } from '../appShell.js';
 
 // The player's choice: 'install' (keep every resource file locally) or 'ondemand'. Unset until the first visit's
 // dialog closes; a returning player's boot never waits for the resource layer. Releases whose site hosted no resource
@@ -28,6 +29,8 @@ function preference(value) {
 
 /** Cache Storage, service workers and Web Locks need a secure context and site data; some in-app browsers lack them. */
 function supported() {
+  // the Android app carries the files and answers their requests itself (appShell.js): nothing to download or keep
+  if (appBundled()) return false;
   const apis = globalThis.isSecureContext && 'serviceWorker' in navigator && 'caches' in globalThis && 'locks' in navigator;
   if (!apis) return false;
   try {
