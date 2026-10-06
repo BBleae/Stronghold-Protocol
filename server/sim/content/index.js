@@ -34,12 +34,15 @@ async function safeImport(path) {
 }
 
 const TIERS = await Promise.all([1, 2, 3, 4, 5, 6].map((t) => safeImport(`./kits/tier${t}.js`)));
+// 外援 / 甄选 (DESIGN §27): one kit file per operator under kits/waiguan/, registered for both chess ids of the operator by
+// the GENERATED kits/waiguan/index.js (tools/gen-waiguan-kits.mjs)
+const WAIGUAN = await safeImport('./kits/waiguan/index.js');
 const DOMAIN_NAMES = ['tokens', 'devices', 'enemies', 'bosses', 'bonds', 'garrisons', 'items', 'bands', 'choices'];
 const DOMAINS = await Promise.all(DOMAIN_NAMES.map((n) => safeImport(`./${n}.js`)));
 const tokens = DOMAINS[0];
 
 /** Merged kit registry: baseChessId → (bb, chess, def) => Kit */
-export const KITS = Object.freeze(Object.assign({}, ...TIERS.map((m) => (m && m.default && typeof m.default === 'object' ? m.default : {}))));
+export const KITS = Object.freeze(Object.assign({}, ...[...TIERS, WAIGUAN].map((m) => (m && m.default && typeof m.default === 'object' ? m.default : {}))));
 
 /** Domain modules in install order: tokens, devices, enemies, bosses, bonds, garrisons, items, bands, choices. */
 export const MODULES = Object.freeze(DOMAIN_NAMES.map((n, i) => [n, DOMAINS[i]]));
