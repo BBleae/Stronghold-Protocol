@@ -17,37 +17,41 @@
 //   kept; an AUTO skill has no operation cooldown, so stored charges go on consecutive attacks.
 // S3 碎颅击 (MANUAL, DEFAULT kept, duration): 攻击间隔 +base_attack_time s (batMod: a flat change, "增大"), attacks at
 //   attack@atk_scale × ATK, each attack hit stuns its target attack@stun s with chance attack@buff_prob.
-// T1 万兽之王: every 【先锋】 operator of her player (herself included) ATK +atk, DEF +def, from the talent's no-module
-//   blackboard (talentsBase); two copies never stack (the stronger holds, pool installAura rule). Module SOL-X
+// T1 万兽之王: an aura while she is on the field (the text has no "编入队伍时 / 携带…时 / 上阵时", the only team-scope
+//   wordings — the repo's reading of this very text: genericTalents.js "所有【先锋】…" scope, test/sim/generic-talents
+//   'F7.auraAlly'; no siege_t_1 template exists): every 【先锋】 operator of her player on the field (herself included)
+//   ATK +atk, DEF +def, from the talent's no-module blackboard (talentsBase) — installAura (kits/tier1.js): refreshed every
+//   0.5 s, it lapses ≤ 0.6 s after she leaves; two copies never stack (the stronger holds). Module SOL-X
 //   (uniequip_002_siege) from level 2 (tier VI level 3) adds "自身攻击力和防御力额外+8%": the module's talent part for
 //   index 0 — its blackboard is that extra (official data: level 2 reads "额外+6%" with atk/def 0.06 while the 先锋 part
-//   stays 8 %), on herself only.
+//   stays 8 %), on herself while she is on the field.
 // T2 粉碎 (siege_t_2: ON_OWNER_KILLED → ModifySp on the source): an enemy that falls (killed by anyone, or a 重伤 that
 //   expires) on the talent's range grid (her tile and the four around it) gives her `sp` SP (lost while her timed skill
 //   runs — the engine's rule). Module SOL-Y (uniequip_003_siege) raises `sp` (talent 1 of the record) and, from level 2,
 //   adds a hidden part (siege_e_003[sp] → [modify_sp]): one random other 【先锋】 operator of her player on the field
-//   gains that part's `sp` (battle RNG, drawn only with two or more candidates).
+//   that can gain SP gains that part's `sp` (battle RNG, drawn only with two or more candidates). Candidates as the
+//   pool's 华法琳 血液样本回收 random ally (kits/tier4.js bldsk_t_1[rand]): selectable (not 孤立), with a skill that is
+//   neither passive nor running a timed activation.
 // Module SOL-X trait: ATK and DEF +atk / +def while she blocks an enemy (the pool's 焰尾 SOL-X).
 // Module SOL-Y "首次部署时部署费用-4" (hidden runtime_cost): the initial deployment is free in battle and a redeploy is not a
 //   首次部署 ⇒ no in-battle effect (pool: 德克萨斯 kits/tier1.js, 忍冬 kits/tier3.js).
 // Modules are dispatched by `chess.module.type` (KIT_CONVENTIONS 15); their numbers come from the loadout record.
 // fx: 'dp' (every DP gain), 'shockBlast' (S2 attack: `tiles` = the cross it covers), 'spGain' (粉碎), 'spGift' (SOL-Y).
 // [ASSUMED] (PRTS unreachable from the authoring container):
-//   * T1 has neither "在场时" nor "编入队伍时": read as a squad effect — every 先锋 operator of her player for the whole
-//     battle, deployed or not (persist, like 年 积甲成山), whether she is on the field or not; summons are no 干员.
+//   * T1: summons are no 干员 (operators only).
 //   * S2 hits ground enemies only (a melee pioneer's attack; no "可对空" note in the data).
 //   * T2 counts every enemy that falls on those tiles (flyers too) while she stands on the field. siege_t_2's ModifySp
 //     carries `_forceFlag`; its meaning is not in the data, so the engine's rule stands (no SP while S3 runs).
 //   * SOL-Y "场上随机另一名【先锋】职业干员": her player's other 先锋 operators on the field (a teammate's on a shared field are
-//     not counted, KIT_CONVENTIONS 5), whatever their skill state (the SP is lost when theirs runs).
+//     not counted, KIT_CONVENTIONS 5).
 
-import { num, tal, talRec, hiddenBb, moduleRec, lazySkills, mods, gridOf, instantKindOf, live, batMod, toggleBuff } from './_lib.js';
+import { num, tal, talRec, hiddenBb, moduleRec, lazySkills, mods, gridOf, instantKindOf, live, batMod, toggleBuff, installAura } from './_lib.js';
 import { absoluteRangeKeys } from '../../../targeting.js';
 import { bodyInKeys } from '../../../body.js';
 import { gridTiles } from '../../fxtiles.js';
 
 const S1 = 'skcom_charge_cost[3]', S2 = 'skchr_siege_2', S3 = 'skchr_siege_3';
-/** 万兽之王 on the 先锋 operators (one per unit: the strongest copy holds) and the SOL-X extra on herself. */
+/** 万兽之王 on the 先锋 operators on the field (one per unit: the strongest copy holds) and the SOL-X extra on herself. */
 export const LORD_KEY = 'siege:lord';
 export const LORD_SELF_KEY = 'siege:lordSelf';
 
@@ -60,11 +64,12 @@ function gainDp(battle, unit, n) {
   battle.fx('dp', { x: unit.x, y: unit.y, id: unit.id, n });
 }
 
+/** Can `u` gain SP now: a skill that is neither passive nor running a timed activation (pool bldsk_t_1[rand] filter). */
+const canGainSp = (u) => !!u?.skill && !u.skill.noSkill && u.skill.kind !== 'passive' && !(u.skill.active && u.skill.isTimed);
+
 /** SP gift to `u` unless its timed skill runs (the engine's rule). */
 function giftSp(u, n) {
-  const sk = u?.skill;
-  if (!sk || sk.noSkill || sk.kind === 'passive' || !(n > 0) || (sk.active && sk.isTimed)) return 0;
-  return sk.gainSp(n, 'talent');
+  return canGainSp(u) && n > 0 ? u.skill.gainSp(n, 'talent') : 0;
 }
 
 /** S1 冲锋号令·γ型: +cost DP, cast as soon as it is ready (header). */
@@ -120,19 +125,12 @@ export default function siege(bb, chess) {
       [S3]: (rec) => skullBreaker(rec, chess),
     }),
     talents: [
-      { install(battle, unit) { // 万兽之王 (+ SOL-X extra on herself)
+      { install(battle, unit) { // 万兽之王 (+ SOL-X extra on herself), while she is on the field
         const v = num(lordBb.atk);
         const m = mods({ atkPct: v, defPct: num(lordBb.def) });
-        if (Object.keys(m).length) {
-          for (const a of battle.allyUnits) {
-            if (!isVanguard(a) || a.ownerId !== unit.ownerId) continue;
-            const cur = a.findBuff(LORD_KEY);
-            if (cur && num(cur.data?.v) >= v) continue; // another copy's equal or stronger 万兽之王
-            battle.addBuff(a, { key: LORD_KEY, mods: m, persist: true, allowDead: true, source: unit, data: { v }, tags: ['talent'] });
-          }
-        }
+        if (Object.keys(m).length) installAura(battle, unit, { key: LORD_KEY, value: v, mods: m, select: (a) => isVanguard(a) && a.ownerId === unit.ownerId });
         const self = mods({ atkPct: num(selfBb.atk), defPct: num(selfBb.def) });
-        if (Object.keys(self).length) battle.addBuff(unit, { key: LORD_SELF_KEY, mods: self, persist: true, allowDead: true, source: unit, tags: ['talent'] });
+        if (Object.keys(self).length) toggleBuff(battle, unit, LORD_SELF_KEY, () => true, self);
       } },
       { install(battle, unit) { // 粉碎 (+ SOL-Y: a random other 先锋 of her player)
         if (!crushGrid || !(crushSp > 0 || giftN > 0)) return;
@@ -142,7 +140,7 @@ export default function siege(bb, chess) {
           if (!bodyInKeys(v, new Set(absoluteRangeKeys(crushGrid, unit.tileR, unit.tileC, unit.dir, 0)))) return;
           if (crushSp > 0 && giftSp(unit, crushSp) > 0) battle.fx('spGain', { x: unit.x, y: unit.y, id: unit.id, n: crushSp });
           if (!(giftN > 0)) return;
-          const others = battle.allies(unit.ownerId).filter((a) => a !== unit && isVanguard(a) && battle.allySelectable(a, unit));
+          const others = battle.allies(unit.ownerId).filter((a) => a !== unit && isVanguard(a) && battle.allySelectable(a, unit) && canGainSp(a));
           const pick = others.length > 1 ? battle.rng.pick(others) : others[0];
           if (pick && giftSp(pick, giftN) > 0) battle.fx('spGift', { x: pick.x, y: pick.y, id: pick.id, src: unit.id, n: giftN });
         }, { owner: unit });

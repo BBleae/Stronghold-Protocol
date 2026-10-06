@@ -10,6 +10,8 @@ import { getData } from '../../../server/data.js';
 import { waiguanRecords } from '../../../shared/waiguan.js';
 import { skillSpecSource } from '../../../server/sim/content/index.js';
 import { AUTO_OP_COOLDOWN, COLS, TICK } from '../../../server/sim/constants.js';
+import { flatStage } from '../../helpers/battleHarness.js';
+import { SharedBossPool } from '../../../server/match/finalAssault.js';
 import WAIGUAN from '../../../server/sim/content/kits/waiguan/index.js';
 
 const CHAR = 'char_362_saga';
@@ -56,6 +58,7 @@ const near = (a, b, eps = 1e-6) => Math.abs(a - b) <= eps * Math.max(1, Math.abs
 const has = (c, tag) => !!c.dmg?.tags?.includes(tag);
 const dp = (h, pid = 'p1') => h.b.getPlayer(pid).dp;
 const phys = (a, d) => Math.max(a - d, 0.05 * a);
+const talentSp = (h, u) => h.hooksOf('spGain').filter((c) => c.unit === u && c.reason === 'talent').map((c) => c.amount);
 /** Every (record, module) of the operator: both tiers' normal chess, both elites with every module incl. 'none'. */
 const ALL = [[ID5, undefined], [ID6, undefined], ...ELITES.flatMap((E) => [null, 'none', SOL_Y, SOL_X].map((m) => [E, m]))];
 const opt = (m) => (m === undefined ? {} : { moduleId: m });
@@ -371,6 +374,7 @@ test('嵯峨 T1: she attacks the other enemy; the 重伤 one cannot attack; the 
   h.b.dealDamage(guard, brute, { amount: 1e3, type: 'true' });
   assert.equal(brute.alive, false);
   assert.deepEqual(h.hooksOf('spGain').filter((c) => c.unit === guard && c.reason === 'talent').map((c) => c.amount), [sp]);
+  assert.deepEqual(talentSp(h, u), [], 'the 击杀者 alone (ModifySp MAIN_TARGET): not her');
   h.b.dealDamage(guard, plain, { amount: 1e8, type: 'true' });
   assert.equal(plain.alive, false);
   assert.equal(h.hooksOf('spGain').filter((c) => c.unit === guard && c.reason === 'talent').length, 1, 'no SP for a plain kill');
@@ -395,6 +399,7 @@ test('嵯峨 T1: two copies share one 重伤 per enemy, neither attacks it, its 
   assert.equal(h.hooksOf('attack').filter((c) => c.attacker === a || c.attacker === b).length, n0);
   h.b.dealDamage(guard, ea, { amount: 10, type: 'true' });
   assert.deepEqual(h.hooksOf('spGain').filter((c) => c.unit === guard && c.reason === 'talent').map((c) => c.amount), [sp], 'once');
+  assert.deepEqual([...talentSp(h, a), ...talentSp(h, b)], [], 'neither 嵯峨');
   done(h);
   // two players on one field: P2's 嵯峨 cripples, P1's guard kills it and gains the SP; P2's S1 DP goes to p2 only
   const players = [
@@ -415,6 +420,7 @@ test('嵯峨 T1: two copies share one 重伤 per enemy, neither attacks it, its 
   assert.equal(t2.ownerId, 'p1');
   g.b.dealDamage(t2, v, { amount: 10, type: 'true' });
   assert.deepEqual(g.hooksOf('spGain').filter((c) => c.unit === t2 && c.reason === 'talent').map((c) => c.amount), [sp]);
+  assert.deepEqual(talentSp(g, g.unit(1)), [], 'a teammate\'s kill of her 重伤 enemy gives her nothing');
   done(g);
 });
 
@@ -435,6 +441,112 @@ test('嵯峨 T1: the 击杀者 SP is lost while its timed skill runs; a 重伤 e
   h.b.dealDamage(guard, e, { amount: 10, type: 'true' });
   assert.equal(e.alive, false);
   assert.equal(h.hooksOf('spGain').filter((c) => c.unit === guard && c.reason === 'talent').length, 0);
+  done(h);
+});
+
+test('嵯峨 T1: the re-pick keeps the attack\'s target count (2+ plain enemies in reach); blocking only a 重伤 enemy she holds — DEFAULT does not cast', () => {
+  // a 重伤 dummy she blocks (her tile) — blocked-first would take it — and two plain ones in front: one target per attack
+  const h = run({ units: [U(ID6, S1, 9, 4)], enemies: [{ key: 'enemy_dummy', pos: [9, 4] }, { key: 'enemy_dummy', pos: [9, 5] }, { key: 'enemy_dummy', pos: [9, 5] }] });
+  h.step(1);
+  const u = h.unit(ID6);
+  const [held, p1, p2] = h.b.enemies;
+  assert.equal(held.blockedBy, u);
+  h.b.dealDamage(u, held, { amount: 1e8, type: 'true' });
+  assert.ok(held.findBuff(CRIPPLE) && held.hp === 1);
+  const t = h.b.time;
+  h.run(6);
+  const atk = h.hooksOf('attack').filter((c) => c.attacker === u && c.t >= t);
+  assert.ok(atk.length >= 4);
+  assert.ok(atk.every((c) => c.targets.length === 1 && (c.targets[0] === p1 || c.targets[0] === p2)), 'one plain target each');
+  done(h);
+  // S3 ready 2 s in, the only enemy is a 重伤 one she blocks: no attack, no cast
+  const s = skillOf(ID6, S3);
+  const g = run({ units: [U(ID6, S3, 9, 4, { carryState: { sp: s.spCost - 2 } })], enemies: [{ key: 'enemy_dummy', pos: [9, 4] }, { key: 'enemy_dummy', pos: [9, 5], time: 6 }] });
+  g.step(1);
+  const v = g.unit(ID6), only = g.b.enemies[0];
+  assert.equal(only.blockedBy, v);
+  g.b.dealDamage(v, only, { amount: 1e8, type: 'true' });
+  const t2 = g.b.time;
+  g.run(5.9 - g.b.time);
+  assert.ok(v.skill.ready && v.blocking.includes(only));
+  assert.equal(g.hooksOf('attack').filter((c) => c.attacker === v && c.t > t2).length, 0, 'no attack');
+  assert.equal(v.skill.activations, 0, 'DEFAULT does not cast on a 重伤 enemy she blocks');
+  assert.ok(g.runUntil(() => v.skill.active, 1), 'cast once a plain one comes');
+  done(g);
+});
+
+test('嵯峨 thresholds: the S3 follow-up needs HP below hp_ratio (exactly at it: none); 清明 needs HP below hp_ratio (exactly 40 %: none); 清明 gives no arts dodge', () => {
+  const s = skillOf(ID6, S3), lt = s.bb['attack@hp_ratio'];
+  const h = run({ units: [U(ID6, S3, 9, 4, { carryState: READY })], enemies: [{ key: 'enemy_dummy', pos: [9, 4] }, { key: 'enemy_dummy', pos: [9, 4] }] });
+  h.step(1);
+  const u = h.unit(ID6);
+  const [at, below] = h.b.enemies;
+  // right after each S3 main hit (the follow-up is checked next), put the targets at / just under the threshold
+  h.b.on('damaged', (c) => {
+    if (c.source !== u || !c.dmg.isAttack || c.dmg.tags?.includes('sagaS3Extra')) return;
+    if (c.target === at) at.hp = at.s.maxHp * lt;
+    if (c.target === below) below.hp = below.s.maxHp * lt - 1;
+  }, { priority: 1000 });
+  assert.ok(h.runUntil(() => u.skill.active, 2));
+  h.run(5);
+  const mainHits = h.hooksOf('damaged').filter((c) => c.source === u && c.dmg.isAttack && !has(c, 'sagaS3Extra') && c.target === at);
+  const extra = h.hooksOf('damaged').filter((c) => c.source === u && has(c, 'sagaS3Extra'));
+  assert.ok(mainHits.length >= 3 && extra.length >= 2);
+  assert.ok(extra.every((c) => c.target === below), 'exactly at hp_ratio: no follow-up (LT)');
+  assert.equal(at.s.maxHp * lt / at.s.maxHp, lt);
+  done(h);
+  for (const [id, m] of [[ID6, undefined], [ELITE6, null]]) {
+    const t1 = talOf(id, 1, m ?? null);
+    const g = run({ units: [U(id, S1, 9, 4, opt(m))], enemies: [{ key: 'enemy_dummy', pos: [9, 8] }] });
+    g.step(1);
+    const v = g.unit(id), e = g.enemy('enemy_dummy');
+    let setTo = null;
+    g.b.on('damaged', (c) => { if (c.target === v && setTo != null) v.hp = setTo; }, { priority: 1000 });
+    setTo = v.s.maxHp * t1.hp_ratio;
+    g.b.dealDamage(e, v, { amount: 1, type: 'true' });
+    assert.equal(v.hpRatio, t1.hp_ratio, 'exactly hp_ratio');
+    assert.equal(v.findBuff('saga:clarity'), null, '"低于": not at it');
+    setTo = v.s.maxHp * t1.hp_ratio - 0.5;
+    g.b.dealDamage(e, v, { amount: 1, type: 'true' });
+    assert.ok(v.findBuff('saga:clarity'), 'below it');
+    assert.ok(near(v.s.dodgePhys, t1.prob));
+    assert.equal(v.s.dodgeArts, 0, 'physical dodge only');
+    done(g);
+  }
+});
+
+test('嵯峨 T1: a leader on a shared boss HP pool is not held at 1 HP (no fatal step for a pool — documented); an ordinary enemy of that field is', () => {
+  const defs = { chess: DEFS.chess, enemies: { ...DEFS.enemies,
+    enemy_bossx: { ...enemyRec({ key: 'enemy_bossx', hp: 600000, speed: 0, dmgType: 'none' }), rank: 'BOSS', hitArea: { w: 4.95, h: 2.95, dx: 0, dy: 1 } } } };
+  const pool = new SharedBossPool(3600);
+  const h = makeBattle({ defs, kind: 'boss', stage: flatStage(), sharedBoss: pool, autoFinish: false, seed: 3, flags: NO_DP, hooks: HOOKS, captureNoisy: true,
+    units: [U(ID6, S1, 10, 6)],
+    enemies: [{ key: 'enemy_bossx', pos: [3, 10], route: { motion: 'WALK', start: [3, 10], end: [3, 10], checkpoints: [] }, tag: 'boss' }, { key: 'enemy_soft', pos: [10, 8] }] });
+  h.step(1);
+  const u = h.unit(ID6);
+  const boss = h.b.enemies.find((e) => e.isBoss), add = h.enemy('enemy_soft');
+  assert.ok(boss.bossPool === pool);
+  h.b.dealDamage(u, add, { amount: 1e7, type: 'true' });
+  assert.ok(add.alive && add.hp === 1 && add.findBuff(CRIPPLE), 'an ordinary enemy: held, 重伤');
+  h.b.dealDamage(u, boss, { amount: 5000, type: 'true' });
+  assert.equal(pool.hp, 0);
+  assert.equal(boss.alive, false, 'the pooled leader dies');
+  assert.equal(boss.findBuff(CRIPPLE), null);
+  assert.equal(h.hooksOf('kill').find((c) => c.victim === boss).killer, u);
+  checkInvariants(h.b);
+});
+
+test('嵯峨 T1: a record without a positive 重伤 interval holds nobody at 1 HP (no endless 重伤, no literal fallback)', () => {
+  const noTimer = structuredClone(rec(ID6));
+  delete noTimer.talents.find((t) => t.index === 0).bb.interval;
+  const h = makeBattle({ defs: { ...DEFS, chess: { ...DEFS.chess, [ID6]: noTimer } }, seed: 7, timeLimit: 60, autoFinish: false, hooks: HOOKS, captureNoisy: true, flags: NO_DP,
+    units: [U(ID6, S1, 9, 4)], enemies: [{ key: 'enemy_soft', pos: [9, 5] }] });
+  h.step(1);
+  const u = h.unit(ID6), e = h.enemy('enemy_soft');
+  assert.equal(u.kit.skillSource, 'skills');
+  h.b.dealDamage(u, e, { amount: 1e7, type: 'true' });
+  assert.equal(e.alive, false, 'her lethal damage kills');
+  assert.equal(h.hooksOf('kill').find((c) => c.victim === e).killer, u);
   done(h);
 });
 

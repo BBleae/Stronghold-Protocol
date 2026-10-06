@@ -45,6 +45,8 @@ const DEFS = {
     enemy_dummy: dummy('enemy_dummy', { def: 100 }),
     enemy_fly: dummy('enemy_fly', { def: 100, motion: 'FLY' }),
     enemy_walker: enemyRec({ key: 'enemy_walker', hp: 1e7, speed: 1, atk: 0, def: 0 }),
+    // flies route 2 (row 9, right → left) over everyone to the goal (9, 2)
+    enemy_flyer: enemyRec({ key: 'enemy_flyer', hp: 1e7, speed: 1.5, atk: 0, def: 0, motion: 'FLY' }),
   },
 };
 const READY = { sp: 999 };
@@ -186,39 +188,59 @@ test('推进之王 S3 碎颅击: interval +base_attack_time, attacks at attack@a
   }
 });
 
-test('推进之王 T1 万兽之王: every 先锋 operator of her player ATK/DEF +8 % (herself too, persist); SOL-X level 3: herself +8 % more; others not', () => {
+test('推进之王 T1 万兽之王: an aura while she is on the field — every 先锋 operator of her player ATK/DEF +atk/+def (herself too); SOL-X level 3: herself more; others not', () => {
   for (const [id, m] of ALL) {
     const lord = lordOf(id), self = selfOf(id, m);
     assert.equal(self.atk > 0, id === ELITE6 && (m === null || m === SOL_X), `${id} ${m}: SOL-X level 3 only`);
     const h = run({ units: [U(id, S1, 9, 4, opt(m)), { chessId: 'test_van_a', row: 10, col: 4 }, { chessId: 'test_guard_a', row: 11, col: 4 }] });
-    h.step(1);
     const u = h.unit(id), van = h.unit('test_van_a'), guard = h.unit('test_guard_a');
+    assert.ok(!u.deployed && van.findBuff(LORD) === null && u.findBuff(LORD) === null && u.findBuff(LORD_SELF) === null, 'nothing before she deploys');
+    h.step(1);
     assert.ok(near(van.s.atk, van.base.atk * (1 + lord.atk)) && near(van.s.def, van.base.def * (1 + lord.def)), `${id} ${m}: 先锋`);
-    assert.ok(guard.s.atk === guard.base.atk && guard.s.def === guard.base.def, 'not a 先锋');
+    assert.ok(guard.s.atk === guard.base.atk && guard.s.def === guard.base.def && guard.findBuff(LORD) === null, 'not a 先锋');
     assert.ok(near(u.s.atk, u.base.atk * (1 + lord.atk + (self.atk ?? 0))), `${id} ${m}: herself ${u.s.atk}`);
     assert.ok(near(u.s.def, u.base.def * (1 + lord.def + (self.def ?? 0))));
-    assert.equal(van.findBuff(LORD).persist, true);
-    // whether she is on the field or not; kept through the 先锋's knock-out
-    h.b.kill(u);
+    assert.equal(van.findBuff(LORD).persist, false);
+    // a 先锋 knocked out and back: the aura takes it again within one refresh
     h.b.kill(van);
     assert.ok(h.b.redeploy(van));
+    h.run(0.55);
     assert.ok(near(van.s.atk, van.base.atk * (1 + lord.atk)));
+    // she leaves: gone within one refresh (≤ 0.6 s) — the 先锋's and her own
+    h.b.kill(u);
+    h.run(0.65);
+    assert.equal(van.findBuff(LORD), null, `${id} ${m}: gone after she left`);
+    assert.ok(van.s.atk === van.base.atk && van.s.def === van.base.def);
+    // she comes back: on again
+    assert.ok(h.b.redeploy(u));
+    h.run(0.55);
+    assert.ok(near(van.s.atk, van.base.atk * (1 + lord.atk)));
+    assert.ok(near(u.s.atk, u.base.atk * (1 + lord.atk + (self.atk ?? 0))), 'herself again');
     done(h);
   }
 });
 
-test('推进之王 T1: two copies — one 万兽之王 per 先锋; two players on one field — her player\'s 先锋 only', () => {
-  const h = run({ units: [U(ID5, S1, 9, 4, { uid: 1, carryState: READY }), U(ELITE6, S1, 9, 6, { uid: 2, carryState: READY }), { chessId: 'test_van_a', row: 10, col: 4, uid: 3 }] });
+test('推进之王 T1: two copies give one 万兽之王 (never both); the stronger source holds; two players on one field — her player\'s 先锋 only', () => {
+  const h = run({ units: [U(ID5, S1, 9, 4, { uid: 1, carryState: READY }), U(ELITE6, S1, 9, 6, { uid: 2, carryState: READY }), { chessId: 'test_van_a', row: 10, col: 4, uid: 3 },
+    { chessId: 'test_guard_a', row: 12, col: 4, uid: 4 }] });
   h.step(1);
-  const van = h.unit(3), a = h.unit(1), b = h.unit(2);
+  const van = h.unit(3), a = h.unit(1), b = h.unit(2), guard = h.unit(4);
   assert.equal(dp(h), h.b.flags.dpInit + skillOf(ID5, S1).bb.cost + skillOf(ELITE6, S1).bb.cost, 'both S1 casts: +cost each to the same player');
-  for (const x of [van, a, b]) {
-    assert.equal(x.buffs.filter((y) => y.key === LORD).length, 1, `${x.defId}: once`);
-    assert.equal(x.findBuff(LORD).source, a, 'equal strength: the first copy\'s holds, never overwritten');
+  for (let i = 0; i < 60; i++) {
+    h.step(1);
+    for (const x of [van, a, b]) assert.equal(x.buffs.filter((y) => y.key === LORD).length, 1, `${x.defId}: once`);
+    assert.ok(near(van.s.atk, van.base.atk * (1 + lordOf(ID5).atk)), `step ${i}: never both (${van.s.atk})`);
   }
-  assert.ok(near(van.s.atk, van.base.atk * (1 + lordOf(ID5).atk)));
   assert.ok(near(b.s.atk, b.base.atk * (1 + lordOf(ELITE6).atk + selfOf(ELITE6, null).atk)), 'the SOL-X extra is her own');
   assert.ok(near(a.s.atk, a.base.atk * (1 + lordOf(ID5).atk)));
+  // a stronger 万兽之王 already on the 先锋 holds (strongest source rule) …
+  h.b.addBuff(van, { key: LORD, mods: { atkPct: 0.5 }, source: guard, data: { v: 0.5 }, duration: 2 });
+  h.run(1.5);
+  assert.ok(near(van.s.atk, van.base.atk * 1.5), 'the stronger one holds');
+  // … and a weaker one gives way at the next refresh
+  h.b.addBuff(van, { key: LORD, mods: { atkPct: 0.01 }, source: guard, data: { v: 0.01 }, duration: 30 });
+  h.run(0.55);
+  assert.ok(near(van.s.atk, van.base.atk * (1 + lordOf(ID5).atk)), 'hers replaces a weaker one');
   done(h);
   // she plays for p2; p1's 先锋 shares the field
   const players = [
@@ -232,6 +254,7 @@ test('推进之王 T1: two copies — one 万兽之王 per 先锋; two players o
   assert.equal(theirs.ownerId, 'p1');
   assert.equal(dp(g, 'p2'), g.b.flags.dpInit + skillOf(ID6, S1).bb.cost, 'her S1: p2');
   assert.equal(dp(g, 'p1'), g.b.flags.dpInit, 'p1 untouched');
+  g.run(1);
   assert.ok(mine.alive && theirs.alive && theirs.deployed);
   assert.ok(near(mine.s.atk, mine.base.atk * (1 + lordOf(ID6).atk)));
   assert.equal(theirs.s.atk, theirs.base.atk, 'a teammate\'s 先锋: not hers');
@@ -267,6 +290,29 @@ test('推进之王 T2 粉碎: an enemy falling on her cross (her tile + the four
   assert.ok(u.skill.active);
   h.b.kill(h.b.enemies.find((e) => Math.round(e.y) === 11), null);
   assert.deepEqual(talentSp(h, u), []);
+  done(h);
+});
+
+test('推进之王 T2 粉碎: a flyer falling on her cross counts; an enemy leaking there does not', () => {
+  for (const [id, m] of [[ID6, undefined], [ELITE6, null]]) {
+    const sp = talOf(id, 1, m ?? null).sp;
+    const h = run({ units: [U(id, S1, 10, 5, opt(m))], enemies: [{ key: 'enemy_fly', pos: [10, 6] }] });
+    h.step(1);
+    const u = h.unit(id), fly = h.enemy('enemy_fly');
+    assert.equal(fly.isFlying, true);
+    h.b.kill(fly, null);
+    assert.deepEqual(talentSp(h, u), [sp], `${id}: a flyer counts`);
+    done(h);
+  }
+  // the goal is (9, 2): on her cross from (9, 3) (the tile behind her); a flyer passes over her and leaks there
+  const h = run({ units: [U(ID6, S1, 9, 3)], enemies: [{ key: 'enemy_flyer', route: 2 }] });
+  h.step(1);
+  const u = h.unit(ID6);
+  assert.ok(h.runUntil(() => h.hooksOf('death').some((c) => c.unit.defId === 'enemy_flyer'), 20));
+  const d = h.hooksOf('death').find((c) => c.unit.defId === 'enemy_flyer');
+  assert.equal(d.reason, 'leak');
+  assert.ok(Math.round(d.unit.y) === 9 && Math.round(d.unit.x) === 2, 'on her cross');
+  assert.deepEqual(talentSp(h, u), [], 'a leak is no 倒下');
   done(h);
 });
 
@@ -306,6 +352,31 @@ test('推进之王 module SOL-Y (level 3): 粉碎 +sp from the module; one rando
   assert.equal(talOf(ELITE5, 1, SOL_Y).sp, talOf(ID5, 1).sp);
   assert.deepEqual(talentSp(k, k.unit(7)), []);
   done(k);
+});
+
+test('推进之王 module SOL-Y gift: only a 先锋 that can gain SP — not 孤立, not skill-less, not one whose skill runs', () => {
+  const gift = hiddenOf(ELITE6, SOL_Y).sp;
+  const h = run({ units: [U(ELITE6, S1, 10, 5, { moduleId: SOL_Y }), { chessId: 'test_van_a', row: 12, col: 6, uid: 5 }, { chessId: 'test_vansk_a', row: 12, col: 7, uid: 6 },
+    { chessId: 'test_vansk_a', row: 12, col: 8, uid: 7, carryState: READY }, { chessId: 'test_vansk_a', row: 12, col: 9, uid: 8 }],
+  enemies: [{ key: 'enemy_dummy', pos: [10, 6] }, { key: 'enemy_dummy', pos: [11, 5] }] });
+  h.step(1);
+  const [noSkill, isolated, busy, ok] = [5, 6, 7, 8].map((i) => h.unit(i));
+  h.b.addBuff(isolated, { key: 'test:isolated', flags: { isolated: true } });
+  assert.ok(busy.skill.activate('test') && busy.skill.active && busy.skill.isTimed);
+  const draws = [];
+  const pick = h.b.rng.pick;
+  h.b.rng.pick = (arr) => { draws.push(arr.map((x) => x.uid)); return pick(arr); };
+  h.b.kill(h.b.enemies[0], null);
+  assert.deepEqual(draws, [], 'one candidate left: no draw');
+  assert.deepEqual(talentSp(h, ok), [gift], 'the one that can gain SP');
+  for (const x of [noSkill, isolated, busy]) assert.deepEqual(talentSp(h, x), [], `uid ${x.uid} is no candidate`);
+  // without that one: nobody
+  h.b.kill(ok);
+  h.b.kill(h.b.enemies.find((e) => e.alive), null);
+  assert.deepEqual(draws, []);
+  assert.deepEqual(talentSp(h, ok), [gift]);
+  for (const x of [noSkill, isolated, busy]) assert.deepEqual(talentSp(h, x), []);
+  done(h);
 });
 
 test('推进之王 module SOL-Y gift: her player\'s 先锋 only (two players on one field); not one off the field', () => {

@@ -4,14 +4,14 @@
 // Sources: the records (data/waiguan.json; normal = skill Lv4, elite = Lv7 + its module at the tier's level) and the
 // official buff templates (ArknightsGameData zh_CN battle/buff_template_data.json: saga_t_1, cripple, saga_s_2,
 // saga_s_3[hit], saga_e_003[damage_scale], charge_cost) for what the texts leave open. Every number comes from a
-// blackboard except S2's "最多6名" (text only, read from the skill text, S2_MAX_TARGETS below).
+// blackboard except S2's "最多6名" (text only: read from the record's skill text; no number there ⇒ no cap).
 //
 // DP (部署费用, REQUIREMENTS §1) is the engine's: battle.addDp(ownerId, n) — the player's DP, capped at flags.dpMax.
 // Trait (尖兵 "能够阻挡两个敌人"): the data block count (professions.js SUB.pioneer has no trait to model).
 // S1 冲锋号令·γ型 (AUTO, instant): +cost DP at once (charge_cost: ModifyCost by `cost`). 技能策略: an AUTO skill takes no
 //   strategy row and its DP gain has no target ⇒ trigger SP_FULL (cast as soon as it is ready) — the pool's rule for the
 //   same common skill (德克萨斯 kits/tier1.js, 焰尾 S1 kits/tier4.js); the record's DEFAULT is changed.
-// S2 除恶 (MANUAL, charges): +cost DP at once; then up to S2_MAX_TARGETS ground enemies on its cross range (x-6, the
+// S2 除恶 (MANUAL, charges): +cost DP at once; then up to the text's 6 ground enemies on its cross range (x-6, the
 //   record's grid) take atk_scale × ATK physical skill damage (her 劝善 holds every lethal one at 1 HP and 重伤s it), and
 //   every 重伤 enemy among them is killed by her (saga_s_2: CheckContainsBuff cripple → InstantKill, source = her ⇒ she
 //   is the 击杀者 of the 重伤 rule below and gains its SP). 技能策略: the record's SKILL_RANGE (MANUAL with a 技能范围 of
@@ -26,9 +26,10 @@
 //   enemy keeps 1 HP); an enemy so saved that is not yet 重伤 becomes 重伤 (buff CRIPPLE_KEY, one per enemy whoever applied
 //   it — overrideType UNIQUE): 禁疗 (HEAL_FREE → engine healFree), no attacks (DISABLE_COMBAT → engine disarm), move speed
 //   ×(1 + move_speed) (FINAL_SCALER of the blackboard's −0.8 — the official FINAL_SCALER reads as ×(1 + v): 气球 −0.9);
-//   after `interval` s it dies with no killer (cripple ON_BUFF_TRIGGER InstantKill _noSource); whoever kills it first —
-//   an operator, a summon, her own S2 — gains `sp` SP (ON_OWNER_KILLED_BY_MAIN_TARGET ModifySp on the killer; lost while
-//   that unit's timed skill runs, the engine's rule). She never attacks a 重伤 enemy (any 重伤, another 嵯峨's too): with
+//   after `interval` s it dies with no killer (cripple ON_BUFF_TRIGGER InstantKill _noSource; a record without a positive
+//   `interval` holds nobody at 1 HP — no 重伤 may last for ever); whoever kills it first — an operator, a summon, her own
+//   S2 — gains `sp` SP (ON_OWNER_KILLED_BY_MAIN_TARGET ModifySp on the killer alone, not on her; lost while that unit's
+//   timed skill runs, the engine's rule). She never attacks a 重伤 enemy (any 重伤, another 嵯峨's too): with
 //   only such enemies in reach she holds her attack (trait canAttack) and her attacks re-pick their targets without them.
 //   SOL-X (uniequip_003_saga) adds, from level 2 (hidden part, tier VI level 3): her damage on an enemy at or below
 //   hp_ratio of its HP ×damage_scale (saga_e_003[damage_scale]: FilterByTargetHpRatio LE → DamageScale, every damage).
@@ -60,8 +61,8 @@ import { gridTiles } from '../../fxtiles.js';
 const S1 = 'skcom_charge_cost[3]', S2 = 'skchr_saga_2', S3 = 'skchr_saga_3';
 /** 重伤 (the official buff key 'cripple'): one per enemy, shared by every copy of her. */
 export const CRIPPLE_KEY = 'saga:cripple';
-/** S2 "对十字范围内最多6名地面敌人" — the 6 is text only (no blackboard key; Lv4 and Lv7 alike): parsed from the record. */
-const S2_MAX_TARGETS = 6;
+/** S2 "对十字范围内最多6名地面敌人": the cap is text only (no blackboard key; Lv4 and Lv7 alike) — read from the record's text. */
+const S2_CAP_RE = /最多(\d+)名/;
 /** saga_s_3[hit] AdvancedApplyDamage `_defaultAtkScale` (S3's blackboard has no atk_scale). */
 const S3_EXTRA_SCALE = 1;
 /** Damage tags (unique per effect, KIT_CONVENTIONS 3). */
@@ -100,7 +101,8 @@ const chargeCost = (rec) => ({
 function purge(rec) {
   const b = rec.bb ?? {};
   const grid = gridOf(rec);
-  const maxT = Math.max(1, Math.floor(parseN(rec.desc, /最多(\d+)名/, S2_MAX_TARGETS)));
+  const cap = parseN(rec.desc, S2_CAP_RE, null);
+  const maxT = cap > 0 ? Math.floor(cap) : Infinity;
   return {
     kind: instantKindOf(rec),
     onStart({ battle, unit }) {
@@ -186,14 +188,14 @@ export default function saga(bb, chess) {
           c.targets = sagaTargets(battle, unit, c.profile || unit.profile);
         }, { owner: unit, priority: 100 });
         // DAMAGE_IS_UNDEADABLE_THIS_TIME: never lethal; the saved enemy becomes 重伤 unless it already is
-        battle.on('fatal', (c) => {
+        if (life > 0) battle.on('fatal', (c) => {
           const e = c.unit;
           if (c.source !== unit || c.prevented || !e || e.side !== 'enemy') return;
           c.prevented = true;
           if (isCrippled(e)) return;
           battle.addBuff(e, {
             key: CRIPPLE_KEY, source: unit, visible: true, tags: ['talent'],
-            duration: life > 0 ? life : Infinity,
+            duration: life,
             flags: { healFree: true, disarm: true },
             mods: mods({ moveMul: Math.max(0, 1 + move) }),
             onExpire: ({ battle: b, unit: v }) => { if (v.alive) b.kill(v, null); },
