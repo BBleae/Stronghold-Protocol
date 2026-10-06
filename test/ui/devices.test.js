@@ -2,12 +2,17 @@
 // blocking, long-press = detail, fullscreen), ui/compat.js polyfills, the HUD 🔍 buttons (hud.js checkButtons), the
 // enemy preview pen helpers (gameLogic penPlacement / previewEnemyKey), the connection-banner class, the audio unlock on
 // iOS-like contexts, and the name normalization's lone-surrogate scan (names.js; no regex lookbehind: a SyntaxError in
-// Safari < 16.4).
+// Safari < 16.4). Phone audit 2026-10-06 (DESIGN §26.6): the screen wake lock, the 全屏并横屏 button of the rotate hint,
+// isPhone and the graphics default.
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { installCompat } from '../../public/js/ui/compat.js';
-import { detectFeatures, featureClasses, fullscreen, installDeviceSupport, LONG_PRESS_MS, screenLandscape } from '../../public/js/ui/device.js';
+import { detectFeatures, featureClasses, fullscreen, installDeviceSupport, isPhone, keepScreenAwake, LONG_PRESS_MS, PHONE_SHORT_SIDE, screenLandscape } from '../../public/js/ui/device.js';
 import { checkButtons } from '../../public/js/ui/hud.js';
 import { penPlacement, penZoneTiles, previewEnemyKey, PEN } from '../../public/js/ui/gameLogic.js';
 import { bannerVisible } from '../../public/js/ui/connBanner.js';
@@ -129,6 +134,20 @@ describe('ui/device.js feature detection', () => {
     assert.equal(fullscreen.supported(none.win), false);
     assert.equal(await fullscreen.enter(none.win), false);
   });
+  test('isPhone: a touch screen whose shorter SCREEN side is under 500 px — not a narrow desktop window, not a tablet', () => {
+    const w = (media, screen, innerWidth) => { const f = fakeWindow({ media, touchPoints: media['(any-pointer: coarse)'] ? 5 : 0 }).win; f.screen = screen; if (innerWidth) f.innerWidth = innerWidth; return f; };
+    const coarse = { '(any-pointer: coarse)': true };
+    assert.equal(PHONE_SHORT_SIDE, 500);
+    assert.equal(isPhone(w(coarse, { width: 390, height: 844 })), true, 'iPhone: portrait sizes');
+    assert.equal(isPhone(w(coarse, { width: 844, height: 390 })), true, 'Android phone turned to landscape');
+    assert.equal(isPhone(w(coarse, { width: 430, height: 932 })), true, 'the biggest iPhone');
+    assert.equal(isPhone(w(coarse, { width: 744, height: 1133 })), false, 'a small tablet (iPad mini)');
+    assert.equal(isPhone(w(coarse, { width: 834, height: 1194 })), false, 'a tablet');
+    assert.equal(isPhone(w({ '(any-pointer: fine)': true, '(any-hover: hover)': true }, { width: 1920, height: 1080 }, 420)), false, 'a desktop window dragged narrow');
+    assert.equal(isPhone(w({ '(any-pointer: fine)': true }, { width: 390, height: 844 })), false, 'no touch screen, no phone');
+    assert.equal(isPhone(w(coarse, {})), false, 'unknown screen size: not a phone');
+    assert.equal(isPhone({}), false, 'no window features at all');
+  });
 });
 
 describe('ui/device.js installDeviceSupport', () => {
@@ -187,6 +206,174 @@ describe('ui/device.js installDeviceSupport', () => {
       dispose();
     }
     assert.equal(f.doc.count('gesturestart'), 0, 'dispose removes the listeners');
+  });
+});
+
+// ---- screen wake lock (phone audit T2) -----------------------------------------------------------------------------------
+
+const tick = async () => { for (let i = 0; i < 4; i++) await Promise.resolve(); };
+
+/** A fake Screen Wake Lock: the sentinels it handed out, a visible / hidden document, requests that can be refused. */
+function fakeWakeLock({ refuse = false, throwSync = false } = {}) {
+  const doc = emitter();
+  doc.visibilityState = 'visible';
+  const state = { requests: [], sentinels: [], refuse, throwSync };
+  const lock = {
+    request(type) {
+      state.requests.push(type);
+      if (state.throwSync) throw new Error('sync');
+      if (state.refuse) return Promise.reject(Object.assign(new Error('refused'), { name: 'NotAllowedError' }));
+      const s = emitter();
+      s.released = false;
+      s.release = async () => { if (s.released) return; s.released = true; s.dispatch(new FakeEvent('release')); };
+      state.sentinels.push(s);
+      return Promise.resolve(s);
+    },
+  };
+  /** The browser hides the page: it releases the lock by itself. */
+  state.hide = async () => { doc.visibilityState = 'hidden'; doc.dispatch(new FakeEvent('visibilitychange')); for (const s of state.sentinels) await s.release(); };
+  state.show = async () => { doc.visibilityState = 'visible'; doc.dispatch(new FakeEvent('visibilitychange')); await tick(); };
+  return { win: { document: doc, navigator: { wakeLock: lock } }, doc, state };
+}
+
+describe('ui/device.js keepScreenAwake (Screen Wake Lock)', () => {
+  test('requests a screen lock while mounted, asks again when the page is back (the browser drops it on hide), lets go on release', async () => {
+    const f = fakeWakeLock();
+    const release = keepScreenAwake(f.win);
+    await tick();
+    assert.deepEqual(f.state.requests, ['screen']);
+    assert.equal(f.doc.count('visibilitychange'), 1);
+    // still visible and held: a visibilitychange does not stack a second lock
+    f.doc.dispatch(new FakeEvent('visibilitychange'));
+    await tick();
+    assert.equal(f.state.requests.length, 1, 'one lock at a time');
+    // hidden: the browser releases it and nothing is requested while hidden; visible again → a new one
+    await f.state.hide();
+    assert.equal(f.state.requests.length, 1);
+    await f.state.show();
+    assert.equal(f.state.requests.length, 2, 're-requested on return');
+    assert.equal(f.state.sentinels[1].released, false);
+    release();
+    await tick();
+    assert.equal(f.state.sentinels[1].released, true, 'released when leaving');
+    assert.equal(f.doc.count('visibilitychange'), 0, 'listener removed');
+    await f.state.show();
+    assert.equal(f.state.requests.length, 2, 'nothing after release');
+  });
+  test('no navigator.wakeLock (plain http, old browsers) or no navigator: a silent no-op', () => {
+    const none = { document: emitter(), navigator: {} };
+    const off = keepScreenAwake(none);
+    assert.equal(typeof off, 'function');
+    assert.doesNotThrow(off);
+    assert.equal(none.document.count('visibilitychange'), 0, 'nothing attached');
+    assert.doesNotThrow(() => keepScreenAwake({})());
+    assert.doesNotThrow(() => keepScreenAwake({ navigator: { wakeLock: {} } })());
+  });
+  test('a refused or throwing request never throws; the next visibilitychange asks again', async () => {
+    const refused = fakeWakeLock({ refuse: true });
+    const off = keepScreenAwake(refused.win);
+    await tick();
+    assert.equal(refused.state.requests.length, 1);
+    refused.state.refuse = false;
+    await refused.state.show();
+    assert.equal(refused.state.requests.length, 2, 'retried');
+    assert.equal(refused.state.sentinels.length, 1);
+    off();
+    const sync = fakeWakeLock({ throwSync: true });
+    assert.doesNotThrow(() => keepScreenAwake(sync.win)());
+    await tick();
+  });
+  test('hidden at mount: no request until the page shows; released before the request resolved: let go at once', async () => {
+    const f = fakeWakeLock();
+    f.doc.visibilityState = 'hidden';
+    const off = keepScreenAwake(f.win);
+    await tick();
+    assert.equal(f.state.requests.length, 0, 'the API refuses a hidden page');
+    await f.state.show();
+    assert.equal(f.state.requests.length, 1);
+    off();
+    // leaving while a request is in flight
+    const g = fakeWakeLock();
+    keepScreenAwake(g.win)();
+    await tick();
+    assert.equal(g.state.sentinels.length, 1);
+    assert.equal(g.state.sentinels[0].released, true, 'the late lock is released, not leaked');
+  });
+});
+
+// ---- rotate hint (phone audit T6) ----------------------------------------------------------------------------------------
+
+describe('rotate hint: 全屏并横屏', () => {
+  test('a tap on the hint button enters fullscreen from the gesture and locks landscape; other clicks do not', async () => {
+    const f = fakeWindow({ media: { '(any-pointer: coarse)': true }, touchPoints: 5 });
+    let locked = null;
+    f.win.screen = { orientation: { lock: async (o) => { locked = o; } } };
+    const dispose = installDeviceSupport(f.win);
+    try {
+      assert.ok(f.classes.has('sp-fs'), 'the button is shown by html.sp-fs (css/theme.css)');
+      f.doc.dispatch(new FakeEvent('click', { target: new FakeElement('button') }));
+      await tick();
+      assert.equal(fullscreen.active(f.win), false, 'an ordinary click does nothing');
+      const btn = new FakeElement('button', { closest: (sel) => (sel === '.rotate-hint__fs' ? btn : null) });
+      f.doc.dispatch(new FakeEvent('click', { target: btn }));
+      await tick();
+      assert.equal(fullscreen.active(f.win), true);
+      assert.equal(locked, 'landscape', 'fullscreen.enter locks landscape where the browser allows it');
+    } finally {
+      dispose();
+    }
+  });
+  test('iPhone Safari (no element fullscreen): no sp-fs class, so the button stays hidden', () => {
+    const f = fakeWindow({ media: { '(any-pointer: coarse)': true }, touchPoints: 5, fs: false });
+    const dispose = installDeviceSupport(f.win);
+    try { assert.equal(f.classes.has('sp-fs'), false); } finally { dispose(); }
+  });
+  test('the hint markup: the locked-rotation tip, and a button that only html.sp-fs shows', () => {
+    const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+    const index = readFileSync(path.join(root, 'public/index.html'), 'utf8');
+    const css = readFileSync(path.join(root, 'public/css/theme.css'), 'utf8');
+    const hint = index.match(/<div class="rotate-hint"[\s\S]*?<noscript>/)?.[0] || '';
+    for (const word of ['控制中心', '竖屏方向锁定', '自动旋转']) assert.ok(hint.includes(word), `the hint says ${word}`);
+    assert.match(hint, /<button type="button" class="rotate-hint__fs">全屏并横屏<\/button>/);
+    assert.match(css, /\.rotate-hint__fs \{\s*display: none;/, 'hidden unless the Fullscreen API exists');
+    assert.match(css, /\.sp-fs \.rotate-hint__fs \{ display: inline-block; \}/);
+    assert.match(css, /\.rotate-hint__fs \{[^}]*min-height: 44px;/, 'a touch-sized target');
+  });
+});
+
+// ---- graphics default of a phone (phone audit P6) ----------------------------------------------------------------------
+
+describe('settings.js: the graphics quality a player who never chose one starts on', () => {
+  // the store reads localStorage / matchMedia / screen when the module loads: one child process per device
+  const SETTINGS = pathToFileURL(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../public/js/ui/settings.js')).href;
+  const boot = ({ coarse, screen, saved = null, patch = null }) => {
+    const script = `
+      const mem = new Map(${saved ? `[['sp.pref.settings', ${JSON.stringify(JSON.stringify(saved))}]]` : ''});
+      globalThis.localStorage = { getItem: (k) => (mem.has(k) ? mem.get(k) : null), setItem: (k, v) => mem.set(k, String(v)) };
+      globalThis.matchMedia = (q) => ({ matches: ${coarse} && q === '(any-pointer: coarse)', addEventListener() {}, removeEventListener() {} });
+      globalThis.screen = ${JSON.stringify(screen)};
+      const m = await import(${JSON.stringify(SETTINGS)});
+      const first = m.settingsStore.get().quality;
+      ${patch ? `m.updateSettings(${JSON.stringify(patch)});` : ''}
+      console.log(JSON.stringify({ first, saved: JSON.parse(mem.get('sp.pref.settings') || 'null') }));`;
+    const r = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stderr);
+    return JSON.parse(r.stdout.trim().split('\n').pop());
+  };
+  const PHONE = { width: 390, height: 844 };
+  test('a phone defaults to 中, a tablet / desktop to 高', () => {
+    assert.equal(boot({ coarse: true, screen: PHONE }).first, 'medium');
+    assert.equal(boot({ coarse: true, screen: { width: 834, height: 1194 } }).first, 'high', 'tablet');
+    assert.equal(boot({ coarse: false, screen: { width: 1920, height: 1080 } }).first, 'high', 'desktop');
+    assert.equal(boot({ coarse: false, screen: PHONE }).first, 'high', 'a narrow screen without touch is no phone');
+  });
+  test('an explicit saved quality wins on a phone, and changing another setting keeps the quality in force', () => {
+    for (const q of ['high', 'medium', 'low']) assert.equal(boot({ coarse: true, screen: PHONE, saved: { quality: q } }).first, q, q);
+    assert.equal(boot({ coarse: true, screen: PHONE, saved: { bgm: 0.4 } }).first, 'medium', 'saved without a quality: still the default');
+    const kept = boot({ coarse: true, screen: PHONE, patch: { bgm: 0.3 } });
+    assert.equal(kept.saved.quality, 'medium', 'saved with the other settings');
+    assert.equal(boot({ coarse: true, screen: PHONE, saved: { quality: 'high' }, patch: { bgm: 0.3 } }).saved.quality, 'high');
+    assert.equal(boot({ coarse: true, screen: PHONE, patch: { quality: 'high' } }).saved.quality, 'high', 'the player picks 高 in the settings modal');
   });
 });
 

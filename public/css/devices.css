@@ -122,6 +122,18 @@ html:not(.sp-in-match) .toast-host { margin-top: var(--sa-t); }
    generic rule above — covered the bottom-right quarter of a phone's 67 × 97 px card and half of its 确认购买 strip, so
    the confirming tap re-opened the detail instead; user playtest #6 item 10) */
 
+/* The room's two stacked copy buttons: the generic hit area (44 px, centred) of 复制链接 covered 复制密钥 — a tap on 复制密钥
+   copied the link (phone audit S2). Each button's area now ends in the middle of the gap between them. */
+.sp-coarse .invite .invite__btns { gap: 6px; }
+.sp-coarse .invite .invite__btns .btn { min-height: max(.36rem, 24px); }
+.sp-coarse .invite .invite__btns .btn::before { height: calc(100% + 6px); }
+
+/* Short screens: the promotion reward's tag keeps its title, icon and sub line; the English micro line goes (S3) */
+@media (max-height: 460px) {
+  .rwtag__micro { display: none; }
+  .rwtag__icon { width: .28rem; height: .28rem; }
+}
+
 /* Narrow viewports (< 768 CSS px: the root scale is clamped at 40 px, so the layout is narrower than the 19.2 rem
    design): the shop bar would cover the corner's ⚙ / 📖 / ⛶ buttons — they wrap into a row above the 交流 button. */
 /* The left-docked detail card then ends above that two-row corner (.24rem + 交流 + .1rem gap + ⚙ row + .1rem): at its
@@ -157,4 +169,36 @@ html:not(.sp-in-match) .toast-host { margin-top: var(--sa-t); }
   .diff-card { padding-top: .12rem; padding-bottom: .12rem; }
   .create-box { margin-top: .18rem; }
   .create-box .btn--xl { height: .8rem; }
+}
+
+/* ---- 6. phone type floor (phone audit S1 / T3) ---------------------------------------------------------------------
+   The UI is laid out for 10.8rem of height and the root is clamped at 40 px, so on a phone in landscape every rem size is
+   0.4 of its 1080p value: the match HUD's names, counts and descriptions came out at 4.4–7.6 CSS px. The root cannot
+   grow (the layout would not fit), so on short touch screens the text that carries information gets a px floor
+   (`max(<its rem>, N px)` — the desktop size wins wherever it is larger) and decorations make room: keyboard hints
+   (no keyboard on a phone) and the English micro captions of the HUD. Boxes keep their size; long names ellipsize. */
+.sp-no-hover kbd, .sp-no-hover .readybtn__key { display: none; }
+@media (max-height: 460px) and (pointer: coarse), (max-height: 460px) and (any-pointer: coarse) {
+  .gm .countdown__label, .gm .lvcard__micro, .gm .ping__unit, .gm .ff-badge { display: none; }
+  /* shop cards: the operator's name and bonds */
+  .scard__name { font-size: max(.19rem, 10px); }
+  .scard__bond { font-size: max(.13rem, 8px); }
+  /* bond strip: names under the discs — a slot is .74rem = 30 px wide, so it widens for a 4-character name at 8 px
+     (卡西米尔 / 维多利亚 ran into their neighbours) — and the layer counts */
+  .bslot { width: max(.74rem, 35px); }
+  .bslot .bond__name { font-size: max(.14rem, 8px); }
+  .bslot__count { font-size: max(.15rem, 8px); }
+  /* team panel, funds, round, the ready count, effect stacks */
+  .team__name { font-size: max(.15rem, 9px); }
+  .funds__label { font-size: max(.14rem, 8px); }
+  .roundbox__label { font-size: max(.16rem, 8px); }
+  .shopbar__remain { font-size: max(.2rem, 9px); }
+  .readywrap__count { font-size: max(.14rem, 8px); }
+  .effect__n { font-size: max(.12rem, 8px); }
+  /* detail card: the stat grid, the 特质 / description texts, the header's position tag */
+  .dstat__k { font-size: max(.12rem, 7px); letter-spacing: 0; } /* 生命值 / 法术抗性 still fit their cell at 7 px */
+  .dstat__v { font-size: max(.17rem, 9px); }
+  .dtrait { font-size: max(.14rem, 9px); line-height: 1.45; }
+  .dgarrison__k { font-size: max(.14rem, 8px); }
+  .dhead__pos { font-size: max(.12rem, 8px); }
 }
