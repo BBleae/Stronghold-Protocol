@@ -401,6 +401,13 @@ function makeData(src) {
 }
 
 const QUALITY_RES = { high: 2, medium: 1.5, low: 1 };
+/**
+ * Frame-rate cap of the ticker (phone audit P8): a 90 / 120 Hz phone drew 120 fps even in the nearly static prep phase
+ * (battery, heat). PIXI's limiter drops whole display frames and compares whole milliseconds, so a cap of exactly 60
+ * also skips frames on a 60 Hz display (measured on its Ticker.update: ~57–59 fps with 33 ms gaps); two fps of headroom
+ * keep 60 Hz at 60 and 90 / 120 / 144 Hz at ~60. Animation time is unaffected: frameBody takes its dt from performance.now().
+ */
+const MAX_FPS = 62;
 /** Pixel-ratio cap of the 3D board canvas per quality (its fill cost is the PBR board, not the sprites). */
 const BOARD_RES = { high: 2, medium: 1.25, low: 1 };
 
@@ -476,6 +483,7 @@ export async function createFieldView(host, options = {}) {
     width: s0.width, height: s0.height, antialias: opts.antialias ?? (settings.quality === 'high' && (globalThis.devicePixelRatio || 1) < 1.5), backgroundColor: 0x0a0e0d, backgroundAlpha: 0,
     resolution: dpr(), autoDensity: true, powerPreference: 'high-performance',
   });
+  app.ticker.maxFPS = MAX_FPS;
   const canvas = app.view;
   canvas.style.display = 'block';
   canvas.style.width = '100%';

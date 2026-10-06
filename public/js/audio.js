@@ -8,7 +8,8 @@
 //   sfx.units { [charId|tokenId|enemyId]: { attack?, hit?, skill?, die?, born?, mix?: { [role]: { p?, vol? } } } }.
 //
 // - The AudioContext is created on the first user gesture (pointerdown/keydown/touchend), so browsers
-//   never block or warn; everything requested before that is remembered (BGM) or dropped (SFX).
+//   never block or warn; everything requested before that is remembered (BGM) or dropped (SFX). Before it is created,
+//   navigator.audioSession.type becomes 'playback' (iOS 16.4+): the silent switch no longer mutes the whole game.
 // - Channels: master → { bgm, sfx } gains; volumes from settings (0..1) + mute. Tab hidden ⇒ suspend.
 // - BGM: `intro` then `loop` (1 s crossfade); switching tracks fades out/in (0.8 s). The same loop URL
 //   keeps playing across phases (prep and combat share a track).
@@ -478,6 +479,7 @@ export class AudioManager {
    * unlocks output after something was started in a gesture).
    */
   _unlock() {
+    this._playbackSession();
     if (this.ctx) {
       const st = this.ctx.state;
       if (st === 'running') { this._dropUnlock(); return; }
@@ -522,6 +524,18 @@ export class AudioManager {
       this._warn('ctx', err);
       this.ctx = null;
     }
+  }
+
+  /**
+   * iOS 16.4+ Safari: Web Audio is "ambient" by default, so the ring / silent switch mutes the whole game (no sound at all
+   * for a player whose phone sits on silent). A game is media: 'playback' plays through the switch. Set before the context
+   * is created / resumed; browsers without navigator.audioSession ignore it.
+   */
+  _playbackSession() {
+    try {
+      const s = this.win?.navigator?.audioSession;
+      if (s && s.type !== 'playback') s.type = 'playback';
+    } catch { /* ignore */ }
   }
 
   /** (Re-)attach the gesture listeners after the context stopped running while visible (see _unlock / _onVis). */

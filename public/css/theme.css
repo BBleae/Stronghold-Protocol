@@ -348,6 +348,26 @@ h1, h2, h3, h4, p { margin: 0; }
   border-radius: 2px;
 }
 .rotate-hint__title { font-size: 20px; font-weight: 700; color: var(--text-hi); }
+/* for a player whose rotation is locked: the OS lock beats the page, so the hint says where to switch it off */
+.rotate-hint__tip { max-width: 22em; font-size: 14px; line-height: 1.6; color: var(--text-lo); }
+/* 全屏并横屏: js/ui/device.js enters fullscreen from this tap and locks landscape where the browser allows it. Only where
+   the Fullscreen API exists (html.sp-fs — not iPhone Safari); the 44 px floor is the touch-target minimum */
+.rotate-hint__fs {
+  display: none;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 24px;
+  border: 1px solid var(--mint-700);
+  background: rgba(20, 24, 22, .9);
+  color: var(--mint-400);
+  font: inherit;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: .06em;
+  cursor: pointer;
+}
+.sp-fs .rotate-hint__fs { display: inline-block; }
+.rotate-hint__fs:active { background: var(--mint-a20); border-color: var(--mint-500); }
 .rotate-hint__micro { font-family: var(--font-display); font-size: 11px; letter-spacing: .3em; color: var(--mint-700); }
 @keyframes rotate-phone {
   0%, 20% { transform: rotate(0deg); }
