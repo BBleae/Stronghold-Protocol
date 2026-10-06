@@ -137,9 +137,43 @@ export function summonLink(desc, bb) {
 }
 
 /** Build a SkillSpec from a normalised skill def and its blackboard. `def` (optional) = normalised unit def. */
+/**
+ * "被动效果：陷阱/棋子/无人机/沙地兽/召唤物/装置…" (艾拉, 多萝西, 望 …): the passive half describes what the SUMMON does when it
+ * triggers — the generic summoner's trap kit reads those numbers from the owner's skill itself (genericSummons.js
+ * trapText) — and the active half ("主动效果/主动开启/自动开启：…") is the operator's. Only the blackboard values the active
+ * half names apply to the operator: a value written there, or a stat the active half names without a number ("攻击间隔缩短").
+ * Without this, 望 S2's 棋子 480% became her own attack scale and 多萝西's trap 370% her next attack. Returns the
+ * operator's blackboard, or null when the skill has no such passive half.
+ */
+const SUMMON_PASSIVE = /^被动效果[：:]\s*(陷阱|棋子|地雷|无人机|沙地兽|召唤物|装置)/;
+const ACTIVE_HALF = /(主动效果|主动开启|自动开启)[：:]/;
+const STAT_WORDS = Object.freeze({
+  atk: '攻击力', def: '防御力', base_attack_time: '攻击间隔', attack_speed: '攻击速度', max_hp: '生命上限',
+  magic_resistance: '法术抗性', def_penetrate_fixed: '防御力', 'attack@projectile_range': '溅射',
+  ability_range_forward_extend: '攻击范围', block_cnt: '阻挡',
+});
+function operatorHalf(desc, bb) {
+  const text = desc.replace(/<[^>]*>/g, '');
+  if (!SUMMON_PASSIVE.test(text)) return null;
+  const at = text.search(ACTIVE_HALF);
+  const active = at >= 0 ? text.slice(at) : '';
+  const nums = [...active.matchAll(/(\d+(?:\.\d+)?)/g)].map((m) => +m[1]);
+  const named = (v) => nums.some((n) => Math.abs(n - Math.abs(v)) < 1e-6 || Math.abs(n - Math.abs(v) * 100) < 0.5 || Math.abs(n - Math.abs(v - 1) * 100) < 0.5);
+  const out = {};
+  for (const [k, raw] of Object.entries(bb || {})) {
+    const v = num(raw);
+    const word = STAT_WORDS[k] ?? STAT_WORDS[k.replace(/^(skill|attack)@/, '')];
+    if (k === 'cnt' || (v !== undefined && v !== 0 && named(v)) || (word && active.includes(word))) out[k] = raw;
+  }
+  return out;
+}
+
 export function genericSkillSpec(sk, bb = sk?.bb ?? {}, def = null) {
   if (!sk) return null;
   const desc = String(sk.description || '');
+  // a summon-passive skill: the operator gets only its active half's values (operatorHalf)
+  const own = def?.type !== 'token' ? operatorHalf(desc, bb) : null;
+  if (own) bb = own;
   // a summon's own stats named with `attack@` keys ("Mon3tr的攻击力+35%") are not the operator's (DESIGN_BC R6)
   const link = def && def.type !== 'token' ? summonLink(desc, bb) : { both: false, summonOnly: false, summonMods: null };
   const g = link.summonOnly ? ((k) => num(bb[k]) ?? num(bb['skill@' + k])) : getter(bb);

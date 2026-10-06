@@ -503,3 +503,30 @@ test('determinism: the same seed gives the same summon battle', REAL, () => {
   assert.ok(a.length > 20);
   assert.equal(a, once());
 });
+
+// =================================================================================================================
+// summon-passive skills: "被动效果：陷阱/棋子…触发时…" describes the summon; the operator gets its active half only
+
+test('generic skill spec: a summon-passive half never becomes the operator\'s own effect (望 棋子, 多萝西 / 艾拉 陷阱)', REAL, async () => {
+  const { genericSkillSpec } = await import('../../server/sim/content/generic.js');
+  const { wgSource } = await import('../helpers/waiguan.js');
+  const spec = (charId, index) => {
+    const def = wgSource().getChess(wgId(charId, { elite: true }), { skillIndex: index });
+    return genericSkillSpec(def.skill, def.skill.bb, def);
+  };
+  for (const i of [0, 1, 2]) {
+    const w = spec('char_2027_wang', i);
+    assert.equal(w.attack?.atkScale, undefined, `望 S${i + 1}: the 棋子 scale is not hers`);
+    assert.deepEqual(w.mods ?? {}, {}, `望 S${i + 1}`);
+    const d = spec('char_4048_doroth', i);
+    assert.equal(d.attack?.atkScale, undefined, `多萝西 S${i + 1}: the trap scale is not hers`);
+  }
+  // 艾拉: S2's active half (防御力+250%, 无视500防御) and S3's (攻击力+60%, 攻击间隔缩短) stay; the trap's stun / 脆弱 do not
+  const e2 = spec('char_4123_ela', 1), e3 = spec('char_4123_ela', 2);
+  assert.equal(e2.mods.defPct, 2.5);
+  assert.equal(e2.mods.defIgnoreFlat, 500);
+  assert.equal(e3.mods.atkPct, 0.6);
+  assert.equal(e3.mods.batPct, -0.35);
+  assert.equal(e3.mods.dmgDealtMul, undefined, 'the trap\'s 25% 脆弱 is not her damage');
+  for (const s of [e2, e3]) assert.ok(!(s.startStatuses ?? []).length && !(s.hitStatuses ?? []).length, 'no trap statuses on her');
+});
