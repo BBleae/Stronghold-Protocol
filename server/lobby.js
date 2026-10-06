@@ -85,7 +85,8 @@
 
 import { randomBytes, randomInt } from 'node:crypto';
 import { ERR, MAX_SEATS, DEFAULT_SEATS, MAX_SPECTATORS, ROOM_CODE_LEN, modeIdFor } from '../shared/constants.js';
-import { checkLoadout } from '../shared/protocol.js';
+import { checkLoadout, checkWaiguanPicks } from '../shared/protocol.js';
+import { waiguanRecords } from '../shared/waiguan.js';
 import { encode, isDroppable, isErrCode, sendRaw, sendSession } from './net.js';
 import { getData as defaultGetData, lookup } from './data.js';
 import { Match as DefaultMatch } from './match/Match.js';
@@ -101,6 +102,12 @@ export const LOBBY_DEFAULTS = Object.freeze({
   maxMatchesPerAddr: 8,   // matches started from one client network that may run at once (0 = unlimited)
   resyncMinGapMs: 1000,   // heavy resyncs (match state / result replay) per session at most this often on repeated hellos
   soloReconnectWindowMs: null, // a dropped solo run stays resumable this long (null = data singleReconnectTime, 24 h)
+  // 匹配 (matchmaking queue, a remake feature; DESIGN §0 listed it out of scope for v1):
+  queueTickMs: 1000,      // how often the queue is re-examined
+  queueMinSeats: 2,       // humans a group needs before it may start (the rest of the 4 seats get AI teammates)
+  queueGraceMs: 3000,     // a player waits at least this long for a second one before playing with AI teammates
+  queueTimeoutMs: 20_000, // …and at most this long, so a lone player is never stuck in the queue
+  queueSilentMs: 45_000,  // a waiting session that stopped answering is dropped (it never joined on purpose)
 });
 
 /** Official `singleReconnectTime` (s) when the data lacks it (constData, research 01 §1). */
@@ -123,7 +130,8 @@ const noopLog = { info() {}, warn() {}, error() {}, debug() {} };
 
 /**
  * @typedef {{ seat: number, playerId: string, name: string, isBot: boolean, ready: boolean,
- *             connected: boolean, left: boolean, loadout?: Record<string, { skill: number, module: string|null }> | null }} Seat
+ *             connected: boolean, left: boolean, loadout?: Record<string, { skill: number, module: string|null }> | null,
+ *             picks?: Record<string, string> | null }} Seat
  */
 
 /** Deep-frozen copy of a checked loadout (shared by the session, the seat and the match's PlayerState). */
@@ -131,6 +139,42 @@ function freezeLoadout(loadout) {
   const out = {};
   for (const [id, e] of Object.entries(loadout || {})) out[id] = Object.freeze({ skill: e.skill, module: e.module ?? null });
   return Object.freeze(out);
+}
+
+/** Deep-frozen copy of a checked 甄选 (DIY) selection (`{ slotId: charId }`, DESIGN §27). */
+function freezePicks(picks) {
+  const out = {};
+  for (const [slot, charId] of Object.entries(picks || {})) if (typeof charId === 'string' && charId) out[slot] = charId;
+  return Object.freeze(out);
+}
+
+/**
+ * The chess records a player's own 甄选 (DIY) picks resolve to, keyed by chessId (both tiers, base and elite forms).
+ * `room.loadout` validates against `data/chess.json` — whose four DIY entries are only empty slot templates — plus these,
+ * so a 外援 operator's skill and module are checkable BEFORE a match exists (DESIGN §16/§27); a match repeats the same
+ * check against its own GameData patch. An operator the player did not pick stays unknown to `checkLoadout`.
+ * @param {any} waiguan data/waiguan.json
+ * @param {Record<string, string>|null|undefined} picks `{ slotId: charId }`
+ * @returns {Record<string, any>} chessId → record (empty without picks)
+ */
+function waiguanChessOf(waiguan, picks) {
+  if (!waiguan || !picks) return {};
+  const byChar = new Map();
+  for (const c of Array.isArray(waiguan.candidates) ? waiguan.candidates : []) {
+    if (c && typeof c.charId === 'string' && c.chessIds) byChar.set(c.charId, c.chessIds);
+  }
+  const all = waiguanRecords(waiguan);
+  const out = {};
+  for (const charId of Object.values(picks)) {
+    const ids = byChar.get(charId);
+    if (!ids) continue;
+    for (const tier of [5, 6]) {
+      const base = ids[tier];
+      if (typeof base !== 'string') continue;
+      for (const id of [base, `${base.slice(0, -1)}b`]) if (all[id]) out[id] = all[id];
+    }
+  }
+  return out;
 }
 
 /** One room: its seat slots (co-op: `capacity`, solo: 1), host, difficulty, optional running match. */
@@ -171,6 +215,8 @@ export class Room {
     this.matchKey = null;
     this.createdAt = now;
     this.disposed = false;
+    /** true when the room was formed by 匹配 (matchmaking): its queued players may leave without the lobby grace */
+    this.matched = false;
   }
 
   /** @param {string} playerId @returns {Seat | null} */
@@ -208,8 +254,13 @@ export class Room {
   /** Humans that have not departed, in seat order. @returns {Seat[]} */
   activeHumans() { return this.seats.filter((s) => s && !s.isBot && !s.left); }
 
-  /** `room.state` frame (DESIGN §8.1) plus `inMatch`. */
-  toState() {
+  /**
+   * `room.state` frame (DESIGN §8.1) plus `inMatch`. `viewerId` narrows the 外援 / 甄选 picks to the requester: a
+   * selection is a player's own shop pool, so a teammate's is not even named here (DESIGN §27) — the frame is encoded
+   * per viewer (see Lobby.broadcastState).
+   * @param {string | null} [viewerId]
+   */
+  toState(viewerId = null) {
     return {
       t: 'room.state',
       code: this.code,
@@ -222,8 +273,15 @@ export class Room {
       seats: this.seats.map((s) => (s
         ? { seat: s.seat, playerId: s.playerId, name: s.name, isBot: s.isBot, ready: s.ready, connected: s.connected && !s.left }
         : null)),
+      picks: viewerId ? (this.picksOf(viewerId) || {}) : {},
       spectators: this.spectators.map((s) => ({ playerId: s.playerId, name: s.name, connected: s.connected })),
     };
+  }
+
+  /** @param {string} playerId @returns {Record<string, string> | null} that seat's 甄选 selection, or null */
+  picksOf(playerId) {
+    const seat = this.seatOf(playerId);
+    return seat && !seat.isBot && seat.picks && Object.keys(seat.picks).length ? seat.picks : null;
   }
 }
 
@@ -254,6 +312,17 @@ export class Lobby {
     this.graceTimers = new Map();
     /** @type {Map<string, NodeJS.Timeout>} deferred (coalesced) resyncs by playerId */
     this.resyncTimers = new Map();
+    /**
+     * 匹配 queue (matchmaking): the sessions waiting for a group, oldest first.
+     * @type {{ playerId: string, session: any, difficulty: string, since: number }[]}
+     */
+    this.queue = [];
+    /**
+     * @type {NodeJS.Timeout | null} the queue's own clock (unref'd: it never keeps the process alive). It runs only while
+     * somebody waits (started by queueJoin, stopped by the tick that empties the queue): an idle lobby — and every room
+     * Durable Object of the Worker, which holds a lobby of one room — keeps no timer, so it can sleep.
+     */
+    this.queueTimer = null;
     /** per-network limit warnings: at most one log line per 10 s (the rest are counted) */
     this.limitLog = { at: -Infinity, suppressed: 0 };
   }
@@ -272,7 +341,8 @@ export class Lobby {
       for (const s of r.seats) if (s && !s.left) (s.isBot ? bots++ : humans++);
       spectators += r.spectators.length;
     }
-    return { rooms: this.rooms.size, matches, humans, bots, spectators };
+    // `queued`: sessions waiting in the 匹配 queue right now (matchmaking)
+    return { rooms: this.rooms.size, matches, humans, bots, spectators, queued: this.queue.length };
   }
 
   // ---------------------------------------------------------------------------------------------------
@@ -333,8 +403,11 @@ export class Lobby {
       case 'room.kick': return this.kick(session, msg);
       case 'room.start': return this.start(session);
       case 'room.loadout': return this.loadout(session, msg);
+      case 'room.pick': return this.pick(session, msg);
       case 'room.spectate': return this.spectate(session, msg);
       case 'room.removeSpectator': return this.removeSpectator(session, msg);
+      case 'queue.join': return this.queueJoin(session, msg);
+      case 'queue.leave': return this.queueLeave(session);
       default:
         if (typeof msg.t === 'string' && msg.t.startsWith('g.')) return this.routeGame(session, msg);
         return fail(ERR.BAD_MSG, `unhandled type ${String(msg.t).slice(0, 32)}`);
@@ -344,6 +417,8 @@ export class Lobby {
   /** The session's socket closed. @param {import('./net.js').Session} session */
   onDisconnect(session) {
     this.clearResync(session.playerId); // the next resume resyncs immediately
+    // 匹配: a waiting session that dropped is dropped from the queue too (a queued player must be reachable to be seated)
+    if (this.queued(session)) { this.queueLeave(session); this.broadcastQueue(); }
     const room = this.roomOf(session);
     // a solo run may be resumed within singleReconnectTime (24 h); everything else keeps the registry's window
     session.resumeWindowMs = room && room.match && room.mode === 'solo' ? this.soloResumeWindowMs() : null;
@@ -373,10 +448,197 @@ export class Lobby {
    */
   shutdown(reason = 'shutdown') {
     for (const room of [...this.rooms.values()]) this.disposeRoom(room, reason);
+    this.stopQueueClock();
+    this.queue = [];
     for (const t of this.graceTimers.values()) clearTimeout(t);
     this.graceTimers.clear();
     for (const t of this.resyncTimers.values()) clearTimeout(t);
     this.resyncTimers.clear();
+  }
+
+  // ---------------------------------------------------------------------------------------------------
+  // 匹配 (matchmaking queue) — a remake feature
+  // ---------------------------------------------------------------------------------------------------
+
+  /**
+   * queue.join { difficulty }: wait for other players instead of hand-sharing a 4-letter key. The queue is re-examined
+   * every `queueTickMs`; a group is formed from the waiting sessions (the oldest entry's difficulty first) once it can
+   * seat `queueMinSeats` humans and either everybody waited `queueGraceMs` or the oldest one waited `queueTimeoutMs`.
+   * Every group gets a NEW 同盟 room (the members are seated through the same path as room.join) and the seats the queue
+   * could not fill are left to the room's own 「添加 AI 队友」 / auto-fill, announced with queue.matched.
+   */
+  queueJoin(session, { difficulty }) {
+    // A lobby without a queue clock has no queue: the room Worker's (one room per Durable Object), whose players queue
+    // over the account API instead (worker/matchmaker.js, DESIGN §28.2)
+    if (!(this.opts.queueTickMs > 0)) return fail(ERR.BAD_MSG, 'matchmaking is not available here');
+    const cur = this.roomOf(session);
+    if (cur && cur.match) return fail(ERR.ROOM_STARTED, 'leave your running match first');
+    this.queueLeave(session, { quiet: true });
+    // a session already waiting for its lobby grace (a reconnect) is not a second entry
+    this.queue.push({ playerId: session.playerId, session, difficulty, since: this.now() });
+    this.startQueueClock();
+    this.queueTick();
+    this.sendQueueState(session);
+    this.log.info(`[queue] ${session.name} joined (${difficulty}); ${this.queue.length} waiting`);
+    return OK;
+  }
+
+  /**
+   * queue.leave: stop waiting. Never an error when the session was not queued (the client sends it on unload too), and it
+   * always answers with the resulting `queue.status` — a client that cancelled must not be left waiting for a frame.
+   * @param {any} session @param {{ quiet?: boolean }} [opts]
+   */
+  queueLeave(session, { quiet = false } = {}) {
+    const before = this.queue.length;
+    this.queue = this.queue.filter((e) => e.playerId !== session.playerId);
+    if (!quiet && before !== this.queue.length) this.log.info(`[queue] ${session.name} left; ${this.queue.length} waiting`);
+    this.sendQueueState(session);
+    return OK;
+  }
+
+  /** The queue entry of a session, or null. */
+  queued(session) {
+    return this.queue.find((e) => e.playerId === session.playerId) || null;
+  }
+
+  /** `queue.status` frame for one session (waiting:false when it is not in the queue). */
+  queueStateOf(session) {
+    const e = this.queued(session);
+    if (!e) return { t: 'queue.status', waiting: false, difficulty: null, count: 0, waitedMs: 0 };
+    const same = this.queue.filter((x) => x.difficulty === e.difficulty).length;
+    return {
+      t: 'queue.status', waiting: true, difficulty: e.difficulty,
+      count: same, total: this.queue.length,
+      waitedMs: Math.max(0, this.now() - e.since),
+      minSeats: this.opts.queueMinSeats, seats: DEFAULT_SEATS, // a matched room is an official 4-seat 同盟 room
+    };
+  }
+
+  sendQueueState(session) {
+    try { sendSession(session, this.queueStateOf(session)); } catch (e) { this.log.error('[queue] sendQueueState failed', e); }
+  }
+
+  /** Notify every waiting session (a new entry, a departure, or a changed count). */
+  broadcastQueue() {
+    for (const e of [...this.queue]) this.sendQueueState(e.session);
+  }
+
+  /** Start the queue clock (idempotent). The interval is unref'd so it never keeps the process alive. */
+  startQueueClock() {
+    if (this.queueTimer || !(this.opts.queueTickMs > 0)) return;
+    this.queueTimer = setInterval(() => {
+      try { this.queueTick(); } catch (e) { this.log.error('[queue] tick failed', e); }
+    }, this.opts.queueTickMs);
+    this.queueTimer.unref?.();
+  }
+
+  stopQueueClock() {
+    if (!this.queueTimer) return;
+    clearInterval(this.queueTimer);
+    this.queueTimer = null;
+  }
+
+  /**
+   * One look at the waiting sessions: drop the ones that left / disconnected / went silent, then start every group that
+   * satisfies the rules. Starting a group removes its entries first, so a failure never leaves half a group behind.
+   */
+  queueTick() {
+    const now = this.now();
+    let removed = 0;
+    this.queue = this.queue.filter((e) => {
+      const s = this.registry.byId(e.playerId);
+      const ok = s && s === e.session && s.connected && this.roomOf(s) == null && now - e.since < this.opts.queueSilentMs;
+      if (!ok) removed++;
+      return ok;
+    });
+
+    // Walk the queue in arrival order. Each group takes the oldest entry, then as many later entries as share its
+    // difficulty and fit — a group of 4 is filled at once, a smaller one only once it is allowed to start.
+    const taken = new Set();
+    const groups = [];
+    for (const head of this.queue) {
+      if (taken.has(head.playerId)) continue;
+      const members = [head];
+      for (const e of this.queue) {
+        if (members.length >= DEFAULT_SEATS) break;
+        if (e === head || taken.has(e.playerId) || e.difficulty !== head.difficulty) continue;
+        members.push(e);
+      }
+      const waited = now - head.since;
+      // The grace runs from the LAST arrival, not from the head's own: a second player that is joining right now (its own
+      // queue.join is a round trip behind) must not be split off into a group of its own. A full group starts at once, and
+      // the hard timeout still guarantees a lone player a room.
+      const lastArrival = Math.max(head.since, ...this.queue.map((e) => e.since));
+      const ready = members.length >= DEFAULT_SEATS
+        || (members.length >= this.opts.queueMinSeats && now - lastArrival >= this.opts.queueGraceMs)
+        || waited >= this.opts.queueTimeoutMs;
+      if (!ready) continue;
+      for (const e of members) taken.add(e.playerId);
+      groups.push(members);
+    }
+
+    if (removed || groups.length) {
+      if (removed) this.log.info(`[queue] ${removed} waiting session(s) dropped`);
+      for (const members of groups) this.startQueuedMatch(members);
+      this.broadcastQueue();
+    }
+    // nobody waits any more (a member that could not be seated was put back above): the clock stops until the next join
+    if (!this.queue.length) this.stopQueueClock();
+  }
+
+  /**
+   * Put one formed group into a fresh 同盟 room. The room is created by the first member (its per-network room limit is
+   * the one that applies), the others join it, and every member is told its code. A member that cannot be seated is put
+   * back at the front of the queue (it keeps waiting rather than losing its place).
+   * @param {{ playerId: string, session: any, difficulty: string, since: number }[]} members
+   */
+  startQueuedMatch(members) {
+    for (const e of members) this.queue = this.queue.filter((x) => x.playerId !== e.playerId);
+    // Every matched human is ready by definition (it asked to be matched): set BEFORE the seats are announced, so the
+    // very first room.state a client sees already carries it (a client that auto-starts reads that frame).
+    const markReady = (room) => {
+      for (const s of room.seats) if (s && !s.isBot && !s.left) s.ready = true;
+      this.broadcastState(room);
+    };
+    const [first, ...rest] = members;
+    let room = null;
+    let failure = null;
+    try {
+      for (const e of members) {
+        if (!room) {
+          const res = this.create(e.session, { mode: 'coop', difficulty: first.difficulty });
+          if (res && res.error) { failure = res; break; }
+          room = this.roomOf(e.session);
+          if (!room) { failure = fail(ERR.INTERNAL, 'queue: no room after create'); break; }
+          room.matched = true; // the room was formed by 匹配 (queued players may leave it without the lobby grace)
+        } else if (this.roomOf(e.session) !== room) {
+          const res = this.placePlayer(room, e.session, this.roomOf(e.session));
+          if (res && res.error) {
+            // the room filled up meanwhile: this one keeps waiting for the next group
+            this.queue.unshift(e);
+            this.log.warn(`[queue] ${e.session.name} could not be seated in ${room.code}: ${res.error}`);
+          }
+        }
+      }
+    } catch (err) {
+      failure = fail(ERR.INTERNAL, err && err.message);
+      this.log.error('[queue] startQueuedMatch threw', err);
+    }
+    if (failure || !room) {
+      for (const e of members) if (!this.queued(e.session)) this.queue.unshift(e);
+      this.log.warn(`[queue] group of ${members.length} not started: ${failure ? failure.error : 'no room'}`);
+      this.broadcastQueue();
+      return;
+    }
+    markReady(room);
+    for (const e of members) {
+      const inRoom = this.roomOf(e.session) === room;
+      try {
+        sendSession(e.session, { t: 'queue.matched', code: room.code, difficulty: room.difficulty, seated: inRoom });
+      } catch (err) { this.log.error('[queue] queue.matched send failed', err); }
+    }
+    this.log.info(`[queue] ${room.code} started with ${members.length} queued player(s) (${room.difficulty})`);
+    void rest;
   }
 
   // ---------------------------------------------------------------------------------------------------
@@ -422,8 +684,22 @@ export class Lobby {
     if (cur && cur.match) return fail(ERR.ROOM_STARTED, 'leave your running match first');
     if (room.match) return fail(ERR.ROOM_STARTED);
     if (room.mode === 'solo') return fail(ERR.ROOM_FULL, 'solo room');
+    return this.placePlayer(room, session, cur);
+  }
+
+  /**
+   * Seat a human in a co-op room's lowest free seat (room.join, and the 匹配 hand-off). Leaves the room it is currently in
+   * (`cur`) first, announces the new room state, and never throws.
+   * @param {Room} room @param {any} session @param {Room | null} [cur] the session's current room, when it has one
+   * @returns {typeof OK | { error: string, detail?: string }}
+   */
+  placePlayer(room, session, cur = null) {
+    if (room.match) return fail(ERR.ROOM_STARTED);
+    if (room.mode === 'solo') return fail(ERR.ROOM_FULL, 'solo room');
     const idx = room.freeSeat();
     if (idx < 0) return fail(ERR.ROOM_FULL);
+    // Always through removeMember — even when the session is already in THIS room as a SPECTATOR: that is what frees the
+    // spectator seat before the player seat is taken (a spectator going on as a player, header).
     if (cur) this.removeMember(cur, session.playerId);
     room.seats[idx] = this.humanSeat(idx, session);
     session.roomCode = room.code;
@@ -612,7 +888,10 @@ export class Lobby {
    */
   loadout(session, { entries }) {
     const data = this.safeData();
-    const res = checkLoadout(entries, (id) => lookup('chess', id, data));
+    // The player's own 外援 / 甄选 operators are loadout targets too (DESIGN §27): they are not in data/chess.json, so
+    // they come from this session's picks and from nowhere else.
+    const diy = waiguanChessOf(data?.waiguan, session.picks);
+    const res = checkLoadout(entries, (id) => lookup('chess', id, data) || diy[id] || null);
     if (!res || res.error) return fail(res && isErrCode(res.error) ? res.error : ERR.BAD_MSG, res && res.detail);
     const loadout = freezeLoadout(res.loadout);
     session.loadout = loadout;
@@ -635,10 +914,39 @@ export class Lobby {
     return OK;
   }
 
+  /**
+   * room.pick (DESIGN §27, 外援 / 甄选): check a player's four DIY slots against data/waiguan.json, store the
+   * selection on the session and the seat, and hand it to a running match (which accepts it only while its shop pool can
+   * still be rebuilt — see Match.setPicks). Mirrors `loadout` above; the frame answers the sender with its own state.
+   */
+  pick(session, { picks }) {
+    const res = checkWaiguanPicks(picks, this.safeData()?.waiguan);
+    if (!res || res.error) return fail(res && isErrCode(res.error) ? res.error : ERR.BAD_MSG, res && res.detail);
+    const stored = freezePicks(res.picks);
+    session.picks = stored;
+    const room = this.roomOf(session);
+    if (!room) return OK;
+    const seat = room.seatOf(session.playerId);
+    if (seat) seat.picks = stored;
+    if (room.match && seat && typeof room.match.setPicks === 'function') {
+      let r;
+      try {
+        r = room.match.setPicks(session.playerId, stored);
+      } catch (e) {
+        this.log.error(`[lobby] ${room.code} match.setPicks threw`, e);
+        return fail(ERR.INTERNAL);
+      }
+      if (r && typeof r === 'object' && r.error) {
+        return fail(isErrCode(r.error) ? r.error : ERR.INTERNAL, typeof r.detail === 'string' ? r.detail : undefined);
+      }
+    }
+    const ok = room ? this.sendState(room, session) : OK;
+    return ok && typeof ok === 'object' && ok.error ? ok : OK;
+  }
+
   // ---------------------------------------------------------------------------------------------------
   // Match wiring
   // ---------------------------------------------------------------------------------------------------
-
   /** @param {Room} room @param {string | null} [key] per-network limit key of the starter */
   startMatch(room, key = null) {
     const host = room.seatOf(room.hostId);
@@ -647,6 +955,8 @@ export class Lobby {
       seat: s.seat, playerId: s.playerId, name: s.name, isBot: s.isBot, connected: s.connected,
       // DESIGN §16: the human's checked operator loadout (bots fight with the defaults)
       loadout: s.isBot ? null : s.loadout || null,
+      // DESIGN §27: the human's checked 甄选 (DIY) selection — its own private shop pool (bots pick none)
+      picks: s.isBot ? null : s.picks || null,
     }));
     // lastPublic / results: the latest m.public broadcast and the m.result frames (encoded), kept for the replay.
     const ctx = { live: true, ended: false, disposed: false, match: null, lastPublic: null, sharedResult: null, results: new Map() };
@@ -905,6 +1215,7 @@ export class Lobby {
     return {
       seat: idx, playerId: session.playerId, name: session.name, isBot: false, ready: false, connected: session.connected, left: false,
       loadout: session.loadout || null,
+      picks: session.picks || null,
     };
   }
 
@@ -916,6 +1227,8 @@ export class Lobby {
   removeMember(room, playerId) {
     const session = this.registry.byId(playerId);
     if (session && session.roomCode === room.code) session.roomCode = null;
+    // 匹配: entering a room (or leaving one) takes the session out of the queue
+    if (session && this.queued(session)) { this.queueLeave(session); this.broadcastQueue(); }
     this.clearGrace(playerId);
     this.dropReplay(room, playerId);
     if (this.freeSpectatorSeat(room, playerId)) return;
@@ -1042,12 +1355,12 @@ export class Lobby {
 
   broadcastState(room) {
     if (room.disposed) return;
-    const data = encode(room.toState());
-    for (const session of this.memberSessions(room)) sendRaw(session.ws, data);
+    // The frame carries the viewer's own 甄选 picks only, so it is encoded (and sent) per member.
+    for (const session of this.memberSessions(room)) sendSession(session, room.toState(session.playerId));
   }
 
   sendState(room, session) {
-    sendSession(session, room.toState());
+    sendSession(session, room.toState(session.playerId));
   }
 
   /** Match broadcast: encode once, send to every connected member. @returns {string | null} the encoded frame */

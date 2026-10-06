@@ -68,7 +68,14 @@ describe('the manifest (data/assets.json)', () => {
     const backs = Object.entries(M.chars).filter(([, c]) => c.spine?.back);
     const withFall = backs.filter(([, c]) => dieClipDur(c.spine.back) > 0).map(([id]) => id).sort();
     assert.ok(backs.length >= 130, `${backs.length} Back skeletons`);
-    assert.deepEqual(withFall, ['char_388_mint', 'char_4064_mlynar', 'char_440_pinecn', 'char_602_cdfend']);
+    // 4 was the pool's count when this test was written (issue #25); the 外援 / 甄选 roster adds operators of its own and
+    // some of them DO carry a Back fall clip, so pinning the exact list would fail on data the mode legitimately fields.
+    // What the fix actually promises is kept below: the four reviewed cases still fall, and a Back clip stays the
+    // exception rather than the rule.
+    for (const id of ['char_388_mint', 'char_4064_mlynar', 'char_440_pinecn', 'char_602_cdfend']) {
+      assert.ok(withFall.includes(id), `${id} Back still has a Die clip`);
+    }
+    assert.ok(withFall.length * 4 < backs.length, `Back fall clips stay rare (${withFall.length}/${backs.length})`);
     for (const [id, c] of Object.entries(M.chars)) assert.ok(dieClipDur(c.spine.front) > 0, `${id} Front has a Die clip`);
     assert.equal(dieClipDur(back(CAPER)), 0);
     assert.equal(dieClipDur(front(CAPER)), front(CAPER).animations.Die);

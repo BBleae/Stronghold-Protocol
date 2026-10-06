@@ -16,6 +16,11 @@
 //             logged in since.
 //
 // Intents of enter(): create {mode, difficulty} · join {code} (a join application, HTTP only: see `application`) ·
+// 匹配 (matchmaking, DESIGN §28.2): queue.join / queue.leave are the account API's queue (POST /api/queue), polled
+// from the menu every QUEUE_POLL_MS; its answers reach the page as the Node server's frames would ('queue.status',
+// 'queue.matched'). A formed group's host enters a room it creates (create) and reports it; a member gets the code and
+// joins it like an invite (main.js: room.join → a join application), which the host's page approves for its own group
+// only (QUEUE_APPROVE_MS).
 // joinApproved {code, ticket} · resume {mode, difficulty} (继续对局, which may take the seat over from another
 // device; a seat that is still a reservation creates its room with mode/difficulty) · resume {code, token} (this
 // tab's own seat after a reload: the room resumes the session the token names, if this account still has it) ·
@@ -46,8 +51,15 @@ export const ENTER_TIMEOUT_MS = 12000;
 export const DRAIN_MS = 5000;
 /** How often a pending join application is checked. */
 export const APPLICATION_POLL_MS = 3000;
+/** 匹配: how often the menu asks for its place in the queue (the queue drops a page silent for 10 s). */
+export const QUEUE_POLL_MS = 1500;
+/** 匹配: how long a matched host's page approves its group's join applications. */
+export const QUEUE_APPROVE_MS = 60_000;
 
 /** Room code of a saved room token (`CODE.<32 hex>`, saved at every welcome), or null. */
+/** 匹配: the status of a menu that waits in no queue (the Node server's queue.status for an unqueued session). */
+const QUEUE_IDLE = Object.freeze({ t: 'queue.status', waiting: false, difficulty: null, count: 0, waitedMs: 0 });
+
 export function roomFromToken(token) {
   const match = typeof token === 'string' && /^([ABCDEFGHJKLMNPQRSTUVWXYZ]{4})\.[a-f0-9]{32}$/.exec(token);
   return match ? match[1] : null;
@@ -71,6 +83,10 @@ export class RoomNet extends Net {
     this._token = null;      // hello token on the route: the last welcome's, or the saved one being resumed
     this._waiting = null;    // { fail } while entering waits for an answer of the room
     this._applicationTimer = null;
+    /** 匹配: the queue this menu waits in ({ difficulty, handling?, done? }), or null */
+    this._queue = null;
+    this._queueTimer = null;
+    this._approveTimer = null;
     this.getToken = () => this._token;
     this.on('room.state', (msg) => { this.room = msg; });
     // A room.closed the server pushed may be followed by the match's final view and result: read them (see _drain).
@@ -82,13 +98,16 @@ export class RoomNet extends Net {
    * request ({ application } for a join application). A failure closes the socket, returns to the menu (or to 'lost'
    * when the login is invalid) and rejects.
    * @param {{ kind: 'create'|'join'|'joinApproved'|'resume'|'spectate', code?: string, ticket?: string,
-   *   token?: string, mode?: string, difficulty?: string, capacity?: number }} intent
+   *   token?: string, mode?: string, difficulty?: string, capacity?: number, queued?: boolean }} intent
+   *   (`queued`: the matched host's own room, which does not leave the 匹配 queue as any other entering does)
    */
   async enter(intent) {
     if (this.state === 'entering') throw new NetError('BUSY');
     if (this.state === 'room') throw new NetError('ALREADY_IN_ROOM');
     if (this._applying() && intent.kind !== 'join' && intent.kind !== 'joinApproved') throw new NetError('APPLICATION_PENDING');
     if (this.state === 'lost') this._toMenu(); // entering anything gives up the room whose login was lost
+    // any other way into a room (an application, 继续对局…) leaves the 匹配 queue, as a seated session does in Node
+    if (this._queue && !intent.queued) void this._queueLeave();
     this.state = 'entering';
     try {
       const reply = await this._enter(intent);
@@ -116,6 +135,8 @@ export class RoomNet extends Net {
    * (NOT_IN_ROOM) and while the login is invalid (LOGIN_REQUIRED).
    */
   request(type, fields = {}, opts = {}) {
+    if (type === 'queue.join') return this._queueJoin(fields.difficulty);
+    if (type === 'queue.leave') return this._queueLeave();
     if (type === 'room.create') return this.enter({ kind: 'create', mode: fields.mode, difficulty: fields.difficulty, capacity: fields.capacity });
     if (type === 'room.join') return this.enter({ kind: 'join', code: fields.code });
     if (this.state === 'menu') return Promise.reject(new NetError('NOT_IN_ROOM'));
@@ -138,6 +159,8 @@ export class RoomNet extends Net {
 
   /** Close for good (logout): no reconnects, no application checks. */
   close() {
+    this._queueStop();
+    this._clearTimer('_approveTimer', 'clearTimeout');
     this._clearTimer('_applicationTimer', 'clearTimeout');
     this.application = null;
     super.close();
@@ -208,6 +231,143 @@ export class RoomNet extends Net {
     const item = await accountRequest(`/api/rooms/${code}/applications`, { action: 'apply' }, this.fetch);
     this.watchApplication({ ...item, code });
     return { application: this.application };
+  }
+
+  // ---- 匹配 (matchmaking, DESIGN §28.2) ----------------------------------------------------------------------------
+
+  async _queueJoin(difficulty) {
+    if (this.state === 'lost') throw new NetError('LOGIN_REQUIRED');
+    if (this.state !== 'menu') throw new NetError('ALREADY_IN_ROOM');
+    if (this._applying()) throw new NetError('APPLICATION_PENDING');
+    this._queueStop();
+    const q = { difficulty };
+    this._queue = q;
+    let status;
+    try {
+      status = await accountRequest('/api/queue', { action: 'join', difficulty }, this.fetch);
+    } catch (error) {
+      if (this._queue === q) this._queue = null;
+      if (error.code === 'LOGIN_REQUIRED') this._lose(error);
+      throw error;
+    }
+    this._queueApply(q, status);
+    return {};
+  }
+
+  // Leaving always answers a status (the page must not keep showing a queue it left); the server is told when it can be.
+  async _queueLeave() {
+    const q = this._queue;
+    this._queueStop();
+    if (q && !q.done) await accountRequest('/api/queue', { action: 'leave' }, this.fetch).catch(() => {});
+    this._emit('queue.status', QUEUE_IDLE);
+    return {};
+  }
+
+  _queueStop() {
+    this._clearTimer('_queueTimer', 'clearTimeout');
+    this._queue = null;
+  }
+
+  _queueSchedule(q) {
+    this._clearTimer('_queueTimer', 'clearTimeout');
+    this._queueTimer = this.timers.setTimeout(() => {
+      this._queueTimer = null;
+      void this._queuePoll(q);
+    }, QUEUE_POLL_MS);
+  }
+
+  async _queuePoll(q) {
+    if (this._queue !== q) return;
+    let status;
+    try {
+      status = await accountRequest('/api/queue', { action: 'poll', difficulty: q.difficulty }, this.fetch);
+    } catch (error) {
+      if (this._queue !== q) return;
+      if (error.code === 'LOGIN_REQUIRED') {
+        this._queueStop();
+        this._emit('queue.status', QUEUE_IDLE);
+        this._lose(error);
+        return;
+      }
+      console.warn('[room-net] queue poll failed; retrying', error);
+      this._queueSchedule(q);
+      return;
+    }
+    this._queueApply(q, status);
+  }
+
+  _queueApply(q, status) {
+    if (this._queue !== q) return;
+    if (status?.matched) {
+      void this._queueMatched(q, status.matched);
+      return;
+    }
+    this._emit('queue.status', { t: 'queue.status', ...status });
+    if (status?.waiting) this._queueSchedule(q);
+    else this._queue = null;
+  }
+
+  // A group was formed: its host opens the room and reports it; a member is handed the code (main.js joins it).
+  async _queueMatched(q, matched) {
+    if (q.handling) return;
+    q.handling = true;
+    let m = matched;
+    let opened = null;
+    // cancelled while the room was being opened or reported: the player leaves that room again (its group, told by
+    // the leave, goes back to the queue)
+    const cancelled = () => {
+      if (this._queue === q) return false;
+      if (opened && this.state === 'room' && this.route?.code === opened) void this.request('room.leave').catch(() => {});
+      return true;
+    };
+    try {
+      if (m.role === 'host' && !m.code) {
+        await this.enter({ kind: 'create', mode: 'coop', difficulty: m.difficulty, queued: true });
+        opened = this.route?.code ?? null;
+        if (cancelled()) return;
+        m = (await accountRequest('/api/queue', { action: 'hosted', code: opened }, this.fetch)).matched;
+      }
+    } catch (error) {
+      // the room could not be opened or reported: out of the queue (a room it did open stays the player's)
+      console.warn('[room-net] matched group not opened', error);
+      if (cancelled()) return;
+      this._queueStop();
+      await accountRequest('/api/queue', { action: 'leave' }, this.fetch).catch(() => {});
+      this._emit('queue.status', { ...QUEUE_IDLE, error: error?.code || 'INTERNAL' });
+      return;
+    }
+    if (cancelled()) return;
+    q.done = true;
+    this._queueStop();
+    this._emit('queue.status', QUEUE_IDLE);
+    this._emit('queue.matched', { t: 'queue.matched', code: m.code, difficulty: m.difficulty, seated: true,
+      expect: m.role === 'host' ? m.expect : 0 });
+    if (m.role === 'host' && m.members?.length) this._approveMatched(m.code, m.members);
+  }
+
+  // The host's page approves the join applications of its own group's accounts (and nobody else's), while it is in that
+  // room, for QUEUE_APPROVE_MS.
+  _approveMatched(code, accountIds) {
+    const want = new Set(accountIds);
+    const until = this.now() + QUEUE_APPROVE_MS;
+    const step = async () => {
+      this._approveTimer = null;
+      if (!want.size || this.now() > until || this.state !== 'room' || this.route?.code !== code) return;
+      try {
+        const { items } = await accountRequest(`/api/rooms/${code}/applications`, undefined, this.fetch);
+        for (const item of items || []) {
+          if (item.status !== 'pending' || !want.has(item.accountId)) continue;
+          await accountRequest(`/api/rooms/${code}/applications`, { action: 'approve', id: item.id }, this.fetch);
+          want.delete(item.accountId);
+        }
+      } catch (error) {
+        console.warn('[room-net] approving the matched applications failed; retrying', error);
+      }
+      if (want.size && this.state === 'room' && this.route?.code === code) {
+        this._approveTimer = this.timers.setTimeout(() => void step(), QUEUE_POLL_MS);
+      }
+    };
+    void step();
   }
 
   // ---- entering --------------------------------------------------------------------------------------------------
@@ -344,6 +504,11 @@ export class RoomNet extends Net {
   _lose(error) {
     this._clearTimer('_reconnectTimer', 'clearTimeout');
     this._clearTimer('_applicationTimer', 'clearTimeout');
+    this._clearTimer('_approveTimer', 'clearTimeout');
+    if (this._queue) {
+      this._queueStop();
+      this._emit('queue.status', QUEUE_IDLE);
+    }
     this._manualClose = true;
     this.lastError = error;
     this.state = 'lost';
@@ -361,6 +526,7 @@ export class RoomNet extends Net {
   // Back to the menu: no socket, no route. Requests still waiting for the room fail with NOT_IN_ROOM.
   _toMenu(drain = false) {
     this._clearTimer('_reconnectTimer', 'clearTimeout');
+    this._clearTimer('_approveTimer', 'clearTimeout');
     if (drain) this._drain();
     else this._dropSocket();
     this._failPending('NOT_IN_ROOM', true);

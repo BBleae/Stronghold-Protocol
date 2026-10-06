@@ -12,9 +12,9 @@ import {
 
 const cx = (...p) => p.flat().filter(Boolean).join(' ');
 
-/** Data files the in-match screens use. */
+/** Data files the in-match screens use (`waiguan` = the 外援 / 甄选 roster, DESIGN §27). */
 export const GAME_FILES = ['config', 'assets', 'chess', 'bonds', 'items', 'bands', 'enemies', 'bosses', 'stages', 'tokens',
-  'choices', 'effects', 'garrisons', 'factions', 'local'];
+  'choices', 'effects', 'garrisons', 'factions', 'local', 'waiguan'];
 
 /**
  * Load every in-match data file; returns lookups (sync, null until loaded).

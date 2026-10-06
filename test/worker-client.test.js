@@ -3,7 +3,7 @@
 // statuses, events, promise outcomes and their texts, and the sockets that get opened.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { RoomNet, roomFromToken, ENTER_TIMEOUT_MS, DRAIN_MS, APPLICATION_POLL_MS } from '../public/js/room-net.js';
+import { RoomNet, roomFromToken, ENTER_TIMEOUT_MS, DRAIN_MS, APPLICATION_POLL_MS, QUEUE_POLL_MS } from '../public/js/room-net.js';
 import { REQUEST_TIMEOUT_MS } from '../public/js/net.js';
 import { installLoadoutSync } from '../public/js/ui/loadoutSync.js';
 import { createStore } from '../public/js/store.js';
@@ -606,4 +606,138 @@ test('idle heartbeats allow platform auto-response without corrupting the game c
   roomState(sock, { inMatch: true });
   await h.timers.advance(4000);
   assert.ok(sock.last('ping').c > first.c, 'in a match pings reach the room with a timestamp');
+});
+
+// ---- 匹配 (matchmaking) over the account API (DESIGN §28.2) ----------------------------------------------------------
+
+const queueEvents = (h) => {
+  const seen = [];
+  h.net.on('queue.status', (m) => seen.push(['status', m.waiting, m.count ?? null]));
+  h.net.on('queue.matched', (m) => seen.push(['matched', m.code, m.seated, m.expect]));
+  return seen;
+};
+
+test('matchmaking from the menu: join polls the queue and reports it; leaving stops polling and tells the queue', async () => {
+  const h = setup();
+  const seen = queueEvents(h);
+  h.api.reply('POST /api/queue', [200, { waiting: true, difficulty: 'NORMAL', count: 1, total: 1, waitedMs: 0 }],
+    [200, { waiting: true, difficulty: 'NORMAL', count: 2, total: 2, waitedMs: 1500 }],
+    [200, { waiting: false }]);
+  await h.net.request('queue.join', { difficulty: 'NORMAL' });
+  await h.timers.advance(QUEUE_POLL_MS);
+  assert.deepEqual(h.api.calls.map((c) => c.body), [{ action: 'join', difficulty: 'NORMAL' }, { action: 'poll', difficulty: 'NORMAL' }]);
+  await h.net.request('queue.leave');
+  await h.timers.advance(QUEUE_POLL_MS * 3);
+  assert.deepEqual(h.api.calls.map((c) => c.body.action), ['join', 'poll', 'leave'], 'no poll after leaving');
+  assert.deepEqual(seen, [['status', true, 1], ['status', true, 2], ['status', false, 0]]);
+  assert.equal(h.ws.sockets.length, 0, 'waiting needs no socket');
+  assert.deepEqual(h.api.unexpected, []);
+});
+
+test('matched as the host: the page opens the room, reports it, and approves its group\'s applications only', async () => {
+  const h = setup();
+  const seen = queueEvents(h);
+  h.api.reply('POST /api/queue', [200, { waiting: true, difficulty: 'HARD', count: 2, total: 2, waitedMs: 0 }],
+    [200, { waiting: false, matched: { role: 'host', difficulty: 'HARD', code: null, expect: 2, members: ['acc-b'] } }],
+    [200, { waiting: false, matched: { role: 'host', difficulty: 'HARD', code: 'ABCD', expect: 2, members: ['acc-b'] } }]);
+  h.api.reply('POST /api/rooms', [201, { code: 'ABCD', ticket: TICKET, generation: 'g1' }]);
+  await h.net.request('queue.join', { difficulty: 'HARD' });
+  await h.timers.advance(QUEUE_POLL_MS);
+  await welcome(h);
+  const sock = h.ws.last();
+  assert.deepEqual({ mode: sock.last('room.create').mode, difficulty: sock.last('room.create').difficulty }, { mode: 'coop', difficulty: 'HARD' });
+  h.api.reply('GET /api/rooms/ABCD/applications', [200, { items: [
+    { id: 'x1', accountId: 'acc-stranger', status: 'pending' },
+    { id: 'b1', accountId: 'acc-b', status: 'pending' },
+  ] }]);
+  h.api.reply('POST /api/rooms/ABCD/applications', [200, { id: 'b1', status: 'approved' }]);
+  roomState(sock);
+  ok(sock, 'room.create');
+  await settle();
+  await settle();
+  const hostedCall = h.api.calls.find((c) => c.body?.action === 'hosted');
+  assert.deepEqual(hostedCall.body, { action: 'hosted', code: 'ABCD' });
+  assert.deepEqual(seen.at(-1), ['matched', 'ABCD', true, 2]);
+  await h.timers.advance(QUEUE_POLL_MS);
+  const approvals = h.api.calls.filter((c) => c.key === 'POST /api/rooms/ABCD/applications').map((c) => c.body);
+  assert.deepEqual(approvals, [{ action: 'approve', id: 'b1' }], 'the stranger is not approved');
+  await h.timers.advance(QUEUE_POLL_MS * 10);
+  assert.equal(h.api.calls.filter((c) => c.key === 'GET /api/rooms/ABCD/applications').length, 1, 'the group is complete: no more checks');
+  assert.deepEqual(h.api.unexpected, []);
+});
+
+test('matched as a member: the page is handed the room code (main.js joins it like an invite)', async () => {
+  const h = setup();
+  const seen = queueEvents(h);
+  h.api.reply('POST /api/queue', [200, { waiting: true, difficulty: 'NORMAL', count: 2, total: 2, waitedMs: 0 }],
+    [200, { waiting: false, matched: { role: 'member', difficulty: 'NORMAL', code: 'WXYZ' } }]);
+  await h.net.request('queue.join', { difficulty: 'NORMAL' });
+  await h.timers.advance(QUEUE_POLL_MS);
+  assert.deepEqual(seen, [['status', true, 2], ['status', false, 0], ['matched', 'WXYZ', true, 0]]);
+  assert.equal(h.ws.sockets.length, 0, 'the member opens no room of its own');
+  await h.timers.advance(QUEUE_POLL_MS * 4);
+  assert.equal(h.api.calls.length, 2, 'matched: no more polls');
+  assert.deepEqual(h.api.unexpected, []);
+});
+
+test('a page already in a room cannot queue', async () => {
+  const h = setup();
+  await inRoom(h);
+  await assert.rejects(h.net.request('queue.join', { difficulty: 'NORMAL' }), { code: 'ALREADY_IN_ROOM' });
+});
+
+test('a cancel while the matched host opens its room: the page leaves that room again and never reports it', async () => {
+  const h = setup();
+  h.api.reply('POST /api/queue', [200, { waiting: true, difficulty: 'NORMAL', count: 2, total: 2, waitedMs: 0 }],
+    [200, { waiting: false, matched: { role: 'host', difficulty: 'NORMAL', code: null, expect: 2, members: ['acc-b'] } }],
+    [200, { waiting: false }]);
+  h.api.reply('POST /api/rooms', [201, { code: 'ABCD', ticket: TICKET, generation: 'g1' }]);
+  await h.net.request('queue.join', { difficulty: 'NORMAL' });
+  await h.timers.advance(QUEUE_POLL_MS);
+  await welcome(h);
+  const sock = h.ws.last();
+  await h.net.request('queue.leave'); // the player clicks cancel while room.create is on its way
+  roomState(sock);
+  ok(sock, 'room.create');
+  await settle();
+  await settle();
+  assert.ok(sock.last('room.leave'), 'the room opened for the group is left again');
+  assert.deepEqual(h.api.calls.filter((c) => c.key === 'POST /api/queue').map((c) => c.body.action), ['join', 'poll', 'leave'], 'no hosted report');
+  assert.deepEqual(h.api.unexpected, []);
+});
+
+test('entering a room another way leaves the queue; an invalid login met queueing asks to log in again', async () => {
+  const h = setup();
+  h.api.reply('POST /api/queue', [200, { waiting: true, difficulty: 'NORMAL', count: 1, total: 1, waitedMs: 0 }],
+    [200, { waiting: false }], [401, { error: 'LOGIN_REQUIRED' }]);
+  h.api.reply('POST /api/rooms/WXYZ/applications', [201, { id: 'app1', status: 'pending' }]);
+  await h.net.request('queue.join', { difficulty: 'NORMAL' });
+  await h.net.request('room.join', { code: 'WXYZ' }); // an application to a public room
+  await h.timers.advance(QUEUE_POLL_MS * 1.5);
+  assert.deepEqual(h.api.calls.filter((c) => c.key === 'POST /api/queue').map((c) => c.body.action), ['join', 'leave']);
+  await h.net.cancelApplication().catch(() => {}); // (no reply needed: the next try is refused before any request)
+  h.net.watchApplication(null);
+  await assert.rejects(h.net.request('queue.join', { difficulty: 'NORMAL' }), { code: 'LOGIN_REQUIRED' });
+  assert.equal(h.net.snapshot().lastError.code, 'LOGIN_REQUIRED', 'the 重新登录 banner shows');
+});
+
+test('a matched group whose room could not be reported tells the player why', async () => {
+  const h = setup();
+  const errors = [];
+  h.net.on('queue.status', (m) => { if (m.error) errors.push(m.error); });
+  h.api.reply('POST /api/queue', [200, { waiting: false, matched: { role: 'host', difficulty: 'NORMAL', code: null, expect: 2, members: ['acc-b'] } }],
+    [400, { error: 'BAD_TARGET' }], [200, { waiting: false }]);
+  h.api.reply('POST /api/rooms', [201, { code: 'ABCD', ticket: TICKET, generation: 'g1' }]);
+  void h.net.request('queue.join', { difficulty: 'NORMAL' });
+  await settle();
+  await welcome(h);
+  const sock = h.ws.last();
+  roomState(sock);
+  ok(sock, 'room.create');
+  await settle();
+  await settle();
+  await settle();
+  assert.deepEqual(errors, ['BAD_TARGET']);
+  assert.deepEqual(h.api.calls.filter((c) => c.key === 'POST /api/queue').map((c) => c.body.action), ['join', 'hosted', 'leave']);
+  assert.equal(h.net.state, 'room', 'the room it did open stays the player\'s');
 });

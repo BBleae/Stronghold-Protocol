@@ -59,21 +59,48 @@ export class SharedPool {
   constructor(gd, { banned = [], players = undefined } = {}) {
     this.gd = gd;
     const ban = new Set(banned);
-    /** @type {Map<string, { cap: number, left: number, tier: number }>} */
+    /** @type {Map<string, { cap: number, left: number, tier: number, owner: string|null }>} */
     this.entries = new Map();
     for (const id of gd.visibleChess) {
       if (ban.has(id)) continue;
       const cap = gd.poolCopies(id, players);
       if (cap <= 0) continue;
-      this.entries.set(id, { cap, left: cap, tier: gd.tierOf(id) });
+      this.entries.set(id, { cap, left: cap, tier: gd.tierOf(id), owner: null });
     }
     this.banned = [...ban].sort();
   }
 
-  /** Whether a base chess is part of this match's pool (visible, not banned). */
-  has(baseId) { return this.entries.has(baseId); }
+  /**
+   * Add one entry that only `owner` can see, roll and buy — the 外援 / 甄选 (DIY) chess of that player (DESIGN §27).
+   * It never enters another player's shop (a 甄选 pick is a private pool, not a shared one), so it neither dilutes a
+   * teammate's rolls nor can a teammate buy it. The pool invariants count it like any other entry, per owner.
+   * @param {string} owner playerId
+   * @param {string} baseId the 甄选 chess id (data/waiguan.json, already merged into the match's chess table)
+   * @param {number} cap copies (the official per-tier pool copies: 8 at tier V, 5 at tier VI)
+   * @returns {boolean} false when the chess is unknown / already taken by another owner
+   */
+  addOwned(owner, baseId, cap) {
+    const tier = this.gd.tierOf(baseId);
+    if (!Number.isInteger(tier)) return false;
+    const n = Math.max(0, Math.floor(cap) || 0);
+    if (n <= 0) return false;
+    const existing = this.entries.get(baseId);
+    if (existing) return existing.owner === owner;
+    this.entries.set(baseId, { cap: n, left: n, tier, owner });
+    return true;
+  }
+
+  /** Whether `playerId` may see / buy a base chess (an unowned entry is everybody's). */
+  visibleTo(baseId, playerId = null) {
+    const e = this.entries.get(baseId);
+    if (!e) return false;
+    return e.owner == null || e.owner === playerId;
+  }
+
+  /** Whether a base chess is part of this match's pool (visible, not banned) — for `playerId`, when given. */
+  has(baseId, playerId = null) { return this.visibleTo(baseId, playerId); }
   cap(baseId) { return this.entries.get(baseId)?.cap ?? 0; }
-  left(baseId) { return this.entries.get(baseId)?.left ?? 0; }
+  left(baseId, playerId = null) { const e = this.entries.get(baseId); return e && this.visibleTo(baseId, playerId) ? e.left : 0; }
 
   /** Take up to n copies; returns the number actually taken (0 when not in the pool / empty). */
   take(baseId, n = 1) {
@@ -93,11 +120,12 @@ export class SharedPool {
     return k;
   }
 
-  /** Remaining copies of eligible chess (tier ≤ maxTier, or exactly `tier`). */
-  _eligible({ maxTier = 6, tier = null, filter = null } = {}) {
+  /** Remaining copies of eligible chess (tier ≤ maxTier, or exactly `tier`), for `playerId` when given. */
+  _eligible({ maxTier = 6, tier = null, filter = null, playerId = null } = {}) {
     const out = [];
     for (const [id, e] of this.entries) {
       if (e.left <= 0) continue;
+      if (e.owner != null && e.owner !== playerId) continue;
       if (tier != null ? e.tier !== tier : e.tier > maxTier) continue;
       if (filter && !filter(id, e)) continue;
       out.push([id, e.left]);
@@ -107,8 +135,9 @@ export class SharedPool {
 
   /**
    * Copy-weighted roll: one copy uniformly among remaining copies of eligible chess. Returns a base id or null.
+   * `playerId` restricts the draw to the shared chess plus that player's own 甄选 picks (DESIGN §27).
    * @param {Function} rng
-   * @param {{ maxTier?: number, tier?: number|null, filter?: (id: string, e: object) => boolean }} [opts]
+   * @param {{ maxTier?: number, tier?: number|null, filter?: (id: string, e: object) => boolean, playerId?: string|null }} [opts]
    */
   roll(rng, opts = {}) {
     const el = this._eligible(opts);
@@ -120,12 +149,13 @@ export class SharedPool {
     return el[el.length - 1][0];
   }
 
-  /** Tier shares of a copy-weighted roll at shop level `maxTier` (current remaining copies). */
-  tierShares(maxTier) {
+  /** Tier shares of a copy-weighted roll at shop level `maxTier` (current remaining copies), for `playerId` when given. */
+  tierShares(maxTier, playerId = null) {
     const t = {};
     let total = 0;
     for (const [, e] of this.entries) {
       if (e.tier > maxTier || e.left <= 0) continue;
+      if (e.owner != null && e.owner !== playerId) continue;
       t[e.tier] = (t[e.tier] || 0) + e.left;
       total += e.left;
     }
@@ -138,8 +168,8 @@ export class SharedPool {
    * Item roll for the shop's item slot: tier by the chess tier shares at this level, uniform item within the tier,
    * falling back to lower tiers when a tier has no item. Returns an item id or null.
    */
-  rollItem(rng, maxTier) {
-    const shares = this.tierShares(maxTier);
+  rollItem(rng, maxTier, playerId = null) {
+    const shares = this.tierShares(maxTier, playerId);
     const tiers = Object.keys(shares).map(Number).sort((a, b) => a - b);
     let tier = null;
     if (tiers.length) {

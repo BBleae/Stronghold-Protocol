@@ -25,7 +25,8 @@ Unknown options or a missing option value are errors (exit code 2); `--refresh` 
   Integrity errors (see §17) make the exit code 1 **and leave the previous output untouched** (unless `--force`);
   warnings never do. Each output file is written atomically (temp file + rename).
 - **Determinism.** Same inputs ⇒ byte-identical outputs (stable key order, no timestamps, no randomness).
-- **Size.** ≈3.5 MB total (limit 6 MB; `chess.json` ≈1.65 MB with the loadout choices), compact JSON (no indentation).
+- **Size.** ≈4.9 MB total (limit 6 MB; `chess.json` ≈1.65 MB with the loadout choices, `waiguan.json` ≈1.4 MB with the
+  外援 / 甄选 roster — see §14b), compact JSON (no indentation).
 - **Derived paths.** `stages.json groundPaths*` come from the sim's own `server/sim/grid.js` pathing: a change there
   needs a rebuild (the offline-rebuild test catches a stale `data/`).
 
@@ -456,10 +457,11 @@ Glyph legend (`rows`):
 | `parts[]` | `["enemy_9014_acstma","enemy_9015_acstmb"]` | boss parts (random local groups / unharmful); not leaders — 限伤 never applies to them |
 | `abilities[]` | handbook texts | |
 
-## 14. `tokens.json` — `{ [tokenId]: Token }` (22)
+## 14. `tokens.json` — `{ [tokenId]: Token }` (57)
 
-`kind`: `summon` (19 chess summons), `bondSummon` (`enemy_9012_acloon` 炎佑 for 炎 6/9), `mapChar` (`char_605_cmedic`
-预备干员-医疗 / `char_613_acmedc` Touch placed by band `band_amedic`).
+`kind`: `summon` (54 chess summons, the pool's 19 + the 外援 / 甄选 roster's 35 — §14b), `bondSummon`
+(`enemy_9012_acloon` 炎佑 for 炎 6/9), `mapChar` (`char_605_cmedic` 预备干员-医疗 / `char_613_acmedc` Touch placed by band
+`band_amedic`).
 
 | Field | Example (`token_10028_vigil_wolf`) | Meaning |
 |---|---|---|
@@ -480,6 +482,62 @@ Glyph legend (`rows`):
 | bondSummon extras | `bondId`, `motion`, `skills`, `talents`, `assets.isEnemyModel` | 炎佑 base template (600 ATK / 12000 HP); at battle start 30 % of the 炎 operators' ATK / HP sums are **added** to it (PRTS "（最终加算）", bonds.yanShip; the 9-炎 ATK ×1.5 on the whole ATK [ASSUMED]) |
 
 ---
+
+## 14b. `waiguan.json` — `{ candidates, chess, chessT5 }` — 外援 / 甄选 (DIY) roster
+
+The official mode gives every player four 甄选 (DIY) slots — 2 at tier V and 2 at tier VI — filled with their own 6★
+operators (`diyChessDict` = `TIER_6`, research 03 §C4). The remake has no account roster, so the pick is a free choice
+among the **87** 6★ operators of `character_table` that are **not** in this mode's shop pool (146 minus the 59 the pool
+already fields; `TOKEN` / `TRAP` professions excluded). Three parts:
+
+| Part | Shape | Meaning |
+|---|---|---|
+| `candidates[]` | `{ charId, name, appellation, rarity, profession, subProfessionId, position, nationId, bonds[], chessIds: { 5, 6 } }` | the light list the picker UI reads (no stats / skills / talents) |
+| `chess{}` | `{ [chessId]: Chess }` | the **tier VI** record of every candidate, normal (`_a`) and elite (`_b`) — a full chess record, built by the very same `chessRecord()` the shop chess go through |
+| `chessT5{}` | `{ [chessId]: { from, …9 fields } }` | the **tier V** records as overlays on their tier VI twin (`from` = that id): the two tiers differ only in `WAIGUAN_TIER_FIELDS` (chessId, baseId, goldenId, tier, identifier, price, sellPrice, upgradeChessId, status), so storing both in full would double the roster for nothing |
+
+- **Chess id**: `chess_char_diy_<tier>_<charId>[_b]`, e.g. `chess_char_diy_6_char_300_phenxi_a`. The four **empty slot
+  templates** stay in `chess.json` (`chess_char_5_diy1_a` … `chess_char_6_diy2_b`: `isDiy`, no `stats`): the slot a pick
+  fills is a different thing from the operator it holds.
+- **Status**: tier V = phase 2 / Lv1 / skill Lv4 / 模组 as the tier V slot; tier VI = phase 2 / Lv60 / skill Lv7 / 模组 as
+  the tier VI slot — exactly the status a 6★ of that tier fights at.
+- **Bonds**: derived from the operator's faction ids — `mainPower` and **every `subPower` entry** (`{ nationId, groupId,
+  teamId }` each), plus the record's own top-level `nationId` / `groupId` / `teamId` — against each core bond's
+  `powerIdList` (bonds.json), else the fallback 协防 `emptyShip` (research 02 §2.1). 34 of the 87 derive a core bond
+  (推进之王 → 维多利亚, 娜仁图亚 → 萨尔贡, 菲亚梅塔 → 拉特兰, 结城理 → 拉特兰 …), 53 become 协防干员. **No 特质**
+  (`garrisonIds: []`).
+  - `subPower` is what makes the rule agree with the mode: the top-level fields carry ONE, often historical faction, and
+    reading only them mis-assigns the operators whose real allegiance sits elsewhere. Checked against the 121 pool
+    operators whose bonds the official mode states: `mainPower` alone gives 70 right / 10 wrong (能天使 read as 炎 instead
+    of 拉特兰, 德克萨斯 as 炎 instead of 叙拉古, 水月 / 百炼嘉维尔 / 卡涅利安 / 烛煌 with no core bond), adding `subPower`
+    gives **80 of 80 right, 0 wrong**; `test/data.test.js` keeps that check as a standing test.
+  - **Each faction source is matched on its own and the results are UNIONed** (never one flat id set): 哈洛德 officially
+    carries 维多利亚 (main) AND 谢拉格 (subPower), 烛煌 维多利亚 AND 炎, 锏 谢拉格 AND 卡西米尔 — a single "any id matches
+    any power" test drops the first of each pair.
+  - Reading the official pool also settles what the ids are: a core bond is only ever matched by a **`nationId`**
+    (`group` / `team` never contribute one on their own — no pool operator has a core bond whose only matching field is a
+    group or team), while `powerIdList` itself holds group ids (`penguin`, `lgd`, `glasgow`, `chiave`…), so both are read.
+  - **One known divergence, pinned by the test**: the 5 企鹅物流 operators (德克萨斯, 缄默德克萨斯, 能天使, 新约能天使,
+    莫斯提马) carry 龙门 `lungmen` **and** 企鹅物流 `penguin`, and 炎's `powerIdList` holds both ids, so the derivation
+    grants them 炎 alongside 叙拉古 / 拉特兰 while the official piece lists the single bond. `penguin` is a 炎 power by the
+    mode's own design, so the extra bond is factually right; `test/data.test.js` lists those five by name so a *new*
+    divergence still fails.
+  - The 53 協防 candidates are the ones the game files give no matching faction: `rhodes`, `iberia`, `columbia`, `ursus`,
+    `higashi`, `leithanien`, `sami`, `minos`, `rim`, `rainbow`, `mujica` … are in no core bond's `powerIdList`, and 9 of
+    them (Sharp / Stormeye / Pith / Touch / Misery / Raidian / Mechanist / 郁金香 / 领主·Sharp) have no faction field at
+    all — the same share as the pool, where the mode itself gives 41 of 121 operators no core bond.
+- **Not in `chess.json`**: the roster is merged per match by the server (`server/match/Match.js` — only the picked
+  records reach that match's chess table, `GameData.addChess`) and loaded on demand by the browser (`public/js/data.js`
+  `waiguan`, warmed with the other match files). A 甄选 record is `isDiy`, which is what keeps it out of `visibleChess`,
+  the shop tier tables and the 禁用盟约 derivation; its `visible` flag is `true` because it is a real, fieldable operator
+  (a 干员调配 target — DESIGN §27).
+- **Pool**: the picked record joins the match pool as an entry only its owner can roll or buy — `SharedPool.addOwned`,
+  the official per-tier pool copies (8 at tier V, 5 at tier VI). A teammate never sees it.
+- **Tokens**: a summoning candidate's summons are in `tokens.json` like any operator's, keyed by the 甄选 chess ids of
+  both tiers (the runtime looks a variant up by the piece's own id); the two tiers share the same variant data.
+- **Rebuild**: `chessRecord()` is shared with `buildChess`, so an official change to skills / modules / talents reaches
+  both. `validateAll` checks every candidate resolves at both tiers, with valid bonds, one default skill, and (where the
+  operator has modules at all) one active default module of its own.
 
 ## 15. Anomalies found while joining (also in `.cache/build-data-report.json`)
 
@@ -544,8 +602,8 @@ Glyph legend (`rows`):
 ## 16. Counts (current build)
 
 `chess 266 (112 visible; 283 selectable skills over the visible chess, 184 module choices over 129 goldens)`, `bonds 23`, `garrisons 249 (43 effect keys)`, `items 115`, `bands 40`, `effects 361`,
-`enemies 249`, `factions 67 entries`, `waves 38`, `stages 11 (8 active)`, `bosses 10`, `tokens 22`, `choice events 109`,
-`bounty cards 129`, `tactic cards 43`.
+`enemies 249`, `factions 67 entries`, `waves 38`, `stages 11 (8 active)`, `bosses 10`, `tokens 57 (54 summons: 19 pool + 35 外援)`, `choice events 109`,
+`bounty cards 129`, `tactic cards 43`, `waiguan 87 candidates (174 tier VI records + 174 tier V overlays)`.
 
 ## 17. Integrity guarantees (checked by the builder and `test/data.test.js`)
 
