@@ -104,8 +104,9 @@ import { pieceTile } from '../render/drag.js';
 import {
   phaseMode, phaseBanner, isCombatPhase, showDeadPill, isBossPhase, placementContext, canPlace, boardTargets, dropIntent,
   snapHud, createHudDelay, pickDrawn, drawnChanged, hudChanged, drawnOf, ownFieldGate, snapUnits, activeBubbles, shortcutFor, shortcutBlocked, closesOnFieldPress, phaseTotalSeconds, homeFieldId, ownFieldId, normalizeSp, sortedPlayers,
+  terrainInfo,
   countdownState, shopBlockReason, stageOverrides, effectiveStage, watchTarget, dropFailureReason,
-  previewEnemyKey, prepCamera, prepCameraFor, foldCamera, deployFieldOf, panelSide, panelSlots, bondPopupPlace, chessLoadout, unitLoadout,
+  previewEnemyKey, prepCamera, prepCameraFor, foldCamera, deployFieldOf, fieldTile, panelSide, panelSlots, bondPopupPlace, chessLoadout, unitLoadout,
   mergeTarget, modeOffBonds, pieceCharId, readyFundsPrompt, ownerBandId,
 } from '../ui/gameLogic.js';
 import { toast } from '../ui/toasts.js';
@@ -414,6 +415,15 @@ function MatchScreen() {
     const st = ownView ? ownStage : baseStage;
     if (st) view.setStage(st);
   }, [view, ownView, ownStage, baseStage]);
+  // the stage behind the board ON SCREEN — the own one (机变 overrides applied) or, while watching a teammate, the plain
+  // one — and how a tapped BOARD tile maps to it (GitHub issue #184: tileClick → gameLogic.terrainInfo). Everywhere but a
+  // boss-prep board the two spaces are the same: a 最终攻势 / 隐秘核心 battle renders the stage's own rows (GEO.BOSS_RECT),
+  // 联防 / normal rects are stage rows; the boss PREP draws the player's half (stage rows 2–5) as board rows 9–12
+  // (render/prepfield.js toDisp), which is exactly gameLogic.fieldTile.
+  live.current.terrainStage = ownView ? ownStage : baseStage;
+  live.current.terrainTile = showPrep && (deployField === 'bossL' || deployField === 'bossR')
+    ? (row, col) => fieldTile(deployField, row, col)
+    : (row, col) => [row, col];
   const staleFieldRef = useRef(null);
   const enteredFieldRef = useRef(null);
   const pressSel = useRef(null);                         // the selected piece when the current field press began
@@ -480,8 +490,11 @@ function MatchScreen() {
     audio.setFieldUnits(field.units);
     if (early && early.length) {
       // replay state-bearing events and lasting fx only (a burst of stale hit sparks / damage numbers would look wrong);
-      // stamped with the snapshot's game time, so the render clock does not drop a lasting fx as a stale cosmetic one
-      view.pushEvents({ ev: early, gt: earlySnap?.gt });
+      // stamped with the snapshot's game time, so the render clock does not drop a lasting fx as a stale cosmetic one —
+      // and `quiet`, so the engine draws them without handing them to the sound ('battleEvents'): that stamp makes them
+      // look fresh, and a field shown again after a catch-up would replay the deaths, deploys and 漏怪 alarm of the
+      // seconds it skipped. The sound gets the buffer's spawns (its unit map), here
+      view.pushEvents({ ev: early, gt: earlySnap?.gt, quiet: true });
       audio.handleBattleEvents(early.filter((e) => e[0] === 'spawn'));
     }
     if (!earlySnap && (field.prep || !combat) && Array.isArray(field.units)) {
@@ -972,6 +985,19 @@ function MatchScreen() {
         pressSel.current = null;
         setSel(wasSel ? null : { uid: e.uid });
         if (wasSel) setDetail((d) => (d?.kind === 'piece' && d.uid === e.uid ? null : d));
+      }),
+      // a tap on the ground itself: a special terrain tile explains itself (GitHub issue #184 「建议加入对于特殊地形的单击
+      // 信息提示」) — 活性源石 / 沼泽 / 排气格栅 / 深水区 / 红蓝门 / 传送, with the numbers of the stage behind the board.
+      // An ordinary tile (road / floor / wall) says nothing, so the press keeps its other meanings (deselect, close).
+      view.on('tileClick', (t) => {
+        if (!t || !Number.isInteger(t.row) || !Number.isInteger(t.col)) return;
+        const L = live.current;
+        const [row, col] = L.terrainTile(t.row, t.col);
+        const info = terrainInfo(L.terrainStage, row, col);
+        if (!info) return;
+        audio.sfx('click', { volume: 0.4 });
+        setSel(null);
+        setDetail({ kind: 'terrain', terrain: info });
       }),
     ];
     return () => { moveOff?.(); for (const off of offs) { try { off?.(); } catch { /* ignore */ } } };

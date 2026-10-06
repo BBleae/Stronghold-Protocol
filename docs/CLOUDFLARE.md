@@ -50,7 +50,7 @@ Wrangler 执行构建、上传本地静态文件，保留 `ROOMS`（房间），
 站点发布资源清单 `/resource-manifest.json`（每个文件的路径、大小与 SHA-256）和清单所列的全部文件。清单收录本机 `public/assets/`、`public/fonts/` 下的全部美术、音频与字体文件，包括本地提取素材（大小与文件数以本站清单为准）。部署机器上的素材以合并后的完整资源包为准（维护者主检出根目录的 `网页卫戍资源包baseline.zip`）：所有历史资源包的并集，同名文件取高清版本。完整资源包有三种拿法，内容相同：
 
 1. **直接下载**：本站的 `/stronghold-resources.zip`（资源管理窗口里的「下载资源包 ZIP」）。部署时构建把资源包切成 24 MiB 的分块放进静态资源，Worker 把分块按顺序拼成一个文件返回：每次下载只算一次 Worker 请求（分块本身是免费的静态资源），支持断点续传和 Range，迅雷 / IDM / aria2 等工具可以多线程下载。文件名带资源版本，和站点当前的素材一致。
-2. **本地脚本**：取与站点相同版本的本仓库，Windows 双击 `scripts\make-resource-pack.bat`，macOS / Linux 运行 `scripts/make-resource-pack.sh`（或 `npm run resources:zip`）。脚本会安装依赖、从 GitHub 下载素材与字体（中断后再次运行会续传），在项目文件夹里生成 `stronghold-resources-<版本>.zip`；已有素材时只打包用 `npm run resources:pack`（输出在 `.cache/`）。国内下载 GitHub 慢时先设置代理，例如 PowerShell 中 `$env:HTTPS_PROXY = 'http://127.0.0.1:7890'; $env:NODE_USE_ENV_PROXY = '1'`（后者让 Node.js 使用该代理）。这样生成的 ZIP 不含本地提取素材；来源仓库也会更新，晚些下载的个别文件可能与站点清单不一致。导入时不一致的跳过并提示数量，缺的文件点「在线下载」补齐。
+2. **本地脚本**：取与站点相同版本的本仓库，Windows 双击 `scripts\make-resource-pack.bat`，macOS / Linux 运行 `scripts/make-resource-pack.sh`（或 `npm run resources:zip`）。脚本会安装依赖、从 GitHub 下载素材与字体（中断后再次运行会续传），在项目文件夹里生成 `stronghold-resources-<版本>.zip`；已有素材时只打包用 `npm run resources:pack`（输出在 `.cache/`）。国内下载 GitHub 慢时先设置代理，例如 PowerShell 中 `$env:HTTPS_PROXY = 'http://127.0.0.1:7890'; $env:NODE_USE_ENV_PROXY = '1'`（后者让 Node.js 使用该代理）；没有本地代理时也可以先设 `$env:SP_ASSET_SOURCE = 'mirror'` 改走 gh-proxy 镜像（第三方代理，见 [DEPLOY.md](DEPLOY.md)「国内镜像下载」）。这样生成的 ZIP 不含本地提取素材；来源仓库也会更新，晚些下载的个别文件可能与站点清单不一致。导入时不一致的跳过并提示数量，缺的文件点「在线下载」补齐。
 3. **网页导出**：在「资源管理」把资源全部保存（在线下载或导入）后，点「导出 ZIP（发给朋友）」，从浏览器缓存生成与站点相同的资源包；导出前逐个核对缓存文件的大小与 SHA-256，缺失或损坏时需先重新下载。Chrome / Edge 直接写入所选文件，其他浏览器在内存中生成后下载。
 
 拿到 ZIP 的朋友打开网站后在「资源管理」点「导入本地 ZIP」。

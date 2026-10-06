@@ -4,6 +4,7 @@
 # Installs dependencies on the first run, downloads every game asset (incl. 中文 + 日文 operator voice; resumable: run it
 # again after an interruption), then writes stronghold-resources-<version>.zip into the project folder.
 # Slow or blocked GitHub downloads: set a proxy first, e.g.  HTTPS_PROXY=http://127.0.0.1:7890 scripts/make-resource-pack.sh
+# or, without a local proxy, the gh-proxy mirror (a third-party proxy, docs/DEPLOY.md):  SP_ASSET_SOURCE=mirror scripts/make-resource-pack.sh
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export NODE_USE_ENV_PROXY=1

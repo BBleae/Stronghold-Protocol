@@ -4,6 +4,7 @@ rem Docs: docs\CLOUDFLARE.md. It lacks the local client extraction: the site's �
 rem Installs dependencies on the first run, downloads every game asset (incl. 中文 + 日文 operator voice; resumable:
 rem run it again after an interruption), then writes stronghold-resources-<version>.zip into the project folder.
 rem Slow or blocked GitHub downloads: set a proxy first, e.g.  set HTTPS_PROXY=http://127.0.0.1:7890
+rem or, without a local proxy, the gh-proxy mirror (a third-party proxy, docs\DEPLOY.md):  set SP_ASSET_SOURCE=mirror
 chcp 65001 >nul
 setlocal EnableExtensions
 title 卫戍协议：盟约 - 生成资源包
@@ -47,5 +48,7 @@ exit /b 1
 echo.
 echo 失败了。网络问题可以直接再运行一次（已下载的文件会保留）；GitHub 下载慢可先设置代理再运行：
 echo   set HTTPS_PROXY=http://127.0.0.1:7890
+echo 没有本地代理时也可以改走 gh-proxy 镜像（第三方代理）：
+echo   set SP_ASSET_SOURCE=mirror
 pause
 exit /b 1

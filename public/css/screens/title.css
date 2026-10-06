@@ -256,7 +256,12 @@
 }
 .title-invite .icon { width: .2rem; height: .2rem; }
 .title-invite b { font-size: .2rem; letter-spacing: .2em; color: #ffd08a; }
-.title-conn { display: flex; align-items: center; justify-content: center; gap: .1rem; min-height: .32rem; overflow-x: clip; font-size: .14rem; color: var(--text-lo); }
+/* The connection row: the state (● text · ping) and the tools (玩法说明 · 资源管理 · ⚙ · ⛶) share one line where they
+   fit (a Node server: 玩法说明 · ⚙ · ⛶). Where they do not — a Cloudflare site's 资源管理 next to ⚙ — the tools take
+   their own line under the state instead of squeezing the row (the state text broke over two lines, ⚙ / ⛶ stopped
+   being squares). */
+.title-conn { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: .1rem; row-gap: .06rem; min-height: .32rem; overflow-x: clip; font-size: .14rem; color: var(--text-lo); }
+.title-conn__state, .title-conn__tools { display: flex; align-items: center; gap: .1rem; }
 .title-conn .ping { height: .26rem; font-size: .15rem; }
 /* 安装 help (js/ui/install.js, shown in the shared alert dialog) */
 .install-steps { margin: 0 0 .1rem; padding-left: 1.4em; line-height: 1.75; color: var(--text-hi); }

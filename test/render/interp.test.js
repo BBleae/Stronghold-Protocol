@@ -254,7 +254,7 @@ describe('SnapshotBuffer', () => {
   });
 
   test('a field entered mid-battle: the early buffer stamped with the snapshot\'s game time is delivered by the render clock, lasting fx included', () => {
-    // screens/game.js: view.pushEvents({ ev: early, gt: earlySnap.gt }) before pushSnapshot(earlySnap)
+    // screens/game.js: view.pushEvents({ ev: early, gt: earlySnap.gt, quiet: true }) before pushSnapshot(earlySnap) (quiet: drawn, not heard — heard-events.test.js)
     const early = [['spawn', { id: 1 }], ['status', 1, 'ab:exposed', 1], ['skill', 1, 1], ['fx', 'firewall', 6, 10, { id: 1, axis: 'col' }], ['fx', 'taunt', 6, 10, { id: 2 }]];   // (the buffer holds state events and lasting fx only)
     const b = new SnapshotBuffer({ delay: 0.5, rate: 2 });
     b.pushEvents(early, 0, 85.1);

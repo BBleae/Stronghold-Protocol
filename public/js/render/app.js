@@ -18,11 +18,12 @@
 //   view.enterBattle(fieldMeta)                 m.field { fieldId, kind, rect, stageId, units: [UnitInfo] } — each
 //                                               unit through renderInfo(UnitInfo) (an enemy's `form`: a view built
 //                                               mid-battle starts in the current model form)
-//   view.pushSnapshot(snap); view.pushEvents(ev | { ev, gt })  b.snap / b.ev wire frames as received (game time in
+//   view.pushSnapshot(snap); view.pushEvents(ev | { ev, gt, quiet? })  b.snap / b.ev wire frames as received (game time in
 //                                               `gt`; a numeric `t` is accepted for raw Battle snapshots / recordings)
 //                                               — drawn LOOK_AHEAD (1 game s) behind them, a look-ahead for attack
 //                                               swings (render/spine.js); emits 'battleEvents' as they are drawn
-//                                               (the sound follows); b.snap `down` keeps knocked-out
+//                                               (the sound follows; `quiet`: a replay — a field entered late — is
+//                                               drawn but heard only for its spawns, heardEvents); b.snap `down` keeps knocked-out
 //                                               operators on the field under a redeploy ring and `elem` draws the
 //                                               element gauges (user playtest #4 items 8 / 9, render/units.js); a
 //                                               'die' with reason FORCED_EXIT (an operator entering 联防 knocked out,
@@ -40,6 +41,10 @@
 //        pieceDragStart { uid, piece, from } · pieceDrop { uid, piece, from, target } · pieceDragEnd {uid, dropped}
 //        pieceClick { uid, piece, button, detail, clientX, clientY } (battle units: { unitId, uid, unit, … })
 //        pieceDetail (right-click / long-press) · pieceHover { uid } | { uid: null } (battle: + unitId, unit)
+//        tileClick { row, col, button, clientX, clientY } — the ground itself was tapped and nothing stands there
+//        (GitHub issue #184: a special terrain tile's own tip; the screen resolves it with gameLogic.terrainInfo).
+//        Prep: a BOARD tile (through the boss-prep transform); battle (a fight, a scouted / spectated board): the
+//        drawn stage tile
 //        tileHover { row, col, area, idx } | null (while dragging: the drop target — the tile under the pointer)
 //   view.pieceScreenRect(uid) → { left, top, right, bottom, width, height, x, y } (client px: the drawn body) | null
 // Picking (user playtest #4 item 1: the ground is drawn as tiles — a press on a tile is a press on the unit standing
@@ -285,6 +290,29 @@ export const FORCED_EXIT = 'forcedExit';
  * not a knock-out), nor for an operator entering the battle knocked out (FORCED_EXIT).
  */
 export const showsDeathFx = (info, consumed = false, reason = null) => !consumed && reason !== FORCED_EXIT && info?.kind !== 'device';
+
+/** Game s an event may be drawn behind the render clock and still be heard ('battleEvents', heardEvents). */
+export const HEARD_LAG = 0.6;
+
+/**
+ * The drawn events the sound hears (the view's 'battleEvents' → screens/game.js → audio.handleBattleEvents): a 'spawn'
+ * always (the sound's unit map), anything else only when it is drawn on time (stamped ≥ renderT − HEARD_LAG) and was
+ * not pushed `quiet`. Quiet tuples are a replay: a field entered mid-battle replays its early buffer (state events and
+ * lasting fx — screens/game.js keepEarly) stamped with the entry snapshot's game time, so the render clock draws them
+ * at once and the stamp alone cannot tell them from fresh ones — a teammate's field shown again after a catch-up
+ * (battle/runner.js CATCHUP_TICKS) would play the deaths, deploys and 漏怪 alarm of the seconds it skipped. Upstream
+ * hands audio only that buffer's spawns too.
+ * @param {Array} evs the tuples drawn this frame (interp.takeEvents) · @param {number[]} stamps their game times
+ * @param {number} renderT · @param {{ has(e): boolean }} [quiet] the tuples pushed quiet · @param {Array} [out]
+ */
+export function heardEvents(evs, stamps, renderT, quiet = null, out = []) {
+  out.length = 0;
+  for (let i = 0; i < evs.length; i++) {
+    const e = evs[i];
+    if (e[0] === 'spawn' || (stamps[i] >= renderT - HEARD_LAG && !quiet?.has(e))) out.push(e);
+  }
+  return out;
+}
 
 /**
  * The views' info of a battle unit from its UnitInfo (m.field / fieldMeta `units`, a 'spawn' event; snapshot.js
@@ -1374,6 +1402,25 @@ export async function createFieldView(host, options = {}) {
     return hit ? hit.ref : null;
   }
 
+  /**
+   * The ground itself was tapped: nothing stands there, so the TILE explains itself — a special terrain tile (活性源石,
+   * 沼泽, 排气格栅, 深水区, 红/蓝门, 传送) opens its own card (GitHub issue #184; screens/game.js `tileClick` →
+   * gameLogic.terrainInfo, which says nothing about an ordinary floor / road / wall tile).
+   * The tile is picked as a BOARD tile (`pickBoardTile`, i.e. through `prepXf.toBoard`): on a Final Assault / Hidden Core
+   * PREP the board draws the boss field's own rows (stage 2–5 as board 9–12), and the screen maps board → stage once more
+   * with `gameLogic.fieldTile` — reporting the DRAWN tile here would be converted twice and explain the wrong tile
+   * (review on #185).
+   * A BATTLE field (a fight, a teammate's scouted board, a spectated one, a 联防 field) draws the stage's own rows and
+   * reports the drawn tile: `prepXf` is not reset when the camera leaves the boss-field prep (setCamera only sets it for
+   * 'prep' / 'bossPrep'), so a boss round's battle — or a teammate's boss field scouted from the own boss-field prep —
+   * would otherwise convert a stage tile as if it were a prep board tile.
+   */
+  function emitTileClick(ev, e) {
+    const t = mode === 'battle' ? groundTile(ev.x, ev.y) : pickBoardTile(ev.x, ev.y);
+    if (!t || !(t.row >= 0) || !(t.col >= 0)) return;    // outside the board this field draws
+    emit('tileClick', { row: t.row, col: t.col, button: e.button, clientX: e.clientX, clientY: e.clientY });
+  }
+
   const onPointerDown = (e) => {
     if (destroyed) return;
     const ev = evPayload(e);
@@ -1384,19 +1431,21 @@ export async function createFieldView(host, options = {}) {
         const payload = { unitId: v.id, uid: info?.uid ?? null, unit: info, button: e.button, detail: e.button === 2, clientX: e.clientX, clientY: e.clientY };
         emit('pieceClick', payload);
         if (e.button === 2) emit('pieceDetail', payload);
-      } else if (leader || penViews.size) {
-        // a scouting board: the round's leader on its boss field, the pen's figures
-        const pv = leaderAt(ev.x, ev.y) || penUnitAt(ev.x, ev.y);
-        if (pv) emitPenClick(pv, e);
+        return;
       }
+      // a scouting board: the round's leader on its boss field, the pen's figures; nothing there → the ground itself
+      const pv = (leader ? leaderAt(ev.x, ev.y) : null) || (penViews.size ? penUnitAt(ev.x, ev.y) : null);
+      if (pv) emitPenClick(pv, e);
+      else emitTileClick(ev, e);
       return;
     }
     if (drag.pointerDown(ev)) { try { canvas.setPointerCapture(e.pointerId); } catch { /* ignore */ } return; }
     if (mode === 'prep') { const lv = leaderAt(ev.x, ev.y); if (lv) { emitPenClick(lv, e); return; } }
     if (penViews.size && mode === 'prep') {
       const pv = penUnitAt(ev.x, ev.y);
-      if (pv) emitPenClick(pv, e);
+      if (pv) { emitPenClick(pv, e); return; }
     }
+    emitTileClick(ev, e);
   };
   const onPointerMove = (e) => {
     if (destroyed) return;
@@ -1522,12 +1571,16 @@ export async function createFieldView(host, options = {}) {
     return interp.push(snap, performance.now() / 1000);
   }
 
+  /** Tuples pushed `quiet` (a replay): drawn, never heard but the spawns (heardEvents). Weak: drawn ones just go. */
+  const quietEv = new WeakSet();
   function pushEvents(ev) {
     if (destroyed || mode !== 'battle') return 0;
     let list = ev, t;
     if (ev && !Array.isArray(ev) && typeof ev === 'object') {
       if (battleMeta?.fieldId && ev.fieldId && ev.fieldId !== battleMeta.fieldId) return 0;
       list = ev.ev; t = frameTime(ev);
+      // a replay (screens/game.js: a field entered late) — drawn like any frame, heard only for its spawns (heardEvents)
+      if (ev.quiet === true && Array.isArray(list)) for (const e of list) if (Array.isArray(e)) quietEv.add(e);
     }
     if (!Array.isArray(list)) return 0;
     // spawn infos are needed as soon as possible (a snapshot may reference the unit first); a placeholder view made
@@ -1573,11 +1626,10 @@ export async function createFieldView(host, options = {}) {
     for (const e of EVS) {
       try { handleEvent(e, renderT); } catch (err) { if (!handleEvent.warned) { handleEvent.warned = true; console.warn('[render] event failed', e, err); } }
     }
-    // the events as they are shown, for the sound (screens/game.js → audio): stale ones (a field entered mid-battle
-    // replays its state events) are silent, spawns always pass (the unit map)
+    // the events as they are shown, for the sound (screens/game.js → audio): stale ones and a replay (a field entered
+    // mid-battle replays its state events, pushed quiet) are silent, spawns always pass (the unit map) — heardEvents
     if (!EVS.length || !listeners.get('battleEvents')?.size) return;
-    HEARD.length = 0;
-    for (let i = 0; i < EVS.length; i++) if (EVS[i][0] === 'spawn' || EVT[i] >= renderT - 0.6) HEARD.push(EVS[i]);
+    heardEvents(EVS, EVT, renderT, quietEv, HEARD);
     if (HEARD.length) emit('battleEvents', HEARD.slice());
   }
 

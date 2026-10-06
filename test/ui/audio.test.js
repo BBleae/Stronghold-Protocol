@@ -1093,3 +1093,89 @@ describe('operator voice', () => {
     assert.deepEqual(r.played(), [['select', OP, 0]]);
   });
 });
+
+// =====================================================================================================================
+// 漏怪 sound (user request "接下来加漏怪的音效", then "应该是原版明日方舟关卡中的怪进蓝门的音效"). The sim emits
+// `['leak', id]` when an enemy reaches its goal (Battle.leak) — NOT a `die` — so until now an escape was completely
+// silent, for the player's own field and for a 联防 the helpers could not hold alike.
+//
+// The cue is the ORIGINAL Arknights stage alarm an enemy entering the exit plays in any normal stage: the manifest's
+// `sfx.battle.leak`, bank `battle.ON_ENEMY_REACHED_EXIT`, file `Battle/b_ui/b_ui_alarmenter`. (The autochess banks
+// have nothing named for an escape — all 13,948 SFX banks searched — but the stage itself does.) The official bank is
+// a one-shot: `maxSoundAllowed: 1` with `popOldest: true` on the `Battle_UI_Important` mixer.
+
+describe('漏怪 sound', () => {
+  async function rig() {
+    const fw = fakeWindow();
+    const urls = [];
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = async (u) => { urls.push(u); return { ok: true, arrayBuffer: async () => new ArrayBuffer(8) }; };
+    const a = new AudioManager({ win: fw.win, getManifest: () => manifest });
+    a.install();
+    fw.fire('pointerdown');
+    const settle = () => new Promise((r) => setTimeout(r, 10));
+    return { a, fw, urls, settle, restore: () => { globalThis.fetch = origFetch; } };
+  }
+
+  test('an escaped enemy plays the original stage exit alarm — and no death sound (a leak is not a `die`)', async () => {
+    const { a, urls, settle, restore } = await rig();
+    try {
+      const url = manifest.audio.sfx.battle.leak;
+      assert.ok(url, '前提：清单里有 sfx.battle.leak');
+      assert.match(url, /b_ui_alarmenter\.mp3$/, '就是原版关卡里怪进蓝门那一声');
+      a.handleBattleEvents([['leak', 7]]);
+      await settle();
+      assert.ok(asked(urls, url), `漏怪 plays ${url}`);
+      assert.equal(askedCount(urls, manifest.audio.sfx.battle.enemyDie), 0, 'a leak is not a death — no death sound');
+    } finally { restore(); }
+  });
+
+  test('leaks of one disaster are ONE alarm (the cue is 1.44 s long), a later one rings again', async () => {
+    const { a, fw, urls, settle, restore } = await rig();
+    try {
+      const url = manifest.audio.sfx.battle.leak;
+      a.handleBattleEvents([['leak', 1]]);
+      await settle();
+      assert.equal(askedCount(urls, url), 1, 'the first escape rings');
+      // the plays themselves, not the fetches: the buffer is cached after the first one
+      const before = fw.made.started;
+      // six more at once — a wiped board, or a 联防 the helpers could not hold
+      a.handleBattleEvents([['leak', 2], ['leak', 3], ['leak', 4], ['leak', 5], ['leak', 6], ['leak', 7]]);
+      await settle();
+      assert.equal(fw.made.started - before, 0, 'one disaster never stacks alarms (the official bank allows 1)');
+      // a genuine later leak is a new disaster and rings again, once the cue (1.44 s) has finished
+      await new Promise((r) => setTimeout(r, 1600));
+      a.handleBattleEvents([['leak', 8]]);
+      await settle();
+      assert.equal(fw.made.started - before, 1, 'a later leak rings again');
+      assert.ok(a.limiter.active <= a.limiter.maxVoices);
+    } finally { restore(); }
+  });
+
+  // fork: the alarm belongs to the field on screen, and the screen can change field mid-burst — the ‹ 联防阵地 N › switch
+  // of a 5–8 player 联防 (DESIGN §24.4), a spectator or an eliminated player picking another field. A switch is a new
+  // unit map (setFieldUnits), never a second alarm on top of the one still ringing.
+  test('a field switch mid-burst keeps the one-alarm gap (several 联防 fields, a spectator switching)', async () => {
+    const { a, fw, urls, settle, restore } = await rig();
+    const perf = globalThis.performance;
+    let fakeNow = 1000;
+    globalThis.performance = { now: () => fakeNow };
+    try {
+      const url = manifest.audio.sfx.battle.leak;
+      a.setFieldUnits([{ id: 1, side: 'enemy', kind: 'enemy', spine: 'enemy_1007_slime' }]);
+      a.handleBattleEvents([['leak', 1]]);
+      await settle();
+      assert.equal(askedCount(urls, url), 1, 'the first escape rings');
+      const before = fw.made.started;
+      fakeNow += 500;
+      a.setFieldUnits([{ id: 9, side: 'enemy', kind: 'enemy', spine: 'enemy_1007_slime' }]); // another 联防 field on screen
+      a.handleBattleEvents([['leak', 9]]);
+      await settle();
+      assert.equal(fw.made.started - before, 0, 'the other field\'s leak 0.5 s later shares the alarm still ringing');
+      fakeNow += 1100;
+      a.handleBattleEvents([['leak', 10]]);
+      await settle();
+      assert.equal(fw.made.started - before, 1, 'past the cue it rings again');
+    } finally { globalThis.performance = perf; restore(); }
+  });
+});

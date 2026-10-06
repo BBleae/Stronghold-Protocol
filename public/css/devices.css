@@ -82,6 +82,11 @@ html:not(.sp-in-match) .toast-host { margin-top: var(--sa-t); }
 .sp-coarse .ewheel__panel .ewheel__nav.is-prev::before { left: auto; right: 0; }
 .sp-coarse .ewheel__panel .ewheel__nav.is-next::before { left: 0; right: auto; }
 .sp-coarse .ewheel__dot::before { inset: -.02rem -.05rem -.2rem; width: auto; height: auto; transform: none; }
+/* The title's connection row (screens/title.js): ⚙ (title-settings) and ⛶ (title-fs) are .4rem squares .16rem apart
+   (the .1rem gap of the row's tools + their .06rem margin), 16 px wide on a phone, so ⛶'s centred 44 px area covered
+   the right half of ⚙ (a tap on ⚙ toggled fullscreen instead of opening 设置). Each one's area is its square plus half
+   the space to its neighbours, still 44 px tall. */
+.sp-coarse .title-conn :is(.title-settings, .title-fs)::before { width: calc(100% + .16rem); }
 
 /* Phones in landscape (short touch screens: 1rem ≈ 40 px here): the most used controls grow a little so they are
    comfortable to hit and to read, without changing the official layout. */
@@ -108,7 +113,7 @@ html:not(.sp-in-match) .toast-host { margin-top: var(--sa-t); }
 .fsbtn { display: grid; place-items: center; padding: 0; background: rgba(8, 11, 10, .85); border: 1px solid var(--line-2); color: var(--text-lo); transition: color var(--t-fast), border-color var(--t-fast); }
 .fsbtn .icon { width: .26rem; height: .26rem; }
 .fsbtn:hover, .fsbtn[aria-pressed="true"] { color: var(--mint-400); border-color: var(--mint-700); }
-.title-fs { width: .4rem; height: .4rem; margin-left: .06rem; }
+.title-fs, .title-settings { width: .4rem; height: .4rem; margin-left: .06rem; }
 /* standalone / fullscreen: the browser bars are gone, nothing to reserve */
 .sp-standalone .rotate-hint__micro::after { content: ' · PWA'; }
 

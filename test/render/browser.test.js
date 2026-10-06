@@ -303,6 +303,42 @@ describe('render engine in headless Chrome', { skip }, () => {
     assert.deepEqual(back, [], 'not resurrected by the snapshots that still list it');
   });
 
+  test('a field entered mid-battle: its early buffer pushed quiet is drawn, only its spawns reach battleEvents; live frames do', async () => {
+    // screens/game.js enter effect: pushEvents({ ev: early, gt: earlySnap.gt, quiet: true }) then pushSnapshot(earlySnap);
+    // without `quiet` the replay's 'leak' / 'die' looked fresh to the sound (render/app.js heardEvents)
+    const { page, problems } = await open('scene=prep&panel=0', 1280, 720);
+    const res = await page.evaluate(async () => {
+      const { createFieldView } = await import('/js/render/app.js');
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const run = async (quiet) => {
+        const host = document.createElement('div');
+        host.style.cssText = 'position:fixed;left:0;top:0;width:640px;height:360px;z-index:9';
+        document.body.appendChild(host);
+        const v = await createFieldView(host, { data: null, assets: null });
+        const heard = [];
+        v.on('battleEvents', (evs) => { for (const e of evs) heard.push(e[0]); });
+        v.enterBattle({ fieldId: 'n:x', kind: 'normal', units: [] });
+        const early = [['spawn', { id: 41, side: 'enemy', kind: 'enemy', defId: 'enemy_1007_slime', x: 9, y: 11, maxHp: 100 }], ['leak', 42], ['die', 43, 'killed']];
+        v.pushEvents({ fieldId: 'n:x', ev: early, gt: 30, quiet });
+        v.pushSnapshot({ fieldId: 'n:x', gt: 30, units: [[41, 9, 11, 100, 100, 0, 0, 0, 0]] });
+        await sleep(400);
+        const entry = heard.slice();
+        v.pushEvents({ fieldId: 'n:x', ev: [['leak', 41]], gt: 30.3 });
+        for (const gt of [30.1, 30.2, 30.3, 30.4]) v.pushSnapshot({ fieldId: 'n:x', gt, units: [[41, 9, 11, 100, 100, 0, 0, 0, 0]] });
+        await sleep(1200);
+        v.destroy();
+        host.remove();
+        return { entry, after: heard.slice(entry.length) };
+      };
+      return { quiet: await run(true), loud: await run(undefined) };
+    });
+    await page.close();
+    assert.deepEqual(problems.filter((p) => !/\[render\]/.test(p)), []);
+    assert.deepEqual(res.quiet.entry, ['spawn'], 'the replay: only its spawn is heard');
+    assert.deepEqual(res.quiet.after, ['leak'], 'a live leak after the entry is heard');
+    assert.deepEqual(res.loud.entry, ['spawn', 'leak', 'die'], 'the same replay not pushed quiet looks fresh by its stamp');
+  });
+
   test('prep scouting board (prep:true + one gt:0 snapshot) stays visible and static', async () => {
     const { page, problems } = await open('scene=prep&panel=0', 1280, 720);
     await wait(1200);

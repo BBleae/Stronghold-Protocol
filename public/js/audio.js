@@ -34,6 +34,11 @@
 // - Deaths/deployments follow the official per-class defaults (unitSoundClass): only operators play the
 //   operator-knocked-down sound; summons use the token sounds; a summon used up by its own effect (fx `consumed`,
 //   香槟炸弹) plays its impact sound instead of a death sound.
+// - 漏怪 ('leak', not a 'die'): the original stage exit alarm `sfx.battle.leak` (battle.ON_ENEMY_REACHED_EXIT), at most
+//   one per LEAK_SFX_GAP_MS. Like every battle sound it belongs to the field on screen — the events screens/game.js
+//   feeds: the own field, a watched teammate's, the 联防 field shown (with several 联防 fields, only that one), a
+//   spectator's or an eliminated player's watched field (with the render engine on its clock: it rings as drawn; a
+//   field entered mid-battle replays the leaks before its entry silently — render/app.js heardEvents).
 // - Buffers are fetched once and cached (LRU). A failed fetch/decode is logged once, plays nothing and is remembered
 //   for RETRY_MS (a missing file is not requested on every use); the next request after that fetches it again.
 // - Operator voice (audio.voice.<lang>.<charId>, tools/assets/voice.mjs) on its own channel and volume, one line at a
@@ -67,6 +72,15 @@ const MAX_VOICES = 8;
 const UNIT_COOLDOWN_MS = 160;
 const URL_GAP_MS = 45;
 const MAX_PER_URL = 2;
+/**
+ * 漏怪: the original Arknights exit alarm (`sfx.battle.leak`, `battle/b_ui/b_ui_alarmenter`) runs **1.44 s**, and the
+ * official bank is a one-shot: `battle.ON_ENEMY_REACHED_EXIT` carries `maxSoundAllowed: 1` with `popOldest: true` on the
+ * `Battle_UI_Important` mixer, i.e. **never two at once** (a new escape replaces the one still ringing). We keep the
+ * "never two at once" half and leave the rest of the cue alone: leaks closer together than the cue is long are the same
+ * disaster and share one alarm, so a line that breaks costs one clear ring per 1.5 s instead of a stutter of restarts.
+ * (The SFX limiter still applies on top.)
+ */
+const LEAK_SFX_GAP_MS = 1500;
 const BUFFER_CACHE = 180;
 /** Decoded-PCM budget of the buffer cache beside its entry count: a voice line decodes to 0.4–1.3 MB (see _buffer). */
 const BUFFER_BYTES = 64 * 1024 * 1024;
@@ -1088,6 +1102,16 @@ export class AudioManager {
           const mix = own ? m.audio.sfx.units[u.def].mix?.die : null;
           if (!unitSoundPlays(mix, this.random())) continue;
           this._playUnitUrl(url, own ? `${e[1]}:die` : `die:${e[1]}`, own ? unitGain(0.8, mix) : 0.7);
+        } else if (kind === 'leak') {
+          // 漏怪: an enemy reached its goal (Battle.leak emits the sim's own EV.LEAK — it is NOT a `die`, so until now a
+          // leak was completely silent, for the player's own field and for a 联防 the helpers could not hold alike).
+          // The cue is the ORIGINAL Arknights stage alarm — the one an enemy entering the exit plays in any normal
+          // stage (manifest `sfx.battle.leak`, bank battle.ON_ENEMY_REACHED_EXIT, file b_ui_alarmenter).
+          // `LEAK_SFX_GAP_MS` keeps it to one alarm at a time (the official bank's own maxSoundAllowed 1).
+          if (now - (this.lastLeakSfxAt ?? -Infinity) < LEAK_SFX_GAP_MS) continue;
+          if (typeof this.getManifest()?.audio?.sfx?.battle?.leak !== 'string') continue;
+          this.lastLeakSfxAt = now;
+          this.battle('leak', { unitKey: 'leak', volume: 0.85 });
         } else if (kind === 'deploy') {
           const u = this.units.get(e[1]);
           if (!u || u.side === 'enemy') continue;
