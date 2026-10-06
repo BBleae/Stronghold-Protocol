@@ -2203,10 +2203,10 @@ A player tested on phones: Safari on iPhone, and Chrome and Firefox on Android. 
 **Cause.** The HUD is sized in rem with the 40 px floor (§19.8). A phone in landscape with the browser's bars showing is about 780×300 CSS px. There the HUD takes 86 px at the top and 109 px at the bottom. `clearHud` zoomed the prep camera out until the bench-to-back-row band fitted the remaining 105 px: ×0.6 of the official framing, about 15 px pieces.
 
 **Zoom floor.**
-- `hudBands` adds `minZoom: 1` on touch screens, so `clearHud` never zooms the board out below the official framing.
+- With the shop bar shown, `hudBands` adds `minZoom: 1` on touch screens, so `clearHud` never zooms the board out below the official framing.
 - The bench's near edge stays above the bottom band, and the back rows may go under the top HUD.
 - At 780×300 the pieces are about 2× bigger.
-- With the shop folded, the official collapsed camera of public issue #5 frames the whole board, so nothing stays hidden.
+- Folded, the shop-collapsed camera of public issue #5 is bigger already and keeps the whole board in view: no floor there.
 
 **Pinch zoom and pan.**
 - A second finger on the field starts a pinch: an image transform of the camera (focal length × z, the principal point moved), the same as `clearHud`. Picking, the three.js board and every layer stay consistent.

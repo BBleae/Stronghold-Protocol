@@ -79,8 +79,8 @@ export const HUD_REM = Object.freeze({
  * @param {string} kind
  * @param {{ width: number, height: number }} size
  * @param {{ shop?: boolean }} [opts] `shop: false` = the folded shop's band
- * On a touch screen the bands carry `minZoom: 1` (render/projection.js clearHud): the board is never zoomed out below
- * the official framing, so its pieces stay big enough to tap.
+ * On a touch screen with the shop bar shown the bands carry `minZoom: 1` (render/projection.js clearHud): the board is
+ * never zoomed out below the official framing, so its pieces stay big enough to tap.
  * @returns {{ top: number, bottom: number, minZoom?: number }|null}
  */
 export function hudBands(kind, size, opts) {
@@ -110,10 +110,11 @@ export function hudBands(kind, size, opts) {
     top: Math.min(h * 0.4, safeTop + rem * HUD_REM.bondStripBottom),
     bottom: Math.min(h * 0.4, bottom),
   };
-  // a touch screen never zooms the board out below the official framing (render/projection.js clearHud minZoom): the
-  // bench stays clear and the back rows may go under the top HUD — with the browser's bars showing (780×300) the zoom-out
-  // shrank the pieces to 15 px, too small to tap (user report 2026-10-06)
-  return touch ? { ...bands, minZoom: 1 } : bands;
+  // with the shop bar shown, a touch screen never zooms the board out below the official framing (render/projection.js
+  // clearHud minZoom): the bench stays clear and the back rows may go under the top HUD — with the browser's bars showing
+  // (780×300) the zoom-out shrank the pieces to 15 px, too small to tap (user report 2026-10-06). Folded, the
+  // shop-collapsed camera is bigger already and keeps the whole board in view (public issue #5).
+  return touch && !folded ? { ...bands, minZoom: 1 } : bands;
 }
 
 /**

@@ -146,14 +146,15 @@ describe('9: the prep camera keeps the bench clear of the shop bar on phones in 
     withDom(40, 0, () => assert.deepEqual(hudBands('prep', { width: 640, height: 200 }), { top: 80, bottom: 80 }), 'clamped at 40 % of the height');
   });
 
-  test('touch screens: the bands carry minZoom 1 — the board is never zoomed out below the official framing', () => {
+  test('touch screens, shop bar shown: the bands carry minZoom 1 — the board is never zoomed out below the official framing', () => {
     const coarse = ['sp-touch', 'sp-coarse'];
-    for (const o of [{}, { shop: false }]) {
-      const mouse = withDom(40, 0, () => hudBands('prep', { width: 780, height: 300 }, o));
-      const touch = withDom(40, 0, () => hudBands('prep', { width: 780, height: 300 }, o), coarse);
-      assert.equal(mouse.minZoom, undefined, `a mouse: no floor (${JSON.stringify(o)})`);
-      assert.deepEqual(touch, { ...mouse, minZoom: 1 }, `the same bands plus the floor (${JSON.stringify(o)})`);
-    }
+    const mouse = withDom(40, 0, () => hudBands('prep', { width: 780, height: 300 }, {}));
+    const touch = withDom(40, 0, () => hudBands('prep', { width: 780, height: 300 }, {}), coarse);
+    assert.equal(mouse.minZoom, undefined, 'a mouse: no floor');
+    assert.deepEqual(touch, { ...mouse, minZoom: 1 }, 'the same bands plus the floor');
+    // folded: the shop-collapsed camera keeps the whole board in view (public issue #5), no floor
+    const folded = withDom(40, 0, () => hudBands('prep', { width: 780, height: 300 }, { shop: false }), coarse);
+    assert.equal(folded.minZoom, undefined, 'folded: no floor');
     assert.equal(withDom(40, 0, () => hudBands('normal', { width: 780, height: 300 }), coarse), null, 'only the prep cameras');
   });
 
