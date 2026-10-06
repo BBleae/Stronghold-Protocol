@@ -9,11 +9,14 @@ import { getData } from '../../../server/data.js';
 import { waiguanRecords } from '../../../shared/waiguan.js';
 import { KITS, skillSpecSource } from '../../../server/sim/content/index.js';
 import { WAIGUAN_KITS } from '../../../server/sim/content/kits/waiguan/index.js';
+import { GameData } from '../../../server/match/gamedata.js';
 
 const DATA = getData({ log: { warn() {}, error() {}, info() {} } });
 const REC = waiguanRecords(DATA.waiguan);
 const DS = new DataSource({ chess: REC }, getDefaultSource());
 const STRICT = process.env.WAIGUAN_STRICT === '1';
+/** The match's game data with the 外援 records (as a match holds its players' picks): GameData.placeableTokens. */
+const GD = new GameData(DATA, 'mode_multi_normal', { chess: REC });
 const authored = new Set(WAIGUAN_KITS.map(([charId]) => charId));
 
 test('外援 kits: every registered operator covers every skill × module of both tiers; the rest are listed', () => {
@@ -34,13 +37,30 @@ test('外援 kits: every registered operator covers every skill × module of bot
   }
 });
 
+/**
+ * The summon pieces a player gets with this loadout and places: server/match/gamedata.js GameData.placeableTokens (the
+ * loadout's placeable summons and the hand count of each, KIT_CONVENTIONS 16), every piece on a free tile in front of
+ * the operator — a skill bound to its summon (凯尔希 S2/S3 "该技能与Mon3tr绑定") charges only with it on the field.
+ */
+const PIECE_TILES = [[10, 6], [10, 7], [9, 6], [11, 7], [9, 7], [12, 6], [10, 8], [12, 7], [9, 8]];
+function summonPieces(id, skillIndex) {
+  const out = [];
+  for (const { tokenId, count } of GD.placeableTokens(id, { skillIndex })) {
+    for (let i = 0; i < count; i++) {
+      const tile = PIECE_TILES[out.length];
+      if (tile) out.push({ uid: 10 + out.length, kind: 'token', tokenId, ownerUid: 1, row: tile[0], col: tile[1] });
+    }
+  }
+  return out;
+}
+
 test('外援 kits: every skill of every authored operator (T6 normal + elite) survives a real wave and casts', () => {
   for (const c of DATA.waiguan.candidates.filter((x) => authored.has(x.charId))) {
     const base = REC[c.chessIds[6]];
     for (const id of [base.chessId, base.goldenId]) {
       for (const s of REC[id].skills) {
         const h = makeBattle({ defs: { chess: REC }, seed: 3, timeLimit: 60,
-          units: [{ chessId: id, row: 10, col: 4, skillIndex: s.index, carryState: { sp: 999 } }, { chessId: 'chess_char_1_01_a', row: 9, col: 4 }, { chessId: 'chess_char_2_06_a', row: 11, col: 5 }],
+          units: [{ uid: 1, chessId: id, row: 10, col: 4, skillIndex: s.index, carryState: { sp: 999 } }, { uid: 2, chessId: 'chess_char_1_01_a', row: 9, col: 4 }, { uid: 3, chessId: 'chess_char_2_06_a', row: 11, col: 5 }, ...summonPieces(id, s.index)],
           enemies: [{ key: 'enemy_1007_slime', count: 8, interval: 1.5 }, { key: 'enemy_1007_slime', route: 1, count: 8, interval: 1.5, time: 3 }] });
         h.runToEnd(90);
         checkInvariants(h.b);

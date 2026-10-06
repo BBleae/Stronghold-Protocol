@@ -3,11 +3,23 @@
 // chess ids — chess_char_diy_5_<charId>_a and chess_char_diy_6_<charId>_a (elites `_b` resolve through their baseId).
 // Static imports only: the Worker / replay-engine bundle (tools/build-worker.mjs) cannot follow a computed import().
 
+import char_003_kalts from './char_003_kalts.js';
+import char_017_huang from './char_017_huang.js';
+import char_134_ifrit from './char_134_ifrit.js';
+import char_197_poca from './char_197_poca.js';
 import char_225_haak from './char_225_haak.js';
+import char_2014_nian from './char_2014_nian.js';
+import char_2023_ling from './char_2023_ling.js';
 
 /** [charId, kit] in charId order. */
 export const WAIGUAN_KITS = Object.freeze([
+  ['char_003_kalts', char_003_kalts],
+  ['char_017_huang', char_017_huang],
+  ['char_134_ifrit', char_134_ifrit],
+  ['char_197_poca', char_197_poca],
   ['char_225_haak', char_225_haak],
+  ['char_2014_nian', char_2014_nian],
+  ['char_2023_ling', char_2023_ling],
 ]);
 
 const out = {};
