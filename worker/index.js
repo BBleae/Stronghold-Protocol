@@ -1,9 +1,12 @@
 import { randomInt } from 'node:crypto';
-import { APP_VERSION, DEFAULT_SEATS } from '../shared/constants.js';
+import { APP_VERSION, DEFAULT_SEATS, PROTOCOL_VERSION } from '../shared/constants.js';
 import { CODE_ALPHABET } from '../server/lobby.js';
 import { RoomRuntime, validCode } from './room-runtime.js';
-import { prepareMatchVersion, retainedMatchVersions } from './match-versions.js';
-import { RULES_VERSION } from '../shared/rules-version.js';
+import { LobbyGatewayDurableObject } from './lobby-gateway.js';
+// Adapt the Workers WebSocket surface to the existing Network's small EventEmitter-like contract (flush after the
+// event's commit), and the snapshot KV chunking / liveness rounding / rules-version check both Durable Objects share.
+import { SNAPSHOT_PART, liveness, knownRulesVersion, SocketAdapter } from './do-storage.js';
+import { prepareMatchVersion } from './match-versions.js';
 import { logInfo, logWarn, logError, errorFields } from './log.js';
 import { handleAuth, authenticate, accountOf, directoryOf } from './accounts/auth.js';
 import { handleGithub } from './accounts/github.js';
@@ -55,12 +58,51 @@ function apiLimit(env, method, path) {
   return env.API_LIMIT;
 }
 
+const lobbyStub = (env) => env.LOBBY.get(env.LOBBY.idFromName('lobby'), { locationHint: 'apac' });
+
+// The node-protocol compatibility surface: as few departures from the upstream node server
+// (server/index.js) as a Workers runtime allows — /healthz answers the same shape, one /ws
+// socket carries the whole lobby, every other path is the static client. No accounts, no
+// tickets, no room DOs: a Node client names its room in a `room.*` message, exactly as it
+// does against a Node server. Uptime is per isolate, not per object; a fresh wake resets it,
+// which only affects a vanity field. (Date.now() at module top level is the runtime's frozen
+// pseudo-clock — zero; the start instant is stamped on the first request.)
+let compatStartedAt = 0;
+async function compatRoute(request, env, url, path) {
+  if (!compatStartedAt) compatStartedAt = Date.now();
+  if (path === '/healthz') {
+    if (request.method !== 'GET') return error(405, 'BAD_MSG');
+    const stats = await lobbyStub(env).fetch(new Request('https://lobby.internal/_status')).then((r) => r.json());
+    return json({ ok: true, version: PROTOCOL_VERSION, app: APP_VERSION,
+      uptimeSec: Math.round((Date.now() - compatStartedAt) / 1000), build: BUILD, ...stats });
+  }
+  if (path === '/ws') {
+    if (request.method !== 'GET') return error(405, 'BAD_MSG');
+    if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') return error(426, 'BAD_MSG', 'WebSocket required');
+    if (env.CONNECT_LIMIT && !(await within(env.CONNECT_LIMIT, networkKey(request)))) return refuseSocket(CLOSE.TRY_LATER, 'too many connections');
+    // The lobby reads the client address from the edge header, the way node reads it from the
+    // socket (trustProxy is off on the Network; the edge is the only trusted hop here).
+    return lobbyStub(env).fetch(new Request('https://lobby.internal/_ws', { headers: { Upgrade: 'websocket',
+      'X-Lobby-IP': edgeIp(request) } }));
+  }
+  if (path.startsWith('/api/')) return error(404, 'ROOM_NOT_FOUND');
+  return env.ASSETS ? env.ASSETS.fetch(request) : error(404, 'ROOM_NOT_FOUND');
+}
+
 async function route(request, env) {
   const url = new URL(request.url);
   const path = url.pathname;
   // Resource files: the complete resource ZIP and the extension-less audio alias, both read from the static assets.
+  // Kept before the compat branch so the node-protocol deployment serves them too (its web players download the
+  // resource pack and its audio uses the /media alias exactly like the account-mode deployment).
   if (path === PACK_PATH) return servePack(request, env);
   if (path.startsWith(MEDIA_PREFIX)) return serveMedia(request, env);
+  // The node-protocol compatibility deployment: the upstream lobby runs verbatim in one
+  // Durable Object (worker/lobby-gateway.js), the APK's embedded client joins with its own
+  // protocol (a /ws without a room code, hello + room.*), and /healthz answers the node shape
+  // ({version, app}) so the APK's server list treats it as a plain server: local resources,
+  // local settings, no room-scoped flag. The account system stays out of this mode.
+  if (env.NODE_COMPAT) return compatRoute(request, env, url, path);
   // Administrator routes: authorized by their own tokens, never by a player session.
   const backup = await handleBackupRoutes(request, env);
   if (backup) return backup;
@@ -146,37 +188,8 @@ async function route(request, env) {
   return env.ASSETS ? env.ASSETS.fetch(request) : error(404, 'ROOM_NOT_FOUND');
 }
 
-// Adapt the Workers WebSocket surface to the existing Network's small EventEmitter-like contract. An event's output
-// waits for the event's commit (flush): its frames, then a close the event made.
-class SocketAdapter {
-  constructor(socket) { this.socket = socket; this.handlers = new Map(); this.closed = false; this.pending = []; this.closing = null; }
-  get readyState() { return this.closed ? 3 : this.socket.readyState; }
-  get bufferedAmount() { return this.socket.bufferedAmount || 0; }
-  on(type, fn) {
-    if (!this.handlers.has(type)) this.handlers.set(type, []);
-    this.handlers.get(type).push(fn);
-  }
-  emit(type, ...args) { for (const fn of this.handlers.get(type) || []) fn(...args); }
-  send(data, callback) { this.pending.push(data); callback?.(); }
-  flush() {
-    for (const data of this.pending) this.socket.send(data);
-    this.pending = [];
-    if (this.closing) this.socket.close(this.closing.code, this.closing.reason);
-    this.closing = null;
-  }
-  close(code, reason) {
-    if (this.closed) return;
-    this.closed = true;
-    this.closing = { code, reason };
-    this.emit('close');
-  }
-  terminate() { this.close(CLOSE.POLICY, 'connection terminated'); }
-}
-
 // Storage key of the restore-attempt counter (RoomDurableObject.restoreMatch).
 const RESTORE_ATTEMPTS = 'restore-attempts';
-// The room snapshot is stored as KV values of this many UTF-16 characters (a value holds at most 128 KiB).
-const SNAPSHOT_PART = 16_000;
 // A running match's log (its checkpoint in the snapshot says how many events to replay).
 const MATCH_EVENTS_TABLE = 'CREATE TABLE IF NOT EXISTS match_events (match_id TEXT NOT NULL, seq INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(match_id,seq))';
 // Finished matches waiting to be published to their MatchArchive: facts and manifest, and the encoded replay chunks.
@@ -191,12 +204,6 @@ const LEASE_REFRESH_MS = 20_000;
 // A room whose next timed step (a match timer) is due within this long stays in memory, and its in-memory timer never
 // waits longer than this (a pending timer keeps the platform from hibernating or evicting the object).
 const AWAKE_MS = 60_000;
-// A save compares the snapshot with liveness timestamps rounded to this: pings alone write at most this often.
-const LIVENESS_MS = 30_000;
-const liveness = (key, value) => (key === 'lastSeen' ? Math.floor(value / LIVENESS_MS) : value);
-
-/** A rules version this bundle can restore: its own or a retained one. */
-const knownRulesVersion = (id) => id === RULES_VERSION || Object.hasOwn(retainedMatchVersions, id);
 
 export class RoomDurableObject {
   constructor(ctx, env) {

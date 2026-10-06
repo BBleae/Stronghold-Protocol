@@ -89,8 +89,11 @@ export async function copyRuntimeAssets({ root = ROOT, out = path.join(root, 'di
   }
   let html = await fs.readFile(path.join(out, 'index.html'), 'utf8');
   // data-sp-rules: the rules version of the page's own simulation (/sim/), compared with a battle's (battle/runner.js)
-  html = html.replace('<html ', `<html data-sp-runtime="cloudflare" data-sp-build="${buildTag}" data-sp-rules="${rulesVersion}" `);
-  html = html.replace('src="/js/main.js"', 'src="/js/worker-entry.js"');
+  // SP_NODE_CLIENT=1 (the node-protocol compatibility deployment, worker/lobby-gateway.js): the page keeps the plain
+  // Node client (main.js, no runtime flag) — its /ws carries the whole lobby and there is no account system to boot.
+  const nodeClient = process.env.SP_NODE_CLIENT === '1';
+  html = html.replace('<html ', `<html ${nodeClient ? '' : 'data-sp-runtime="cloudflare" '}data-sp-build="${buildTag}" data-sp-rules="${rulesVersion}" `);
+  if (!nodeClient) html = html.replace('src="/js/main.js"', 'src="/js/worker-entry.js"');
   // Local fonts and system fallbacks keep the resource gate independent of Google Fonts reachability.
   html = html.replace(/\s*<link[^>]+https:\/\/fonts\.(?:googleapis|gstatic)\.com[^>]*>/g, '');
   html = html.replace('</head>', '  <link rel="stylesheet" href="/css/resources.css" />\n</head>');
