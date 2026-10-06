@@ -417,7 +417,10 @@ class Client {
     await this.waitFor((s) => s.ready || s.phase !== 'PREP', 'ready', 8000);
   }
 
-  /** 准备 with funds left asks first (剩余资金, the button and Space alike): press 准备就绪. No dialog is a no-op. */
+  /**
+   * 准备 with funds left asks first (剩余资金, DESIGN §23.11; the button and Space alike): confirm it, as a player who means
+   * to start the fight does — press 准备就绪. No dialog is a no-op. Resolves to whether it confirmed.
+   */
   async confirmFundsLeft() {
     await sleep(250);
     const open = await this.page.evaluate(() => {
@@ -547,6 +550,7 @@ describe('real server + real browsers', { skip: !ENABLED && 'set SP_REAL_E2E=1 (
             await c.deployFromHand(2);
             const s2 = await c.st();
             if (s2.temp > 0) c.note(`temp not empty (${s2.temp}) — ready blocked`);
+            // Space asks about leftover funds like the button does (DESIGN §23.11); c.ready() confirms after its click
             if (c === guest) {
               await c.page.keyboard.press('Space');
               await c.confirmFundsLeft();
