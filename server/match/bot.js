@@ -35,7 +35,8 @@
 //      greedily — blockers first, then damage dealers by DPS, then healers — over every
 //      (legal tile, direction) pair of the server's deploy map (no 深水区). A MELEE operator is planned on the ground
 //      tiles, where it blocks — except elite 歌蕾蒂娅 carrying HOK-Y, who may also take a 高台 (placeClass; owner's
-//      decision 2026-10-04). She stays a blocker in the lineup (basePositionClass). Each unit's range grid — the one it is
+//      decision 2026-10-04; likewise elite 帕拉斯 carrying INS-Y, shared/highGround.js). She stays a blocker in the lineup
+//      (basePositionClass). Each unit's range grid — the one it is
 //      deployed with, rangeRec (loadoutRecord attackRangeGrid) — is rotated per direction (DESIGN §3; RIGHT is tried first
 //      and kept on ties, so symmetric ranges and melee units whose front adds nothing stay facing the gates), so
 //      ranged units turn toward the enemy path tiles they cover best and blockers toward the road; on 气流 tiles
@@ -950,8 +951,10 @@ export function* planLayoutSteps(m, ps, pieces, params = LAYOUT_PARAMS, { occupi
     let bestV = -Infinity;
     // a "只能部署在召唤者攻击范围内" summon (伺夜's 狼群, 缪尔赛思's 流形): only the tiles of its owner's range
     const within = p.kind === 'token' && typeof ps.summonRange === 'function' ? ps.summonRange(p) : null;
-    // ground tiles for a MELEE blocker. placeClass 'all' is only elite 歌蕾蒂娅 + HOK-Y: she may stand on a 高台,
-    // and when one of those tiles covers the enemy road she is planned there (owner 2026-10-04: the bot uses the 高台).
+    // ground tiles for a MELEE blocker. placeClass 'all' is only an elite whose module grants the 高台 (歌蕾蒂娅 + HOK-Y,
+    // 帕拉斯 + INS-Y): she may stand on a 高台, and when one of those tiles covers the enemy road she is planned there
+    // (owner 2026-10-04: the bot uses the 高台). Summons are planned by their own position (艾拉's trap stays on the
+    // ground, which its TRP-D widening allows too).
     const cls = p.kind === 'token' ? basePositionClass(r0) : placeClass(ps, m.gd.chess(p.id) || r0);
     const preferHigh = cls === 'all' && basePositionClass(r0) === 'melee';
     let bestHigh = null;

@@ -25,8 +25,8 @@ Unknown options or a missing option value are errors (exit code 2); `--refresh` 
   Integrity errors (see §17) make the exit code 1 **and leave the previous output untouched** (unless `--force`);
   warnings never do. Each output file is written atomically (temp file + rename).
 - **Determinism.** Same inputs ⇒ byte-identical outputs (stable key order, no timestamps, no randomness).
-- **Size.** ≈4.9 MB total (limit 6 MB; `chess.json` ≈1.65 MB with the loadout choices, `waiguan.json` ≈1.4 MB with the
-  外援 / 甄选 roster — see §14b), compact JSON (no indentation).
+- **Size.** ≈5.4 MiB total (5,685,493 bytes; limit 6 MiB; `chess.json` ≈1.65 MB with the loadout choices, `waiguan.json`
+  ≈1.6 MB with the 外援 / 甄选 roster — see §14b), compact JSON (no indentation).
 - **Derived paths.** `stages.json groundPaths*` come from the sim's own `server/sim/grid.js` pathing: a change there
   needs a rebuild (the offline-rebuild test catches a stale `data/`).
 
@@ -152,7 +152,7 @@ Top level: `{ season, seasonName, modes, economy, lpCapPerRound, bossOvertimeAft
 | `name`, `appellation` | `"隐现"`, `"Insider"` | |
 | `rarity` | `5` | stars 1–6 |
 | `profession`, `subProfessionId`, `subProfessionName`, `position` | `"SNIPER"`, `"fastshot"`, `"速射手"`, `"RANGED"` | |
-| `placement` | | not stored. A MELEE chess may stand on a 高台 only when it is elite 歌蕾蒂娅 (`char_474_glady`, `isGolden`) carrying HOK-Y 淡金坠饰 (`uniequip_003_glady`), decided at place time from the loadout (`shared/highGround.js`, `board.js placeClass`). The trait 「可以放置于远程位」 is not read. Owner's decision 2026-10-04; §22.6's `placement: "all"` is gone. `position` stays MELEE for the battle |
+| `placement` | | not stored. A MELEE chess may stand on a 高台 only when it is elite 歌蕾蒂娅 (`char_474_glady`, `isGolden`) carrying HOK-Y 淡金坠饰 (`uniequip_003_glady`), or (外援, owner's decision 2026-10-06) elite 帕拉斯 carrying INS-Y (`uniequip_003_pallas`); 艾拉's trap may when its owner is elite 艾拉 carrying TRP-D (`uniequip_002_ela`). Decided at place time from the loadout (`shared/highGround.js`, `board.js placeClass` / `piecePlaceClass`). The trait 「可以放置于远程位」 is not read. Owner's decision 2026-10-04; §22.6's `placement: "all"` is gone. `position` stays MELEE for the battle |
 | `nationId` | `"laterano"` | |
 | `bonds[]` | `["lateranoShip","swiftShip"]` | bondIds (→ `bonds.json`) |
 | `garrisonIds[]` | `["garrison_16_b"]` | 特质 (→ `garrisons.json`); first = displayed trait |
@@ -494,13 +494,19 @@ already fields; `TOKEN` / `TRAP` professions excluded). Three parts:
 |---|---|---|
 | `candidates[]` | `{ charId, name, appellation, rarity, profession, subProfessionId, position, nationId, bonds[], chessIds: { 5, 6 } }` | the light list the picker UI reads (no stats / skills / talents) |
 | `chess{}` | `{ [chessId]: Chess }` | the **tier VI** record of every candidate, normal (`_a`) and elite (`_b`) — a full chess record, built by the very same `chessRecord()` the shop chess go through |
-| `chessT5{}` | `{ [chessId]: { from, …9 fields } }` | the **tier V** records as overlays on their tier VI twin (`from` = that id): the two tiers differ only in `WAIGUAN_TIER_FIELDS` (chessId, baseId, goldenId, tier, identifier, price, sellPrice, upgradeChessId, status), so storing both in full would double the roster for nothing |
+| `chessT5{}` | `{ [chessId]: { from, …9 fields[, …module-level fields] } }` | the **tier V** records as overlays on their tier VI twin (`from` = that id), rebuilt by `shared/waiguan.js waiguanTier5Records`. Every record differs in `WAIGUAN_TIER_FIELDS` (chessId, baseId, goldenId, tier, identifier, price, sellPrice, upgradeChessId, status). An **elite** also differs in what its slot's 模组 level decides (tier V elite `equipLevel` 1, tier VI 3), so its overlay adds the `WAIGUAN_ELITE_TIER_FIELDS` (`stats`, `trait`, `talents`, `module`, `modules`) that differ from the tier VI elite — build-data builds the tier V elite in full and stores only that difference; `statsBase` / `traitBase` / `talentsBase` / the skills stay shared |
 
 - **Chess id**: `chess_char_diy_<tier>_<charId>[_b]`, e.g. `chess_char_diy_6_char_300_phenxi_a`. The four **empty slot
   templates** stay in `chess.json` (`chess_char_5_diy1_a` … `chess_char_6_diy2_b`: `isDiy`, no `stats`): the slot a pick
   fills is a different thing from the operator it holds.
-- **Status**: tier V = phase 2 / Lv1 / skill Lv4 / 模组 as the tier V slot; tier VI = phase 2 / Lv60 / skill Lv7 / 模组 as
-  the tier VI slot — exactly the status a 6★ of that tier fights at.
+- **Status**: the slot templates' official status (`charChessDataDict`): normal = phase 2 / Lv1 / skill Lv4 / no 模组
+  (both tiers); elite = phase 2 / Lv60 / skill Lv7 / 模组 level **1 at tier V, 3 at tier VI** — exactly the status a pool
+  6★ of that tier fights at (the pool's tier I–V elites are module level 1, its tier VI elites level 3).
+- **Modules (模组)**: the operator's own, like a pool chess. Default = its first ADVANCED uniequip
+  (`uniequip_002_<char>`); an elite equips it at the slot's level and offers every ADVANCED uniequip as a 干员调配 choice
+  (`modules[]`, 144 per tier over 85 operators; the same ids at both tiers, the level-1 / level-3 numbers per tier); a
+  normal record carries the inactive stub `{ id, name, type, level: 0, active: false }` a pool normal has. 凯尔希·思衡托 and
+  予愿安洁莉娜 have no uniequip: elite `module` `{ id: null, …, active: false }`, `modules: []`, normal `module: null`.
 - **Bonds**: derived from the operator's faction ids — `mainPower` and **every `subPower` entry** (`{ nationId, groupId,
   teamId }` each), plus the record's own top-level `nationId` / `groupId` / `teamId` — against each core bond's
   `powerIdList` (bonds.json), else the fallback 协防 `emptyShip` (research 02 §2.1). 34 of the 87 derive a core bond
@@ -534,10 +540,15 @@ already fields; `TOKEN` / `TRAP` professions excluded). Three parts:
 - **Pool**: the picked record joins the match pool as an entry only its owner can roll or buy — `SharedPool.addOwned`,
   the official per-tier pool copies (8 at tier V, 5 at tier VI). A teammate never sees it.
 - **Tokens**: a summoning candidate's summons are in `tokens.json` like any operator's, keyed by the 甄选 chess ids of
-  both tiers (the runtime looks a variant up by the piece's own id); the two tiers share the same variant data.
+  both tiers (the runtime looks a variant up by the piece's own id). The normal records' variants are the same at both
+  tiers; a tier V elite's variant carries its level-1 module data (token attributes, `isToken` parts, `byModule`), so it
+  differs from the tier VI elite's wherever the module touches the summon (19 variants, e.g. 令's 魂 −3 cost only at level 1).
 - **Rebuild**: `chessRecord()` is shared with `buildChess`, so an official change to skills / modules / talents reaches
-  both. `validateAll` checks every candidate resolves at both tiers, with valid bonds, one default skill, and (where the
-  operator has modules at all) one active default module of its own.
+  both. `validateAll` checks every candidate resolves at both tiers, with valid bonds and one default skill; every record
+  at its slot's official `equipLevel`, `module.level` = `equipLevel`, every elite composing back from `statsBase` /
+  `traitBase` / `talentsBase` + its default module (one active default iff it has choices), the same module ids at both
+  tiers, the normal stub, overlays holding only the allowed fields, and that the tier V overlays reproduce the tier V
+  elites built in full.
 
 ## 15. Anomalies found while joining (also in `.cache/build-data-report.json`)
 
@@ -603,7 +614,7 @@ already fields; `TOKEN` / `TRAP` professions excluded). Three parts:
 
 `chess 266 (112 visible; 283 selectable skills over the visible chess, 184 module choices over 129 goldens)`, `bonds 23`, `garrisons 249 (43 effect keys)`, `items 115`, `bands 40`, `effects 361`,
 `enemies 249`, `factions 67 entries`, `waves 38`, `stages 11 (8 active)`, `bosses 10`, `tokens 57 (54 summons: 19 pool + 35 外援)`, `choice events 109`,
-`bounty cards 129`, `tactic cards 43`, `waiguan 87 candidates (174 tier VI records + 174 tier V overlays)`.
+`bounty cards 129`, `tactic cards 43`, `waiguan 87 candidates (174 tier VI records + 174 tier V overlays; 144 module choices per tier)`.
 
 ## 17. Integrity guarantees (checked by the builder and `test/data.test.js`)
 
