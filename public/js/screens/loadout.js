@@ -203,12 +203,13 @@ function WaiguanSlots({ m, picks, roster, locked, onOpen, onClear }) {
           <button type="button" class="lo-wg__btn tapx" data-testid=${`waiguan-slot-${slot}`} disabled=${locked}
             onClick=${() => onOpen(slot)} title=${cand ? `${cand.name}（点击更换）` : '点击选择外援干员'}>
             ${cand
-              ? html`<span class="lo-wg__art"><${Img} src=${chessAvatarUrl(m, chess)} fallback=${html`<span class="lo-card__glyph">${[...(cand.name || '?')][0]}</span>`} /></span>
-                  <span class="lo-wg__name">${cand.name}</span>`
-              : html`<span class="lo-wg__art is-empty"><${Icon} name="plus" /></span>
-                  <span class="lo-wg__name t-dim">未选择</span>`}
+              ? html`<span class="lo-wg__art"><${Img} src=${chessAvatarUrl(m, chess)} fallback=${html`<span class="lo-card__glyph">${[...(cand.name || '?')][0]}</span>`} /></span>`
+              : html`<span class="lo-wg__art is-empty"><${Icon} name="plus" /></span>`}
+            <span class="lo-wg__text">
+              <span class=${cx('lo-wg__name', !cand && 't-dim')}>${cand ? cand.name : '未选择'}</span>
+              <span class="lo-wg__label">${meta.label}</span>
+            </span>
           </button>
-          <span class="lo-wg__label">${meta.label}</span>
           ${cand && !locked
             ? html`<button type="button" class="lo-wg__clear tapx" data-testid=${`waiguan-clear-${slot}`}
                 onClick=${() => onClear(slot)} aria-label="清空该外援位" title="清空">✕</button>`

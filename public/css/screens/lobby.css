@@ -237,6 +237,7 @@
 /* ---- create ------------------------------------------------------------------------------------------ */
 .create-box { margin-top: .3rem; display: flex; flex-direction: column; gap: .12rem; }
 .create-box .btn--xl { height: .92rem; font-size: .32rem; letter-spacing: .3em; }
+.create-box__row { display: flex; flex-direction: column; gap: .12rem; }
 .create-box__hint { display: flex; align-items: center; justify-content: center; min-height: .3rem; font-size: .14rem; color: var(--text-lo); }
 
 /* ---- 匹配 (matchmaking queue) ------------------------------------------------------------------------ */
@@ -245,7 +246,7 @@
 .queue-panel__head { display: flex; align-items: center; gap: .1rem; }
 .queue-panel__title { font-size: max(.18rem, 12px); font-weight: 700; letter-spacing: .06em; color: var(--mint-400); }
 .queue-panel__time { margin-left: auto; font-size: max(.2rem, 13px); color: var(--text-md); letter-spacing: .08em; }
-.queue-panel__body { display: flex; align-items: center; justify-content: space-between; gap: .12rem;
+.queue-panel__body { display: flex; align-items: center; gap: .16rem;
   font-size: max(.15rem, 10px); color: var(--text-lo); }
 .queue-panel__body b { color: var(--mint-400); font-size: max(.2rem, 13px); }
-.queue-panel .btn { align-self: flex-start; }
+.queue-panel__body .btn { margin-left: auto; flex: none; }

@@ -13,7 +13,7 @@
 import { useEffect, useRef, useState } from '../../vendor/hooks.module.js';
 import { DIFFICULTIES, DIFFICULTY_NAMES, DIFFICULTY_COLORS, ROOM_CODE_LEN, MAX_SEATS, DEFAULT_SEATS, MAX_SPECTATORS, ERR, modeIdFor } from '../../../shared/constants.js';
 import {
-  html, Button, Icon, MicroLabel, Panel, TextField, PingPill, AvatarFrame, Tooltip, Spinner, DifficultyIcon, doctorNo, PlayerName, Fragment,
+  html, Button, Icon, MicroLabel, Panel, TextField, PingPill, AvatarFrame, Tooltip, Spinner, DifficultyIcon, doctorNo, PlayerName,
 } from '../ui/components.js';
 import { toast, toastError } from '../ui/toasts.js';
 import { GuideButton } from '../ui/guide.js';
@@ -192,12 +192,13 @@ function QueuePanel({ q, difficulty, onCancel, busy }) {
     <div class="queue-panel__body">
       <span><b class="num">${q.count || 1}</b> 人在等待</span>
       <span class="t-dim">${need > 0 ? `再等 ${need} 人即可开始` : '即将开始'}</span>
+      <${Button} variant="ghost" size="sm" data-testid="queue-cancel" onClick=${onCancel} loading=${busy === 'unqueue'}>取消匹配<//>
     </div>
-    <${Button} variant="ghost" size="sm" data-testid="queue-cancel" onClick=${onCancel} loading=${busy === 'unqueue'}>取消匹配<//>
   </div>`;
 }
 
-/** Rotating tactical tips (config.json `tips`, weighted list of { tip, weight }). */function TipsPanel() {
+/** Rotating tactical tips (config.json `tips`, weighted list of { tip, weight }). */
+function TipsPanel() {
   const cfg = getConfig();
   const tips = Array.isArray(cfg?.tips)
     ? cfg.tips.map((t) => (typeof t === 'string' ? t : t?.tip)).filter((t) => typeof t === 'string' && t)
@@ -391,7 +392,7 @@ export function LobbyScreen() {
         <div class="create-box">
           ${queue.waiting
             ? html`<${QueuePanel} q=${queue} difficulty=${queue.difficulty || difficulty} busy=${busy} onCancel=${queueLeave} />`
-            : html`<${Fragment}>
+            : html`<div class="create-box__row">
                 <${Tooltip} block=${true} text=${ready ? null : '正在连接服务器…'}>
                   <${Button} variant="primary" size="xl" block=${true} iconRight="chevrons" loading=${busy === 'create'} disabled=${!ready} onClick=${create}>
                     ${roomMode === 'solo' ? '开始独立模拟' : '创建同盟'}
@@ -404,7 +405,7 @@ export function LobbyScreen() {
                       <//>
                     <//>`
                   : null}
-              <//>`}
+              </div>`}
           <div class="create-box__hint">
             ${!queue.waiting && !ready
               ? html`<${Spinner} size="sm" label="CONNECTING" />`
