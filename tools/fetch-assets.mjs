@@ -249,6 +249,7 @@ async function main() {
   // entries come from the committed tools/assets/waiguan-operators.json. Missing / empty ⇒ the pool's own operators only.
   const waiguanOperators = await readJson(WAIGUAN_OPERATORS_FILE).catch(() => null);
   const extraOperators = waiguanOperators && typeof waiguanOperators === 'object' && waiguanOperators.operators ? waiguanOperators.operators : {};
+  const extraTokens = waiguanOperators && typeof waiguanOperators === 'object' && waiguanOperators.tokens ? waiguanOperators.tokens : {};
   const plan = buildPlan({
     assets07, ops03, enemies05, maps05, audio, modelsData,
     extraEnemyIds: Object.keys(dataEnemies || {}),
@@ -257,6 +258,7 @@ async function main() {
     voice,
     localEnemySpines,
     extraOperators,
+    extraTokens,
   });
   const leaves = collectLeaves(plan.template);
   log(`[plan] ${leaves.length} files + ${plan.models.size} Spine models ` +
