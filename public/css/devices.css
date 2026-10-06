@@ -122,6 +122,18 @@ html:not(.sp-in-match) .toast-host { margin-top: var(--sa-t); }
    generic rule above — covered the bottom-right quarter of a phone's 67 × 97 px card and half of its 确认购买 strip, so
    the confirming tap re-opened the detail instead; user playtest #6 item 10) */
 
+/* The room's two stacked copy buttons: the generic hit area (44 px, centred) of 复制链接 covered 复制密钥 — a tap on 复制密钥
+   copied the link (phone audit S2). Each button's area now ends in the middle of the gap between them. */
+.sp-coarse .invite .invite__btns { gap: 6px; }
+.sp-coarse .invite .invite__btns .btn { min-height: max(.36rem, 24px); }
+.sp-coarse .invite .invite__btns .btn::before { height: calc(100% + 6px); }
+
+/* Short screens: the promotion reward's tag keeps its title, icon and sub line; the English micro line goes (S3) */
+@media (max-height: 460px) {
+  .rwtag__micro { display: none; }
+  .rwtag__icon { width: .28rem; height: .28rem; }
+}
+
 /* Narrow viewports (< 768 CSS px: the root scale is clamped at 40 px, so the layout is narrower than the 19.2 rem
    design): the shop bar would cover the corner's ⚙ / 📖 / ⛶ buttons — they wrap into a row above the 交流 button. */
 /* The left-docked detail card then ends above that two-row corner (.24rem + 交流 + .1rem gap + ⚙ row + .1rem): at its
