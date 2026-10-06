@@ -75,7 +75,9 @@ export const HUD_REM = Object.freeze({
  * @param {string} kind
  * @param {{ width: number, height: number }} size
  * @param {{ shop?: boolean }} [opts] `shop: false` = the folded shop's band
- * @returns {{ top: number, bottom: number }|null}
+ * On a touch screen the bands carry `minZoom: 1` (render/projection.js clearHud): the board is never zoomed out below
+ * the official framing, so its pieces stay big enough to tap.
+ * @returns {{ top: number, bottom: number, minZoom?: number }|null}
  */
 export function hudBands(kind, size, opts) {
   if (kind !== 'prep' && kind !== 'bossPrep') return null;
@@ -85,8 +87,10 @@ export function hudBands(kind, size, opts) {
   let safeTop = 0;
   let safeBottom = 0;
   let corner = 0;
+  let touch = false;
   try {
     rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 100;
+    touch = document.documentElement.classList.contains('sp-coarse');
     // the HUD layer starts below the top safe-area inset and ends above the bottom one (css/devices.css .gm__hud)
     const hud = document.querySelector('.gm__hud')?.getBoundingClientRect();
     safeTop = Math.max(0, hud?.top || 0);
@@ -98,10 +102,14 @@ export function hudBands(kind, size, opts) {
   const bottom = folded
     ? Math.max(safeBottom + rem * HUD_REM.shopTabTop + HUD_REM.shopTabBorderPx, corner || safeBottom + rem * HUD_REM.cornerTop)
     : rem * HUD_REM.shopBarTop + HUD_REM.shopBarBorderPx;
-  return {
+  const bands = {
     top: Math.min(h * 0.4, safeTop + rem * HUD_REM.bondStripBottom),
     bottom: Math.min(h * 0.4, bottom),
   };
+  // a touch screen never zooms the board out below the official framing (render/projection.js clearHud minZoom): the
+  // bench stays clear and the back rows may go under the top HUD — with the browser's bars showing (780×300) the zoom-out
+  // shrank the pieces to 15 px, too small to tap (user report 2026-10-06)
+  return touch ? { ...bands, minZoom: 1 } : bands;
 }
 
 /**

@@ -356,6 +356,28 @@ describe('HUD clearance of the prep views (user playtest #5 item 9)', () => {
     assert.equal(clearHud(cam, hud, null, vp), cam);
   });
 
+  test('clearHud minZoom (touch screens): the zoom-out stops there, the bench stays clear and the back rows go under the top HUD', () => {
+    const vp = { width: 780, height: 300 };
+    const keep = { near: 6.5, zNear: 0.16, far: 12.5, zFar: 0.42 };
+    const cam = presetCamera('prep', vp);
+    const hud = { top: 86, bottom: 109 };
+    const fit = clearHud(cam, hud, keep, vp);
+    assert.ok(fit.scale / cam.scale < 0.8, `a phone with its browser bars zooms far out: ×${fit.scale / cam.scale}`);
+    for (const minZoom of [0.85, 1]) {
+      const z = clearHud(cam, { ...hud, minZoom }, keep, vp);
+      assert.ok(near(z.scale / cam.scale, minZoom, 1e-9), `×${z.scale / cam.scale}`);
+      const b = band(z, 'prep');
+      assert.ok(near(b.near, vp.height - hud.bottom - 1, 1e-6), `bench edge on the shop bar's top + 1 px gap: ${b.near}`);
+      assert.ok(b.far < hud.top, 'the back row goes under the top HUD');
+      const c0 = cam.project(0, 9, 0), c1 = z.project(0, 9, 0);
+      assert.ok(near(c1.x - vp.width / 2, minZoom * (c0.x - vp.width / 2), 1e-6), 'x about the centre');
+    }
+    // a band that fits, or a floor below the fitting zoom: unchanged behaviour
+    assert.equal(clearHud(cam, { top: 0, bottom: 0, minZoom: 1 }, keep, vp), cam);
+    assert.deepEqual(clearHud(cam, { ...hud, minZoom: 0.1 }, keep, vp).params(), fit.params());
+    assert.deepEqual(clearHud(cam, { ...hud, minZoom: NaN }, keep, vp).params(), fit.params());
+  });
+
   test('an adjusted camera picks, projects and lerps like any other (bench, raised and low tiles; three.js too)', () => {
     const heights = (r, c) => (r === 7 ? 0.16 : r === 12 && c === 4 ? 0.42 : 0);
     for (const [w, h] of [[844, 390], [800, 360]]) {

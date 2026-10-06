@@ -18,6 +18,9 @@
 //     standing on the pressed tile, or a regular enemy near the pointer, still wins.
 //   * an ally's tile and an enemy both qualify → the nearer one (distance in tiles to the pointer's point), ties → the
 //     ally, then the front-most.
+//   * a finger (touch) on an EMPTY tile: the unit whose drawn body it is on (`pickBody`: an upright box BODY_HALF_W tile
+//     either side of its feet, from its feet up to its head; front-most first) — a phone's tiles are narrower than a
+//     fingertip and the model stands up over the tile behind its own. A unit on the pressed tile always wins.
 // (Replaces the drawn-body shapes and the 1-px render probe of v2.2, DESIGN §17.2: the player aims at the grid.)
 
 /** Battle enemies are picked within this many tiles of the pointer's ground point or of their drawn body on screen. */
@@ -100,6 +103,29 @@ export function pickOnTile(units, ground) {
     if (!u || !onTile(u, ground)) continue;
     const d = groundDist(u, ground);
     if (d < bd - EPS || (Math.abs(d - bd) <= EPS && depthOf(u) > depthOf(best))) { best = u; bd = d; }
+  }
+  return best;
+}
+
+/** Half-width (tiles, in the unit's px per tile) of the upright body box a finger on an empty tile picks (`pickBody`). */
+export const BODY_HALF_W = 0.4;
+
+/**
+ * Touch fallback for an empty tile (see the header): the unit whose drawn body — `body` { x, top, feet, s } on screen —
+ * holds the point, front-most first.
+ * @param {Array<PickUnit|null>} units
+ * @param {number} px
+ * @param {number} py
+ * @returns {PickUnit|null} one of `units`
+ */
+export function pickBody(units, px, py) {
+  if (!Array.isArray(units) || !Number.isFinite(px) || !Number.isFinite(py)) return null;
+  let best = null;
+  for (const u of units) {
+    const b = u?.body;
+    if (!b || !(b.s > 0) || ![b.x, b.top, b.feet].every(Number.isFinite)) continue;
+    if (Math.abs(px - b.x) > BODY_HALF_W * b.s || py < Math.min(b.top, b.feet) || py > Math.max(b.top, b.feet)) continue;
+    if (!best || depthOf(u) > depthOf(best)) best = u;
   }
   return best;
 }
