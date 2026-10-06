@@ -301,6 +301,8 @@ export function buildPlan({ assets07, ops03, enemies05, maps05, audio, modelsDat
   // loop below (avatar / portrait / battle Spine / skill icons / unit SFX), so an operator of the roster is planned
   // exactly like a pool operator.
   const operatorsById = { ...(assets07?.operators || {}), ...extraOperators };
+  // the pool's own characters (research 07): their battle voice is planned below; a 外援 operator has none
+  const charIds = Object.keys(assets07?.operators || {}).sort();
   for (const id of Object.keys(operatorsById).sort()) {
     const o = operatorsById[id];
     // Alternatives in the order the entry lists them. A research 07 entry names raw.githubusercontent.com (fetch-assets
