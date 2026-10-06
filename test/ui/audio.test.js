@@ -410,6 +410,22 @@ describe('AudioManager', () => {
       } finally { globalThis.fetch = origFetch; }
     }
   });
+  test('the buffer cache keeps a decoded-PCM budget (64 MB) beside its entry count, never evicting the playing BGM', async () => {
+    const fw = fakeWindow();
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = async () => ({ ok: true, arrayBuffer: async () => new ArrayBuffer(8) });
+    try {
+      const a = new AudioManager({ win: fw.win, getManifest: () => manifest });
+      a.install();
+      fw.fire('pointerdown');
+      // every file decodes to 32 MB of PCM (4 Mi frames × 2 channels × 4 bytes): two fit the budget, a third does not
+      a.ctx.decodeAudioData = (ab, ok) => ok({ duration: 1, length: 4 * 1024 * 1024, numberOfChannels: 2 });
+      a.bgm = { loopUrl: '/v/bgm.mp3' };
+      for (const u of ['/v/bgm.mp3', '/v/a.mp3', '/v/b.mp3']) { await a._buffer(u); await new Promise((r) => setTimeout(r, 0)); }
+      assert.deepEqual([...a.buffers.keys()], ['/v/bgm.mp3', '/v/b.mp3'], 'the oldest buffer that is not the BGM went');
+      assert.equal([...a.bufBytes.values()].reduce((s, n) => s + n, 0), 64 * 1024 * 1024);
+    } finally { globalThis.fetch = origFetch; }
+  });
 });
 
 // user playtest #4 item 6: 纯烬艾雅法拉's skill sound rang outside her skill — her manifest `hit` is her S3 impact
@@ -521,6 +537,9 @@ describe('operator voice', () => {
     assert.equal(voiceUrl(null, 'cn', OP, 'select'), null);
     assert.deepEqual(voiceLangsIn(m).map(([k]) => k), ['cn', 'jp']);
     assert.deepEqual(voiceLangsIn({ audio: { voice: { jp: { [OP]: {} } } } }).map(([k]) => k), ['jp']);
+    // the EN / KR dubs (DESIGN §21.30): offered when the site has them, after 中文 / 日文
+    assert.deepEqual(voiceLangsIn({ audio: { voice: { kr: { [OP]: {} }, en: { [OP]: {} }, cn: { [OP]: {} } } } }),
+      [['cn', '中文'], ['en', '英文'], ['kr', '韩文']]);
   });
 
   test('the rules are data/assets.json audio.voiceRules (the official battleVoice) plus the end lines', () => {

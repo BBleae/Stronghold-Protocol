@@ -1752,12 +1752,12 @@ export function shortcutBlocked(act, { modal = false, drawer = false } = {}) {
 export const DEFAULT_SETTINGS = Object.freeze({ bgm: 0.6, sfx: 0.8, voice: 0.8, voiceLang: 'cn', muted: false, damageNumbers: true, quality: 'high' });
 const QUALITIES = ['high', 'medium', 'low'];
 /** Operator voice languages (js/audio.js VOICE_LANGS) + 'off'. */
-const VOICE_LANG_KEYS = ['cn', 'jp', 'off'];
+const VOICE_LANG_KEYS = ['cn', 'jp', 'en', 'kr', 'off'];
 
 /**
  * Sanitize persisted settings.
  * @param {any} raw
- * @returns {{ bgm: number, sfx: number, muted: boolean, damageNumbers: boolean, quality: 'high'|'medium'|'low' }}
+ * @returns {{ bgm: number, sfx: number, voice: number, voiceLang: 'cn'|'jp'|'en'|'kr'|'off', muted: boolean, damageNumbers: boolean, quality: 'high'|'medium'|'low' }}
  */
 export function sanitizeSettings(raw) {
   const r = isObj(raw) ? raw : {};

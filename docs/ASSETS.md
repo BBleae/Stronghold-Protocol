@@ -20,7 +20,8 @@ npm run assets       # = node tools/vendor.mjs && node tools/fetch-assets.mjs
 | `--offline` | No network. Re-runs post-processing (atlas fixes, skeleton parsing, WOFF2) on what is already on disk, then rebuilds `data/assets.json`. |
 | `--dry-run` | Print the plan (file and model counts, alias notes) and exit. |
 | `--refresh-index` | Re-download the upstream indexes: `audio_data.json`, `models_data.json` and (with voice) `charword_table.json`. |
-| `--voice=LANGS` | Operator battle voice: `cn,jp` (default: 中文 and 日文, ~73 MB), `cn` (~32 MB), `jp` (~41 MB) or `none`. See [Operator voice](#operator-voice). |
+| `--voice=LANGS` | Operator battle voice: `cn,jp` (default: 中文 and 日文, ~73 MB), `cn` (~32 MB), `jp` (~41 MB), any comma list of `cn`, `jp`, `en`, `kr` (the English / Korean dubs are opt-in), or `none`. See [Operator voice](#operator-voice). |
+| `--voice-lang=L` | One dub only — upstream's spelling of `--voice=L` (`cn`, `jp`, `en` or `kr`). |
 | `--prune` | Delete files under `public/assets/` that the manifest no longer references, for example after a mapping change. Without this flag they are only listed in the report. `public/assets/local/` (written by `tools/local-extract`) is never pruned. Implies `--allow-shrink`. |
 | `--allow-shrink` | Write `data/assets.json` even when it loses entries the current one has (see "The manifest never shrinks by accident" below). |
 | `--local-spines` | Rewrite `tools/assets/local-enemy-spines.json` (the metadata of the enemy models only the local client has, see "Enemy aliases") from the models `tools/local-extract/extract.py` extracted to `public/assets/local/spine/enemy/`. Run it after a game update changed them; without it the committed file is used and a differing extraction only gets a warning. |
@@ -89,7 +90,7 @@ The research JSONs in `docs/research/` (03, 05, 07) define **which** ids are nee
 | Enemy Spine that no dump carries (灼热源石虫 / 炽焰源石虫) | the local client only (`tools/local-extract/extract.py ENEMY_SPINES`, optional); never downloaded and never required: an overlay of the web alias (`enemies[id].spineLocal`) | `local/spine/enemy/{enemyId}/{stem}.*` (listed in `data/local-assets.json`) |
 | BGM | AA2 `voice` branch `audio/sound_beta_2/music/**` (大厅/休整期 `act1autochess`, 开战 `act13side/m_bat_kazimierz2_{1,2}` — 骑士之日 / 无畏者; the 开战 track follows the round: `_2` 无畏者 rounds 1–7, `_1` 骑士之日 from round 8) | `audio/bgm/{file}.mp3` |
 | SFX (UI, battle, per unit) | AA2 `voice` `audio/sound_beta_2/**`, mapped from `audio_data.json` banks | `audio/sfx/{same sub-path}.mp3` |
-| Operator battle voice (中文, 日文; see below) | AA2 `voice` `audio/sound_beta_2/voice_cn/**` and `voice/**`, lines from `charword_table.json` | `voice/{cn,jp}/{wordKey}/cn_{NNN}.mp3` |
+| Operator battle voice (中文, 日文; 英文 / 韩文 on request; see below) | AA2 `voice` `audio/sound_beta_2/voice_cn/**` and `voice/**` (`voice_en/**`, `voice_kr/**`), lines from `charword_table.json` | `voice/{cn,jp,en,kr}/{wordKey}/cn_{NNN}.mp3` |
 | Fonts: Bender Regular and Light, Novecento Wide | TimWangZi/The-font-of-Arknights | `public/fonts/*.{otf,ttf,woff2}`, `public/fonts/fonts.css` |
 
 The `stem` of a Spine model is the upstream file name. Two examples: `char_107_liskam` has the stem `char_107_liskarm`, and `enemy_9032_aclionk` uses `enemy_1559_vtlionk`. The skel and atlas of a model always share one stem. pixi-spine locates the atlas by swapping the extension, so this matters.
@@ -174,13 +175,14 @@ game plays a line — and downloads them from the ArknightsAssets2 `voice` branc
 - The squad leader (队长) of a normal stage has no slot in this mode: it is the rarest operator on the board (then 精锐,
   then the highest tier) when the battle's 行动开始 is said (the end line keeps that leader). A leader without voice
   lines (盟约·辅助干员) says none, and 作战中 waits for it only until it was due.
-- Voice has its own channel (设置 → 角色语音, 语音语言 中文 / 日文 / 关闭). Summons, enemies and the reserve operators
+- Voice has its own channel (设置 → 角色语音, 语音语言 中文 / 日文 / 关闭, plus 英文 / 韩文 when the site has them). Summons, enemies and the reserve operators
   (预备干员, no voice in the game) say nothing.
 - Lines outside a battle (编入队伍, 任命队长, 行动出发, 精英化晋升, home and base lines) and 完成高难行动 (`FOUR_STAR`, 突袭
   clears) are not downloaded.
 - Languages: `cn` = `CN_MANDARIN` (folder `voice_cn/`), `jp` = `JP` (`voice/`); a linkage operator with only its own
   `LINKAGE` voice uses it in both. 120 of the 138 pool operators have voice: 12 lines each, ~0.26 MB (中文) and
-  ~0.34 MB (日文).
+  ~0.34 MB (日文). On request (`--voice=…,en,kr`, from upstream #73): `en` = `EN` (`voice_en/`), `kr` = `KR`
+  (`voice_kr/`), the same file names; an operator without that dub has no line in it, a linkage operator keeps its own.
 
 ## Post-processing
 
@@ -196,7 +198,7 @@ game plays a line — and downloads them from the ArknightsAssets2 `voice` branc
 - **Fonts:** OTF/TTF files are converted to WOFF2 by a built-in encoder (`tools/assets/woff2.mjs`: Brotli with null transforms).
   - Its output was verified lossless against Google's reference `woff2` decoder.
   - `fonts.css` lists WOFF2 first and falls back to the original file.
-- Images stay PNG. WebP conversion is not done: it would need a native dependency.
+- Images stay PNG. WebP conversion is not done: it would need a native dependency. The local-client board textures are the exception: `tools/local-extract/extract.py` (Python, where Pillow is already a dependency) writes WebP copies of the 12 textures the 3D board downloads (`WEBP`: colour maps lossy at quality 95 with the alpha and the RGB under transparent texels kept, normal and data maps lossless) and `data/local-assets.json` lists the copies; the PNGs stay beside them for `tools/crop-board-atlas.mjs`. `extract.py --webp` adds the copies to an existing extraction without the client.
 
 ## Manifest schema (`data/assets.json`)
 
@@ -208,7 +210,7 @@ All paths are URL paths relative to the site root, for example `/assets/char/ava
   hash: 'a1b2c3d4e5f6',             // content hash (cache busting)
   generator: 'tools/fetch-assets.mjs',
   stats: { files, bytes, chars, charsWithBack, enemies, enemiesWithSpine, tokens, tokensWithSpine,
-           spineModels, bonds, items, bands, skills, ui, sfxUnits },
+           spineModels, bonds, items, bands, skills, ui, sfxUnits, voice?: { [lang]: operators } },
   chars:   { [charId]: { avatar, avatarE2?, portrait, portraitE2?, spine: { front: Spine, back?: Spine } } },
   enemies: { [enemyId]: { icon, spine?: Spine, spineAliasOf?: enemyId,
                           spineLocal?: { group, skel, atlas, textures, …Spine } } },
@@ -246,7 +248,7 @@ All paths are URL paths relative to the site root, for example `/assets/char/ava
                 mix?: { [attack|hit|die|born]: { p?, vol? } } } }
     },
     // operator battle voice (tools/assets/voice.mjs; absent with --voice=none); arrays are played at random
-    voice?: { [cn|jp]: { [charId]: { select: [url], deploy: [url], combat: [url], start, win3, win, fail } } },
+    voice?: { [cn|jp|en|kr]: { [charId]: { select: [url], deploy: [url], combat: [url], start, win3, win, fail } } },
     // with voice: the official battle voice rules (audio_data.json battleVoice, see Operator voice)
     voiceRules?: { crossfade, minTimeDeltaForEnemyEncounter, minSpCostForImportantPassiveSkill,
                    voiceTypeOptions: [{ voiceType, priority, overlapIfSamePriority, cooldown, delay }] }

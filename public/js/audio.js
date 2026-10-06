@@ -68,6 +68,8 @@ const UNIT_COOLDOWN_MS = 160;
 const URL_GAP_MS = 45;
 const MAX_PER_URL = 2;
 const BUFFER_CACHE = 180;
+/** Decoded-PCM budget of the buffer cache beside its entry count: a voice line decodes to 0.4–1.3 MB (see _buffer). */
+const BUFFER_BYTES = 64 * 1024 * 1024;
 const XFADE_S = 1;
 const FADE_S = 0.8;
 /** 'atk' projectile kinds whose first id is the previous bounce target (sim ai.js), not the attacker. */
@@ -96,14 +98,14 @@ const OPENING_PHASES = new Set([PHASE.COMBAT, PHASE.FINAL_ASSAULT, PHASE.HIDDEN_
 /** 行动开始 belongs to a battle's opening: never said later; 作战中 waits for it that long at most. */
 const OPENING_MS = 15000;
 /** Voice languages the settings offer, in order (tools/assets/voice.mjs VOICE_LANGS). */
-export const VOICE_LANGS = Object.freeze([['cn', '中文'], ['jp', '日文']]);
+export const VOICE_LANGS = Object.freeze([['cn', '中文'], ['jp', '日文'], ['en', '英文'], ['kr', '韩文']]);
 
 // ---- pure helpers (unit-tested) -----------------------------------------------------------------------
 
 /**
  * URL of an operator voice line (audio.voice.<lang>.<charId>.<role>; array roles pick at random).
  * @param {any} manifest data/assets.json
- * @param {string} lang 'cn' | 'jp' | 'off'
+ * @param {string} lang 'cn' | 'jp' | 'en' | 'kr' | 'off'
  * @param {string} charId
  * @param {string} role select | deploy | combat | start | win3 | win | fail
  * @param {() => number} [rand]
@@ -441,6 +443,7 @@ export class AudioManager {
     this.squadLeader = null;  // charId of the leader who opened the latest battle: says the match's end line
     this.voiceLog = [];       // the lines started: { role, charId, type } (latest 200; the browser E2E reads it)
     this.buffers = new Map(); // url → Promise<AudioBuffer|null> (insertion order = LRU)
+    this.bufBytes = new Map(); // url → decoded PCM bytes (the byte budget of the LRU, see _buffer)
     this.warned = new Set();
     this.limiter = new SfxLimiter();
     this.uiVoices = 0;
@@ -634,13 +637,34 @@ export class AudioManager {
       }
     })();
     this.buffers.set(url, p);
-    while (this.buffers.size > BUFFER_CACHE) {
-      const first = this.buffers.keys().next().value;
-      // never evict the playing BGM
-      if (this.bgm && first === this.bgm.loopUrl) { const v = this.buffers.get(first); this.buffers.delete(first); this.buffers.set(first, v); break; }
-      this.buffers.delete(first);
-    }
+    p.then((buf) => {
+      // still the cached entry (not evicted or retried meanwhile): count its decoded PCM against the byte budget
+      if (!buf || this.buffers.get(url) !== p) return;
+      try {
+        this.bufBytes.set(url, (buf.length || 0) * (buf.numberOfChannels || 1) * 4);
+        this._trimBuffers();
+      } catch { /* ignore */ }
+    }, () => {});
+    this._trimBuffers();
     return p;
+  }
+
+  /**
+   * Evict least-recently-used buffers until both the entry count and the decoded-PCM budget hold. The count alone is
+   * not enough once voice lines are in the cache: 180 of them are ~100 MB of PCM (a voice decodes to 0.4–1.3 MB).
+   */
+  _trimBuffers() {
+    let bytes = 0;
+    for (const n of this.bufBytes.values()) bytes += n;
+    if (this.buffers.size <= BUFFER_CACHE && bytes <= BUFFER_BYTES) return;
+    for (const url of [...this.buffers.keys()]) {
+      if (this.buffers.size <= BUFFER_CACHE && bytes <= BUFFER_BYTES) break;
+      // never evict the playing BGM (a voice keeps its own reference to its buffer)
+      if (this.bgm && url === this.bgm.loopUrl) continue;
+      bytes -= this.bufBytes.get(url) || 0;
+      this.buffers.delete(url);
+      this.bufBytes.delete(url);
+    }
   }
 
   /** Preload a list of URLs (e.g. UI SFX) once unlocked. */

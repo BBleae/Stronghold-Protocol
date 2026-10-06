@@ -15,6 +15,9 @@
 export const VOICE_LANGS = Object.freeze({
   cn: { types: ['CN_MANDARIN', 'LINKAGE', 'JP'], label: '中文' },
   jp: { types: ['JP', 'LINKAGE'], label: '日文' },
+  // the EN / KR dubs (upstream #73's --voice-lang en | kr, DESIGN §21.30): opt-in, `--voice=cn,jp,en,kr`
+  en: { types: ['EN', 'LINKAGE'], label: '英文' },
+  kr: { types: ['KR', 'LINKAGE'], label: '韩文' },
 });
 
 /** Folder under sound_beta_2 of a voiceLangType (an entry's own voicePath wins). */
@@ -31,11 +34,11 @@ export const VOICE_ROLES = Object.freeze({
   fail: 'LOSE',                                                                    // 行动失败
 });
 
-/** Languages downloaded by default (`--voice` absent). */
+/** Languages downloaded by default (`--voice` absent); en / kr only when asked for. */
 export const DEFAULT_VOICE_LANGS = Object.freeze(['cn', 'jp']);
 
 /**
- * Parse the --voice option: 'cn,jp' (default) | 'cn' | 'jp' | 'none'.
+ * Parse the --voice option: 'cn,jp' (default) | any comma list of cn, jp, en, kr | 'none'.
  * @param {string|undefined} value
  * @returns {string[]} language keys of VOICE_LANGS
  */

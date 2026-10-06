@@ -40,7 +40,7 @@ import { processModels, findLocalEnemyModels, localEnemySpineMeta, loadLocalEnem
 import { collectLeaves, downloadLeaves, resolveTemplate, totalBytes, contentHash, droppedEntries, MANIFEST_VERSION } from './assets/manifest.mjs';
 import { fontJobs, buildFonts } from './assets/fonts.mjs';
 import { skelParserAvailable } from './assets/skel.mjs';
-import { parseVoiceLangs, indexCharWords } from './assets/voice.mjs';
+import { parseVoiceLangs, indexCharWords, VOICE_LANGS } from './assets/voice.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const ASSETS = join(ROOT, 'public', 'assets');
@@ -62,7 +62,9 @@ const HELP = `Usage: node tools/fetch-assets.mjs [options]
                     (without it such a run keeps the current manifest, lists the entries and exits 1)
   --local-spines    rewrite ${LOCAL_ENEMY_SPINES_FILE} from the enemy models extracted
                     by tools/local-extract/extract.py (public/assets/local/spine/enemy/)
-  --voice=LANGS     operator battle voice: cn,jp (default, ~73 MB), cn (~32 MB), jp (~41 MB) or none
+  --voice=LANGS     operator battle voice: cn,jp (default, ~73 MB), cn (~32 MB), jp (~41 MB), any comma list
+                    of cn, jp, en, kr (English / Korean dubs: opt-in), or none
+  --voice-lang=L    one dub only (upstream's spelling): the same as --voice=L
   --help            this text`;
 
 /**
@@ -81,6 +83,11 @@ export function parseArgs(argv) {
     else if (k === '--refresh-index') o.refreshIndex = true;
     else if (k === '--prune') o.prune = true;
     else if (k === '--voice') o.voice = parseVoiceLangs(v);
+    // upstream #73's spelling (one dub): the same as --voice=<lang> (DESIGN §21.30)
+    else if (k === '--voice-lang') {
+      if (!v) throw new Error(`--voice-lang needs a language (${Object.keys(VOICE_LANGS).join(' | ')})\n${HELP}`);
+      o.voice = parseVoiceLangs(v);
+    }
     else if (k === '--allow-shrink') o.allowShrink = true;
     else if (k === '--local-spines') o.localSpines = true;
     else if (k === '--help' || k === '-h') o.help = true;

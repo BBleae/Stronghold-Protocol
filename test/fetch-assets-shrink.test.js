@@ -68,6 +68,17 @@ test('fetch-assets shrink guard: the committed manifest minus some audio entries
   assert.deepEqual(shrinkGuard(null, next, parseArgs([])), { dropped: [], write: true }, 'no current manifest: written');
   assert.equal(parseArgs(['--allow-shrink']).allowShrink, true);
   assert.throws(() => parseArgs(['--allow-shrinks']), /unknown option/);
+  // 干员战斗语音 (DESIGN §21.30): the fork's --voice=LANGS picks the dubs (tools/assets/voice.mjs parseVoiceLangs);
+  // upstream's --voice-lang=L is taken as its spelling of --voice=L (EN / KR included); --voice-all (the prep-only lines
+  // no client of the fork plays) is not
+  assert.deepEqual(parseArgs(['--voice=jp']).voice, ['jp']);
+  assert.deepEqual(parseArgs(['--voice=none']).voice, []);
+  assert.deepEqual(parseArgs(['--voice=cn,en,kr']).voice, ['cn', 'en', 'kr']);
+  assert.deepEqual(parseArgs(['--voice-lang=en']).voice, ['en']);
+  assert.deepEqual(parseArgs(['--voice-lang=kr']).voice, ['kr']);
+  assert.throws(() => parseArgs(['--voice-lang=fr']), /unknown voice language/);
+  assert.throws(() => parseArgs(['--voice-lang']), /--voice-lang needs a language/);
+  assert.throws(() => parseArgs(['--voice-all']), /unknown option/);
   assert.equal(statSync(MANIFEST).mtimeMs, before, 'importing the tool runs nothing');
 });
 

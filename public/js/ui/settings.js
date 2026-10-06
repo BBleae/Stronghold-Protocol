@@ -70,7 +70,7 @@ export function SettingsModal({ open, onClose }) {
       <${Slider} label="背景音乐" micro="BGM" icon="play" value=${s.bgm} onInput=${(v) => updateSettings({ bgm: v })} />
       <${Slider} label="音效" micro="SFX" icon="signal" value=${s.sfx}
         onInput=${(v) => { updateSettings({ sfx: v }); if (!tested) { setTested(true); setTimeout(() => setTested(false), 400); audio.sfx('click'); } }} />
-      ${voiceLangs.length ? html`<${Slider} label="角色语音" micro="VOICE" icon="user" value=${s.voice} onInput=${(v) => updateSettings({ voice: v })} />
+      ${voiceLangs.length ? html`<${Slider} label="角色语音" micro="VOICE" icon="mic" value=${s.voice} onInput=${(v) => updateSettings({ voice: v })} />
         <div class="set-row">
           <span class="set-row__label">语音语言<${MicroLabel}>VOICE LANGUAGE<//></span>
           <div class="set-seg" role="radiogroup">

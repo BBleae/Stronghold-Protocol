@@ -19,8 +19,9 @@
 // feedback after 0.1.0 (DESIGN §21, v0.1.1) including batch 6 (§21.21–§21.25: 坚固维式重锤 once per deployment, 起飞,
 // fenced tiles, knocked-out bodies, the dispatcher snapshot and the manifest shrink guard credited to PR #2 / PR #7) and
 // the 突变细胞 bench rule (§21.1: the carrier destroyed, its new operator gained into the 整备区 — official footage, PR #2),
-// the closing additions §21.26–§21.28 (GitHub issues #1 / #5 / #8) and the owner's deliberate trigger deviation for six
-// 重装 skills (§21.29, GitHub issue #4 / PR #12).
+// the closing additions §21.26–§21.28 (GitHub issues #1 / #5 / #8), the owner's deliberate trigger deviation for six
+// 重装 skills (§21.29, GitHub issue #4 / PR #12) and upstream's operator battle voice (§21.30, #73),
+// merged onto the fork's own voice pipeline.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -844,4 +845,38 @@ test('the deliberate trigger deviation (DESIGN §21.29): six 重装 skills DEFAU
   assert.match(SIM, /the six of DESIGN §21\.29/);
   assert.match(PLAYING, /深巡、雷蛇的二技能，号角的二、三技能，灰毫的一、二技能按玩家反馈改为攻击范围内有敌人时就释放/);
   assert.match(doc('CHANGELOG.md'), /深巡、雷蛇的二技能，号角的二、三技能，灰毫的一、二技能改为攻击范围内有敌人时就释放/);
+});
+
+test('干员战斗语音 (DESIGN §21.30): upstream #73 merged onto the fork\'s voice pipeline — one engine, one manifest shape', () => {
+  const manifest = JSON.parse(readFileSync(join(ROOT, 'data/assets.json'), 'utf8'));
+  const voice = manifest.audio?.voice ?? {};
+  // the fork's shape: audio.voice.<lang>.<charId>.<role> (tools/assets/voice.mjs), with the official rules beside it
+  for (const lang of Object.keys(voice)) {
+    assert.ok(['cn', 'jp', 'en', 'kr'].includes(lang), `voice language ${lang}`);
+    const ids = Object.keys(voice[lang]);
+    assert.ok(ids.length >= 100, `${lang}: ${ids.length} operators carry battle voice`);
+    for (const id of ids) {
+      assert.match(id, /^char_/);
+      for (const role of Object.keys(voice[lang][id])) {
+        assert.ok(['select', 'deploy', 'combat', 'start', 'win3', 'win', 'fail'].includes(role), `${lang}.${id}.${role}`);
+      }
+    }
+  }
+  if (Object.keys(voice).length) assert.ok(Array.isArray(manifest.audio.voiceRules?.voiceTypeOptions), 'audio.voiceRules');
+  // upstream's parallel pipeline was not taken: no second engine, no per-battle 结算 hook, no panel voice
+  const audioSrc = doc('public/js/audio.js');
+  assert.ok(!/class VoiceGate|VOICE_PRIORITY|resultSpeaker/.test(audioSrc), 'audio.js has one voice engine');
+  assert.ok(/_trimBuffers\(\)/.test(audioSrc) && /BUFFER_BYTES = 64 \* 1024 \* 1024/.test(audioSrc), 'the decoded-PCM budget');
+  assert.ok(!/audio\.voice\(/.test(doc('public/js/ui/detailPanel.js')), 'the detail panel says nothing (选中干员 is the board tap)');
+  assert.ok(!/resultVoiceSlot|battleRunner\.on\('result'/.test(doc('public/js/screens/game.js')));
+  assert.ok(!/indexVoice|VOICE_SLOTS/.test(doc('tools/assets/plan.mjs')), 'one voice plan (tools/assets/voice.mjs)');
+  // the docs
+  assert.match(DESIGN, /### 21\.30 干员战斗语音 \(upstream #73\) on this fork/);
+  assert.match(DESIGN, /\*\*Upstream behaviour the fork does not have\*\*/);
+  assert.match(doc('docs/ASSETS.md'), /## Operator voice/);
+  assert.match(SIM, /\['engage', id\]/);
+  // upstream's EN / KR dubs and its --voice-lang spelling, on the fork's pipeline (opt-in)
+  assert.match(DESIGN, /The EN \/ KR dubs, on the fork's pipeline/);
+  assert.match(doc('docs/ASSETS.md'), /`--voice-lang=L`/);
+  assert.match(doc('tools/assets/voice.mjs'), /en: \{ types: \['EN'/);
 });

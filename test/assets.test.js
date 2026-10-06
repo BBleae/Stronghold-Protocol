@@ -704,7 +704,7 @@ describe('operator voice lines (tools/assets/voice.mjs)', () => {
   const table = {
     charWords: { ...words('char_002_amiya', ALL), ...words('char_459_tachak', [['选中干员1', 'BATTLE_SELECT', '021']]) },
     voiceLangDict: {
-      char_002_amiya: { charId: 'char_002_amiya', dict: { CN_MANDARIN: { wordkey: 'char_002_amiya', voicePath: null }, JP: { wordkey: 'char_002_amiya', voicePath: null } } },
+      char_002_amiya: { charId: 'char_002_amiya', dict: { CN_MANDARIN: { wordkey: 'char_002_amiya', voicePath: null }, JP: { wordkey: 'char_002_amiya', voicePath: null }, EN: { wordkey: 'char_002_amiya', voicePath: null } } },
       char_459_tachak: { charId: 'char_459_tachak', dict: { LINKAGE: { wordkey: 'char_459_tachak', voicePath: 'Audio/Sound_Beta_2/Voice/' } } },
     },
   };
@@ -727,7 +727,19 @@ describe('operator voice lines (tools/assets/voice.mjs)', () => {
     assert.deepEqual(voiceLines(idx, 'char_459_tachak', 'cn'), { select: ['voice/char_459_tachak/cn_021.mp3'] });
     assert.deepEqual(voiceLines(idx, 'char_459_tachak', 'jp'), { select: ['voice/char_459_tachak/cn_021.mp3'] });
     assert.equal(voiceLines(idx, 'char_600_cpione', 'cn'), null, 'reserve operators have no voice');
-    assert.equal(voiceLines(idx, 'char_002_amiya', 'kr'), null);
+    assert.equal(voiceLines(idx, 'char_002_amiya', 'kr'), null, 'no KR dub listed for her');
+  });
+
+  test('the EN / KR dubs (upstream #73, DESIGN §21.30): the same lines from voice_en/ / voice_kr/; a linkage operator keeps its own', () => {
+    const en = voiceLines(idx, 'char_002_amiya', 'en');
+    assert.deepEqual(Object.keys(en).sort(), Object.keys(VOICE_ROLES).sort());
+    assert.equal(en.start, 'voice_en/char_002_amiya/cn_020.mp3');
+    assert.deepEqual(en.combat.map((p) => p.slice(-7, -4)), ['025', '026', '027', '028']);
+    const kr = indexCharWords({ ...table, voiceLangDict: { char_002_amiya: { charId: 'char_002_amiya', dict: { KR: { wordkey: 'char_002_amiya', voicePath: null } } } } });
+    assert.equal(voiceLines(kr, 'char_002_amiya', 'kr').win3, 'voice_kr/char_002_amiya/cn_030.mp3');
+    assert.equal(voiceLines(kr, 'char_002_amiya', 'cn'), null, 'a KR-only entry is no 中文 voice');
+    assert.deepEqual(voiceLines(idx, 'char_459_tachak', 'en'), { select: ['voice/char_459_tachak/cn_021.mp3'] });
+    assert.deepEqual(voiceLines(idx, 'char_459_tachak', 'kr'), { select: ['voice/char_459_tachak/cn_021.mp3'] });
   });
 
   test('--voice option: 中文 and 日文 by default', () => {
@@ -735,6 +747,8 @@ describe('operator voice lines (tools/assets/voice.mjs)', () => {
     assert.deepEqual(parseVoiceLangs('cn'), ['cn']);
     assert.deepEqual(parseVoiceLangs('JP, jp'), ['jp']);
     assert.deepEqual(parseVoiceLangs('none'), []);
+    assert.deepEqual(parseVoiceLangs('cn,jp,en,kr'), ['cn', 'jp', 'en', 'kr'], 'EN / KR on request');
+    assert.deepEqual(parseVoiceLangs('KR'), ['kr']);
     assert.throws(() => parseVoiceLangs('fr'), /unknown voice language/);
   });
 
@@ -743,7 +757,7 @@ describe('operator voice lines (tools/assets/voice.mjs)', () => {
     const onDisk = existsSync(join(ROOT, 'public', 'assets', 'voice'));
     if (!v) return; // assets fetched with --voice=none
     for (const [lang, per] of Object.entries(v)) {
-      assert.ok(['cn', 'jp'].includes(lang), lang);
+      assert.ok(['cn', 'jp', 'en', 'kr'].includes(lang), lang);
       for (const [charId, roles] of Object.entries(per)) {
         assert.ok(/^char_/.test(charId), charId);
         for (const [role, urls] of Object.entries(roles)) {
