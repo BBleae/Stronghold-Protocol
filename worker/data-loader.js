@@ -17,10 +17,13 @@ import stages from '../data/stages.json';
 import bosses from '../data/bosses.json';
 import tokens from '../data/tokens.json';
 import tuning from '../data/tuning.json';
+// 外援 / 甄选 (DIY, DESIGN §27): a room checks its players' picks and loadouts against it, and a match (and its
+// recovery and replay engines) builds the picked operators' records from it
+import waiguan from '../data/waiguan.json';
 
 export const ROOT = '';
 export const DATA_DIR = '/data';
 export function readDataDirectory() {
   return { config, chess, bonds, garrisons, items, bands, effects, choices, enemies, factions,
-    waves, stages, bosses, tokens, assets: null, tuning };
+    waves, stages, bosses, tokens, assets: null, tuning, waiguan };
 }

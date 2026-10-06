@@ -10,6 +10,7 @@
 // (shared/protocol.js loadoutOptions / checkLoadout), so a sanitised loadout is always accepted.
 
 import { loadoutOptions, checkLoadout, resolveLoadout, MODULE_NONE, LOADOUT_LIMITS } from '../../../shared/protocol.js';
+import { isWaiguanRecord, waiguanRecords } from '../../../shared/waiguan.js';
 
 export { MODULE_NONE };
 
@@ -57,6 +58,54 @@ export function parseStored(raw) {
 
 /** Serialised form for localStorage. */
 export const toStored = (entries) => ({ v: LOADOUT_VERSION, entries: entries || {} });
+
+// ---- 外援 / 甄选 (DIY) picks (DESIGN §27, shared/waiguan.js) -------------------------------------------------
+
+/**
+ * localStorage key of the 甄选 selection. It is stored like the loadout (per browser) and sent with C2S
+ * `room.pick { picks }`; the slot ids are fixed by shared/waiguan.js, so a stored pick stays valid across builds and the
+ * server is the one that refuses a candidate the current data no longer lists.
+ */
+export const PICKS_PREF = 'waiguan';
+export const PICKS_VERSION = 1;
+
+/** Slot ids of the four 甄选 slots, in screen order. */
+export const PICK_SLOTS = Object.freeze(['diy5a', 'diy5b', 'diy6a', 'diy6b']);
+
+/** Structurally valid `{ [slotId]: charId }` (unknown keys, junk values and `__proto__` are dropped). */
+export function parseStoredPicks(raw) {
+  const src = isObj(raw) && isObj(raw.picks) ? raw.picks : isObj(raw) && raw.v == null ? raw : null;
+  const out = {};
+  if (!src) return out;
+  for (const slot of PICK_SLOTS) {
+    const id = src[slot];
+    if (typeof id === 'string' && /^[A-Za-z0-9_\-.:]{1,64}$/.test(id) && !UNSAFE_IDS.has(id)) out[slot] = id;
+  }
+  return out;
+}
+
+/** Serialised form of the 甄选 selection for localStorage. */
+export const picksToStored = (picks) => {
+  const clean = parseStoredPicks(picks || {});
+  return { v: PICKS_VERSION, picks: clean };
+};
+
+/**
+ * The 甄选 selection normalised against data/waiguan.json: keeps a pick whose charId the roster still lists under that
+ * slot's tier, drops the rest (a build with a different roster never sends the server a pick it would refuse).
+ * @param {Record<string, string>} picks
+ * @param {any} waiguan data/waiguan.json
+ * @returns {Record<string, string>}
+ */
+export function sanitizePicks(picks, waiguan) {
+  const clean = parseStoredPicks(picks || {});
+  const candidates = Array.isArray(waiguan?.candidates) ? waiguan.candidates : null;
+  if (!candidates) return clean;
+  const known = new Set(candidates.map((c) => c && c.charId).filter(Boolean));
+  const out = {};
+  for (const [slot, charId] of Object.entries(clean)) if (known.has(charId)) out[slot] = charId;
+  return out;
+}
 
 // ---- export / import ----------------------------------------------------------------------------------------------
 
@@ -264,8 +313,14 @@ export function selectedModule(loadout, chess, getChess) {
  * Visible normal chess (the loadout slots), in shop order: tier, then shopSortId.
  * @param {any[]} list data.list('chess')
  */
-/** Whether a chess record is a loadout slot (a visible normal chess — what the server's checkLoadout accepts). */
-export const isLoadoutSlot = (c) => !!c && !c.isGolden && c.visible !== false && !c.isHidden && !c.isDiy && (!c.baseId || c.baseId === c.chessId);
+/**
+ * Whether a chess record is a loadout slot — what the server's checkLoadout accepts: a normal chess that is fieldable,
+ * plus a 外援 / 甄选 (DIY) operator the player picked (its record carries combat data and offers skills and a module,
+ * DESIGN §27). The four EMPTY slot templates of data/chess.json are `isDiy` without `stats`, so they stay out, and the
+ * caller's `getChess` only knows the records it was given (the screen merges the player's own picks into the lookup).
+ */
+export const isLoadoutSlot = (c) => !!c && !c.isGolden && !c.isHidden && (!c.baseId || c.baseId === c.chessId)
+  && (isWaiguanRecord(c) || (c.visible !== false && !c.isDiy));
 
 export function rosterOf(list) {
   return (Array.isArray(list) ? list : [])
@@ -310,6 +365,47 @@ export function changedCount(entries, getChess) {
   }
   return n;
 }
+
+/**
+ * The chess records of a player's 甄选 (DIY) picks, keyed by chessId (both tiers, base and elite forms). The loadout
+ * screen and the sync both merge these into their chess lookup, so a 外援 operator is a loadout slot exactly like a shop
+ * operator — which is also what the server does with the same picks (server/lobby.js waiguanChessOf).
+ * @param {any} waiguan data/waiguan.json (null while it is not loaded: the result is then empty)
+ * @param {Record<string, string>|null|undefined} picks `{ slotId: charId }` (loadoutStore.picks)
+ * @returns {Record<string, any>} chessId → record
+ */
+export function waiguanPickChess(waiguan, picks) {
+  const slots = picks && typeof picks === 'object' ? Object.values(picks).filter((c) => typeof c === 'string' && c) : [];
+  if (!waiguan || !slots.length) return {};
+  const byChar = new Map();
+  for (const c of Array.isArray(waiguan.candidates) ? waiguan.candidates : []) {
+    if (c && typeof c.charId === 'string' && c.chessIds) byChar.set(c.charId, c.chessIds);
+  }
+  const all = waiguanRecords(waiguan);
+  const out = {};
+  for (const charId of slots) {
+    const ids = byChar.get(charId);
+    if (!ids) continue;
+    for (const tier of [5, 6]) {
+      const base = ids[tier];
+      if (typeof base !== 'string') continue;
+      for (const id of [base, `${base.slice(0, -1)}b`]) if (all[id]) out[id] = all[id];
+    }
+  }
+  return out;
+}
+
+/**
+ * A chess lookup (`data.lookup('chess', …)`) widened by the player's own 甄选 records.
+ * @param {(id: string) => any} getChess the base lookup
+ * @param {Record<string, any>} diy waiguanPickChess(...)
+ * @returns {(id: string) => any}
+ */
+export const withWaiguan = (getChess, diy) => {
+  const extra = diy && typeof diy === 'object' ? diy : null;
+  if (!extra || !Object.keys(extra).length) return getChess;
+  return (id) => getChess(id) || extra[id] || null;
+};
 
 // ---- display helpers -----------------------------------------------------------------------------------------------------
 

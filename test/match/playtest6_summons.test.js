@@ -38,8 +38,21 @@ const stackOf = (ps, id) => ps.hand.find((p) => p && p.kind === 'token' && p.id 
 const move = (m, uid, to, dir) => m.handle('p_0', { t: 'g.move', uid, to, ...(dir ? { dir } : {}) });
 
 test('tokens.json: the manually deployable summons are hand pieces — 医疗探机, 诅咒娃娃, 爬行号·防护单元 with the talent ones', () => {
-  const placeable = Object.values(DATA.tokens).filter((t) => t.placeable).map((t) => t.tokenId).sort();
-  assert.deepEqual(placeable, [DRONE, DOLL, 'token_10017_skadi2_dedant', 'token_10028_vigil_wolf', 'token_10030_mlyss_wtrman', DEVICE].sort());
+  // The POOL's own hand summons are exactly these six (unchanged): every other pool summon is HIDDEN or display-only.
+  const poolChess = new Set(Object.keys(DATA.chess));
+  const poolPlaceable = Object.values(DATA.tokens)
+    .filter((t) => t.placeable && (t.owners || []).some((o) => poolChess.has(o)))
+    .map((t) => t.tokenId).sort();
+  assert.deepEqual(poolPlaceable, [DRONE, DOLL, 'token_10017_skadi2_dedant', 'token_10028_vigil_wolf', 'token_10030_mlyss_wtrman', DEVICE].sort());
+  // The 外援 / 甄选 (DIY) roster (DESIGN §27) brings its own hand summons — 凯尔希's Mon3tr, 白铁's platforms, the
+  // tacticians' 援军 … — each a real manually deployable summon of its operator. For every token, `placeable` must match
+  // the rule for the operators that make it: not HIDDEN, and produced by a talent or a skill of some loadout.
+  const makes = (list) => list.includes('talent') || list.includes('skill');
+  for (const t of Object.values(DATA.tokens)) {
+    if (t.kind !== 'summon') continue;
+    const made = Object.values(t.variants).some((v) => makes(v.sources) || Object.values(v.bySkill || {}).some((b) => makes(b.sources)));
+    assert.equal(t.placeable, t.displayType !== 'HIDDEN' && made, `${t.tokenId} (${t.name}): placeable`);
+  }
   // HIDDEN shop-state tokens stay battle-only (PRTS: 新约能天使 with 使命必达！ provides no 投递坐标 card)
   for (const t of Object.values(DATA.tokens)) if (t.displayType === 'HIDDEN') assert.equal(t.placeable, false, t.name);
   assert.equal(DATA.tokens.token_10056_angel2_target.placeable, false);

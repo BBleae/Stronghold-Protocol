@@ -18,6 +18,7 @@ import assert from 'node:assert/strict';
 import { PHASE } from '../../shared/constants.js';
 import { Match } from '../../server/match/Match.js';
 import { SEEDS, runFull } from './fullmatchRun.js';
+import { WAIGUAN_POOL_COPIES } from '../../shared/waiguan.js';
 
 // 5–8-seat matches take about twice as long as 4-seat ones: a bounded number of seeds keeps the full suite's length
 export const LARGE_SEEDS = Math.max(1, Math.min(SEEDS, 6));
@@ -150,7 +151,12 @@ export function runLarge({ difficulty, humans, bots, seed }) {
   // shared pool, sized at the start for the n seats (1–4: the official copies)
   const f = Math.max(1, n / 4);
   let entries = 0;
-  for (const id of m.pool.entries.keys()) {
+  for (const [id, e] of m.pool.entries) {
+    // a 外援 (DIY) entry is its owner's own: fixed copies, never scaled by the seats (DESIGN §27)
+    if (e.owner != null) {
+      check(e.cap === WAIGUAN_POOL_COPIES[e.tier], '外援 copies are fixed', `${id}: ${e.cap}, want ${WAIGUAN_POOL_COPIES[e.tier]}`);
+      continue;
+    }
     const base = baseCopies(m.gd, id);
     if (!Number.isInteger(base) || base <= 0) continue;
     entries++;

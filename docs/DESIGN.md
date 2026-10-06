@@ -2304,3 +2304,83 @@ Decorations make room:
 - The 500 px phone threshold.
 - 62 fps.
 - `playback` audio interrupting other apps' audio.
+---
+
+## 27. 外援 / 甄选 (DIY) slots (remake addition)
+
+The official mode gives every player **four 甄选 (DIY) slots** — 2 at tier V and 2 at tier VI — filled with their own 6★
+operators (`diyChessDict` = `TIER_6`): "对于五六阶干员，除了目标干员外，还各共开放了2个甄选干员名额，博士可以选择等阶加入精英干员或
+自己在活动外已有的六星干员" (research 03 §C4; §0 listed DIY as out of scope for v1 — this section supersedes that). The
+remake has no account roster, so the pick is a **free choice among the 6★ operators that are not in this mode's shop pool**.
+
+| Rule | Implementation |
+|---|---|
+| Candidates | the 87 6★ of `character_table` minus the 59 the shop pool fields (TOKEN / TRAP excluded); `tools/build-data.mjs buildWaiguan` → `data/waiguan.json` (§DATA 14b) |
+| Slots | `shared/waiguan.js WAIGUAN_SLOTS`: `diy5a`, `diy5b` (tier V), `diy6a`, `diy6b` (tier VI). The four **empty templates** live in `data/chess.json` (`chess_char_5_diy1_a` …) and are never shop-reachable |
+| Record | `chess_char_diy_<tier>_<charId>[_b]`, built by the same `chessRecord()` the shop chess use: real stats, skills, talents, module choices, summons. Tier V = phase 2 / Lv1 / skill 4 / its slot's 模组; tier VI = phase 2 / Lv60 / skill 7 / its slot's 模组 |
+| Bonds | derived from the operator's faction ids against each core bond's `powerIdList`, else the fallback 协防 `emptyShip` (research 02 §2.1). The ids come from `mainPower` **and every `subPower` entry**, not from the top-level `nationId` / `groupId` / `teamId` alone: those carry one often-historical faction, and reading only them mis-assigned real operators (能天使 as 炎 instead of 拉特兰, 德克萨斯 as 炎 instead of 叙拉古, 水月 / 百炼嘉维尔 / 卡涅利安 / 烛煌 with no core bond at all, 结城理 as 协防 instead of 拉特兰 — his `subPower` is `laterano`). Checked against the 121 pool operators whose bonds the mode states: 70 right / 10 wrong without `subPower`, **80 of 80 right with it** (`test/data.test.js`). 34 of 87 now derive a core bond, 53 fall back to 协防干员 — the same share as the pool, where the mode gives 41 of 121 operators no core bond. **No 特质** |
+| Pool | `SharedPool.addOwned(owner, baseId, cap)`: the entry is visible, rollable and buyable **only by its owner**, with the official per-tier pool copies (8 at tier V, 5 at tier VI). It never dilutes a teammate's rolls and a teammate can never buy it — a 甄选 pick is a private pool, not a shared one |
+| Visibility | `room.state.picks` carries the requester's own selection only (the frame is encoded per member); a teammate's picks are never named. Nothing about a 甄选 piece appears in a partner's view either — it is that player's chess |
+| Check | `room.pick { picks }` → `checkWaiguanPicks` (shared/protocol.js): known slot, real candidate, and **no candidate filling both slots of one tier** (they are two pieces of one pool); the same operator MAY take a tier V and a tier VI slot |
+| When | accepted while the pool can still take the entries — `Match.setPicks` allows `LOBBY` / `INFO_CHECK` / `BAND_CHECK` and refuses afterwards (`WRONG_PHASE`); the client sends on the same debounce as `room.loadout` (`ui/loadoutSync.js`, `flushPicks`) |
+| Loadout | a 甄选 pick is a **干员调配 target like any pool chess**: the screen offers its skills and module, the roster lists it (both tiers), the change badge counts it, and `checkLoadout` accepts it. Three things make that work (fixed 2026-10-06, they were NOT in place before): the record publishes `visible: true` **once it has combat data** — `visible` means "a real, fieldable operator", and what keeps the record out of the shared shop pool is `isDiy` alone (`GameData.visibleChess`, `SharedPool`) —, `shared/waiguan.js isWaiguanRecord` tells such a record from the four EMPTY templates (no stats) which stay refused, and the checker's lookup is widened by **that player's own picks**: `server/lobby.js waiguanChessOf(data.waiguan, session.picks)` for `room.loadout`, the identical `shared/waiguan.js waiguanRecords` set for a running match (`PlayerState` checks against `gd.chess`). The browser widens its lookup the same way (`ui/loadoutModel.js waiguanPickChess` + `withWaiguan`, fed by `loadoutSync` and the screen), and `flushAll` sends `room.pick` **before** `room.loadout` — an entry naming an operator the server has not stored yet would be dropped as `unknown chess`. A template, an operator the player did not pick, or any unknown id is still `BAD_TARGET` |
+| Roster check | the picker renders **all 87** candidates and searches every one by name (verified against the browser: 87 cards, 87/87 found, none extra). Cross-checked against the latest official `character_table` (2026-10-06): **146 6★ = 87 candidates + 59 fixed shop operators**, no gap. The picker's search box was broken for the same release (a `TextField onInput` written with the DOM convention: it threw on every keystroke and the list never filtered, so typing a name looked like "this operator is missing") — `screens/loadout.js WaiguanPicker` now takes the string |
+| Bots | `botWaiguanPicks` fills a bot's slots with candidates whose derived bond it is playing around (the bonds this match did not switch off), never two of one tier, skipping a candidate whose every bond is banned. Measured over 12 seeds × 4 difficulties (`tools/matchrun.mjs`): HARD wins 5/12 → 6/12, other difficulties unchanged, zero engine / meta / sim errors |
+| Data flow | `server/match/Match.js` merges only the picked records into **this match's** chess table (`GameData.addChess`) — never into `getChess()` / another match; the browser loads `data/waiguan.json` on demand (`public/js/data.js` `waiguan`, warmed with the match files) |
+| UI | the 干员调配 screen's four slot tiles above the roster (`screens/loadout.js WaiguanSlots`) + the candidate picker (`WaiguanPicker`: search, class filter, the sibling slot of the same tier marked as taken); the selection is stored per browser (`sp.pref.waiguan`) like the loadout |
+| Tests | `test/match/waiguan.test.js` (protocol check, empty templates, record injection, pool privacy both ways, copy return on a re-pick, bot picks), `test/ui/loadout.test.js` `picks:` block (storage, sanitising, `room.pick` frames, the clear path, offline / missing roster), `test/ui/waiguan-loadout.test.js` (the four loadout ends: templates vs real records, roster listing, sanitiser + lobby check, refusal without the pick), `test/data.test.js` waiguan block (both tiers, bonds, default module, tier overlay round trip, `visible` = real operator), browser `test/ui/waiguan.e2e.test.js` (slots / picker, **skill switch stored by the server**, **the picker search filters**) |
+
+**Deviations / assumptions.** The candidate set is the official rule read as "6★ not in this mode's pool" (the official
+game keys it on the player's account instead). The tier V slots hold a 6★ at tier V status — the official slot's own
+status, kept as read. Copy caps reuse the official per-tier pool copies. A pick taken after the initial pool build adds
+a pool entry (the pool only ever grows) while its copies are returned when a piece was already bought and the slot
+changes. Modules: two candidates (凯尔希·思衡托, 予愿安洁莉娜) have none in the official data and get the same
+module-less elite shape the pool uses.
+
+---
+
+## 28. 匹配 (matchmaking queue) — a remake addition
+
+§0 listed a **matchmaking queue** as out of scope for v1. This section adds one: a player waits for other players instead
+of collecting a 4-letter 同盟密钥 by hand, and the server groups the waiting sessions into a fresh 同盟 room. **This is a
+remake feature — the official mode has no such queue.**
+
+### 28.1 The Node server's queue — `server/lobby.js`, `shared/protocol.js`, `public/js/screens/lobby.js` / `room.js`
+
+| Piece | Where | Rule |
+|---|---|---|
+| `queue.join { difficulty }` | `shared/protocol.js`, `server/lobby.js queueJoin` | Enters (or re-enters) the queue with the difficulty the lobby has selected. Refused while a match runs (`ROOM_STARTED`: leave it first). Joining twice keeps ONE entry |
+| `queue.leave` | `queueLeave` | Leaves the queue and is **always answered** with a `queue.status` — a cancel must not leave the client waiting for a frame. Never an error when the session was not queued (the client sends it on unload too) |
+| `queue.status` | per session | `{ waiting, difficulty, count, total, waitedMs, minSeats, seats }`. `count` = sessions waiting for the **same** difficulty (what a group is built from), `total` = everybody waiting. Sent on join / leave and to every waiting session whenever the queue changes |
+| `queue.matched` | per member | `{ code, difficulty, seated }` once a group is formed. The client then joins that code like any 同盟密钥 (`main.js` reuses the deep-link join path) and `screens/room.js` takes over (below) |
+| Grouping | `queueTick` (every `queueTickMs`, only while somebody waits: an idle lobby keeps no timer) | Walks the queue in arrival order: the oldest entry heads a group, later entries of the **same difficulty** fill it up to `DEFAULT_SEATS` (4: a matched room is the official 4-seat 同盟 room; rooms of 5–8 seats (§24) are made by hand). A group starts when it is full, or — with at least `queueMinSeats` humans — once the grace has passed, or when the head waited `queueTimeoutMs` |
+| Grace | `queueGraceMs` | Measured from the **last arrival** in the queue, not from the head's own arrival: a second player whose `queue.join` is still in flight must not be split off into a group of its own (a real race the tests caught) |
+| Timeout | `queueTimeoutMs` | A lone player always gets a room: the seats the queue cannot fill are left to be filled with AI teammates, so nobody waits forever |
+| Liveness | `queueSilentMs` | A waiting session that disconnected or went silent is dropped by the tick, and `onDisconnect` drops it at once: the queue must never seat an unreachable player |
+| Leaving the queue | `removeMember` | Entering a room (join / create / placePlayer) takes the session out of the queue automatically |
+| Readiness | `startQueuedMatch` | Every matched human is `ready` before the room state is announced (it asked to be matched), so the room opens ready |
+| Auto-start | `screens/room.js` | In a room whose `queue.matched` the client saw, the HOST fills the free seats with AI teammates (`room.addBot`, up to the room's capacity) and then starts (`room.start`) once every other human is ready and connected. Runs once per room code, never for a hand-made room |
+| Observability | `GET /healthz` | `queued` = sessions waiting right now |
+| Tests | `test/matchmaking.test.js` (each test boots its own server: the queue and the room registry are per server), `test/ui/matchmaking.e2e.test.js` (browser: queue panel → auto-join → AI fill → the match starts; and 取消匹配) |
+
+**Deliberate choices.** Only same-difficulty players are grouped (mixing 标准 with 终极 would decide a match's difficulty by
+arrival order). A group never exceeds `DEFAULT_SEATS`; a player that could not be seated keeps waiting instead of being
+dropped. The queue lives in memory like every room — a server restart empties it. The room is a normal 同盟 room: it has
+a code, it can be shared, and its AI teammates can still be removed by hand.
+
+### 28.2 匹配 in the room Worker (account mode) — `worker/matchmaker.js`, `worker/rooms/queue-routes.js`, `public/js/room-net.js`
+
+The Worker has no lobby every session is connected to: each room is its own Durable Object, and the menu of an account
+page has no socket (room-net.js). Its queue is one more Durable Object, `MATCHMAKER` (instance `'queue'`, binding and
+migration `v4-matchmaker` in `wrangler.jsonc`), reached over the account API; the room's own `Lobby` has no queue
+(`queueTickMs: 0`: a `queue.join` on a room socket is refused, and no queue clock keeps a room awake).
+
+| Piece | Rule |
+|---|---|
+| `POST /api/queue { action, difficulty?, code? }` | Signed in, from the game's own page (Origin), counted per network against its own `QUEUE_LIMIT` (a waiting page polls 40 times a minute: the queue does not use up `API_LIMIT`). `join` (the 匹配 click) is refused from a seat in a live room (`ALREADY_SEATED`, as applying elsewhere is) and starts over: a group the account was in before is left first. Answers the account's status: §28.1's `queue.status` fields, plus `matched` once a group was formed |
+| Polling | The menu page polls (`poll`, carrying the difficulty) every `QUEUE_POLL_MS` (1.5 s) while it waits; a page silent for `silentMs` (6 s) is dropped — from the queue, and from a group still waiting for its room (`expect` counts the live members only) — which is how the Worker learns of a closed page. The queue is memory only: an evicted instance starts empty and the next poll re-enters the player, except within `leftMs` (5 s) of a `leave` (a poll that crossed it). Entering a room any other way (an application, 继续对局) leaves the queue |
+| Grouping | `MatchQueue.tick`, run on every call (no timer): §28.1's rules — same difficulty, ≤ `DEFAULT_SEATS`, ≥ 2 after the grace, a lone player after the timeout. The grace runs from the last arrival **of the group** (the Node queue takes the whole queue's): players of another difficulty never hold a group back |
+| The room | The group's first account is its **host**: `matched { role: 'host', code: null, expect, members }`. Its page creates a co-op room the normal way (`POST /api/rooms`, `room.create`) and reports it (`hosted { code }`, refused unless the host sits in that room); a host that does not report within `hostMs` (20 s), or whose page went away before it was told, is dropped and the others go back to the front of the queue, keeping their waiting time. A host that cancels (its page leaves the room it opened) or queues again ends the group the same way. Members get `matched { role: 'member', code }` and join it like an invite (`main.js` pendingJoin → `room.join` → a join application); a room that could not be opened or reported is a toast |
+| Admission | The host's page approves the join applications of **its group's accounts only** (`QUEUE_APPROVE_MS`, 60 s); a stranger's application waits for the host as always. Nothing in the queue seats, approves or creates anything: every room write is one of the players' own requests, with its usual checks |
+| Readiness and start | A matched member says `room.ready` itself once inside (the Node server marks it; a failed try is repeated once the room is online again). The host's `screens/room.js` sequence first waits (≤ 30 s) until the `expect`ed humans are in — their seats must not go to AI teammates first — then fills the free seats and starts once the others are ready |
+| Tests | `test/worker/matchmaker.test.js` (MatchQueue rules, the Durable Object's answers), `test/worker/matchmaking.test.js` (workerd: queue → host opens and reports → the member is approved in), `test/worker-client.test.js` (the page: polling, leaving, host / member hand-over, approvals of the group only, a cancel while the host opens its room, entering another way, errors) |

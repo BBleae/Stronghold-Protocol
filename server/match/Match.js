@@ -151,6 +151,7 @@ import { PlayerState } from './PlayerState.js';
 import { buildDeployMap, boardOrder, pieceDir } from './board.js';
 import { bondList, offBondCounts } from './bondsMeta.js';
 import { EffectDispatcher, getDefaultRegistry } from './effectsMeta.js';
+import { WAIGUAN_SLOTS, waiguanPickOf, waiguanRecords, WAIGUAN_POOL_COPIES } from '../../shared/waiguan.js';
 import { generateDraft, applyCard, cardView, bountyBattles, isMultiRoundBounty } from './choices.js';
 import { setupMatchWaves, buildNormalWave, buildBossWave, bountySpawns, withBounties, previewOf, weightedPick } from './waves.js';
 import { planUnite, uniteBattleOpts, uniteSurvivors, uniteGroups, uniteGroupOf, uniteBills, uniteResultFor } from './unite.js';
@@ -238,6 +239,95 @@ function dataSourceFor(data) {
   return ds;
 }
 
+// ---- 外援 / 甄选 (DIY) picks (DESIGN §27, shared/waiguan.js) ---------------------------------------
+
+/** Copies a 甄选 pick holds in its own private pool (shared/waiguan.js; the invariants check it there too). */
+export { WAIGUAN_POOL_COPIES };
+
+/** `opts.seats[].picks` → `{ [playerId]: { [slotId]: charId } }`, dropping empty selections. */
+function collectWaiguanPicks(seats) {
+  const out = {};
+  for (const s of Array.isArray(seats) ? seats : []) {
+    if (!s || typeof s.playerId !== 'string' || !s.picks || typeof s.picks !== 'object') continue;
+    const clean = {};
+    for (const [slot, charId] of Object.entries(s.picks)) if (typeof charId === 'string' && charId) clean[slot] = charId;
+    if (Object.keys(clean).length) out[s.playerId] = clean;
+  }
+  return out;
+}
+
+/** The 甄选 records every pick of the match needs, merged into the match's chess table. `{ [chessId]: record }`. */
+function waiguanChessPatch(roster, picks, records, warn = null) {
+  const out = {};
+  for (const sel of Object.values(picks || {})) {
+    for (const [slotId, charId] of Object.entries(sel)) {
+      const slot = WAIGUAN_SLOTS.find((s) => s.slot === slotId);
+      const rec = slot ? records[`chess_char_diy_${slot.tier}_${charId}_a`] : null;
+      if (!rec) { if (warn) warn(`甄选 ${slotId}=${charId}: no record in data/waiguan.json`); continue; }
+      out[rec.chessId] = rec;
+    }
+  }
+  return out;
+}
+
+/** The bonds this match plays with: every bond the mode does not switch off and the draw did not disable. */
+function gdActiveBonds(gd) {
+  const off = new Set([...(gd.disabledBonds || []), ...(gd.modeInactiveBonds || [])]);
+  return (gd.bondIds || []).filter((b) => !off.has(b));
+}
+
+/**
+ * The 甄选 (DIY) picks a BOT brings (DESIGN §27): its own shop pool is private, so a bot that skipped the slots would
+ * simply play with two fewer tiers' worth of options than a human. The heuristic is deliberately small and deterministic:
+ * per tier, take up to two candidates whose derived bond the bot is playing around (the band it drafted, else the bonds
+ * the match did not switch off), a candidate never filling both slots of one tier; without a preference the roster's
+ * first two candidates of the tier fill in, so a bot never leaves a slot empty.
+ * @param {import('./gamedata.js').GameData} gd
+ * @param {any} roster data/waiguan.json (null ⇒ no picks)
+ * @param {string[]} preferBonds bonds to look for first
+ * @param {(charId: string) => boolean} [allow] extra filter (e.g. skip a battle-disabled bond)
+ * @returns {Record<string, string>} `{ slotId: charId }` (empty when the roster is missing)
+ */
+export function botWaiguanPicks(gd, roster, preferBonds, allow = null) {
+  const cands = Array.isArray(roster?.candidates) ? roster.candidates : [];
+  if (!cands.length) return {};
+  const want = new Set((Array.isArray(preferBonds) ? preferBonds : []).filter(Boolean));
+  const score = (c) => (Array.isArray(c.bonds) ? c.bonds.filter((b) => want.has(b)).length : 0);
+  const ok = (c) => typeof c?.charId === 'string' && (!allow || allow(c.charId));
+  const out = {};
+  for (const tier of [5, 6]) {
+    const slots = ['diy5a', 'diy5b', 'diy6a', 'diy6b'].filter((s) => (s.startsWith('diy5') ? 5 : 6) === tier);
+    const ranked = cands.filter(ok).slice().sort((a, b) => score(b) - score(a) || String(a.name).localeCompare(String(b.name), 'zh'));
+    const preferred = ranked.filter((c) => score(c) > 0);
+    const chosen = [];
+    for (const c of (preferred.length ? preferred : ranked)) {
+      if (chosen.length >= slots.length) break;
+      if (chosen.includes(c.charId)) continue;
+      chosen.push(c.charId);
+      // only an operator of a bond the bot is playing around is worth a second look; otherwise one filler is enough
+      if (!preferred.length) break;
+    }
+    slots.forEach((slot, i) => { if (chosen[i]) out[slot] = chosen[i]; });
+  }
+  return out;
+}
+
+/**
+ * The record a 甄选 slot's pick refers to (`{ record, chessId, tier, golden }`), or null.
+ * @param {any} roster data/waiguan.json
+ * @param {Record<string, any>} records `waiguanRecords(roster)` (built once per match)
+ * @param {string} slotId
+ * @param {string} charId
+ */
+function waiguanRecordFor(roster, records, slotId, charId) {
+  const slot = WAIGUAN_SLOTS.find((s) => s.slot === slotId);
+  if (!slot) return null;
+  const base = records[`chess_char_diy_${slot.tier}_${charId}_a`];
+  const gold = records[`chess_char_diy_${slot.tier}_${charId}_b`];
+  if (!base) return null;
+  return { record: base, chessId: base.chessId, tier: base.tier, golden: !!gold, candidate: waiguanPickOf(roster?.candidates, base.chessId)?.candidate || null };
+}
+
 export class Match {
   /** @param {object} opts see MATCH INTERFACE above */
   constructor(opts) {
@@ -256,7 +346,15 @@ export class Match {
     this.broadcastFn = opts.broadcast;
     this.onEndFn = opts.onEnd;
     this.data = opts.data && typeof opts.data === 'object' ? opts.data : {};
-    this.gd = new GameData(this.data, this.modeId);
+    // 外援 / 甄选 (DIY, DESIGN §27): each player's four slots are filled from data/waiguan.json before the chess table
+    // is built, so the records the players picked are part of THIS match's GameData (and of no other match's).
+    this.waiguanRoster = this.data.waiguan && typeof this.data.waiguan === 'object' ? this.data.waiguan : null;
+    /** every 甄选 record of the roster (tier V reconstructed from the tier VI overlays), built once per match */
+    this.waiguanRecords = waiguanRecords(this.waiguanRoster, (m) => this.log.warn(`[match] ${m}`));
+    /** @type {Record<string, Record<string, any>>} playerId → { slotId: charId } (an empty pick set is dropped) */
+    this.waiguanPicks = collectWaiguanPicks(opts.seats);
+    const waiguanChess = waiguanChessPatch(this.waiguanRoster, this.waiguanPicks, this.waiguanRecords, (m) => this.log.warn(`[match] ${m}`));
+    this.gd = new GameData(this.data, this.modeId, { chess: waiguanChess });
     if (!this.difficulty) this.difficulty = this.gd.difficulty;
     this.isSolo = this.mode === 'solo' || this.gd.isSolo;
     this.ownsScheduler = !opts.scheduler;
@@ -345,6 +443,37 @@ export class Match {
     this.bannedChess = bans.banned;
     // a co-op room of 5–8 seats (humans + bots) has more copies per chess (gamedata.js poolCopies; fixed for the match)
     this.pool = new SharedPool(this.gd, { banned: bans.banned, players: this.order.length });
+    const poolPicks = { ...this.waiguanPicks };
+    // Bots bring their own 甄选 picks too (botWaiguanPicks): their pool is private like a human's, so an AI seat that
+    // skipped the slots would play with fewer options than the human beside it. The bands are drafted later, so the binds
+    // the bot aims at here are the ones this match did NOT switch off.
+    for (const s of opts.seats) {
+      if (!s || typeof s.playerId !== 'string' || !s.isBot || poolPicks[s.playerId]) continue;
+      const off = new Set([...(this.disabledBonds || []), ...(this.modeInactiveBonds || [])]);
+      // skip a candidate whose every bond is switched off this match: its record would be in the pool but unbuyable
+      const picks = botWaiguanPicks(this.gd, this.waiguanRoster, gdActiveBonds(this.gd),
+        (charId) => {
+          const cand = this.waiguanRoster?.candidates?.find((c) => c.charId === charId);
+          const bonds = Array.isArray(cand?.bonds) ? cand.bonds : [];
+          return bonds.length === 0 || bonds.some((b) => !off.has(b));
+        });
+      if (Object.keys(picks).length) poolPicks[s.playerId] = picks;
+    }
+    for (const [playerId, picks] of Object.entries(poolPicks)) {
+      // a bot's picks are this match's own state (no lobby seat to write them back to)
+      if (this.players.has(playerId)) this.waiguanPicks[playerId] = picks;
+      for (const [slotId, charId] of Object.entries(picks)) {
+        const rec = waiguanRecordFor(this.waiguanRoster, this.waiguanRecords, slotId, charId);
+        if (!rec) continue;
+        // a bot's picks are made here, after the chess table was built from the humans' picks: its records join this
+        // match's table first (as Match.setPicks does), else gd.tierOf / price / the engine would not know the chess
+        this.gd.addChess(rec.record);
+        const cap = WAIGUAN_POOL_COPIES[rec.tier] ?? 0;
+        if (!this.pool.addOwned(playerId, rec.chessId, cap)) {
+          this.log.warn(`[match] 甄选 ${slotId}=${charId}: pool entry refused (${rec.chessId})`);
+        }
+      }
+    }
 
     this.phase = PHASE.LOBBY;
     this.round = 0;
@@ -461,6 +590,66 @@ export class Match {
       this.markPrivate(ps);
     });
     return res;
+  }
+
+  /**
+   * room.pick during the match (DESIGN §27, 外援 / 甄选): the lobby already checked the selection against
+   * data/waiguan.json (checkWaiguanPicks). Accepted only while the shop pool can still take the entries — the pool is
+   * built at construction and only grows, so a pick may be added or replaced during LOBBY / INFO_CHECK / BAND_CHECK and
+   * is refused once BATTLE_CHECK starts (WRONG_PHASE, the pool is frozen for the match).
+   * @param {string} playerId
+   * @param {Record<string, string>} picks `{ slotId: charId }`
+   * @returns {{ ok: true } | { error: string, detail?: string }}
+   */
+  setPicks(playerId, picks) {
+    const ps = this.players.get(playerId);
+    if (!ps || ps.isBot || ps.left) return fail(ERR.NOT_IN_ROOM);
+    if (this.disposed || this.ended) return fail(ERR.WRONG_PHASE);
+    if (this.phase !== PHASE.LOBBY && this.phase !== PHASE.INFO_CHECK && this.phase !== PHASE.BAND_CHECK) {
+      return fail(ERR.WRONG_PHASE, '甄选 locked for this match');
+    }
+    let res = OK;
+    this.guard(() => {
+      const before = this.waiguanPicks[playerId] || {};
+      // copies already taken from a slot the player is dropping go back before the new entries are added, so a
+      // replacement never leaks pool copies (the entries themselves stay: the pool only ever grows)
+      for (const [slotId, charId] of Object.entries(before)) {
+        // a slot the new selection keeps keeps its copies; every other one (changed or dropped) gives them back
+        if (charId && picks && picks[slotId] === charId) continue;
+        const rec = waiguanRecordFor(this.waiguanRoster, this.waiguanRecords, slotId, charId);
+        if (rec) this.releaseWaiguanCopies(playerId, rec.chessId);
+      }
+      const next = {};
+      for (const [slotId, charId] of Object.entries(picks || {})) {
+        if (typeof charId !== 'string' || !charId) continue;
+        const rec = waiguanRecordFor(this.waiguanRoster, this.waiguanRecords, slotId, charId);
+        if (!rec) { res = fail(ERR.BAD_TARGET, `${charId} is not a 甄选 candidate`); return; }
+        // the record must be in THIS match's chess table before the pool entry points at it (the engine resolves every
+        // chess id through gd.chess): the lobby passes the picks at construction, this path is a pick taken later
+        this.gd.addChess(rec.record);
+        this.pool.addOwned(playerId, rec.chessId, WAIGUAN_POOL_COPIES[rec.tier] ?? 0);
+        next[slotId] = charId;
+      }
+      if (Object.keys(next).length) this.waiguanPicks[playerId] = next;
+      else delete this.waiguanPicks[playerId];
+      ps.picks = Object.keys(next).length ? Object.freeze({ ...next }) : null;
+      this.markPrivate(ps);
+    });
+    return res;
+  }
+
+  /**
+   * Return the pool copies a player holds of a 甄选 chess (used when a slot is dropped or re-picked). The piece itself is
+   * the player's and stays where it is — only the copies it took from the (owner-scoped) pool go back.
+   * @param {string} playerId
+   * @param {string} chessId base chess id of the dropped slot
+   */
+  releaseWaiguanCopies(playerId, chessId) {
+    const ps = this.players.get(playerId);
+    if (!ps || typeof ps.allChess !== 'function') return;
+    for (const piece of ps.allChess()) {
+      if (this.gd.baseIdOf(piece.id) === chessId) ps.returnCopies(piece);
+    }
   }
 
   onDisconnect(playerId) {

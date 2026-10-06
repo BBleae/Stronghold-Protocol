@@ -18,6 +18,7 @@ import { BAND_TURN_SECONDS } from '../../server/match/Match.js';
 import { createRng } from '../../server/sim/rng.js';
 import { FakeBattle } from './fakeBattle.js';
 import { DATA, makeMatch, checkInvariants } from './harness.js';
+import { WAIGUAN_POOL_COPIES } from '../../shared/waiguan.js';
 
 const bossFields = () => FakeBattle.instances.filter((b) => b.kind === 'boss' || b.kind === 'hidden');
 const MULTI = ['mode_multi_funny', 'mode_multi_normal', 'mode_multi_hard', 'mode_multi_abyss'];
@@ -66,7 +67,11 @@ test('pool copies: the official counts for 1–4 seats; ceil(count × seats / 4)
   // the match: seats (humans + bots) at match start
   for (const [humans, bots, f] of [[1, 3, 1], [2, 2, 1], [1, 4, 5 / 4], [3, 3, 6 / 4], [1, 7, 2]]) {
     const h = makeMatch({ mode: 'coop', difficulty: 'NORMAL', humans, bots, seed: 300 + humans + bots, fake: true });
-    for (const [id, e] of h.m.pool.entries) assert.equal(e.cap, f === 1 ? gd.poolCopies(id) : Math.ceil(gd.poolCopies(id) * f - 1e-9), `${humans}+${bots}: ${id}`);
+    for (const [id, e] of h.m.pool.entries) {
+      // a player's own 甄选 entry (AI teammates bring theirs, DESIGN §27) keeps the official per-tier copies at any size
+      if (e.owner != null) { assert.equal(e.cap, WAIGUAN_POOL_COPIES[e.tier], `${humans}+${bots}: own ${id}`); continue; }
+      assert.equal(e.cap, f === 1 ? gd.poolCopies(id) : Math.ceil(gd.poolCopies(id) * f - 1e-9), `${humans}+${bots}: ${id}`);
+    }
     h.m.dispose();
   }
 });

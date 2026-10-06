@@ -398,3 +398,42 @@
 .lo-io__text:focus { border-color: var(--mint-700); }
 .lo-io__text::placeholder { color: var(--text-lo); }
 .lo-io__file { display: none; }
+
+/* ---- 外援 / 甄选 (DIY) slots (DESIGN §27) ---------------------------------------------------------------- */
+
+/* The four slots above the roster: 2 at tier V, 2 at tier VI. Each is one short row (portrait, then name and tier), so the
+   roster below keeps its height on short phones too. */
+.lo-wg { flex: none; display: flex; flex-direction: column; gap: .06rem; padding: .08rem .1rem .1rem;
+  border: 1px solid var(--line-2); background: linear-gradient(180deg, rgba(23, 249, 183, .05), transparent 60%); }
+.lo-wg__head { display: flex; align-items: center; justify-content: space-between; gap: .1rem; }
+.lo-wg__count { font-size: max(.15rem, 10px); color: var(--text-lo); }
+.lo-wg__count b { color: var(--mint-400); font-size: max(.2rem, 12px); margin-right: .02rem; }
+.lo-wg__row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .08rem; }
+.lo-wg__slot { position: relative; display: flex; flex-direction: column; gap: .03rem; min-width: 0; }
+.lo-wg__btn { display: flex; align-items: center; gap: .08rem; padding: .04rem; text-align: left;
+  border: 1px dashed var(--line-3); background: rgba(0, 0, 0, .3); color: inherit; cursor: pointer; min-width: 0; width: 100%; }
+.lo-wg__btn:hover:not(:disabled) { border-color: var(--mint-500); }
+.lo-wg__btn:disabled { opacity: .55; cursor: not-allowed; }
+.lo-wg__slot.is-filled .lo-wg__btn { border-style: solid; border-color: var(--line-3); }
+.lo-wg__slot--t5 .lo-wg__btn { box-shadow: inset 0 -2px 0 var(--tier-5); }
+.lo-wg__slot--t6 .lo-wg__btn { box-shadow: inset 0 -2px 0 var(--tier-6); }
+.lo-wg__art { position: relative; flex: none; display: grid; place-items: center; width: max(.72rem, 34px); aspect-ratio: 1; overflow: hidden; background: #1b201e; }
+.lo-wg__art img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.lo-wg__art.is-empty { color: var(--text-dim); }
+.lo-wg__art.is-empty .icon { width: 34%; height: 34%; }
+.lo-wg__text { display: flex; flex-direction: column; gap: .02rem; min-width: 0; padding-right: max(.24rem, 15px); }
+.lo-wg__name { font-size: max(.16rem, 10px); line-height: 1.2; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lo-wg__label { font-size: max(.12rem, 8px); color: var(--text-dim); letter-spacing: .04em; }
+.lo-wg__clear { position: absolute; top: .02rem; right: .02rem; width: max(.24rem, 15px); height: max(.24rem, 15px);
+  display: grid; place-items: center; border: 1px solid var(--line-3); background: rgba(8, 10, 9, .8); color: var(--text-lo);
+  font-size: max(.13rem, 9px); line-height: 1; cursor: pointer; }
+.lo-wg__clear:hover { color: var(--red-premium); border-color: rgba(255, 84, 84, .5); }
+.lo-wg__hint { margin: 0; font-size: max(.13rem, 9px); line-height: 1.35; }
+
+/* The picker dialog: the roster's own card grid, in a wide modal. */
+.lo-wgpick { display: flex; flex-direction: column; gap: .1rem; min-height: 0; }
+.lo-wgpick__n { font-size: max(.14rem, 10px); white-space: nowrap; }
+.lo-wgpick__n b { color: var(--mint-400); }
+.lo-wgpick__grid { max-height: min(6.4rem, 62vh); overflow-y: auto; padding-right: .04rem; }
+.lo-wgpick__note { margin: 0; font-size: max(.14rem, 10px); }
+.lo-card.is-locked { opacity: .45; cursor: not-allowed; }
