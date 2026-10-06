@@ -123,6 +123,22 @@ function alt(rel, urls, bytes) {
   return a;
 }
 
+/**
+ * The candidate URLs of one research-shaped file entry: `url` | `{ url, mirror?, bytes? }` | an array of candidate URLs
+ * (for a Spine record: candidate folders, the same order for its three files). A research 07 entry names
+ * raw.githubusercontent.com only: the Downloader adds the jsDelivr fallback, and the opt-in gh-proxy in front of it
+ * (--asset-source=mirror, tools/assets/network.mjs). A 外援 entry of tools/assets/waiguan-operators.json names jsDelivr
+ * as `url` and the same file on raw.githubusercontent.com as `mirror`; `mirror` goes first, so every file of the
+ * roster — avatar, portrait, battle Spine (and its atlas pages, spine.mjs) and skill icons — follows the same source
+ * order as a pool operator (docs/DEPLOY.md 国内镜像下载) and `url` stays an explicit fallback.
+ * @param {any} x
+ * @returns {string[]}
+ */
+export function entryUrls(x) {
+  const list = Array.isArray(x) ? x : typeof x === 'string' ? [x] : [].concat(x?.mirror ?? [], x?.url ?? []);
+  return [...new Set(list.filter((u) => typeof u === 'string' && u))];
+}
+
 /** A leaf with the given alternatives (null alternatives are dropped). */
 function leaf(...alts) {
   const list = alts.flat().filter((a) => a && a.urls && a.urls.length);
@@ -262,9 +278,12 @@ export function collectEnemyIds({ assets07, enemies05, maps05, ops03 }) {
  * @param {Record<string, import('./spine.mjs').LocalSpineMeta>} [p.localEnemySpines] metadata of the enemy models the
  *   local client has (the committed tools/assets/local-enemy-spines.json, never the disk): each planned enemy listed
  *   gets `spineLocal` = { group: 'spine/enemy/<id>', ...meta } beside its web `spine`
+ * @param {Record<string, any>} [p.extraOperators] operator asset entries (07-assets.json shape) for characters research
+ *   07 does not list — the 外援 / 甄选 (DIY) roster (tools/assets/waiguan-operators.json, DESIGN §27). Each file is
+ *   tried at its raw.githubusercontent.com `mirror` first, then at its jsDelivr `url` (entryUrls).
  * @returns {{ template: any, models: Map<string, any>, notes: string[] }}
  */
-export function buildPlan({ assets07, ops03, enemies05, maps05, audio, modelsData, extraEnemyIds = [], extraTokenIds = [], extraHandbook = {}, localEnemySpines = {}, voice = null }) {
+export function buildPlan({ assets07, ops03, enemies05, maps05, audio, modelsData, extraEnemyIds = [], extraTokenIds = [], extraHandbook = {}, localEnemySpines = {}, voice = null, extraOperators = {} }) {
   const notes = [];
   /** @type {Map<string, any>} */
   const models = new Map();
@@ -273,8 +292,9 @@ export function buildPlan({ assets07, ops03, enemies05, maps05, audio, modelsDat
   // --- Spine model helpers -------------------------------------------------
   const addModel = (key, def) => { if (!models.has(key)) models.set(key, { key, ...def }); return { model: key }; };
   const fexliModel = (key, kind, dir, rec, skillIndices) => {
-    // rec: 07 { skel:{url,bytes}|url|url[], atlas, png } — arrays are candidate folders (same order for all three)
-    const us = (x) => (Array.isArray(x) ? x : [typeof x === 'string' ? x : x?.url]).filter((v) => typeof v === 'string' && v);
+    // rec: 07 { skel:{url,bytes}|url|url[], atlas, png } — arrays are candidate folders (same order for all three); a
+    // 外援 entry's { url, mirror } adds its raw.githubusercontent.com copy (entryUrls), which baseUrl then names
+    const us = entryUrls;
     const b = (x) => (x && typeof x === 'object' && !Array.isArray(x) ? x.bytes : undefined);
     if (!us(rec?.skel).length || !us(rec?.atlas).length || !us(rec?.png).length) return null;
     const stem = skelStem(us(rec.skel)[0]);
@@ -293,18 +313,29 @@ export function buildPlan({ assets07, ops03, enemies05, maps05, audio, modelsDat
   const skills = {};
   const skillsById = {};
   const unitsSfx = {};
+  // 外援 / 甄选 (DIY) roster (DESIGN §27): the characters data/waiguan.json can field are not in research 07, so their
+  // entries come from the committed tools/assets/waiguan-operators.json. They are merged here and processed by the SAME
+  // loop below (avatar / portrait / battle Spine / skill icons / unit SFX), so an operator of the roster is planned
+  // exactly like a pool operator.
+  const operatorsById = { ...(assets07?.operators || {}), ...extraOperators };
+  // the pool's own characters (research 07): their battle voice is planned below; a 外援 operator has none
   const charIds = Object.keys(assets07?.operators || {}).sort();
-  for (const id of charIds) {
-    const o = assets07.operators[id];
+  for (const id of Object.keys(operatorsById).sort()) {
+    const o = operatorsById[id];
+    // Alternatives: a research 07 entry names raw.githubusercontent.com (the Downloader adds its jsDelivr mirror, and
+    // the opt-in gh-proxy in front); a waiguan-operators.json entry also names its jsDelivr copy, tried after the raw
+    // `mirror` (entryUrls). A network that cannot open raw.githubusercontent.com at all (the machine the roster was
+    // generated on) falls through to jsDelivr; tools/fetch-assets-retry.mjs tries the jsDelivr hosts first there.
+    const urlsOf = entryUrls;
     // DESIGN §16 operator loadouts: any skill of the character can be equipped — the icons, skill SFX and Spine skill
     // clips of every skill index (the pool's primary index first, as before)
     const idx0 = skillIdx.get(id) || [0];
     const idx = [...idx0, ...(o.skills || []).map((k) => k.index).filter((i) => Number.isInteger(i) && i >= 0 && !idx0.includes(i)).sort((a, b) => a - b)];
     const c = {};
-    c.avatar = leaf(alt(`char/avatar/${id}.png`, o.avatar?.e0e1?.url, o.avatar?.e0e1?.bytes));
-    if (o.avatar?.e2?.url) c.avatarE2 = leaf(alt(`char/avatar/${id}_2.png`, o.avatar.e2.url, o.avatar.e2.bytes));
-    c.portrait = leaf(alt(`char/portrait/${id}_1.png`, o.portrait?.e0e1?.url, o.portrait?.e0e1?.bytes));
-    if (o.portrait?.e2?.url) c.portraitE2 = leaf(alt(`char/portrait/${id}_2.png`, o.portrait.e2.url, o.portrait.e2.bytes));
+    c.avatar = leaf(alt(`char/avatar/${id}.png`, urlsOf(o.avatar?.e0e1), o.avatar?.e0e1?.bytes));
+    if (o.avatar?.e2?.url) c.avatarE2 = leaf(alt(`char/avatar/${id}_2.png`, urlsOf(o.avatar.e2), o.avatar.e2.bytes));
+    c.portrait = leaf(alt(`char/portrait/${id}_1.png`, urlsOf(o.portrait?.e0e1), o.portrait?.e0e1?.bytes));
+    if (o.portrait?.e2?.url) c.portraitE2 = leaf(alt(`char/portrait/${id}_2.png`, urlsOf(o.portrait.e2), o.portrait.e2.bytes));
     c.spine = {};
     const front = fexliModel(`op:${id}:front`, 'op', `spine/op/${id}/front/`, o.battleSpine?.front, idx);
     if (front) c.spine.front = front; else notes.push(`${id}: no Front battle Spine in research data`);
@@ -322,7 +353,7 @@ export function buildPlan({ assets07, ops03, enemies05, maps05, audio, modelsDat
       const s = (o.skills || []).find((k) => k.index === i);
       if (!s) { notes.push(`${id}: skill index ${i} missing in research data`); continue; }
       const iconId = s.iconId || s.skillId;
-      if (s.icon?.url && !skills[iconId]) skills[iconId] = leaf(alt(`skill/${safeName(iconId)}.png`, s.icon.url, s.icon.bytes));
+      if (s.icon?.url && !skills[iconId]) skills[iconId] = leaf(alt(`skill/${safeName(iconId)}.png`, entryUrls(s.icon), s.icon.bytes));
       if (s.skillId) skillsById[s.skillId] = iconId;
       const ss = audio.skillBanks.get(s.skillId)?.get('ON_SKILL_START');
       if (ss?.length) skillSfx[String(i)] = soundLeaf(ss);

@@ -16,6 +16,7 @@ npm run assets       # = node tools/vendor.mjs && node tools/fetch-assets.mjs
 | Option | Effect |
 |---|---|
 | `--concurrency=N` | Parallel downloads (default 16). |
+| `--asset-source=M` | `direct` (default) or `mirror`: a GitHub download is first tried once through a prefix proxy (`SP_GITHUB_PROXY`, default `https://gh-proxy.com/`). `SP_ASSET_SOURCE` sets the default. Opt-in only; see [DEPLOY.md](DEPLOY.md)「国内镜像下载」. |
 | `--force` | Re-download everything. |
 | `--offline` | No network. Re-runs post-processing (atlas fixes, skeleton parsing, WOFF2) on what is already on disk, then rebuilds `data/assets.json`. |
 | `--dry-run` | Print the plan (file and model counts, alias notes) and exit. |
@@ -47,11 +48,15 @@ How downloads are fetched:
 - Each source gets 3 attempts with exponential backoff.
 - If `raw.githubusercontent.com` fails, the jsDelivr mirror (`cdn.jsdelivr.net/gh/…`) is tried.
 - There is no mirror for the ArknightsAssets2 `voice` branch, because jsDelivr returns 404 for it.
+- With `--asset-source=mirror`, the prefix proxy comes first: one attempt per URL, then the raw URL and jsDelivr as
+  above. Three proxy failures in a row turn it off for the rest of the run, for the indexes, files and fonts alike
+  (`tools/assets/network.mjs MirrorPolicy`). A job never tries the same source URL twice.
 - A manifest entry with fallbacks (for example an enemy icon that falls back to its base enemy's icon) only moves on to the next alternative after a **definitive 404**. When the primary fails transiently (network error, 5xx or an invalid payload after all retries), no fallback is fetched. The path is listed under `downloadErrors` in the report, and the next run retries the primary.
 - A skeleton that fails to parse is deleted and removed from the ledger, so the next online run downloads it again.
 
-The first run downloads about **327 MiB in about 6,900 files** (of which the operator voice, both languages: ~73 MB in
-2,880 files, and the 55 emote and 玩法说明 files, 21.3 MiB). Without them it was 242 MiB in about 3,700 files, 134 s on a
+The first run downloads about **475 MiB in about 8,000 files** (`data/assets.json` `stats`; of which the operator voice,
+both languages: ~73 MB in 2,880 files, the 55 emote and 玩法说明 files, 21.3 MiB, and the 78 外援 / 甄选 operators of
+DESIGN §27, 126 MiB in 1,082 files). Without voice, emotes and 外援 it was 242 MiB in about 3,700 files, 134 s on a
 ~3 MB/s link. A re-run takes about 1 s.
 
 Outputs:
@@ -97,8 +102,8 @@ The `stem` of a Spine model is the upstream file name. Two examples: `char_107_l
 
 ### Id scope
 
-- **Operators:** all 138 pool charIds from `activity_table` (`charShopChessDatas[*].charId ∪ backupCharId`), including hidden chess and backup operators.
-- **Tokens:** the 20 pool tokens.
+- **Operators:** all 138 pool charIds from `activity_table` (`charShopChessDatas[*].charId ∪ backupCharId`), including hidden chess and backup operators — **plus the 外援 / 甄选 (DIY) roster charIds** (DESIGN §27): 87 candidates, 9 of them pool operators already; the other 78 are not in research 07 and their entries come from the committed `tools/assets/waiguan-operators.json` (see below). 216 operators in all.
+- **Tokens:** the 20 pool tokens, plus every token key of `data/tokens.json` (built by `tools/build-data.mjs`, when present) — the 35 summons of the 外援 roster: their avatar from the default location (34 found), no battle Spine upstream, so 13 of the 55 tokens have a model.
 - **Enemies:** 253 ids planned, 252 in the manifest (心烛 has no assets). The set is the union of:
   - the 07 enemy list;
   - every enemy in the `act1autochess_*` wave, boss and 联防 levels that act2 modes use (from `05-maps.json`; the tutorial is excluded);
@@ -183,6 +188,41 @@ game plays a line — and downloads them from the ArknightsAssets2 `voice` branc
   `LINKAGE` voice uses it in both. 120 of the 138 pool operators have voice: 12 lines each, ~0.26 MB (中文) and
   ~0.34 MB (日文). On request (`--voice=…,en,kr`, from upstream #73): `en` = `EN` (`voice_en/`), `kr` = `KR`
   (`voice_kr/`), the same file names; an operator without that dub has no line in it, a linkage operator keeps its own.
+
+### 外援 / 甄选 operator entries (`tools/assets/waiguan-operators.json`)
+
+Of the 87 6★ operators that `data/waiguan.json` can field (the 甄选 / DIY roster, DESIGN §27), 78 are **not** in
+`docs/research/07-assets.json`, which only covers the mode's shop pool. Their avatar, portrait, battle Spine (Front and
+Back) and skill-icon entries live in the committed `tools/assets/waiguan-operators.json`, in the same shape as a research
+07 operator entry, and `tools/fetch-assets.mjs` merges them into the plan (`buildPlan({ extraOperators })`).
+
+- **URL order.** A research entry names `raw.githubusercontent.com`; `fetch-assets.mjs` adds the jsDelivr mirror
+  as a fallback when the raw URL fails. The roster entries are written the other way round — the entry's `url` is the
+  **jsDelivr mirror** and `mirror` holds the raw URL — because the machine the roster was generated on cannot open
+  `raw.githubusercontent.com` at all. Both files are equivalent, so either order produces the same bytes. The plan
+  (`tools/assets/plan.mjs entryUrls`) lists `mirror` first for every file of an entry — avatar, portrait, battle Spine
+  (and so the atlas pages) and skill icons — so a roster download follows the same order as a pool operator: the prefix
+  proxy when `--asset-source=mirror` is chosen, then raw, then jsDelivr. On a network that cannot open raw at all, the
+  raw attempts fail and jsDelivr answers; `fetch-assets-retry.mjs` (below) tries the jsDelivr hosts first.
+- **Size notes.** Avatar and portrait entries carry the byte counts measured from the mirror (a download that returns a
+  different size is flagged). Spine files carry none: jsDelivr refuses to list these repositories ("Package size exceeded
+  the configured limit of 50 MB"), so there is no authoritative size to record, and the downloader only compares sizes
+  when a file has one.
+- **Regenerating.** `node tools/probe-waiguan-assets.mjs` re-measures the mirror (174 HEADs: avatar + portrait of every
+  candidate, plus an optional `--spine-sample N` model-size sample) into `.cache/waiguan-assets-probe.json`, and
+  `node tools/gen-waiguan-operators.mjs` rebuilds `tools/assets/waiguan-operators.json` from it. Both are run by hand, not
+  by CI, and the generated file is committed like `tools/assets/local-enemy-spines.json`. The generator **skips the 9
+  candidates research 07 already lists** — `plan.mjs` merges `extraOperators` OVER the research entries, so a thinner entry
+  would silently drop the E2 art and skill SFX those entries carry.
+- **Flaky mirror.** The mirror drops large responses (operator Spine pages are 0.4–0.9 MB) now and then, and its host
+  names fail TLS in rotation on some networks (`cdn.jsdelivr.net`, `fastly.jsdelivr.net`, `gcore.jsdelivr.net` and
+  `jsdelivr.b-cdn.net` all serve the same path; measured here: `fastly` failed 100% of the time while the others answered).
+  When `fetch-assets.mjs` leaves files missing it refuses to write a smaller `data/assets.json`;
+  `node tools/fetch-assets-retry.mjs` then downloads **only the files that are missing on disk**, over several rounds with
+  growing timeouts and rotating host names (4 at a time). Run it until it reports none, then run `fetch-assets.mjs` again
+  to write the manifest. It takes the same source choice (`--asset-source=mirror` or `SP_ASSET_SOURCE`, `SP_GITHUB_PROXY`):
+  the proxy copy of a GitHub URL is tried first, once, behind the same circuit breaker, and every download is
+  format-checked like `fetch-assets.mjs` does.
 
 ## Post-processing
 

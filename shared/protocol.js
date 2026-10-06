@@ -2,6 +2,7 @@
 // Every client→server message is `{ t, rid?, ...fields }`. Unknown `t` or invalid fields ⇒ ERR.BAD_MSG.
 
 import { DIFFICULTIES, NAME_MAX_LEN, ROOM_CODE_LEN, MAX_SEATS, DEFAULT_SEATS, EMOTES, GEO } from './constants.js';
+import { WAIGUAN_SLOTS, isWaiguanRecord } from './waiguan.js';
 
 // ---- tiny validators -------------------------------------------------------
 const isInt = (v, lo = -Infinity, hi = Infinity) => Number.isInteger(v) && v >= lo && v <= hi;
@@ -86,6 +87,48 @@ const isLoadoutEntry = (e) => isPlain(e) && Object.keys(e).length > 0 && Object.
 /** Structural check of `room.loadout.entries`. */
 export const isLoadoutEntries = (v) => isMap(v, LOADOUT_LIMITS.entries, isId, isLoadoutEntry);
 
+// ---- 外援 / 甄选 (DIY) picks (DESIGN §27, shared/waiguan.js) -------------------------------------------------
+
+/**
+ * `room.pick { picks }`: the player's four 甄选 (DIY) slots — `picks` = `{ [slotId]: charId | null }` over the room's
+ * slots (`diy5a` / `diy5b` / `diy6a` / `diy6b`, shared/waiguan.js WAIGUAN_SLOTS). Structure only: the semantic check
+ * against data/waiguan.json (a real 6★ candidate, not already carried in another slot of the same tier) is
+ * `checkWaiguanPicks`, used by the server (lobby, match) and by the client to sanitise a stored selection.
+ */
+export const WAIGUAN_PICK_LIMITS = Object.freeze({ picks: 4 });
+export const isWaiguanPicks = (v) => isMap(v, WAIGUAN_PICK_LIMITS.picks, isId, nullable(isId));
+
+/**
+ * Semantic check + normalisation of a 甄选 selection (shared/waiguan.js, DESIGN §27). Every key must be one of the
+ * room's slots and every value a candidate of `data/waiguan.json`; a candidate may not fill two slots OF THE SAME TIER
+ * (two tier V slots are two different pieces of the shop pool, and the pool is keyed by chess id). An empty result is
+ * valid — the four slots then stay empty and unreachable, exactly like a match that never enabled them.
+ * @param {any} picks `room.pick.picks`
+ * @param {any} waiguan data/waiguan.json (null / missing ⇒ only an empty selection is acceptable)
+ * @returns {{ ok: true, picks: Record<string, string> } | { error: 'BAD_MSG'|'BAD_TARGET', detail: string }}
+ */
+export function checkWaiguanPicks(picks, waiguan) {
+  if (picks === undefined || picks === null) return { ok: true, picks: {} };
+  if (!isWaiguanPicks(picks)) return { error: 'BAD_MSG', detail: 'bad waiguan picks' };
+  const slots = WAIGUAN_SLOTS;
+  const candidates = Array.isArray(waiguan?.candidates) ? waiguan.candidates : [];
+  const byChar = new Map(candidates.map((c) => [c && c.charId, c]));
+  const out = {};
+  for (const [slotId, charId] of Object.entries(picks)) {
+    const slot = slots.find((s) => s.slot === slotId);
+    if (!slot) return { error: 'BAD_TARGET', detail: `unknown 甄选 slot ${slotId}` };
+    if (charId == null || charId === '') continue; // an empty slot
+    if (!byChar.has(charId)) return { error: 'BAD_TARGET', detail: `${charId} is not a 甄选 candidate` };
+    for (const [other, taken] of Object.entries(out)) {
+      if (taken !== charId) continue;
+      const otherSlot = slots.find((s) => s.slot === other);
+      if (otherSlot && otherSlot.tier === slot.tier) return { error: 'BAD_TARGET', detail: `${charId} fills two tier ${slot.tier} slots` };
+    }
+    out[slotId] = charId;
+  }
+  return { ok: true, picks: out };
+}
+
 /** Skill indexes a chess record offers (data `skills[]`, DESIGN §16; the default skill alone while data lacks it). */
 function skillIndexesOf(c) {
   if (!c || typeof c !== 'object') return [];
@@ -134,6 +177,12 @@ export function loadoutOptions(base, golden = null) {
  * Semantic check + normalisation of a loadout against the game data (DESIGN §16). Strict: any unknown / hidden / elite
  * chess id, illegal skill index or module rejects the whole loadout. Entries equal to the defaults are dropped, the
  * rest are stored complete: `{ skill, module }` (module null for a chess without an elite record).
+ *
+ * A 外援 / 甄选 (DIY) operator the player picked IS a valid target (DESIGN §27): its record carries full combat data and
+ * the screen offers its skills and module like any other chess. Only the four empty SLOT TEMPLATES of data/chess.json are
+ * refused (shared/waiguan.js isWaiguanRecord tells them apart) — and since the caller's `getChess` only knows the records
+ * it was given, an operator the player does not field stays `unknown chess` (the lobby builds it from that player's picks,
+ * a match from the same picks through its GameData patch).
  * @param {any} entries `room.loadout.entries`
  * @param {(id: string) => any} getChess chess record lookup (normal and golden ids)
  * @returns {{ ok: true, loadout: Record<string, { skill: number, module: string|null }> } | { error: 'BAD_MSG'|'BAD_TARGET', detail: string }}
@@ -144,7 +193,7 @@ export function checkLoadout(entries, getChess) {
   for (const id of Object.keys(entries)) {
     const e = entries[id];
     const base = typeof getChess === 'function' ? getChess(id) : null;
-    if (!base || base.isGolden || base.visible === false || base.isHidden || base.isDiy || (base.baseId && base.baseId !== id)) {
+    if (!base || base.isGolden || base.visible === false || base.isHidden || (base.isDiy && !isWaiguanRecord(base)) || (base.baseId && base.baseId !== id)) {
       return { error: 'BAD_TARGET', detail: `unknown chess ${id}` };
     }
     const golden = base.goldenId ? getChess(base.goldenId) || null : null;
@@ -276,6 +325,9 @@ export const C2S = {
   'room.start': {},
   // operator loadout (DESIGN §16): stored per session/seat; accepted until the match leaves INFO_CHECK
   'room.loadout': { entries: isLoadoutEntries },
+  // 外援 / 甄选 (DIY) slots (DESIGN §27): the 6★ operators this player brings in from outside the shop pool, one per
+  // slot; stored per session/seat like the loadout and accepted until the shop pool of a match is built
+  'room.pick': { picks: isWaiguanPicks },
   // spectator seats (remake feature, community report #26; MAX_SPECTATORS): take one of a co-op room's spectator seats —
   // in its lobby or while its match runs — never a player seat; the host frees one by playerId (the spectator gets
   // room.closed { reason: 'kicked' }). room.leave / g.leave leave a spectator seat like a player seat. The room Worker
@@ -283,6 +335,11 @@ export const C2S = {
   // (worker/rooms/spectators.js); the Node server's lobby answers ROOM_NOT_FOUND without one.
   'room.spectate': { code: (v) => isStr(v, ROOM_CODE_LEN + 2) && /^[A-Za-z0-9]+$/.test(v), $optional: ['code'] },
   'room.removeSpectator': { playerId: isId },
+  // 匹配 (matchmaking queue, a remake feature): wait for other players instead of collecting a 4-letter key by hand.
+  // The server groups the waiting players into a fresh 同盟 room once enough are there (or a short grace runs out) and
+  // fills the seats it could not fill with AI teammates.
+  'queue.join': { difficulty: (v) => DIFFICULTIES.includes(v) },
+  'queue.leave': {},
 
   // match
   'g.infoReady': {},
@@ -335,6 +392,9 @@ export const C2S = {
 export const S2C = [
   'welcome', 'ok', 'error', 'pong',
   'room.state', 'room.closed',
+  // 匹配 (matchmaking): the queue the player is waiting in (`queue.status`), and the room the server put it in
+  // (`queue.matched` → the client sends room.join with that code like any other room code).
+  'queue.status', 'queue.matched',
   'm.public', 'm.private', 'm.field', 'm.toast', 'm.ticker', 'm.emote', 'm.result',
   // m.unitStats { seq, round, units: [unitStatsEntry] } — the answer to g.unitStats (the requester only)
   'm.unitStats',

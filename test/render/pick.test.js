@@ -8,7 +8,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { presetCamera, pickTile } from '../../public/js/render/projection.js';
-import { pickOnTile, pickBattle, ENEMY_REACH, AREA_PICK, hitRectAt } from '../../public/js/render/pick.js';
+import { pickOnTile, pickBattle, pickBody, BODY_HALF_W, ENEMY_REACH, AREA_PICK, hitRectAt } from '../../public/js/render/pick.js';
 import { hitRect } from '../../server/sim/body.js';
 import { unitDepthKey } from '../../public/js/render/units.js';
 import { TILE_H } from '../../public/js/render/style.js';
@@ -183,5 +183,24 @@ describe('pickBattle: allies by their tile, walking enemies by their ground posi
   test('bad input: nothing', () => {
     assert.equal(pickBattle(null, at(1, 1), 0, 0), null);
     assert.equal(pickBattle([null, foe('x', NaN, 1), { key: 'y', tile: null, x: 1, y: 1, fly: true, body: { x: 1, top: 0, feet: 1, s: 0 } }], at(1, 1), 1, 1), null);
+  });
+});
+
+describe('pickBody: a finger on an empty tile picks the body drawn over it', () => {
+  // two units standing one behind the other: the front one's head is drawn over the back one's (empty) tile row
+  const front = { tile: { row: 9, col: 3 }, depth: 20, body: { x: 100, top: 40, feet: 100, s: 50 } };
+  const back = { tile: { row: 10, col: 3 }, depth: 10, body: { x: 110, top: 0, feet: 60, s: 45 } };
+  test('inside the upright box (BODY_HALF_W tile either side of the feet, feet to head), front-most first', () => {
+    assert.equal(BODY_HALF_W, 0.4);
+    assert.equal(pickBody([front, back], 100, 70), front);
+    assert.equal(pickBody([back, front], 105, 50), front, 'both hold the point: the front-most');
+    assert.equal(pickBody([front, back], 110, 20), back, 'above the front one\'s head');
+    assert.equal(pickBody([front, back], 100 + 0.41 * 50, 70), null, 'beside the body');
+    assert.equal(pickBody([front, back], 100, 101), null, 'below the feet');
+  });
+  test('garbage-safe', () => {
+    assert.equal(pickBody(null, 1, 1), null);
+    assert.equal(pickBody([null, {}, { body: { x: NaN, top: 0, feet: 1, s: 1 } }], 0, 0.5), null);
+    assert.equal(pickBody([front], NaN, 70), null);
   });
 });

@@ -257,6 +257,35 @@ describe('AudioManager', () => {
       globalThis.fetch = origFetch;
     }
   });
+  test('phone audit T5: navigator.audioSession becomes "playback" before the context exists (the iPhone silent switch no longer mutes everything)', () => {
+    const fw = fakeWindow();
+    const session = { type: 'auto' };
+    const seen = [];
+    const Base = fw.win.AudioContext;
+    fw.win.AudioContext = class extends Base { constructor() { super(); seen.push(session.type); } };
+    fw.win.navigator = { audioSession: session };
+    const a = new AudioManager({ win: fw.win, getManifest: () => null });
+    a.install();
+    assert.equal(session.type, 'auto', 'not before the first gesture');
+    fw.fire('pointerdown');
+    assert.equal(a.unlocked, true);
+    assert.deepEqual(seen, ['playback'], 'already "playback" when the AudioContext is created');
+    assert.equal(session.type, 'playback');
+  });
+  test('audioSession: absent (every browser but iOS 16.4+ Safari) or throwing never breaks the unlock', () => {
+    const none = fakeWindow();
+    none.win.navigator = {};
+    const a = new AudioManager({ win: none.win, getManifest: () => null });
+    a.install();
+    none.fire('pointerdown');
+    assert.equal(a.unlocked, true);
+    const bad = fakeWindow();
+    bad.win.navigator = { audioSession: Object.defineProperty({}, 'type', { get: () => 'auto', set() { throw new TypeError('read-only'); } }) };
+    const b = new AudioManager({ win: bad.win, getManifest: () => null });
+    b.install();
+    assert.doesNotThrow(() => bad.fire('pointerdown'));
+    assert.equal(b.unlocked, true, 'the context is created anyway');
+  });
   test('a file that cannot be fetched or decoded plays nothing and is logged once', async (t) => {
     t.mock.timers.enable({ apis: ['setTimeout'] });
     const warn = t.mock.method(console, 'warn', () => {});

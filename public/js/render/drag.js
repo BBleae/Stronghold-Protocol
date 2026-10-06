@@ -99,13 +99,17 @@ const DEFAULTS = { threshold: 6, touchThreshold: 10, longPressMs: 480 };
  *   isOverCanvas?: (clientX, clientY) => boolean, // false when DOM UI covers the point (default true)
  *   canPlace?: (piece, row, col, target) => boolean,
  *   emit: (name, payload) => void,
- *   setTimeout?, clearTimeout?, threshold?, touchThreshold?, longPressMs?
+ *   setTimeout?, clearTimeout?, nextFrame?, threshold?, touchThreshold?, longPressMs?
  * }} hooks
  */
 export function createDragController(hooks) {
   const h = { ...DEFAULTS, ...hooks };
   const setT = h.setTimeout || ((fn, ms) => setTimeout(fn, ms));
   const clearT = h.clearTimeout || ((id) => clearTimeout(id));
+  // the long press is decided at the next frame: a finger lifted while the page was busy (a slow phone's long frame) is
+  // delivered at the start of that frame, before its animation callbacks — a tap, not a long press (which opened the
+  // detail instead of selecting the unit)
+  const nextFrame = h.nextFrame || (typeof requestAnimationFrame === 'function' ? (fn) => requestAnimationFrame(fn) : (fn) => fn());
   let editable = false;
   let canPlace = typeof h.canPlace === 'function' ? h.canPlace : null;
   /** @type {null | { mode: 'pressed'|'dragging'|'held', pointerId, pointerType, piece, from, sx, sy, timer }} */
@@ -198,9 +202,12 @@ export function createDragController(hooks) {
         st.timer = setT(() => {
           if (st !== snapshot || st.mode !== 'pressed') return;
           st.timer = null;
-          st.mode = 'held';
-          emit('pieceClick', { uid: piece.uid, piece, button: 0, detail: true, clientX: snapshot.cx, clientY: snapshot.cy });
-          emit('pieceDetail', { uid: piece.uid, piece, clientX: snapshot.cx, clientY: snapshot.cy });
+          nextFrame(() => {
+            if (st !== snapshot || st.mode !== 'pressed') return;
+            st.mode = 'held';
+            emit('pieceClick', { uid: piece.uid, piece, button: 0, detail: true, clientX: snapshot.cx, clientY: snapshot.cy });
+            emit('pieceDetail', { uid: piece.uid, piece, clientX: snapshot.cx, clientY: snapshot.cy });
+          });
         }, h.longPressMs);
       }
       return true;

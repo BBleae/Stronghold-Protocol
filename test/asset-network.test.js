@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -80,6 +81,20 @@ test('downloader uses proxy, validates payload, falls back, and skips existing f
   assert.deepEqual(calls, [PROXY, RAW]);
   assert.equal((await dl.run([job])).get(job.rel).status, 'skip');
   assert.equal(calls.length, 2);
+});
+
+// A 外援 roster entry (tools/assets/waiguan-operators.json, plan.mjs entryUrls) lists raw and its jsDelivr copy as two
+// candidates: the jsDelivr copy is also the raw URL's own fallback, and is tried once, not twice.
+test('a job listing raw and its jsDelivr copy tries each source once, after the proxy in mirror mode', async (t) => {
+  for (const [source, expected] of [['direct', [RAW, CDN]], ['mirror', [PROXY, RAW, CDN]]]) {
+    const dir = await fixture(t);
+    const calls = [];
+    const dl = new Downloader({ root: dir, ledgerPath: join(dir, 'ledger.json'), source, retries: 1, backoffMs: 0, log: quiet,
+      fetchImpl: async (url) => { calls.push(url); return new Response('down', { status: 503 }); } });
+    const job = { rel: 'a.json', urls: [RAW, CDN], kind: 'json' };
+    assert.equal((await dl.run([job])).get(job.rel).status, 'error');
+    assert.deepEqual(calls, expected, source);
+  }
 });
 
 test('proxy provenance is recognized as the primary asset, not a fallback asset', async (t) => {
@@ -373,5 +388,20 @@ test('setup and asset CLI document and validate source options before doing work
     const invalid = spawnSync(process.execPath, [script, '--asset-source=invalid'], { encoding: 'utf8' });
     assert.notEqual(invalid.status, 0);
     assert.match(invalid.stderr, /unknown asset source/);
+  }
+});
+
+// tools/fetch-assets-retry.mjs (the 外援 PR's download-only helper) takes the same source choice as fetch-assets: the
+// option or SP_ASSET_SOURCE, checked before any work, and the gh-proxy copies go through the shared MirrorPolicy.
+test('fetch-assets-retry takes --asset-source / SP_ASSET_SOURCE like fetch-assets and checks it before doing work', () => {
+  const script = 'tools/fetch-assets-retry.mjs';
+  for (const [args, env] of [[['--asset-source=invalid'], {}], [['--asset-source', 'auto'], {}], [[], { SP_ASSET_SOURCE: 'auto' }]]) {
+    const r = spawnSync(process.execPath, [script, ...args], { encoding: 'utf8', env: { ...process.env, ...env } });
+    assert.notEqual(r.status, 0, JSON.stringify(args));
+    assert.match(r.stderr, /unknown asset source/);
+  }
+  const src = readFileSync(script, 'utf8');
+  for (const needle of ['new MirrorPolicy(', 'githubProxyUrl(', 'network.request(', 'network.readBody(', 'network.failed(', 'validate(job.kind']) {
+    assert.ok(src.includes(needle), needle);
   }
 });

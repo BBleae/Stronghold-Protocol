@@ -121,7 +121,7 @@ import { isClientCombat, observeTarget, teammateProgress, cameraLayers, layerCam
 import { screenStrip, playerBonds, playerLayer, detailBondOwner, toggleBond, popupView } from '../ui/watchBonds.js';
 import { data, localAsset, getChess, getMode } from '../data.js';
 import { audio, unitSoundClass } from '../audio.js';
-import { useDocClass, FullscreenButton } from '../ui/device.js';
+import { useDocClass, useWakeLock, FullscreenButton } from '../ui/device.js';
 
 const cx = (...p) => p.flat().filter(Boolean).join(' ');
 const HUD_HZ_MS = 200;
@@ -211,6 +211,7 @@ function PausedOverlay({ canResume, busy, onResume, onExit }) {
 
 function MatchScreen() {
   useDocClass('sp-in-match');
+  useWakeLock();   // the player mostly watches a battle: the phone must not dim and lock (the socket dies with it)
   const pub = useStore((s) => s.match.public);
   const priv = useStore((s) => s.match.private);
   const field = useStore((s) => s.match.field);
@@ -684,7 +685,9 @@ function MatchScreen() {
     if (phase !== PHASE.PREP && penRef.current.on) togglePenRef.current(false);
     // a battle unit's panel (live HP of a unit of the fight that just ended) never outlives its battle
     if (!isCombatPhase(phase) && phase !== PHASE.SETTLE) setDetail((d) => (d?.kind === 'unit' ? null : d));
-    if (isCombatPhase(phase)) { setCollapsed(false); setDrag(null); view?.highlightTiles(null, null); }
+    // a shop card's / item's detail belongs to the prep it was opened in: on a phone it kept covering the left of the
+    // battlefield through the fight (phone audit S6)
+    if (isCombatPhase(phase)) { setCollapsed(false); setDrag(null); view?.highlightTiles(null, null); setDetail((d) => (d?.kind === 'chess' || d?.kind === 'item' ? null : d)); }
     setSel(null);
     if (phase !== PHASE.PREP) setRewardMin(false);
     setSpBusy(null);

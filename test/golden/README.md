@@ -59,9 +59,23 @@ node tools/golden.mjs --twice                   # determinism: the corpus twice 
 ## This fork
 
 The digests in this directory are the fork's own (BBleae/Stronghold-Protocol), regenerated after merging upstream
-0.1.4. They differ from upstream's files only in client effect counts (`events.fx` and the `fx` kinds) of 31 scenarios
-(roster 13, bonds 5, fields 13; no match): the fork's sim sends extra cosmetic effect events and parameters (fork
-commit 6d5c094, PR #5 — `snowTiles`, `motes`, the 同盟支援 `link`, `shell` → `helmShell`, `beam` → `sentryRecall`).
-Every gameplay field (units, enemies, players, hooks, `rngDraws`, `snaps`, all 16 matches) equals upstream's. After
-each upstream merge, run `npm run golden:update` and compare with upstream's files (`git show
-MERGE_HEAD:test/golden/<family>.json`): a moved value outside `events.fx` / `fx` is a merge bug, not a fork difference.
+0.1.4 and then fork PRs #15–#17. They differ from upstream's files in two ways, and in no other:
+
+- **Client effect counts** (`events.fx` and the `fx` kinds) of 31 scenarios (roster 13, bonds 5, fields 13): the fork's
+  sim sends extra cosmetic effect events and parameters (fork commit 6d5c094, PR #5 — `snowTiles`, `motes`, the
+  同盟支援 `link`, `shell` → `helmShell`, `beam` → `sentryRecall`). Every gameplay field of the roster, bonds and
+  fields families (units, enemies, players, hooks, `rngDraws`, `snaps`) equals upstream's.
+- **3 of the 16 matches** — `solo-HARD-2`, `coop4-FUNNY-6`, `coop2-ABYSS-10-boosted` — since fork PR #17 (外援干员 /
+  甄选, DESIGN §27): every bot seat brings its own 甄选 picks (`botWaiguanPicks` in `server/match/Match.js`), which puts
+  that seat's private pool entries from `data/waiguan.json` into the match (all bots of a match pick alike and an entry
+  has one owner, so only the first bot's entries are accepted — DESIGN §27 Known gaps), and two bot shop heuristics
+  count those entries (`server/match/bot.js`: `refreshValue`'s copy total and `bondPoolStats`' supply include every
+  private entry, a teammate's too). So the bots refresh, buy and field their bonds a little differently: different `rng.shop` /
+  `rng.bots` / `rng.meta` counts, boards and bond layers, and `solo-HARD-2` now ends in an elimination in round 13
+  instead of a victory. No 甄选 chess reaches a board in these matches. With `data/waiguan.json` left out of the data
+  (or with those two heuristics skipping private entries) all 16 matches equal upstream's again.
+
+After each merge, run `npm run golden:update` and compare with upstream's files (`git show
+<upstream commit>:test/golden/<family>.json`): a moved value outside `events.fx` / `fx`, or in a match other than the
+three above, is a merge bug unless a fork change explains it — check by rerunning the moved scenarios with that change
+left out, then record the cause here.

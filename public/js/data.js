@@ -33,6 +33,9 @@ export const DATA_FILES = Object.freeze({
   choices: 'choices.json',
   config: 'config.json',
   assets: 'assets.json',
+  // 外援 / 甄选 (DIY) roster (DESIGN §27): the 6★ operators outside the shop pool, at both DIY tiers. Loaded on demand
+  // (the 甄选 picker and the 干员调配 screen), or with the rest of the match files once the player is in a room.
+  waiguan: 'waiguan.json',
   // Optional art extracted from a local game client (DESIGN §13): { groups: { '<subdir>': { name: { path, w, h } } } }.
   // The emotes and the 玩法说明 pages are in data/assets.json too (downloaded from the mirror): artUrls().
   local: 'local-assets.json',

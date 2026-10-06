@@ -215,7 +215,8 @@ function legacyInvariants(m) {
     assert.ok(e.left >= 0 && e.left <= e.cap, `pool ${base} left ${e.left} cap ${e.cap}`);
     assert.equal(e.left + (held.get(base) || 0), e.cap, `pool accounting ${base}: left ${e.left} + held ${held.get(base) || 0} != cap ${e.cap}`);
   }
-  for (const [base, n] of held) if (!pool.has(base)) assert.equal(n, 0, `non-pool chess ${base} holds copies`);
+  // any entry counts — a player's own 甄选 entry too (pool.has(base) without a player asks the SHARED pool only)
+  for (const [base, n] of held) if (!pool.entries.has(base)) assert.equal(n, 0, `non-pool chess ${base} holds copies`);
   return true;
 }
 

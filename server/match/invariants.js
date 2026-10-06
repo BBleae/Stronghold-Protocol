@@ -2,7 +2,8 @@
 // (test/match/harness.js checkInvariants asserts the list is empty) and by tools/matchrun.mjs --check sweeps.
 //
 // collectViolations(m) → string[] (empty when every invariant holds):
-//   pool     cap = gd.poolCopies(base, seats) (5–8 seats scale it); 0 ≤ left ≤ cap and left + Σ copies held by
+//   pool     cap = gd.poolCopies(base, seats) (5–8 seats scale it; a player's own 甄选 entry: WAIGUAN_POOL_COPIES of its
+//            tier); 0 ≤ left ≤ cap and left + Σ copies held by
 //            pieces == cap per base chess; non-pool chess hold 0 copies
 //   economy  funds / pendingFunds non-negative integers, LP finite, shop level in range, prices ≥ 0
 //   pieces   unique uids; hand 10 / temp 5 slots; chess carry ≤ equipPerChess known items; a normal piece holds ≤ 1
@@ -20,6 +21,7 @@
 import { PHASE, BOND_LAYER_CAP } from '../../shared/constants.js';
 import { FIELD, canPlace, placeClass, positionClass, parseKey } from './board.js';
 import { computeBonds } from './bondsMeta.js';
+import { WAIGUAN_POOL_COPIES } from '../../shared/waiguan.js';
 
 const PHASES = new Set(Object.values(PHASE));
 
@@ -167,12 +169,16 @@ export function collectViolations(m, { limit = 25 } = {}) {
   // the copies per chess were sized for the match's seats at its start (1–4 official, 5–8 × seats / 4: gamedata.js)
   const seats = Array.isArray(m.order) ? m.order.length : undefined;
   for (const [base, e] of m.pool.entries) {
-    if (typeof gd.poolCopies === 'function' && e.cap !== gd.poolCopies(base, seats)) fail(`pool ${base}: cap ${e.cap} != ${gd.poolCopies(base, seats)} for ${seats} seats`);
+    if (e.owner != null) {
+      // a player's own 甄选 entry (pool.js addOwned): the official per-tier copies, never scaled by the seats
+      if (e.cap !== WAIGUAN_POOL_COPIES[e.tier]) fail(`pool ${base}: own entry of ${e.owner} cap ${e.cap} != ${WAIGUAN_POOL_COPIES[e.tier]} (tier ${e.tier})`);
+    } else if (typeof gd.poolCopies === 'function' && e.cap !== gd.poolCopies(base, seats)) fail(`pool ${base}: cap ${e.cap} != ${gd.poolCopies(base, seats)} for ${seats} seats`);
     if (!(e.left >= 0 && e.left <= e.cap)) fail(`pool ${base}: left ${e.left} cap ${e.cap}`);
     const h = held.get(base) || 0;
     if (e.left + h !== e.cap) fail(`pool ${base}: left ${e.left} + held ${h} != cap ${e.cap}`);
   }
-  for (const [base, n] of held) if (!m.pool.has(base) && n !== 0) fail(`non-pool chess ${base} holds ${n} copies`);
+  // any entry counts — a player's own 甄选 entry too (pool.has(base) without a player asks the SHARED pool only)
+  for (const [base, n] of held) if (!m.pool.entries.has(base) && n !== 0) fail(`non-pool chess ${base} holds ${n} copies`);
 
   // combat fields
   if (m.phase === PHASE.COMBAT) {

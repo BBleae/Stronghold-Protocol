@@ -230,6 +230,17 @@ function wireNet() {
   net.on('replaced', () => toast('该身份已在其他页面登录，本页已断开', 'warn', { ttl: 6000 }));
   net.on('unhandledError', (err) => toastError(err));
   net.on('room.state', onRoomState);
+  // 匹配 (matchmaking queue): the queue the player waits in, and the room the server put it in
+  net.on('queue.status', (msg) => {
+    store.set({ queue: { ...payload(msg), matched: null } });
+    // the account Worker's queue could not open its group's room (room-net.js; the Node server sends an error frame)
+    if (msg.error) toastError(msg.error);
+  });
+  net.on('queue.matched', (msg) => {
+    // `expect`: the humans a matched host waits for before AI teammates take the free seats (account mode only)
+    store.patch('queue', { matched: { code: msg.code, difficulty: msg.difficulty, seated: !!msg.seated,
+      expect: Number.isInteger(msg.expect) ? msg.expect : 0 } });
+  });
   net.on('room.closed', (msg) => {
     // A match that ended with a result to show (spectators get it after room.closed: worker/rooms/spectators.js) stays on
     // screen for its final view and result; the result screen leads back to the lobby. Anything else leaves at once.
@@ -266,18 +277,32 @@ function wireNet() {
     if (s.room && !prev.room) warmGameData();
     // an approved join application enters the room from any page: the account pages give way to it
     if (s.room && !prev.room && s.ui.accountPage) store.patch('ui', { accountPage: null });
+    // 匹配: the queue put this player in a room — join it like a deep link would (once, while not already inside)
+    if (s.queue.matched && s.queue.matched !== (prev.queue && prev.queue.matched) && s.queue.matched.seated) {
+      const code = s.queue.matched.code;
+      if (!s.room) {
+        store.patch('ui', { pendingJoin: code });
+        schedulePendingJoin();
+      }
+    }
   });
 }
 
 /**
  * Download every data file of the match UI (gameComponents GAME_FILES: operators, skills, bonds, items, enemies, 特质 …)
- * in the background once the player is in a room — a match is near (the lobby alone never downloads them). The game's
+ * and the render engine's scripts in the background once the player is in a room — a match is near (the lobby alone never downloads them). The game's
  * texts are static data loaded once per page — never fetched during a match — and the match screen waits for these
  * files, so with them warmed it opens at once and no text ever appears late (user playtest #3 item 9). Idempotent (the
  * data store shares each file's promise).
  */
 function warmGameData() {
-  const go = () => { data.loadAll(GAME_FILES).catch(() => {}); };
+  const go = () => {
+    data.loadAll(GAME_FILES).catch(() => {});
+    // the render engine too (its module graph + Pixi / pixi-spine): on a phone link the match's first field otherwise
+    // waits for them (ui/fieldHost.js) — the 3D board's art stays lazy, it upgrades the 2D board when it lands
+    import('./render/app.js').then((m) => m.ensurePixi?.()).catch(() => {});
+    import('./assets.js').catch(() => {});
+  };
   if (typeof globalThis.requestIdleCallback === 'function') globalThis.requestIdleCallback(go, { timeout: 2500 });
   else setTimeout(go, 600);
 }

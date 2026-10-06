@@ -18,8 +18,8 @@ import { pngSize, isCompletePng, isMp3, validate } from '../tools/assets/formats
 import { encodeWoff2, decodeWoff2Tables, readSfnt, uintBase128 } from '../tools/assets/woff2.mjs';
 import { assetToPath, pickUnitSfx, indexAudio } from '../tools/assets/audio.mjs';
 import { parseVoiceLangs, indexCharWords, voiceLines, VOICE_ROLES } from '../tools/assets/voice.mjs';
-import { mirrorUrl, safeName, encodePath } from '../tools/assets/sources.mjs';
-import { collectEnemyIds, skillIndicesByChar, buildPlan, GUIDE_PAGES, UI_EXTRAS } from '../tools/assets/plan.mjs';
+import { mirrorUrl, safeName, encodePath, downloadUrls } from '../tools/assets/sources.mjs';
+import { collectEnemyIds, skillIndicesByChar, buildPlan, entryUrls, GUIDE_PAGES, UI_EXTRAS } from '../tools/assets/plan.mjs';
 import { resolveTemplate, collectLeaves } from '../tools/assets/manifest.mjs';
 import { spineEntry } from '../public/js/assets.js';
 import { EMOTE_CATALOG, emoteArtGroup } from '../shared/constants.js';
@@ -467,6 +467,77 @@ describe('downloader (fake network)', () => {
     assert.ok(readFileSync(join(dir, 'out', 'g.png')).equals(PNG), '404 primary → fallback used');
     assert.equal(existsSync(join(dir, 'out', 'f.png')), false, 'transient failure → no fallback on the primary path');
     assert.equal(calls.filter((u) => u.endsWith('fallback.png')).length, 1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The 外援 / 甄选 roster (DESIGN §27) is planned from tools/assets/waiguan-operators.json, whose entries name jsDelivr as
+// `url` and the raw.githubusercontent.com copy as `mirror`. Every file of an entry — not only the avatar and portrait —
+// lists the raw copy first, so the downloads follow the same source order as a pool operator: the opt-in gh-proxy
+// (--asset-source=mirror, upstream #24), then raw, then jsDelivr (docs/DEPLOY.md 国内镜像下载).
+describe('外援 roster asset entries (tools/assets/waiguan-operators.json)', () => {
+  const plan = (extraOperators) => buildPlan({ assets07: {}, ops03: {}, enemies05: {}, maps05: {}, audio: indexAudio({}), modelsData: {}, extraOperators });
+  const RAWGH = 'https://raw.githubusercontent.com/';
+  const JSD = 'https://cdn.jsdelivr.net/gh/';
+
+  test('entryUrls: a research entry keeps its URL(s); a roster entry lists `mirror` (raw) before `url` (jsDelivr)', () => {
+    assert.deepEqual(entryUrls('u'), ['u']);
+    assert.deepEqual(entryUrls({ url: 'u', bytes: 3 }), ['u']);
+    assert.deepEqual(entryUrls(['a', 'b', 'a']), ['a', 'b'], 'candidate folders, in order');
+    assert.deepEqual(entryUrls({ url: 'j', mirror: 'r' }), ['r', 'j']);
+    assert.deepEqual(entryUrls({ url: 'j', mirror: ['r1', 'r2'] }), ['r1', 'r2', 'j']);
+    assert.deepEqual(entryUrls(null), []);
+    assert.deepEqual(entryUrls({ url: '', mirror: null }), []);
+  });
+
+  test('avatar, portrait, battle Spine (and its atlas pages) and skill icons: raw first, jsDelivr next, the gh-proxy in front when chosen', () => {
+    const f = (repo, path) => ({ url: `${JSD}${repo}@main/${path}`, mirror: `${RAWGH}${repo}/main/${path}` });
+    const sp = (side, ext) => f('fexli/ArknightsResource', `spine/char_9999_x/char_9999_x/${side}/char_9999_x.${ext}`);
+    const entry = {
+      avatar: { e0e1: { ...f('yuanyan3060/ArknightsGameResource', 'avatar/char_9999_x.png'), bytes: 10 } },
+      portrait: { e0e1: f('yuanyan3060/ArknightsGameResource', 'portrait/char_9999_x_1.png') },
+      battleSpine: { front: { skel: sp('Front', 'skel'), atlas: sp('Front', 'atlas'), png: sp('Front', 'png') } },
+      skills: [{ index: 0, skillId: 'skchr_x_1', iconId: 'skchr_x_1', icon: f('yuanyan3060/ArknightsGameResource', 'skill/skill_icon_skchr_x_1.png') }],
+    };
+    const p = plan({ char_9999_x: entry });
+    const both = (x) => [x.mirror, x.url];
+    const av = p.template.chars.char_9999_x.avatar.alts[0];
+    assert.deepEqual(av.urls, both(entry.avatar.e0e1));
+    assert.equal(av.bytes, 10);
+    assert.deepEqual(p.template.chars.char_9999_x.portrait.alts[0].urls, both(entry.portrait.e0e1));
+    assert.deepEqual(p.template.skills.skchr_x_1.alts[0].urls, both(entry.skills[0].icon));
+    const m = p.models.get('op:char_9999_x:front');
+    assert.deepEqual(m.skel.urls, both(sp('Front', 'skel')));
+    assert.deepEqual(m.atlas.urls, both(sp('Front', 'atlas')));
+    assert.deepEqual(m.pngs[0].urls, both(sp('Front', 'png')));
+    assert.equal(m.skel.rel, 'spine/op/char_9999_x/front/char_9999_x.skel', 'the same files as before: only the URL order changed');
+    assert.equal(m.baseUrl, `${RAWGH}fexli/ArknightsResource/main/spine/char_9999_x/char_9999_x/Front/`, 'atlas pages: the raw folder (spine.mjs adds the others)');
+    // what the Downloader makes of the first candidate (tools/assets/network.mjs → sources.mjs downloadUrls)
+    assert.deepEqual(downloadUrls(m.skel.urls[0], { source: 'mirror' }), [`https://gh-proxy.com/${m.skel.urls[0]}`, m.skel.urls[0], m.skel.urls[1]]);
+    assert.deepEqual(downloadUrls(m.skel.urls[0]), [m.skel.urls[0], m.skel.urls[1]]);
+  });
+
+  test('the committed roster file: every operator\'s files have a raw.githubusercontent.com first candidate and a jsDelivr one', () => {
+    const roster = readJson('tools/assets/waiguan-operators.json').operators;
+    const ids = Object.keys(roster);
+    assert.ok(ids.length > 0);
+    const p = plan(roster);
+    const check = (urls, what) => {
+      assert.ok(urls[0].startsWith(RAWGH), `${what}: ${urls[0]}`);
+      assert.ok(urls.some((u) => u.startsWith(JSD)), `${what}: a jsDelivr candidate`);
+    };
+    for (const id of ids) {
+      const c = p.template.chars[id];
+      check(c.avatar.alts[0].urls, `${id}.avatar`);
+      check(c.portrait.alts[0].urls, `${id}.portrait`);
+      for (const side of ['front', 'back']) {
+        const m = p.models.get(`op:${id}:${side}`);
+        if (!m) { assert.equal(side, 'back', `${id}: a Front model`); continue; }
+        for (const a of [m.skel, m.atlas, ...m.pngs]) check(a.urls, a.rel);
+        assert.ok(m.baseUrl.startsWith(RAWGH), m.baseUrl);
+      }
+      for (const s of roster[id].skills || []) if (s.icon?.url) check(p.template.skills[s.iconId || s.skillId].alts[0].urls, `${id} ${s.skillId}`);
+    }
   });
 });
 

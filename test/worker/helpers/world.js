@@ -16,7 +16,7 @@ import { bundleWorker } from '../../../tools/build-worker.mjs';
 import { createAccountHarness, productionLimits } from './account-harness.js';
 
 const fixture = (bundle) => `
-import worker, { SiteDirectory, AccountDurableObject, RoomDurableObject as ProductionRoom, MatchArchive }
+import worker, { SiteDirectory, AccountDurableObject, RoomDurableObject as ProductionRoom, MatchArchive, Matchmaker }
   from ${JSON.stringify(bundle.replaceAll('\\', '/'))};
 import { hash } from './worker/accounts/auth.js';
 
@@ -121,7 +121,7 @@ export class RoomDurableObject extends ProductionRoom {
     }
   }
 }
-export { AccountDurableObject, MatchArchive };
+export { AccountDurableObject, MatchArchive, Matchmaker };
 
 export default {
   async fetch(request, env) {
@@ -177,7 +177,7 @@ export async function createWorld(t, { bindings = {} } = {}) {
   const bundle = path.join(dir, 'worker.mjs');
   await bundleWorker({ outfile: bundle });
   const durableObjects = Object.fromEntries([['SITES', 'TestObject'], ['ACCOUNTS', 'AccountDurableObject'],
-    ['ROOMS', 'RoomDurableObject'], ['MATCH_ARCHIVES', 'MatchArchive']]
+    ['ROOMS', 'RoomDurableObject'], ['MATCH_ARCHIVES', 'MatchArchive'], ['MATCHMAKER', 'Matchmaker']]
     .map(([binding, className]) => [binding, { className, useSQLite: true }]));
   const h = await createAccountHarness(fixture(bundle), { durableObjects, ratelimits: productionLimits, bindings });
   t.after(() => h.dispose());

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- no action bar, the game's dark background behind the WebView while it loads (values-v28: into the cutout) -->
+    <style name="Theme.Stronghold" parent="android:Theme.Material.NoActionBar.Fullscreen">
+        <item name="android:windowBackground">@color/bg</item>
+        <item name="android:statusBarColor">@color/bg</item>
+        <item name="android:navigationBarColor">@color/bg</item>
+    </style>
+    <color name="bg">#0c0f0e</color>
+</resources>

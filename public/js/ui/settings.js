@@ -5,28 +5,31 @@
 import { useState } from '../../vendor/hooks.module.js';
 import { html, Modal, Button, Icon, MicroLabel } from './components.js';
 import { createStore, useStore, loadPref, savePref } from '../store.js';
-import { sanitizeSettings } from './gameLogic.js';
+import { sanitizeSettings, defaultQuality } from './gameLogic.js';
 import { audio, voiceLangsIn } from '../audio.js';
 import { data } from '../data.js';
 import { openGuide } from './guide.js';
-import { detectFeatures } from './device.js';
+import { detectFeatures, isPhone } from './device.js';
 import { APP_VERSION } from '../../../shared/constants.js';
 
 /** The deployed commit on the Cloudflare build (index.html data-sp-build, tools/build-worker.mjs), else none. */
 const BUILD = typeof document !== 'undefined' ? document.documentElement.dataset.spBuild || '' : '';
 
+/** The quality a player who never chose one starts on (中 on a phone, DESIGN §26.6); a saved choice wins. */
+const FALLBACK_QUALITY = defaultQuality(isPhone());
+
 /** Settings store: { bgm, sfx, voice, voiceLang, muted, damageNumbers, quality }. */
-export const settingsStore = createStore(sanitizeSettings(loadPref('settings', null)));
+export const settingsStore = createStore(sanitizeSettings(loadPref('settings', null), FALLBACK_QUALITY));
 
 settingsStore.subscribe((s) => {
-  savePref('settings', sanitizeSettings(s));
+  savePref('settings', sanitizeSettings(s, FALLBACK_QUALITY));
   audio.setVolumes(s);
 });
 audio.setVolumes(settingsStore.get());
 
 /** @param {Partial<ReturnType<typeof sanitizeSettings>>} patch */
 export function updateSettings(patch) {
-  settingsStore.set(sanitizeSettings({ ...settingsStore.get(), ...patch }));
+  settingsStore.set(sanitizeSettings({ ...settingsStore.get(), ...patch }, FALLBACK_QUALITY));
 }
 
 /** Preact hook: current settings. */

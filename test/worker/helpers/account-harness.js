@@ -17,6 +17,7 @@ export const productionLimits = Object.freeze({
   REGISTER_LIMIT: { namespace_id: '1007', simple: { limit: 3, period: 60 } },
   LOGIN_LIMIT: { namespace_id: '1008', simple: { limit: 10, period: 60 } },
   USERNAME_LIMIT: { namespace_id: '1009', simple: { limit: 5, period: 60 } },
+  QUEUE_LIMIT: { namespace_id: '1010', simple: { limit: 600, period: 60 } },
 });
 /**
  * Wait for the next minute when less than `ms` of this one is left. Miniflare's rate limiting bindings count in

@@ -20,6 +20,7 @@ import { toast, toastError } from '../ui/toasts.js';
 import { copyText } from '../ui/clipboard.js';
 import { GuideButton } from '../ui/guide.js';
 import { ResourceButton } from '../ui/resourceButton.js';
+import { useWakeLock } from '../ui/device.js';
 import { LoadoutButton } from './loadout.js';
 import { net } from '../net.js';
 import { account } from '../account.js';
@@ -65,6 +66,7 @@ export function roomFacts(room, myId) {
   const seats = normalizeSeats(room);
   const occupied = seats.filter(Boolean);
   const humans = occupied.filter((s) => !s.isBot);
+  const bots = occupied.filter((s) => s.isBot);
   const mine = occupied.find((s) => s.playerId === myId) || null;
   const isHost = room?.hostId != null && room.hostId === myId;
   const others = humans.filter((s) => s.playerId !== myId);
@@ -74,7 +76,7 @@ export function roomFacts(room, myId) {
   const readyHumans = humans.filter(isReady).length;
   const othersReady = others.every((s) => s.ready && s.connected !== false);
   return {
-    seats, occupied, humans, mine, isHost, readyHumans, isReady,
+    seats, occupied, humans, bots, mine, isHost, readyHumans, isReady,
     capacity: seats.length,
     emptySeats: seats.filter((s) => !s).length,
     canStart: isHost && othersReady && !!mine,
@@ -227,10 +229,14 @@ export function RoomScreen() {
   const room = useStore((s) => s.room);
   const me = useStore((s) => s.me, shallowEqual);
   const conn = useStore((s) => s.connection, shallowEqual);
+  const queue = useStore((s) => s.queue, shallowEqual);
   const [busy, setBusy] = useState(null);
   const alive = useRef(true);
   const inFlight = useRef(false); // synchronous guard against double clicks (state updates are async)
+  const queuedRun = useRef(null); // 匹配: the auto-fill / auto-start sequence already started for this room
+  const readiedRun = useRef(null); // 匹配: the room this matched member already said ready in
   useEffect(() => () => { alive.current = false; }, []);
+  useWakeLock();   // waiting for the others with the phone in hand: no lock screen while the room is open
 
   if (!room) return null;
   const online = conn.status === 'online';
@@ -263,6 +269,86 @@ export function RoomScreen() {
   };
   const setDifficulty = (difficulty) => run('diff', () => net.request('room.setDifficulty', { difficulty }));
   const setCapacity = (capacity) => run('cap', () => net.request('room.setCapacity', { capacity }));
+  /**
+   * 匹配 (matchmaking): the room this player was put in starts on its own — the host fills the seats the queue could not
+   * fill with AI teammates, waits until everybody else who was matched is connected and ready, and then starts. The
+   * event only fires for a room the queue created (`queue.matched`), so a hand-made room is untouched. It runs once per
+   * room code, and only while this client is the host and no match is running yet.
+   */
+  useEffect(() => {
+    const code = queue.matched && queue.matched.seated ? queue.matched.code : null;
+    if (!code || !room || room.code !== code || room.inMatch) return undefined;
+    if (!facts.isHost || queuedRun.current === code) return undefined;
+    let cancelled = false;
+    let amHost = facts.isHost;   // `store.get()` is used inside the loop, so a re-render cannot restart it
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const step = async (kind, fn) => {
+      if (inFlight.current || cancelled) return null;
+      inFlight.current = true;
+      if (alive.current) setBusy(kind);
+      try { return await fn(); } catch (err) { if (!cancelled) toastError(err); return null; } finally {
+        inFlight.current = false;
+        if (alive.current) setBusy(null);
+      }
+    };
+    const sequence = async () => {
+      queuedRun.current = code;
+      // a short beat so the matched players' own room.join frames land before the seats are counted
+      await sleep(400);
+      // account mode (room-net.js, DESIGN §28.2): the matched members come in through join applications this page
+      // approves, after the room opened — wait for them (≤ 30 s) before their seats could go to AI teammates. The Node
+      // server seats a group at once (`expect` absent).
+      const expect = queue.matched.expect || 0;
+      for (let i = 0; i < 120 && !cancelled; i++) {
+        const cur = store.get().room;
+        if (!cur || cur.code !== code || cur.inMatch) return;
+        const f = roomFacts(cur, me.playerId);
+        if (!f.isHost) return;
+        if (f.humans.length >= expect) break;
+        await sleep(250);
+      }
+      for (let i = 0; i < 6 && !cancelled; i++) {
+        const cur = store.get().room;
+        if (!cur || cur.code !== code || cur.inMatch) return;
+        const f = roomFacts(cur, me.playerId);
+        amHost = f.isHost;
+        if (!amHost) return;                                    // the host moved on: its client starts instead
+        if (f.humans.length + f.bots.length >= f.capacity) break; // the room's own seat count (4–8)
+        await step('add', () => net.request('room.addBot', {}));
+        await sleep(120);
+      }
+      // wait until every other HUMAN is ready (a matched player is ready on arrival) and connected, then start
+      for (let i = 0; i < 80 && !cancelled; i++) {
+        const cur = store.get().room;
+        if (!cur || cur.code !== code || cur.inMatch) return;
+        const f = roomFacts(cur, me.playerId);
+        amHost = f.isHost;
+        if (!amHost) return;
+        const others = f.humans.filter((s) => s.playerId !== me.playerId);
+        if (others.every((s) => s.ready && s.connected)) {
+          await step('start', () => net.request('room.start', {}));
+          return;
+        }
+        await sleep(250);
+      }
+    };
+    void sequence();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- re-running on every room.state would restart the sequence
+  }, [queue.matched, room && room.code, me.playerId]);
+
+  // 匹配: a matched member is ready on arrival. The Node server marks it so; in a room Worker the member came in through
+  // a join application (DESIGN §28.2) and says so itself, once per room.
+  useEffect(() => {
+    const code = queue.matched && queue.matched.seated ? queue.matched.code : null;
+    if (!online || !code || !room || room.code !== code || room.inMatch || facts.isHost || !facts.mine || facts.mine.ready) return;
+    if (readiedRun.current === code) return;
+    readiedRun.current = code;
+    net.request('room.ready', { ready: true }).catch((err) => {
+      console.warn('[room] matched ready failed', err);
+      if (readiedRun.current === code) readiedRun.current = null; // said again once the room is back online
+    });
+  }, [queue.matched, room && room.code, facts.isHost, facts.mine && facts.mine.ready, online]);
   // spectator seats: the host frees one; a spectator takes a free player seat with room.join of this room
   const removeSpectator = (playerId) => run(`rs${playerId}`, () => net.request('room.removeSpectator', { playerId }));
   const sit = () => run('sit', () => net.request('room.join', { code: room.code }));

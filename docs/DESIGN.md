@@ -2157,7 +2157,7 @@ The official 同盟模拟 has 1–4 players (research 09 §3.1; the room's four 
 
 ### 24.2 The shared pool — `gamedata.js poolCopies(baseId, players)`, `pool.js SharedPool({ players })`, `Match` constructor
 
-Copies per chess = ceil(official × n / 4), n = the match's seats (humans + bots) at the match start — every tier and the per-operator overrides (缪尔赛思 4): 5 seats 15 / 18 / 23 / 20 / 10 / 7 (缪尔赛思 5), 6 seats 18 / 21 / 27 / 24 / 12 / 8 (6), 7 seats 21 / 25 / 32 / 28 / 14 / 9 (7), 8 seats 24 / 28 / 36 / 32 / 16 / 10 (8). Sized once: an elimination returns the seat's copies as before and never shrinks the pool.
+Copies per chess = ceil(official × n / 4), n = the match's seats (humans + bots) at the match start — every tier and the per-operator overrides (缪尔赛思 4): 5 seats 15 / 18 / 23 / 20 / 10 / 7 (缪尔赛思 5), 6 seats 18 / 21 / 27 / 24 / 12 / 8 (6), 7 seats 21 / 25 / 32 / 28 / 14 / 9 (7), 8 seats 24 / 28 / 36 / 32 / 16 / 10 (8). Sized once: an elimination returns the seat's copies as before and never shrinks the pool. A player's own 外援 / 甄选 entry (§27, `SharedPool.addOwned`) is not shared and keeps the official per-tier copies (`WAIGUAN_POOL_COPIES`: 8 at tier V, 5 at tier VI) whatever the seats (`match/invariants.js`, `test/match/fullmatchLarge.js`).
 
 ### 24.3 Drafts — `Match.bandTurnSeconds`, `gamedata.js bandTurnSeconds / spTurnSeconds`, `choices.js spDraftCardCount / bountyDraftCards / shopDraftCards`, `shared/protocol.js SP_CARDS_MAX`
 
@@ -2266,6 +2266,14 @@ Reports after the 0.1.3 release. Each was checked against the official data and 
   unchanged; client highlights = the server under four loadouts; the swap; the battle input and the sim on / off the
   高台; the bots plan each record on a 高台 that covers the road, a 重装 on the road, no 高台 fallback for it);
   `test/ui/gameLogic.test.js` (the drag mirror under four loadouts).
+- **This fork — the 甄选 records (§27)**: the rule reads the record, so it reaches data/waiguan.json too. Of its
+  records exactly four widen — 温蒂 (`char_400_weedy`, 推击手), tier V and VI, normal and elite; every other 甄选 melee
+  stays on the ground, 帕拉斯 included (her 教官 Y module talent 「可以额外部署在远程位」 is the 部署效果 above, not
+  read). A picked 温蒂 gets `placeClass` `'all'` from the match's chess table (`gd.addChess`), the bots plan her like
+  the six above, and the client's `piecePosition` agrees when it is given the record (the loadout screen's
+  `withWaiguan` lookup). The golden roster corpus enumerates data/chess.json only, so no digest covers her. Test:
+  `test/match/waiguan.test.js` (the four records, `g.move` of a picked 温蒂 onto a 高台 of 战场#01(下半) and 帕拉斯
+  refused, the client mirror).
 
 ### 25.3 阿戈尔 5: the 3 revives go to the first 3 members knocked out (GitHub #105, #140; the owner's decision of 2026-10-05) — `content/bonds/core.js installEgir`
 
@@ -2376,9 +2384,11 @@ Reports after the 0.1.3 release. Each was checked against the official data and 
 - **Why the ground was free**: a press on a tile that had nothing on it only closed what was open (a piece / unit card, the selection). `render/app.js` now emits `tileClick { row, col }` when neither a battle unit, a prep piece (the drag controller), a pen enemy nor the boss leader took the press, and `ui/fallbackField.js` emits the same from its own tile divs, so both field implementations behave alike.
 - **What the card says**: `gameLogic.terrainInfo(stage, row, col)` reads the glyph from `stage.rows`, its legend entry from `stage.tiles` (tileKey / height / buildable / passability) and **that stage's own terrain parameters** from `stage.special[<terrain>]` — the values `sim/content/devices.js` runs on: 活性源石 `damage 70 / atk 0.2 / attack_speed 20 / duration 300` (PRTS 特殊地形 "部署于其上的我军和经过的敌军在{duration}s内每秒受到{damage}真实伤害…"), 沼泽's stack rule (`intervalSec` 1, `aspdPerStack` −0.05, `moveMulPerStack` −0.05, `maxStacks` 10, `heavyWeight` 3, cleared on leaving — PRTS 沼泽控制), 深水区's drowning (`damage 40`, aspd −0.6, move ×0.6) plus 拒绝部署 (PRTS 深水区 地形信息; `grid.js DEPLOY_REFUSED_TILES`), 排气格栅's "operators on it cannot be targeted by enemy ranged attacks" — completed in review with the two halves that matter in play: the operator it blocks still gets attacked (the tile's buff is a 隐匿-like `stealth` flag, `devices.js enterTerrain`), and 深水区's drowning damage is sourceless damage that no 干员's 增伤 / 穿透 / 装备 applies to and is *not* 环境伤害 (`tickDeepsea`'s tags are `dot` / `periodic` / `deepsea`, deliberately not `terrain`). The gates and teleports carry no `special`, so they key on `tileKey` — 红门 (enemy gate) / 蓝门 (protection objective) / 传送入口 / 传送出口, in the words `docs/PLAYING.md` already uses. The card is a normal `ResultDialog`-less `DetailPanel` card: read-only, no protocol frame, closed by the next field press (`closesOnFieldPress` now lists `terrain`) or its own ✕.
 - **An ordinary tile still says nothing** (road / floor / wall / fence / bench → null): the press keeps its other meanings there — deselecting a piece, closing a card — and a drag still starts only on a piece.
+- **This fork, on a touch screen (merged with the phone support of §26.1)**: a mouse explains the tile on press; a finger explains it at its **release**, and only when the touch stayed a tap — the same finger, released within `TAP_SLOP_PX` 12 of the press, in the field mode it went down in, and no pinch started meanwhile (`render/app.js touchTap`; `startPinch` drops it). So the first finger of a pinch, a one-finger swipe and a finger still down open nothing. In battle the finger's release goes through the same order as a mouse press (`battlePress`): a unit, else the round's leader or a pen figure, else the tile. The prep press stays drag-first — a piece, the boss leader or a pen figure under the finger takes it at once, as before — and only a press that nothing took waits for its release. The DOM fallback board (`ui/fallbackField.js`) has no pinch and selects on press, so its tiles still explain themselves on the press.
 - **Coordinate spaces (corrected in review)**: a tap reports BOARD coordinates — `emitTileClick` picks with `pickBoardTile`, so the boss-prep transform (`prepXf.toBoard`) is applied once, in the renderer. (The first version reported the DRAWN tile from `groundTile` and the screen mapped it again, so on a Final Assault / Hidden Core prep the tap was converted twice and explained another tile.) Everywhere but that prep board the two spaces are the same: a 最终攻势 / 隐秘核心 battle renders the stage's own rows (`GEO.BOSS_RECT`), the normal and 联防 rects are stage rows. A boss PREP draws the player's half — stage rows 2–5 — as board rows 9–12, and the screen turns the board tile into the stage tile with `gameLogic.fieldTile` before the lookup (and reads the stage the board on screen is built from: the own one with the player's 机变 tile overrides, `effectiveStage`, or the plain stage while watching a teammate). **This fork**: only the PREP board picks through `pickBoardTile`; a BATTLE field — a fight, a teammate's scouted board (the normal one framed by the prep camera with `shop: false`, a boss round's pair boss field), a spectated board (观战席 or a public match), each 联防 field of a 5–8 player room (§24.4) — reports the drawn tile (`groundTile`), because `prepXf` keeps the boss-prep transform after the camera leaves the own boss-field prep (`setCamera` only sets it for `prep` / `bossPrep`), so a teammate's boss field scouted from it, or the boss battle that follows, would otherwise read a stage tile as a prep board tile. On those boards the round's leader (§23.18; during prep it stands on a scouted or spectated boss field too, issue #9) takes the press before the ground does, like a pen figure.
+- **This fork: only a tile the board DRAWS explains itself** (review of the merge of #185): the pick runs on the whole 19×21 stage grid, but the board on screen is smaller — the 3D board builds only the view's area (`boardArea`: the own field, rows 6–13 × cols 0–10, and the ring around it; the boss field; both halves in 联防), so a click on the background beside the island named a tile nobody could see (every stage has a 传送入口 at (8,11), right of the temp row; a teammate's half, cols 11–20, likewise). `emitTileClick` now asks `tileDrawn` on the drawn tile, before the board-space conversion: the 3D board's built tiles (`board3d/layout.js classifyStage` `drawn`), else the 2D TileField's (`tiles.js parseStage` `drawn`) — the 2D board draws those tiles as its dim margin, so there they still explain themselves. The DOM fallback only ever had the tiles of its own rect.
 - **[ASSUMED]**: that a player wants the official's 地形信息 here (the official shows terrain descriptions in its own level / terrain UI, not in-match — research 09 records none) and the wording of the mechanism lines: the numbers are the data's, the prose is ours (marked as ours in `TERRAIN_TIPS`). A 机变 card that switches a terrain off (模拟战场演变 · 沙尘暴停止) is not reflected — the tip explains the TILE, not the round's modifier.
-- **Tests**: `test/ui/gameLogic.test.js` (every terrain of the real stages with its own numbers: 活性源石 in 战场#04, 沼泽 in 战场#06, 排气格栅 in 战场#07, 深水区 in 战场#05; the four gate / teleport tiles; an ordinary glyph → null; out-of-range, fractional and legend-less input; the fact lines from the legend entry; a stage missing its parameters still explains the mechanism), `test/ui/terrain-detail.test.js` (the tap's target resolves into the card; a tip-less or malformed one does not), `test/ui/terrain-tip.e2e.test.js` (headless Chrome on the mock harness: a tap on 蓝门 / 红门 opens the card with its own line on BOTH field implementations — the engine canvas at the tile's own screen position and the DOM fallback's tile — while a tap on a floor tile opens nothing; and on a Final Assault PREP the tapped tile is the one the board tile maps to on the boss field, the regression the review asked for; this fork adds: a Final Assault BATTLE entered from the boss-field prep — the renderer still holding the prep transform — explains the drawn stage tile, e.g. stage (1,3) 传送入口, which the prep transform would read as board (8,3) and explain nothing).
+- **Tests**: `test/ui/gameLogic.test.js` (every terrain of the real stages with its own numbers: 活性源石 in 战场#04, 沼泽 in 战场#06, 排气格栅 in 战场#07, 深水区 in 战场#05; the four gate / teleport tiles; an ordinary glyph → null; out-of-range, fractional and legend-less input; the fact lines from the legend entry; a stage missing its parameters still explains the mechanism), `test/ui/terrain-detail.test.js` (the tap's target resolves into the card; a tip-less or malformed one does not), `test/ui/terrain-tip.e2e.test.js` (headless Chrome on the mock harness: a tap on 蓝门 / 红门 opens the card with its own line on BOTH field implementations — the engine canvas at the tile's own screen position and the DOM fallback's tile — while a tap on a floor tile opens nothing; and on a Final Assault PREP the tapped tile is the one the board tile maps to on the boss field, the regression the review asked for; this fork adds: a Final Assault BATTLE entered from the boss-field prep — the renderer still holding the prep transform — explains the drawn stage tile, e.g. stage (1,3) 传送入口, which the prep transform would read as board (8,3) and explain nothing; and a touch case with CDP touch events — in prep a finger still down explains nothing, its release opens the 蓝门 card, a swipe and a pinch explain nothing, the pinch zooms the board and a tap after the zoom still opens the card; in battle a finger still down opens nothing and the release of a tap on a special tile opens its card; and a click on (8,11) 传送入口 — on the 2D board, which draws it as its margin, it opens the card; on the 3D board, which does not build it, it opens nothing while the 蓝门 it does build still does).
 
 ### 25.6 活性源石 is ONE material on both boards (GitHub #184, same report's second half) — `render/style.js` (`ORIGINIUM`, `linearToSrgb255` / `linearToHex`), `render/textures.js` (`originiumCanvas` / `originiumOverlay`, `MAT_DRAW.infection` / `infection2`, `PROC_LAYERS.originium` / `originium2`, `DEFAULT_ART_LAYERS.infection` / `infection2`), `render/tiles.js` (`variantMat`, the pulse tint), `render/board3d/materials.js` (`infectionMaterial`)
 
@@ -2526,3 +2536,236 @@ Reports after the 0.1.3 release. Each was checked against the official data and 
   `playtest5_blocking` (its 瑕光 S2 test included), `combat`, `engine-requests`, `kits_t1t2` / `kits_alt_t2` (小满),
   `kits_t3` / `kits_alt_t3` (瑕光), `kits_t5` / `kits_alt_t5` / `garrisons_battle` (缇缇) and the other sleep and block
   suites pass unchanged.
+
+---
+
+## 26. Phones (player report and phone audit, 2026-10-06)
+
+A player tested on phones: Safari on iPhone, and Chrome and Firefox on Android. The report: "根本点不到干员。整个棋盘位于中间位置，缩放过小". An audit then ran the game in Chrome device emulation at 640×360 … 915×412, portrait, and an iPad. It covered screens, touch, platform quirks and performance. The items below are the ones that make the board hard to use or cover it. Everything here applies to touch screens only, unless it says otherwise; desktop framing and sizes are unchanged.
+
+### 26.1 Pieces big enough to tap — `render/projection.js clearHud`, `ui/fieldHost.js hudBands`, `render/app.js` (pinch, battle taps), `render/pick.js pickBody`, `render/drag.js`
+
+**Cause.** The HUD is sized in rem with the 40 px floor (§19.8). A phone in landscape with the browser's bars showing is about 780×300 CSS px. There the HUD takes 86 px at the top and 109 px at the bottom. `clearHud` zoomed the prep camera out until the bench-to-back-row band fitted the remaining 105 px: ×0.6 of the official framing, about 15 px pieces.
+
+**Zoom floor.**
+- With the shop bar shown, `hudBands` adds `minZoom: 1` on touch screens, so `clearHud` never zooms the board out below the official framing.
+- The bench's near edge stays above the bottom band, and the back rows may go under the top HUD.
+- At 780×300 the pieces are about 2× bigger.
+- Folded, the shop-collapsed camera of public issue #5 is bigger already and keeps the whole board in view: no floor there.
+
+**Pinch zoom and pan.**
+- A second finger on the field starts a pinch: an image transform of the camera (focal length × z, the principal point moved), the same as `clearHud`. Picking, the three.js board and every layer stay consistent.
+- Zoom range 1× to `USER_ZOOM_MAX` 3×. The point under the fingers stays under them. The pan reaches `USER_PAN_SLACK` 30 % of the viewport past the framing.
+- The pinch is that pair of fingers: a third finger is ignored, and the pinch ends when one of the two lifts.
+- A piece being pressed or dragged goes home, and no finger counts again (no new pinch either) until all have lifted.
+- Any camera request or resize resets the view.
+
+**Taps in battle.** A touch picks a unit on release, when the release is within `TAP_SLOP_PX` 12 of the press, so the first finger of a pinch and a swipe open nothing. The mouse still picks on press. With nothing under the finger, the same release goes on to the round's leader or a pen figure, and then to the ground: a special terrain tile opens its card (§25.5).
+
+**Taps on the empty prep ground.** A finger that no piece, boss leader or pen figure took explains the terrain tile under it (§25.5) at its release, under the same tap rule (`touchTap`: the same finger, within `TAP_SLOP_PX`, the same field mode, no pinch). The prep press itself is unchanged: drag-first.
+
+**A finger on an empty tile** picks the unit whose drawn body it is on (`pickBody`).
+- The body is an upright box `BODY_HALF_W` 0.4 tile either side of the feet, from the feet to the head; the front-most unit wins.
+- This applies to prep pieces and battle allies.
+- A unit on the pressed tile always wins, so the tile rule of §18.1 stays the rule. The mouse keeps it strictly.
+
+**Long press, decided at the next frame** (`drag.js nextFrame`).
+- The 480 ms timer is wall-clock. On a busy phone's long frame the finger's release arrives with the next frame, after the timer: the tap became a long press, which opened the detail instead of selecting the unit.
+- The decision now waits for that frame. Input events are dispatched before its animation callbacks, so a finger already lifted is still a tap.
+
+### 26.2 The engine on a slow link — `render/app.js STARTUP_WAIT_MS`, `ui/fieldHost.js`, `main.js warmGameData`
+
+- **What went wrong.** The flat DOM fallback board (24 px tiles in the middle of the screen) is what the report also described. `createFieldView` waited for its optional parts one after another: the asset and local-art manifests 4 s, fonts 1.5 s, the board art 2.5 s and the 3D board 6 s. That is 14 s, more than `ui/fieldHost.js`'s 12 s engine timeout, which then mounted the fallback for the whole match.
+- **Now.** Those waits share one 4 s budget (`STARTUP_WAIT_MS`). Each part still upgrades the view in place when it lands.
+- **Timeout.** The engine gets 30 s for the whole mount — one deadline shared by the imports and the view's startup. An engine that resolves after it is destroyed, because the fallback owns the host by then.
+- **Warm-up.** Entering a room warms the render engine's modules and Pixi / pixi-spine together with the game data.
+
+### 26.3 Covered controls and wrong taps — `css/devices.css`, `css/screens/game-shop.css`, `screens/game.js`
+
+**The room's 复制密钥 / 复制链接 buttons.**
+- Problem: they are stacked, and the generic 44 px hit area of 复制链接 covered 复制密钥. A tap on the key copied the link.
+- Fix: each button's area now ends in the middle of the gap between them.
+
+**The promotion reward's tag.**
+- Problem: the vertical title shrank to one glyph.
+- Fix: `flex: none`, and short screens hide its English micro line.
+
+**A shop card's or an item's detail card.**
+- Problem: it stayed over the battlefield into combat.
+- Fix: it closes when combat starts.
+
+### 26.4 Type floor — `css/devices.css` §6 (short touch screens)
+
+The root is clamped at 40 px, so on a phone every rem size is 0.4 of its 1080p value: names, counts and descriptions in the match HUD came out at 4.4–7.6 px. The root cannot grow (the layout would not fit). So text that carries information gets `max(<its rem>, N px)`; boxes keep their sizes and long names ellipsize.
+
+| Text | Floor |
+|---|---|
+| Shop-card name | 10 px |
+| Shop-card bonds | 8 px |
+| Bond-strip names (slots widened to 35 px so 4-character names stay apart) and layer counts | 8 px |
+| Team names | 9 px |
+| Funds, round, remaining placements, the ready count, effect stacks | 8–9 px |
+| Detail card: stat values | 9 px |
+| Detail card: stat labels | 7 px |
+| Detail card: 特质 text | 9 px |
+
+Decorations make room:
+- Keyboard hints are hidden on devices without hover.
+- The HUD's English captions (COUNTDOWN, LEVEL, ms) are hidden on short screens.
+
+### 26.5 Phone keyboards — `ui/components.js TextField`
+
+`TextField` sets `autocorrect="off"` and `autocapitalize` off by default (iOS rewrote typed room codes). It passes `autoCapitalize` / `enterKeyHint` / `inputMode` through:
+- room code: `characters` + `go`;
+- callsign: `go`;
+- loadout search: `search`.
+
+### 26.6 Screen awake, sound with the silent switch, locked rotation, graphics default, frame cap — `ui/device.js keepScreenAwake / useWakeLock / isPhone`, `audio.js _playbackSession`, `index.html` + `css/theme.css .rotate-hint__fs`, `ui/gameLogic.js defaultQuality`, `ui/settings.js`, `render/app.js MAX_FPS`
+
+**Screen wake lock.** Held while the match or the room screen is mounted, and re-requested when the page is visible again. The player mostly watches a battle: the phone dimmed, locked and dropped the socket.
+
+**The iPhone silent switch.** Before the first `AudioContext` is created, `navigator.audioSession.type = 'playback'` (iOS 16.4+). The switch no longer mutes every sound.
+
+**The rotate hint.**
+- A line on rotation lock: iPhone, 控制中心 → 竖屏方向锁定; Android, 自动旋转.
+- Where the Fullscreen API exists (`html.sp-fs`), a 全屏并横屏 button enters fullscreen from the tap and locks landscape where allowed.
+
+**Graphics default.** `quality` defaults to `medium` on phones (`isPhone`: touch and a screen side under 500 CSS px), only while no quality was saved.
+
+**Frame cap.** `app.ticker.maxFPS = 62` on every device, so 90 / 120 Hz phones no longer draw 120 fps through a nearly static prep. It is 62, not 60, because PIXI's limiter compares whole milliseconds and a cap of exactly 60 drops frames on a 60 Hz display.
+
+### 26.7 Not done here (from the audit)
+
+- Portrait play: only the rotate hint shows.
+- Cold-load size: about 19 MB to the first battle, plus a 6.7 MB 3D board atlas.
+- Memory growth over many rounds.
+- The briefing / draft / result screens' type sizes.
+- Back-gesture and backgrounding handling beyond the wake lock.
+
+**[ASSUMED]:**
+- The 3× zoom limit and the 30 % pan reach.
+- The 0.4-tile body box.
+- The official framing as the floor, rather than a minimum tile size in px.
+- The 4 s startup budget and the 30 s engine timeout.
+- Each type floor.
+- The 500 px phone threshold.
+- 62 fps.
+- `playback` audio interrupting other apps' audio.
+---
+
+## 27. 外援 / 甄选 (DIY) slots (remake addition)
+
+The official mode gives every player **four 甄选 (DIY) slots** — 2 at tier V and 2 at tier VI — filled with their own 6★
+operators (`diyChessDict` = `TIER_6`): "对于五六阶干员，除了目标干员外，还各共开放了2个甄选干员名额，博士可以选择等阶加入精英干员或
+自己在活动外已有的六星干员" (research 03 §C4; §0 listed DIY as out of scope for v1 — this section supersedes that). The
+remake has no account roster, so the pick is a **free choice among the 6★ operators that are not in this mode's shop pool**.
+
+| Rule | Implementation |
+|---|---|
+| Candidates | the 87 6★ of `character_table` minus the 59 the shop pool fields (TOKEN / TRAP excluded); `tools/build-data.mjs buildWaiguan` → `data/waiguan.json` (§DATA 14b) |
+| Slots | `shared/waiguan.js WAIGUAN_SLOTS`: `diy5a`, `diy5b` (tier V), `diy6a`, `diy6b` (tier VI). The four **empty templates** live in `data/chess.json` (`chess_char_5_diy1_a` …) and are never shop-reachable |
+| Record | `chess_char_diy_<tier>_<charId>[_b]`, built by the same `chessRecord()` the shop chess use: real stats, skills, talents, module choices, summons. Tier V = phase 2 / Lv1 / skill 4 / its slot's 模组; tier VI = phase 2 / Lv60 / skill 7 / its slot's 模组 |
+| Bonds | derived from the operator's faction ids against each core bond's `powerIdList`, else the fallback 协防 `emptyShip` (research 02 §2.1). The ids come from `mainPower` **and every `subPower` entry**, not from the top-level `nationId` / `groupId` / `teamId` alone: those carry one often-historical faction, and reading only them mis-assigned real operators (能天使 as 炎 instead of 拉特兰, 德克萨斯 as 炎 instead of 叙拉古, 水月 / 百炼嘉维尔 / 卡涅利安 / 烛煌 with no core bond at all, 结城理 as 协防 instead of 拉特兰 — his `subPower` is `laterano`). Checked against the 121 pool operators whose bonds the mode states: 70 right / 10 wrong without `subPower`, **80 of 80 right with it** (`test/data.test.js`). 34 of 87 now derive a core bond, 53 fall back to 协防干员 — the same share as the pool, where the mode gives 41 of 121 operators no core bond. **No 特质** |
+| Pool | `SharedPool.addOwned(owner, baseId, cap)`: the entry is visible, rollable and buyable **only by its owner**, with the official per-tier pool copies (8 at tier V, 5 at tier VI). It never dilutes a teammate's rolls and a teammate can never buy it — a 甄选 pick is a private pool, not a shared one |
+| Visibility | `room.state.picks` carries the requester's own selection only (the frame is encoded per member); a teammate's picks are never named. Nothing about a 甄选 piece appears in a partner's view either — it is that player's chess |
+| Check | `room.pick { picks }` → `checkWaiguanPicks` (shared/protocol.js): known slot, real candidate, and **no candidate filling both slots of one tier** (they are two pieces of one pool); the same operator MAY take a tier V and a tier VI slot |
+| When | accepted while the pool can still take the entries — `Match.setPicks` allows `LOBBY` / `INFO_CHECK` / `BAND_CHECK` and refuses afterwards (`WRONG_PHASE`); the client sends on the same debounce as `room.loadout` (`ui/loadoutSync.js`, `flushPicks`) |
+| Loadout | a 甄选 pick is a **干员调配 target like any pool chess**: the screen offers its skills and module, the roster lists it (both tiers), the change badge counts it, and `checkLoadout` accepts it. Three things make that work (fixed 2026-10-06, they were NOT in place before): the record publishes `visible: true` **once it has combat data** — `visible` means "a real, fieldable operator", and what keeps the record out of the shared shop pool is `isDiy` alone (`GameData.visibleChess`, `SharedPool`) —, `shared/waiguan.js isWaiguanRecord` tells such a record from the four EMPTY templates (no stats) which stay refused, and the checker's lookup is widened by **that player's own picks**: `server/lobby.js waiguanChessOf(data.waiguan, session.picks)` for `room.loadout`, the identical `shared/waiguan.js waiguanRecords` set for a running match (`PlayerState` checks against `gd.chess`). The browser widens its lookup the same way (`ui/loadoutModel.js waiguanPickChess` + `withWaiguan`, fed by `loadoutSync` and the screen), and `flushAll` sends `room.pick` **before** `room.loadout` — an entry naming an operator the server has not stored yet would be dropped as `unknown chess`. A template, an operator the player did not pick, or any unknown id is still `BAD_TARGET` |
+| Roster check | the picker renders **all 87** candidates and searches every one by name (verified against the browser: 87 cards, 87/87 found, none extra). Cross-checked against the latest official `character_table` (2026-10-06): **146 6★ = 87 candidates + 59 fixed shop operators**, no gap. The picker's search box was broken for the same release (a `TextField onInput` written with the DOM convention: it threw on every keystroke and the list never filtered, so typing a name looked like "this operator is missing") — `screens/loadout.js WaiguanPicker` now takes the string |
+| Bots | `botWaiguanPicks` fills a bot's slots with candidates whose derived bond it is playing around (the bonds this match did not switch off), never two of one tier, skipping a candidate whose every bond is banned. Measured over 12 seeds × 4 difficulties (`tools/matchrun.mjs`): HARD wins 5/12 → 6/12, other difficulties unchanged, zero engine / meta / sim errors |
+| Data flow | `server/match/Match.js` merges only the picked records — each pick's normal record **and its elite** (`…_b`; `GameData.goldenIdOf` names an elite only when the table holds it) — into **this match's** chess table (`GameData.addChess`) — never into `getChess()` / another match; the browser loads `data/waiguan.json` on demand (`public/js/data.js` `waiguan`, warmed with the match files) |
+| UI | the 干员调配 screen's four slot tiles above the roster (`screens/loadout.js WaiguanSlots`) + the candidate picker (`WaiguanPicker`: search, class filter, the sibling slot of the same tier marked as taken); the selection is stored per browser (`sp.pref.waiguan`) like the loadout |
+| Tests | `test/match/waiguan.test.js` (protocol check, empty templates, record injection, pool privacy both ways, copy return on a re-pick, bot picks, three copies merging into the elite and 升华 promoting one — for a seat's, a bot's and a later `setPicks` pick), `test/ui/loadout.test.js` `picks:` block (storage, sanitising, `room.pick` frames, the clear path, offline / missing roster), `test/ui/waiguan-loadout.test.js` (the four loadout ends: templates vs real records, roster listing, sanitiser + lobby check, refusal without the pick), `test/data.test.js` waiguan block (both tiers, bonds, default module, tier overlay round trip, `visible` = real operator), browser `test/ui/waiguan.e2e.test.js` (slots / picker, **skill switch stored by the server**, **the picker search filters**) |
+
+**Deviations / assumptions.** The candidate set is the official rule read as "6★ not in this mode's pool" (the official
+game keys it on the player's account instead). The tier V slots hold a 6★ at tier V status — the official slot's own
+status, kept as read. Copy caps reuse the official per-tier pool copies. A pick taken after the initial pool build adds
+a pool entry (the pool only ever grows) while its copies are returned when a piece was already bought and the slot
+changes. Modules: two candidates (凯尔希·思衡托, 予愿安洁莉娜) have none in the official data and get the same
+module-less elite shape the pool uses.
+
+**Known gaps (found while merging upstream 0.1.4 into the fork, 2026-10-07; they reproduce on fork/master 2e73864, so
+the merge did not cause them — each needs its own change, and the first two and the shared-entry one move the golden
+matches again).**
+- **The shop never offers a 甄选 chess.** The private entry is only drawn when a roll passes `playerId`
+  (`pool.roll` / `rollItem` / `tierShares`), and no caller does: `PlayerState._rollChessSlot` / `_rollItemSlot` /
+  `pushRewardOffer`, `Match.rollPool`, `choices.js`, `effectsMeta.js`. The SOLD_OUT checks of `PlayerState` ask
+  `pool.has(base)` / `pool.left(base)` without the player too. Measured: four picks, shop level 6, 400 refreshes → 0
+  甄选 slots (a roll with `playerId` draws them).
+- **A 甄选 chess on the board does not fight.** The match's sim `DataSource` (`Match.ds`, `dataSourceFor(this.data)`)
+  reads `data.chess` only, not the records `GameData.addChess` merged in, so the battle drops the piece silently. The
+  browser's client-side combat and the Worker's replay / recovery engines need the same records (the battle spec or the
+  recording has to carry them).
+- **`room.pick` is not recorded.** `server/match/checkpoint.js` records `start` / `handle` / `onDisconnect` /
+  `onReconnect` / `onLeave` / `setLoadout`, not `setPicks`; a pick changed in INFO_CHECK / BAND_CHECK is lost on a
+  Durable Object recovery or a replay, which then diverges.
+- **The in-match client cannot look a 甄选 record up**: `useGameData().chess` is `data.lookup('chess', id)`; only the
+  loadout screen merges the picked records (`withWaiguan`).
+- **Bot heuristics count every private entry** (`bot.js refreshValue`'s copy total, `bondPoolStats`' supply, and
+  `Match.bondInPool`), a teammate's and the bot's own unreachable ones included — the cause of the 3 golden matches
+  that differ from upstream's (test/golden/README.md). Once the shop draws them, count only `owner == null` or the
+  bot's own entries (`bondInPool`: shared entries only).
+- **Two players who pick the same 甄选 operator share ONE entry — the later one gets none.** `SharedPool.entries` is keyed
+  by the chess id (`chess_char_diy_<tier>_<charId>_a`, no player in it) and `addOwned` refuses an id another owner holds
+  (`return existing.owner === owner`). Nothing prevents the collision: `checkWaiguanPicks` only stops one player filling
+  both slots of a tier, a teammate's picks are never shown (Visibility above), the constructor only logs a warning and
+  `Match.setPicks` ignores the refusal and answers `{ ok: true }` (`room.state.picks` echoes the pick). Bots always
+  collide: `botWaiguanPicks` is deterministic over the match-wide active bonds, so every bot of a match picks the same
+  four operators and only the first bot's entries exist — the golden co-op matches included. Once the shop draws 甄选
+  (first gap) the later player has no pool, and `pool.take(base)` (no owner check; `PlayerState.acquireChess`) would
+  draw on the first player's copies. The fix is a product choice — entries per (owner, chess id) with `take` / `give` /
+  `left` / `has` and the invariants taking the owner, or per-owner chess ids; bots staggered by seat or allowed to repeat —
+  and it moves the golden co-op matches (every bot then has its entries).
+- Fixed in the merge: the pool invariant "a chess outside the pool holds no copies" (`invariants.js`, the test harness)
+  asked `pool.has(base)`, which is false for an owned entry, so any held 甄选 piece was reported; it now asks whether
+  the pool has the entry at all. And (review of the merge) a 甄选 piece never became an elite: only the normal record
+  joined the match's table, so three copies stayed three normals and 升华 / 博士投影 did nothing — the elite record joins
+  it too now (Data flow above); no golden digest moved (no 甄选 piece reaches a board in them).
+
+---
+
+## 28. 匹配 (matchmaking queue) — a remake addition
+
+§0 listed a **matchmaking queue** as out of scope for v1. This section adds one: a player waits for other players instead
+of collecting a 4-letter 同盟密钥 by hand, and the server groups the waiting sessions into a fresh 同盟 room. **This is a
+remake feature — the official mode has no such queue.**
+
+### 28.1 The Node server's queue — `server/lobby.js`, `shared/protocol.js`, `public/js/screens/lobby.js` / `room.js`
+
+| Piece | Where | Rule |
+|---|---|---|
+| `queue.join { difficulty }` | `shared/protocol.js`, `server/lobby.js queueJoin` | Enters (or re-enters) the queue with the difficulty the lobby has selected. Refused while a match runs (`ROOM_STARTED`: leave it first). Joining twice keeps ONE entry |
+| `queue.leave` | `queueLeave` | Leaves the queue and is **always answered** with a `queue.status` — a cancel must not leave the client waiting for a frame. Never an error when the session was not queued (the client sends it on unload too) |
+| `queue.status` | per session | `{ waiting, difficulty, count, total, waitedMs, minSeats, seats }`. `count` = sessions waiting for the **same** difficulty (what a group is built from), `total` = everybody waiting. Sent on join / leave and to every waiting session whenever the queue changes |
+| `queue.matched` | per member | `{ code, difficulty, seated }` once a group is formed. The client then joins that code like any 同盟密钥 (`main.js` reuses the deep-link join path) and `screens/room.js` takes over (below) |
+| Grouping | `queueTick` (every `queueTickMs`, only while somebody waits: an idle lobby keeps no timer) | Walks the queue in arrival order: the oldest entry heads a group, later entries of the **same difficulty** fill it up to `DEFAULT_SEATS` (4: a matched room is the official 4-seat 同盟 room; rooms of 5–8 seats (§24) are made by hand). A group starts when it is full, or — with at least `queueMinSeats` humans — once the grace has passed, or when the head waited `queueTimeoutMs` |
+| Grace | `queueGraceMs` | Measured from the **last arrival** in the queue, not from the head's own arrival: a second player whose `queue.join` is still in flight must not be split off into a group of its own (a real race the tests caught) |
+| Timeout | `queueTimeoutMs` | A lone player always gets a room: the seats the queue cannot fill are left to be filled with AI teammates, so nobody waits forever |
+| Liveness | `queueSilentMs` | A waiting session that disconnected or went silent is dropped by the tick, and `onDisconnect` drops it at once: the queue must never seat an unreachable player |
+| Leaving the queue | `removeMember` | Entering a room (join / create / placePlayer) takes the session out of the queue automatically |
+| Readiness | `startQueuedMatch` | Every matched human is `ready` before the room state is announced (it asked to be matched), so the room opens ready |
+| Auto-start | `screens/room.js` | In a room whose `queue.matched` the client saw, the HOST fills the free seats with AI teammates (`room.addBot`, up to the room's capacity) and then starts (`room.start`) once every other human is ready and connected. Runs once per room code, never for a hand-made room |
+| Observability | `GET /healthz` | `queued` = sessions waiting right now |
+| Tests | `test/matchmaking.test.js` (each test boots its own server: the queue and the room registry are per server), `test/ui/matchmaking.e2e.test.js` (browser: queue panel → auto-join → AI fill → the match starts; and 取消匹配) |
+
+**Deliberate choices.** Only same-difficulty players are grouped (mixing 标准 with 终极 would decide a match's difficulty by
+arrival order). A group never exceeds `DEFAULT_SEATS`; a player that could not be seated keeps waiting instead of being
+dropped. The queue lives in memory like every room — a server restart empties it. The room is a normal 同盟 room: it has
+a code, it can be shared, and its AI teammates can still be removed by hand.
+
+### 28.2 匹配 in the room Worker (account mode) — `worker/matchmaker.js`, `worker/rooms/queue-routes.js`, `public/js/room-net.js`
+
+The Worker has no lobby every session is connected to: each room is its own Durable Object, and the menu of an account
+page has no socket (room-net.js). Its queue is one more Durable Object, `MATCHMAKER` (instance `'queue'`, binding and
+migration `v4-matchmaker` in `wrangler.jsonc`), reached over the account API; the room's own `Lobby` has no queue
+(`queueTickMs: 0`: a `queue.join` on a room socket is refused, and no queue clock keeps a room awake).
+
+| Piece | Rule |
+|---|---|
+| `POST /api/queue { action, difficulty?, code? }` | Signed in, from the game's own page (Origin), counted per network against its own `QUEUE_LIMIT` (a waiting page polls 40 times a minute: the queue does not use up `API_LIMIT`). `join` (the 匹配 click) is refused from a seat in a live room (`ALREADY_SEATED`, as applying elsewhere is) and starts over: a group the account was in before is left first. Answers the account's status: §28.1's `queue.status` fields, plus `matched` once a group was formed |
+| Polling | The menu page polls (`poll`, carrying the difficulty) every `QUEUE_POLL_MS` (1.5 s) while it waits; a page silent for `silentMs` (6 s) is dropped — from the queue, and from a group still waiting for its room (`expect` counts the live members only) — which is how the Worker learns of a closed page. The queue is memory only: an evicted instance starts empty and the next poll re-enters the player, except within `leftMs` (5 s) of a `leave` (a poll that crossed it). Entering a room any other way (an application, 继续对局) leaves the queue |
+| Grouping | `MatchQueue.tick`, run on every call (no timer): §28.1's rules — same difficulty, ≤ `DEFAULT_SEATS`, ≥ 2 after the grace, a lone player after the timeout. The grace runs from the last arrival **of the group** (the Node queue takes the whole queue's): players of another difficulty never hold a group back |
+| The room | The group's first account is its **host**: `matched { role: 'host', code: null, expect, members }`. Its page creates a co-op room the normal way (`POST /api/rooms`, `room.create`) and reports it (`hosted { code }`, refused unless the host sits in that room); a host that does not report within `hostMs` (20 s), or whose page went away before it was told, is dropped and the others go back to the front of the queue, keeping their waiting time. A host that cancels (its page leaves the room it opened) or queues again ends the group the same way. Members get `matched { role: 'member', code }` and join it like an invite (`main.js` pendingJoin → `room.join` → a join application); a room that could not be opened or reported is a toast |
+| Admission | The host's page approves the join applications of **its group's accounts only** (`QUEUE_APPROVE_MS`, 60 s); a stranger's application waits for the host as always. Nothing in the queue seats, approves or creates anything: every room write is one of the players' own requests, with its usual checks |
+| Readiness and start | A matched member says `room.ready` itself once inside (the Node server marks it; a failed try is repeated once the room is online again). The host's `screens/room.js` sequence first waits (≤ 30 s) until the `expect`ed humans are in — their seats must not go to AI teammates first — then fills the free seats and starts once the others are ready |
+| Tests | `test/worker/matchmaker.test.js` (MatchQueue rules, the Durable Object's answers), `test/worker/matchmaking.test.js` (workerd: queue → host opens and reports → the member is approved in), `test/worker-client.test.js` (the page: polling, leaving, host / member hand-over, approvals of the group only, a cancel while the host opens its room, entering another way, errors) |

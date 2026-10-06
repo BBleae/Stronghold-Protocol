@@ -154,9 +154,14 @@ export class Downloader {
     const kept = await this.existingSize(job);
     if (kept >= 0) return { status: 'skip', bytes: kept };
     let lastError = null;
+    // each source once per job: a candidate that is another's jsDelivr fallback (a 外援 entry lists both, plan.mjs
+    // entryUrls) is not retried a second time
+    const tried = new Set();
     for (const url of job.urls) {
       const sources = this.network.urls(url);
       for (const src of sources) {
+        if (tried.has(src)) continue;
+        tried.add(src);
         const r = await this.fetchWithRetries(src, job.kind);
         if (r.notFound || r.skipped) continue;
         if (r.error) { lastError = r.error; continue; }

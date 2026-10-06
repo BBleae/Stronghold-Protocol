@@ -132,7 +132,7 @@ export class RoomRuntime {
       error: (message, detail) => logError('room_runtime', { ...context(message), ...(detail ? { error: errorFields(detail) } : {}) }),
     };
     this.registry = new SessionRegistry({ now, maxSessions: ROOM_LIMITS.sessions });
-    this.lobby = new AlarmLobby({ registry: this.registry, now, log, options: { maxRooms: 1 }, MatchClass: RecordedMatch });
+    this.lobby = new AlarmLobby({ registry: this.registry, now, log, options: { maxRooms: 1, queueTickMs: 0 }, MatchClass: RecordedMatch });
     this.lobby.genCode = () => this.code;
     // Spectators (worker/rooms/spectators.js) see the room's state and the match's broadcasts.
     this.spectators = new Spectators(this);

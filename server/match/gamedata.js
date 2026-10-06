@@ -76,20 +76,25 @@ export class GameData {
   /**
    * @param {Readonly<Record<string, any>>} data server/data.js getData() (may be partial)
    * @param {string} modeId e.g. 'mode_multi_hard'
+   * @param {{ chess?: Record<string, any> }} [patch] per-match additions to the chess table — the 外援 / 甄选 (DIY)
+   *   records of the players in THIS match (data/waiguan.json, DESIGN §27). They live on this instance only, so a
+   *   match's private chess never leaks into another match or into getChess().
    */
-  constructor(data, modeId) {
+  constructor(data, modeId, patch = null) {
     this.raw = data && typeof data === 'object' ? data : {};
     this.config = getConfig(this.raw) || {};
     this.modeId = modeId;
     this.mode = getMode(modeId, this.raw) || {};
     this.economy = this.config.economy && typeof this.config.economy === 'object' ? this.config.economy : {};
-    const chess = this.raw.chess && typeof this.raw.chess === 'object' ? this.raw.chess : {};
-    this._chess = chess;
+    const base = this.raw.chess && typeof this.raw.chess === 'object' ? this.raw.chess : {};
+    const extra = patch && patch.chess && typeof patch.chess === 'object' ? patch.chess : null;
+    this._chess = extra ? { ...base, ...extra } : base;
     this._items = this.raw.items && typeof this.raw.items === 'object' ? this.raw.items : {};
     this._bonds = this.raw.bonds && typeof this.raw.bonds === 'object' ? this.raw.bonds : {};
-    /** visible, shop-eligible base (normal) chess ids */
-    this.visibleChess = Object.keys(chess).filter((id) => {
-      const c = chess[id];
+    /** visible, shop-eligible base (normal) chess ids — a match's 甄选 (DIY) records are NOT here: they are private to
+     * one player and enter its shop through SharedPool.addOwned (DESIGN §27). */
+    this.visibleChess = Object.keys(this._chess).filter((id) => {
+      const c = this._chess[id];
       return c && c.visible && !c.isGolden && !c.isDiy && !c.isHidden && Number.isInteger(c.tier);
     }).sort();
     /**
@@ -110,6 +115,20 @@ export class GameData {
     this.inactiveEnemies = new Set(Array.isArray(this.mode.inactiveEnemyKeys) ? this.mode.inactiveEnemyKeys : []);
     /** data/tuning.json (titles only, see the header) */
     this.tuning = this.raw.tuning && typeof this.raw.tuning === 'object' ? this.raw.tuning : {};
+  }
+
+  /**
+   * Add one chess record to THIS match's table — how a 甄选 (DIY) pick taken after the match was constructed reaches the
+   * engine (DESIGN §27, Match.setPicks). The record stays local to this instance: `visibleChess` is untouched (a 甄选
+   * record is never shop-visible) and no global lookup learns about it.
+   * @param {object} rec the chess record (data/waiguan.json)
+   * @returns {object|null} the stored record, or null when the record is unusable
+   */
+  addChess(rec) {
+    if (!rec || typeof rec !== 'object' || typeof rec.chessId !== 'string' || !Number.isInteger(rec.tier)) return null;
+    if (this._chess[rec.chessId]) return this._chess[rec.chessId];
+    this._chess = { ...this._chess, [rec.chessId]: rec };
+    return rec;
   }
 
   /**

@@ -48,3 +48,13 @@ dist/
 .dev.vars.*
 .replay-engines/
 public/resource-manifest.json
+
+# --- Android app (android/, docs/ANDROID.md): build output and the bundled game resources (tools/build-android.mjs) --
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/app/src/main/assets/game/
+dist-android/
+*.keystore
+*.jks

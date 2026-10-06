@@ -82,6 +82,7 @@ function harness(opts = {}) {
     emit: (name, p) => events.push([name, p]),
     setTimeout: (fn, ms) => { const id = nextTimer++; timers.set(id, { fn, ms }); return id; },
     clearTimeout: (id) => timers.delete(id),
+    nextFrame: opts.frames ? (fn) => opts.frames.push(fn) : undefined,
   });
   const ev = (type, x, y, extra = {}) => c[type]({ pointerId: 1, pointerType: 'mouse', button: 0, x, y, clientX: x, clientY: y, ...extra });
   const fire = () => { for (const [id, t] of [...timers]) { timers.delete(id); t.fn(); } };
@@ -184,6 +185,27 @@ describe('drag controller', () => {
     h.ev('pointerUp', 450, 250, { pointerType: 'touch' });
     assert.deepEqual(h.names(), ['pieceClick', 'pieceDetail']);
     assert.equal(h.events[0][1].detail, true);
+  });
+
+  test('a long press is decided at the next frame: a release delivered by then (a slow phone\'s long frame) is a tap', () => {
+    const frames = [];
+    const h = harness({ frames });
+    h.c.setEditable(true);
+    h.ev('pointerDown', 450, 250, { pointerType: 'touch' });
+    h.fire();                                         // 480 ms passed while the page was busy
+    assert.deepEqual(h.names(), [], 'nothing before the frame');
+    h.ev('pointerUp', 450, 250, { pointerType: 'touch' }); // the queued release comes first in that frame
+    for (const f of frames.splice(0)) f();
+    assert.deepEqual(h.names(), ['pieceClick']);
+    assert.equal(h.events[0][1].detail, false, 'a tap: the unit is selected');
+    // still held at the frame: the long press
+    const g = harness({ frames });
+    g.c.setEditable(true);
+    g.ev('pointerDown', 450, 250, { pointerType: 'touch' });
+    g.fire();
+    for (const f of frames.splice(0)) f();
+    g.ev('pointerUp', 450, 250, { pointerType: 'touch' });
+    assert.deepEqual(g.names(), ['pieceClick', 'pieceDetail']);
   });
 
   test('touch drag cancels the long-press timer and uses a larger threshold', () => {

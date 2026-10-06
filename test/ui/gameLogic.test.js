@@ -11,7 +11,7 @@ import {
   phaseMode, phaseBanner, isCombatPhase, isBossPhase, countdownState, phaseTotalSeconds, sortBonds, bondTier, nextThreshold,
   bondMembers, memberHeadCount, bannedPerBond, priceTone, mergeProgress, shopBlockReason, deploySets, indexPieces, placementContext, canPlace,
   boardTargets, dropIntent, normalizeDraft, normalizeSp, groupEnemies, factionTypes, snapHud, bossFrac, attackInterval, fmtNum,
-  rangeGridBox, shortcutFor, sanitizeSettings, DEFAULT_SETTINGS, normalizeResult, cycleField, fieldLabel, homeFieldId,
+  rangeGridBox, shortcutFor, sanitizeSettings, defaultQuality, DEFAULT_SETTINGS, normalizeResult, cycleField, fieldLabel, homeFieldId,
   activeBubbles, sortedPlayers, tileKey, prepCapsuleLabel, prepCamera, dropFailureReason, terrainInfo,
   pieceCharId, boardOperators, voiceLeader, createHudDelay, pickDrawn, drawnChanged, hudChanged, drawnOf, ownFieldGate, snapUnits,
 } from '../../public/js/ui/gameLogic.js';
@@ -527,6 +527,17 @@ describe('keyboard & settings', () => {
     assert.equal(sanitizeSettings({ bgm: 0.5 }).voice, DEFAULT_SETTINGS.voice, 'a saved profile without `voice` gets the default');
     assert.equal(sanitizeSettings({ bgm: 0.333 }).bgm, 0.33);
     assert.equal(sanitizeSettings({ quality: 'low' }).quality, 'low');
+  });
+  test('phone audit P6: a phone starts on 中, only when no quality was chosen — a saved one always wins', () => {
+    assert.equal(defaultQuality(false), 'high', 'desktop / tablet keep 高');
+    assert.equal(defaultQuality(true), 'medium');
+    assert.equal(DEFAULT_SETTINGS.quality, 'high', 'the shared default is untouched');
+    assert.equal(sanitizeSettings(null, defaultQuality(true)).quality, 'medium', 'first run on a phone');
+    assert.equal(sanitizeSettings({ bgm: 0.5 }, defaultQuality(true)).quality, 'medium', 'settings saved without a quality');
+    assert.equal(sanitizeSettings({ quality: 'ultra' }, defaultQuality(true)).quality, 'medium', 'an unknown value is no choice');
+    for (const q of ['high', 'medium', 'low']) assert.equal(sanitizeSettings({ quality: q }, defaultQuality(true)).quality, q, `saved ${q} wins on a phone`);
+    assert.equal(sanitizeSettings(null).quality, 'high', 'no fallback given: unchanged behaviour');
+    assert.deepEqual({ ...sanitizeSettings(null, 'medium'), quality: 'high' }, { ...DEFAULT_SETTINGS }, 'only the quality differs');
   });
 });
 
