@@ -17,13 +17,24 @@ test('pairing by seat: (1,2), (3,4); an odd player alone', () => {
   assert.deepEqual(pairPlayers([p(3), p(1), p(0), p(2)]).map((g) => g.map((x) => x.seat)), [[0, 1], [2, 3]]);
 });
 
-test('boss pool = bloodPoint[difficulty] in co-op whatever the alive count (× alive / 4 only with aliveScaling; solo × 0.25) × tuning; shared and never negative', () => {
+test('pairing of 5–8 players (remake extension): seat pairs up to (7,8), an odd last player alone, gaps skipped', () => {
+  const p = (seat) => ({ seat, playerId: `s${seat}` });
+  const pairs = (seats) => pairPlayers(seats.map(p)).map((g) => g.map((x) => x.seat));
+  assert.deepEqual(pairs([4, 3, 2, 1, 0]), [[0, 1], [2, 3], [4]]);
+  assert.deepEqual(pairs([0, 1, 2, 3, 4, 5, 6]), [[0, 1], [2, 3], [4, 5], [6]]);
+  assert.deepEqual(pairs([7, 6, 5, 4, 3, 2, 1, 0]), [[0, 1], [2, 3], [4, 5], [6, 7]]);
+  assert.deepEqual(pairs([7, 0, 5, 3, 2]), [[0, 2], [3, 5], [7]], 'eliminated seats leave gaps');
+});
+
+test('boss pool = bloodPoint[difficulty] in co-op whatever the alive count up to 4 (× alive / 4 only with aliveScaling; solo × 0.25; × alive / 4 above 4) × tuning; shared and never negative', () => {
   // research numbers (data/tuning.json left out); DESIGN §20.10: notice 5114's "敌方领袖的总生命值不变" is about the
   // mirrored copies, the one note on player count (巴哈姆特 12294 "聯機隊友(撤退/死掉)變少，最後boss血條也會變少") has no
   // proportion — config bossHpScale.aliveScaling (off) would apply × alive / 4
   const { tuning, ...RAW } = DATA; // eslint-disable-line no-unused-vars
   const gd = new GameData(RAW, 'mode_multi_hard');
-  for (const n of [4, 3, 2, 1, undefined, 9]) assert.equal(bossPoolHp(gd, 'boss_1', n), 1800000, `${n} alive`);
+  for (const n of [4, 3, 2, 1, undefined]) assert.equal(bossPoolHp(gd, 'boss_1', n), 1800000, `${n} alive`);
+  // rooms of 5–8 (remake extension, gamedata.js largeRoom): × alive / 4 above 4 alive
+  for (const [n, hp] of [[5, 2250000], [6, 2700000], [7, 3150000], [8, 3600000], [9, 4050000]]) assert.equal(bossPoolHp(gd, 'boss_1', n), hp, `${n} alive`);
   assert.equal(gd.bossPoolHp('boss_1', 2), bossPoolHp(gd, 'boss_1', 2), 'GameData agrees');
   // the flip: config bossHpScale.aliveScaling true scales the pool by alive / 4
   const scaled = new GameData({ ...RAW, config: { ...RAW.config, bossHpScale: { ...RAW.config.bossHpScale, aliveScaling: true },
@@ -33,7 +44,7 @@ test('boss pool = bloodPoint[difficulty] in co-op whatever the alive count (× a
   assert.equal(bossPoolHp(scaled, 'boss_1', 2), 900000);
   assert.equal(bossPoolHp(scaled, 'boss_1', 1), 450000);
   assert.equal(bossPoolHp(scaled, 'boss_1'), 1800000, 'no count given: a full team');
-  assert.equal(bossPoolHp(scaled, 'boss_1', 9), 1800000, 'never above the data value');
+  assert.equal(bossPoolHp(scaled, 'boss_1', 8), 3600000, 'above 4 alive only the large-room factor (× 8 / 4)');
   assert.equal(bossPoolHp(new GameData(RAW, 'mode_single_abyss'), 'boss_5', 1), 750000);
   assert.equal(bossPoolHp(new GameData(RAW, 'mode_single_funny'), 'boss_2', 1), 56250);
   // the balance layer multiplies the pool (docs/BALANCE.md)

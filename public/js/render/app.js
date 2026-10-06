@@ -128,7 +128,7 @@ import { BoardScene } from './board3d/scene.js';
 import { AREAS, areaFor, unionAreas } from './board3d/layout.js';
 import { layoutPen, penSignature } from './pen.js';
 import { IDENTITY, bossPrepField, tilesToDisp, leaderStand } from './prepfield.js';
-import { pickOnTile, pickBattle, hitRectAt, hitTiles } from './pick.js';
+import { pickOnTile, pickBattle, hitRectAt, hitTiles, pickBody } from './pick.js';
 import { promotionsOf } from './promote.js';
 import { createLoadGovernor, maxAnimInterval } from './loadlevel.js';
 
@@ -137,6 +137,12 @@ const PIECE_DIRS = new Set(['UP', 'RIGHT', 'DOWN', 'LEFT']);
 /** Stored facing of a prep piece (m.private board pieces carry `dir`; bench pieces have none ⇒ undefined). */
 const pieceDirOf = (piece) => (typeof piece?.dir === 'string' && PIECE_DIRS.has(piece.dir.toUpperCase()) ? piece.dir.toUpperCase() : undefined);
 const CAMERA_MS = 750;
+/** Longest the view's startup waits for its optional parts (fonts, board art, the 3D board) — see createFieldView. */
+const STARTUP_WAIT_MS = 4000;
+/** Touch pinch on the field (see the pointer handlers): the deepest zoom, the pan's reach past the framing, a tap's slop. */
+const USER_ZOOM_MAX = 3;
+const USER_PAN_SLACK = 0.3;
+const TAP_SLOP_PX = 12;
 /**
  * Game seconds the battle is drawn behind the simulation (render/interp.js lookAhead): enough for the whole wind-up of
  * 99% of the attack clips and for Texas' Attack_Start + strike (0.97 s). In GAME time so it holds at every battle /
@@ -176,12 +182,14 @@ function pickUnitOf(v, walks = false, hitArea = null) {
   if (!v || v.destroyed || (v.alive === false && !v.down)) return null;
   if (Number.isFinite(v.alpha) && v.alpha < 0.05) return null;
   const sc = v.screen;
-  const body = walks && sc && sc.s > 0 && !v.culled ? { x: sc.x, top: Number.isFinite(sc.top) ? sc.top : sc.y, feet: sc.y, s: sc.s } : null;
+  const shown = sc && sc.s > 0 && !v.culled ? { x: sc.x, top: Number.isFinite(sc.top) ? sc.top : sc.y, feet: sc.y, s: sc.s } : null;
+  const body = walks ? shown : null;
   const tile = walks ? null : { row: Math.round(v.y), col: Math.round(v.x) };
   // a huge boss (data `hitArea`): its hit area on the ground and a body box as wide as it are pickable (render/pick.js)
   const area = walks && !v.flying ? hitRectAt(v.x, v.y, hitArea) : null;
   if (area && body) body.hw = hitArea.w / 2;
-  return { tile, x: v.x, y: v.y, fly: walks && !!v.flying, body, area, depth: v.root && !v.root.destroyed ? v.root.zIndex : 0, ref: v };
+  // `drawn`: the standing unit's body on screen, for a finger on an empty tile (render/pick.js pickBody)
+  return { tile, x: v.x, y: v.y, fly: walks && !!v.flying, body, drawn: walks ? null : shown, area, depth: v.root && !v.root.destroyed ? v.root.zIndex : 0, ref: v };
 }
 
 let pixiPromise = null;
@@ -313,6 +321,10 @@ export function renderInfo(u) {
     // where a scouted prep piece stands (Match.prepFieldMeta: 'board' | 'hand' | 'temp'): a tap on a bench / temp
     // operator opens its card without a range (ui/facing.js unitRange)
     area: typeof u.area === 'string' ? u.area : undefined,
+    // the ally's equipped item ids (UnitInfo.items, DESIGN §16 / §21.11): the detail card needs them for a teammate's
+    // unit (resolveDetail `unitItems` → the read-only 装备 section and the 变形同构体 pairing chips); the owner's own
+    // unit takes its items from the piece instead, so only other players' boards ever read this field
+    items: Array.isArray(u.items) ? u.items.filter((x) => typeof x === 'string') : undefined,
   };
 }
 
@@ -389,6 +401,13 @@ function makeData(src) {
 }
 
 const QUALITY_RES = { high: 2, medium: 1.5, low: 1 };
+/**
+ * Frame-rate cap of the ticker (phone audit P8): a 90 / 120 Hz phone drew 120 fps even in the nearly static prep phase
+ * (battery, heat). PIXI's limiter drops whole display frames and compares whole milliseconds, so a cap of exactly 60
+ * also skips frames on a 60 Hz display (measured on its Ticker.update: ~57–59 fps with 33 ms gaps); two fps of headroom
+ * keep 60 Hz at 60 and 90 / 120 / 144 Hz at ~60. Animation time is unaffected: frameBody takes its dt from performance.now().
+ */
+const MAX_FPS = 62;
 /** Pixel-ratio cap of the 3D board canvas per quality (its fill cost is the PBR board, not the sprites). */
 const BOARD_RES = { high: 2, medium: 1.25, low: 1 };
 
@@ -431,6 +450,12 @@ export async function createFieldView(host, options = {}) {
   if (!host || typeof host.appendChild !== 'function') throw new TypeError('createFieldView: host element required');
   const opts = options && typeof options === 'object' ? options : {};
   const P = await ensurePixi();
+  // the optional waits below (asset manifest, fonts, board art, the 3D board) share one budget: they only spare the
+  // first frame a late swap — each upgrades in place when it lands — and on a slow phone link their sum (14 s) ran
+  // past ui/fieldHost.js's engine timeout, which then gave the whole match to the flat DOM board (user report
+  // 2026-10-06: "整个棋盘位于中间位置，缩放过小")
+  const waitUntil = performance.now() + STARTUP_WAIT_MS;
+  const waitFor = (ms) => Math.max(0, Math.min(ms, waitUntil - performance.now()));
   const assets = resolveAssets(opts.assets);
   const data = makeData(opts.data);
   const settings = { damageNumbers: true, quality: 'high', ...(opts.settings || {}) };
@@ -444,9 +469,9 @@ export async function createFieldView(host, options = {}) {
   // the manifest, and the optional local-art manifest in parallel: unit views pick an enemy's local-client model by it
   // (assets.js spineEntry, DESIGN §13 — 灼热源石虫 / 炽焰源石虫); absent or slow, they draw the web models
   await withTimeout(Promise.all([assets.ready ? assets.ready() : null, assets.local ? assets.local() : null]
-    .map((p) => Promise.resolve(p).catch(() => {}))), 4000);
+    .map((p) => Promise.resolve(p).catch(() => {}))), waitFor(4000));
   // web fonts for the bitmap damage numbers / tier chips (never block long)
-  try { if (document.fonts?.load) await withTimeout(Promise.all([document.fonts.load('700 40px Bender'), document.fonts.load('700 40px Oxanium')]), 1500); } catch { /* ignore */ }
+  try { if (document.fonts?.load) await withTimeout(Promise.all([document.fonts.load('700 40px Bender'), document.fonts.load('700 40px Oxanium')]), waitFor(1500)); } catch { /* ignore */ }
 
   const size = () => ({ width: Math.max(1, host.clientWidth || 1), height: Math.max(1, host.clientHeight || 1) });
   const dpr = () => Math.min(globalThis.devicePixelRatio || 1, QUALITY_RES[settings.quality] || 2);
@@ -458,6 +483,7 @@ export async function createFieldView(host, options = {}) {
     width: s0.width, height: s0.height, antialias: opts.antialias ?? (settings.quality === 'high' && (globalThis.devicePixelRatio || 1) < 1.5), backgroundColor: 0x0a0e0d, backgroundAlpha: 0,
     resolution: dpr(), autoDensity: true, powerPreference: 'high-performance',
   });
+  app.ticker.maxFPS = MAX_FPS;
   const canvas = app.view;
   canvas.style.display = 'block';
   canvas.style.width = '100%';
@@ -520,6 +546,11 @@ export async function createFieldView(host, options = {}) {
   let stageRec = null;
   let cam = presetCamera('prep', { width: s0.width, height: s0.height, padding: defaultPadding('prep', s0) }, { hud: hudBands('prep', s0) });
   let camFrom = null, camTo = null, camT0 = 0, camKind = 'prep', camOpts = {}, camMs = CAMERA_MS;
+  // the player's pinch zoom / pan on a touch screen: an image transform of `userBase` (the camera when the gesture
+  // began) — screen' = z·screen + (ox, oy), i.e. the focal length × z and the principal point moved (the same 2D
+  // transform as projection.js clearHud), so picking, the three.js board and every layer stay consistent. A new
+  // camera request (setCamera, a resize) drops it.
+  let userBase = null, userZ = 1, userOx = 0, userOy = 0;
   let pendingView = null;     // tile band/focus to apply when the camera transition ends
   const views = new Map();    // key → view (prep: 'p:'+uid; battle: unit id)
   let prepPieces = [];        // { uid, piece, area, idx, row, col, key }
@@ -611,7 +642,7 @@ export async function createFieldView(host, options = {}) {
     if (art && !destroyed) { tiles.setArt(art); tiles.project(cam, true); }
     return art;
   }, () => null);
-  await withTimeout(artPromise, 2500);
+  await withTimeout(artPromise, waitFor(2500));
 
   // ---- 3D board layer (render/board3d, DESIGN §15) -----------------------------------------------------------
   let board3d = null;          // BoardScene while the 3D board is on
@@ -690,7 +721,7 @@ export async function createFieldView(host, options = {}) {
   }
   if (want3d) {
     const ready = Promise.all([threePromise, packPromise]).then(([THREE, pack]) => (THREE && pack ? enable3d(THREE, pack) : false), () => false);
-    await withTimeout(ready, 6000);
+    await withTimeout(ready, waitFor(6000));
   }
   // the official soft shadow sprite replaces the procedural one once loaded (may already be cached; asked again when the
   // manifest arrives late)
@@ -776,6 +807,7 @@ export async function createFieldView(host, options = {}) {
     }
     camKind = nextKind;
     camOpts = { ...o };
+    userBase = null; userZ = 1; userOx = userOy = 0;
     // the field actually shown (a 'prep' camera on the boss rows is the Final Assault prep: boss field built / drawn)
     const vk = viewKind(camKind, camOpts);
     if (vk === 'prep') setPrepField(IDENTITY);
@@ -1199,6 +1231,11 @@ export async function createFieldView(host, options = {}) {
   }
 
   /** The prep piece under a canvas point: the one on the tile under it (render/pick.js; board, bench and temp rows). */
+  /** A press of a finger is being resolved (render/pick.js pickBody: an empty tile picks the body drawn over it). */
+  let touchPress = false;
+  /** The standing units as pickBody candidates (their drawn bodies). */
+  const drawnBodies = (units) => units.filter((u) => u.drawn).map((u) => ({ ...u, body: u.drawn }));
+
   function pieceAt(x, y) {
     if (mode !== 'prep') return null;
     const units = [];
@@ -1206,7 +1243,7 @@ export async function createFieldView(host, options = {}) {
       const u = pickUnitOf(views.get(e.key));
       if (u) { u.entry = e; units.push(u); }
     }
-    const best = pickOnTile(units, groundTile(x, y))?.entry;
+    const best = pickOnTile(units, groundTile(x, y))?.entry || (touchPress ? pickBody(drawnBodies(units), x, y)?.entry : null);
     if (!best) return null;
     return { uid: best.uid, kind: best.piece.kind, id: best.piece.id, area: best.area, idx: best.idx, row: best.row, col: best.col, piece: best.piece, draggable: true };
   }
@@ -1366,28 +1403,96 @@ export async function createFieldView(host, options = {}) {
       const u = pickUnitOf(v, enemy, enemy ? data.enemy(v.info.defId)?.hitArea ?? null : null);
       if (u) units.push(u);
     }
-    const hit = pickBattle(units, groundTile(x, y), x, y);
+    const hit = pickBattle(units, groundTile(x, y), x, y) || (touchPress ? pickBody(drawnBodies(units), x, y) : null);
     return hit ? hit.ref : null;
+  }
+
+  // ---- touch: pinch zoom / two-finger pan (user report: on a phone the pieces were too small to tap) -------------
+  // One finger keeps every existing gesture (tap, long press, drag). A second finger on the field starts a pinch of that
+  // pair of fingers: an ongoing piece drag is cancelled (the piece goes home); a third finger is ignored, the pinch ends
+  // when one of its two lifts, and no finger counts again — no new pinch either — until all have lifted. Zoom
+  // USER_ZOOM_MAX× at most, never below the camera's own framing; the pan may pull the board up to USER_PAN_SLACK of
+  // the viewport past its framing (out from under the HUD). In battle a touch picks a unit on release (a tap), so the
+  // first finger of a pinch selects nothing.
+  const touches = new Map();  // pointerId → canvas point, fingers on the field
+  let pinch = null;           // { a, b (its two pointerIds), d0, mx0, my0, z0, ox0, oy0 } while both are down
+  let gestured = false;       // a pinch happened: ignore the fingers until all have lifted
+  let battleTap = null;       // { pointerId, x, y, e } a battle touch waiting for its release
+
+  function userCam() {
+    const c = userBase.clone();
+    c.scale = userBase.scale * userZ;
+    c.cx = userZ * userBase.cx + userOx;
+    c.cy = userZ * userBase.cy + userOy;
+    return c.update();
+  }
+
+  /** Distance and midpoint of the pinch's two fingers (pointerIds `a`, `b`). */
+  function fingers(a, b) {
+    const p = touches.get(a), q = touches.get(b);
+    return { d: Math.max(1, Math.hypot(q.x - p.x, q.y - p.y)), mx: (p.x + q.x) / 2, my: (p.y + q.y) / 2 };
+  }
+
+  function startPinch(a, b) {
+    drag.pointerCancel(null);  // a piece being pressed / dragged goes home (pieceDragEnd → endDragVisual)
+    battleTap = null;
+    if (camTo) stepCamera(camT0 + camMs + 1); // a camera still flying lands first
+    if (!userBase) { userBase = cam; userZ = 1; userOx = userOy = 0; }
+    const f = fingers(a, b);
+    pinch = { a, b, d0: f.d, mx0: f.mx, my0: f.my, z0: userZ, ox0: userOx, oy0: userOy };
+    gestured = true;
+  }
+
+  function movePinch() {
+    if (!pinch || !userBase || camTo || !touches.has(pinch.a) || !touches.has(pinch.b)) return;
+    const f = fingers(pinch.a, pinch.b);
+    const W = vp.width, H = vp.height;
+    const z = Math.max(1, Math.min(USER_ZOOM_MAX, pinch.z0 * f.d / pinch.d0));
+    // the base-camera point under the fingers' first midpoint stays under their midpoint
+    const sx = (pinch.mx0 - pinch.ox0) / pinch.z0, sy = (pinch.my0 - pinch.oy0) / pinch.z0;
+    const slX = W * USER_PAN_SLACK, slY = H * USER_PAN_SLACK;
+    userZ = z;
+    userOx = Math.max(W - z * W - slX, Math.min(slX, f.mx - z * sx));
+    userOy = Math.max(H - z * H - slY, Math.min(slY, f.my - z * sy));
+    cam = userCam();
+  }
+
+  /** A press on the battle view: a unit, else a scouting board's leader or pen figure under the point, opens its card. */
+  function battlePress(ev, e) {
+    const v = battleUnitAt(ev.x, ev.y);
+    if (v) {
+      const info = infos.get(v.id) || v.info;
+      const payload = { unitId: v.id, uid: info?.uid ?? null, unit: info, button: e.button, detail: e.button === 2, clientX: e.clientX, clientY: e.clientY };
+      emit('pieceClick', payload);
+      if (e.button === 2) emit('pieceDetail', payload);
+    } else if (leader || penViews.size) {
+      // a scouting board: the round's leader on its boss field, the pen's figures
+      const pv = leaderAt(ev.x, ev.y) || penUnitAt(ev.x, ev.y);
+      if (pv) emitPenClick(pv, e);
+    }
   }
 
   const onPointerDown = (e) => {
     if (destroyed) return;
     const ev = evPayload(e);
-    if (mode === 'battle') {
-      const v = battleUnitAt(ev.x, ev.y);
-      if (v) {
-        const info = infos.get(v.id) || v.info;
-        const payload = { unitId: v.id, uid: info?.uid ?? null, unit: info, button: e.button, detail: e.button === 2, clientX: e.clientX, clientY: e.clientY };
-        emit('pieceClick', payload);
-        if (e.button === 2) emit('pieceDetail', payload);
-      } else if (leader || penViews.size) {
-        // a scouting board: the round's leader on its boss field, the pen's figures
-        const pv = leaderAt(ev.x, ev.y) || penUnitAt(ev.x, ev.y);
-        if (pv) emitPenClick(pv, e);
+    if (e.pointerType === 'touch') {
+      touches.set(e.pointerId, { x: ev.x, y: ev.y });
+      if (gestured) return;          // a pinch ran: no finger counts (no new pinch) until all have lifted
+      if (touches.size >= 2) {
+        const [a, b] = touches.keys(); // the finger already down and this one
+        startPinch(a, b);
+        return;
       }
+    }
+    if (mode === 'battle') {
+      if (e.pointerType === 'touch') { battleTap = { pointerId: e.pointerId, x: ev.x, y: ev.y, e: { button: e.button, clientX: e.clientX, clientY: e.clientY } }; return; }
+      battlePress(ev, e);
       return;
     }
-    if (drag.pointerDown(ev)) { try { canvas.setPointerCapture(e.pointerId); } catch { /* ignore */ } return; }
+    touchPress = e.pointerType === 'touch';
+    let pressed;
+    try { pressed = drag.pointerDown(ev); } finally { touchPress = false; }
+    if (pressed) { try { canvas.setPointerCapture(e.pointerId); } catch { /* ignore */ } return; }
     if (mode === 'prep') { const lv = leaderAt(ev.x, ev.y); if (lv) { emitPenClick(lv, e); return; } }
     if (penViews.size && mode === 'prep') {
       const pv = penUnitAt(ev.x, ev.y);
@@ -1397,6 +1502,11 @@ export async function createFieldView(host, options = {}) {
   const onPointerMove = (e) => {
     if (destroyed) return;
     const ev = evPayload(e);
+    if (e.pointerType === 'touch' && touches.has(e.pointerId)) {
+      touches.set(e.pointerId, { x: ev.x, y: ev.y });
+      if (gestured) { if (pinch && (e.pointerId === pinch.a || e.pointerId === pinch.b)) movePinch(); return; }
+      if (battleTap && battleTap.pointerId === e.pointerId && Math.hypot(ev.x - battleTap.x, ev.y - battleTap.y) > TAP_SLOP_PX) battleTap = null;
+    }
     if (mode === 'battle') {
       if (e.pointerType === 'touch') return;
       const v = battleUnitAt(ev.x, ev.y);
@@ -1409,8 +1519,35 @@ export async function createFieldView(host, options = {}) {
     }
     drag.pointerMove(ev);
   };
-  const onPointerUp = (e) => { if (!destroyed && mode !== 'battle') drag.pointerUp(evPayload(e)); try { canvas.releasePointerCapture(e.pointerId); } catch { /* ignore */ } };
-  const onPointerCancel = (e) => { if (!destroyed) drag.pointerCancel(evPayload(e)); };
+  /** A finger lifted (or was cancelled): true when it belonged to a pinch and must not reach the other handlers. */
+  function liftTouch(e) {
+    if (e.pointerType !== 'touch' || !touches.has(e.pointerId)) return false;
+    touches.delete(e.pointerId);
+    if (pinch && (e.pointerId === pinch.a || e.pointerId === pinch.b)) pinch = null;
+    const was = gestured;
+    if (!touches.size) gestured = false;
+    return was;
+  }
+  const onPointerUp = (e) => {
+    if (!destroyed && !liftTouch(e)) {
+      if (mode === 'battle') {
+        const t = battleTap;
+        battleTap = null;
+        // a tap: released within TAP_SLOP_PX of where it went down (the last move may not have come as a pointermove)
+        const up = evPayload(e);
+        if (t && t.pointerId === e.pointerId && Math.hypot(up.x - t.x, up.y - t.y) <= TAP_SLOP_PX) {
+          touchPress = true;
+          try { battlePress({ x: t.x, y: t.y }, t.e); } finally { touchPress = false; }
+        }
+      } else drag.pointerUp(evPayload(e));
+    }
+    try { canvas.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
+  };
+  const onPointerCancel = (e) => {
+    if (destroyed) return;
+    if (battleTap && battleTap.pointerId === e.pointerId) battleTap = null;
+    if (!liftTouch(e)) drag.pointerCancel(evPayload(e));
+  };
   const onPointerLeave = (e) => { if (!destroyed && !drag.dragging) drag.pointerLeave(evPayload(e)); if (hoverUnit) { hoverUnit = null; emit('pieceHover', { uid: null, unitId: null }); } };
   const onContext = (e) => e.preventDefault();
   // A finger is handled through the pointer events above only. The compatibility mouse events + click of a tap come
@@ -1482,12 +1619,29 @@ export async function createFieldView(host, options = {}) {
     return info;
   }
 
+  // a hand item on a scouted prep board (UnitInfo kind 'item'): the plate's icon and colour resolve client-side,
+  // exactly like the own prep bench (pieceInfo)
+  function scoutItemInfo(info) {
+    const rec = data.item(info.defId);
+    const tier = rec?.tier || info.tier || 1;
+    return { ...info,
+      icon: assets.itemIcon ? assets.itemIcon(rec ? { trapId: rec.trapId, iconId: rec.iconId } : info.defId) : null,
+      color: (info.golden || rec?.isGolden) ? 0xffc600 : TIER_COLORS[tier] || TIER_COLORS[1] };
+  }
+
   function battleView(id) {
     let v = views.get(id);
     if (v) return v;
     const info = infos.get(id);
     if (!info || gone.has(id)) return null;
-    v = info.kind === 'device' ? new DeviceView(ctx, info) : new UnitView(ctx, info, { prep: !!battleMeta?.prep && info.side === 'ally' });
+    v = info.kind === 'device' ? new DeviceView(ctx, info)
+      : info.kind === 'item' ? new ItemView(ctx, scoutItemInfo(info))
+      : new UnitView(ctx, info, { prep: !!battleMeta?.prep && info.side === 'ally' });
+    // a teammate's operator shows its equipped items like the own prep bench does (item pips; user playtest #2:
+    // at the unit, not only in the detail card) — prep surfaces only, the battle HUD stays as it is
+    if (v.setItems && battleMeta?.prep && Array.isArray(info.items) && info.items.length) {
+      v.setItems(info.items.map((it) => { const r = data.item(it); return assets.itemIcon ? assets.itemIcon(r ? { trapId: r.trapId, iconId: r.iconId } : it) : null; }));
+    }
     v.setWorld(info.x, info.y, 0);
     v._seen = false;
     v._born = performance.now();
@@ -1850,6 +2004,7 @@ export async function createFieldView(host, options = {}) {
     board3d?.resize(sz.width, sz.height, boardDpr());
     layoutBackdrop();
     const target = targetCamera(camKind, camOpts);
+    userBase = null; userZ = 1; userOx = userOy = 0;
     if (camTo) camTo = target; else cam = target;
     tiles.project(cam, true);
   }

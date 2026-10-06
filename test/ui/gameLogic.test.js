@@ -11,12 +11,13 @@ import {
   phaseMode, phaseBanner, isCombatPhase, isBossPhase, countdownState, phaseTotalSeconds, sortBonds, bondTier, nextThreshold,
   bondMembers, memberHeadCount, bannedPerBond, priceTone, mergeProgress, shopBlockReason, deploySets, indexPieces, placementContext, canPlace,
   boardTargets, dropIntent, normalizeDraft, normalizeSp, groupEnemies, factionTypes, snapHud, bossFrac, attackInterval, fmtNum,
-  rangeGridBox, shortcutFor, sanitizeSettings, DEFAULT_SETTINGS, normalizeResult, cycleField, fieldLabel, homeFieldId,
+  rangeGridBox, shortcutFor, sanitizeSettings, defaultQuality, DEFAULT_SETTINGS, normalizeResult, cycleField, fieldLabel, homeFieldId,
   activeBubbles, sortedPlayers, tileKey, prepCapsuleLabel, prepCamera, dropFailureReason,
   pieceCharId, boardOperators, voiceLeader, createHudDelay, pickDrawn, drawnChanged, hudChanged, drawnOf, ownFieldGate, snapUnits,
 } from '../../public/js/ui/gameLogic.js';
 import { pairPlayers } from '../../server/match/finalAssault.js';
 import { PHASE, GEO } from '../../shared/constants.js';
+import { SP_CARDS_MAX } from '../../shared/protocol.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const load = (f) => JSON.parse(readFileSync(path.join(ROOT, 'data', f), 'utf8'));
@@ -412,7 +413,8 @@ describe('drafts', () => {
     const sp2 = normalizeSp({ cards: [{}, {}], order: ['b', 'a'], turn: 0, picks: [{ playerId: 'b', idx: 1 }, { playerId: 'x', idx: 9 }] }, players);
     assert.equal(sp2.turnPid, 'b'); assert.equal(sp2.cards[1].takenBy, 'b'); assert.equal(sp2.pickOf.has('x'), false);
     assert.equal(normalizeSp(null), null);
-    assert.equal(normalizeSp({ cards: new Array(9).fill({}) }).cards.length, 6, 'at most 6 cards');
+    // at most the server's most cards: co-op max(6, alive + 2) — 6 for 1–4 players, 10 for 8 (shared/protocol.js)
+    assert.equal(normalizeSp({ cards: new Array(SP_CARDS_MAX + 3).fill({}) }).cards.length, SP_CARDS_MAX, 'at most SP_CARDS_MAX cards');
   });
 });
 
@@ -495,6 +497,20 @@ describe('keyboard & settings', () => {
     assert.equal(shortcutFor({ key: 'r', code: 'KeyR' }), 'refresh');
     assert.equal(shortcutFor({ key: 'F', code: 'KeyF' }), 'freeze');
     assert.equal(shortcutFor({ key: 'd' }), 'levelUp');
+    assert.equal(shortcutFor({ key: 'q', code: 'KeyQ' }), 'retreat');
+    assert.equal(shortcutFor({ key: 'Q' }), 'retreat');
+    assert.equal(shortcutFor({ code: 'KeyX' }), 'sell');
+    assert.equal(shortcutFor({ key: 'X' }), 'sell');
+    for (const key of ['q', 'x']) {
+      assert.equal(shortcutFor({ key, repeat: true }), null);
+      assert.equal(shortcutFor({ key, ctrlKey: true }), null);
+      assert.equal(shortcutFor({ key, metaKey: true }), null);
+      assert.equal(shortcutFor({ key, altKey: true }), null);
+      for (const tagName of ['INPUT', 'TEXTAREA', 'SELECT']) {
+        assert.equal(shortcutFor({ key, target: { tagName } }), null);
+      }
+      assert.equal(shortcutFor({ key, target: { isContentEditable: true } }), null);
+    }
     assert.equal(shortcutFor({ key: ' ', code: 'Space' }), 'ready');
     assert.equal(shortcutFor({ key: 'Escape' }), 'escape');
     assert.equal(shortcutFor({ key: 'r', ctrlKey: true }), null);
@@ -504,7 +520,7 @@ describe('keyboard & settings', () => {
     assert.equal(shortcutFor({ key: ' ', code: 'Space', target: { tagName: 'BUTTON' } }), 'ready', 'space readies even with a HUD button focused');
     assert.equal(shortcutFor({ key: ' ', code: 'Space', target: { tagName: 'TEXTAREA' } }), null);
     assert.equal(shortcutFor({ key: 'd', target: { tagName: 'DIV', isContentEditable: true } }), null);
-    assert.equal(shortcutFor({ key: 'x' }), null);
+    assert.equal(shortcutFor({ key: 'z' }), null);
     assert.equal(shortcutFor(null), null);
   });
   test('sanitizeSettings', () => {
@@ -515,6 +531,17 @@ describe('keyboard & settings', () => {
     assert.equal(sanitizeSettings({ voiceLang: 'off' }).voiceLang, 'off');
     assert.equal(sanitizeSettings({ bgm: 0.333 }).bgm, 0.33);
     assert.equal(sanitizeSettings({ quality: 'low' }).quality, 'low');
+  });
+  test('phone audit P6: a phone starts on 中, only when no quality was chosen — a saved one always wins', () => {
+    assert.equal(defaultQuality(false), 'high', 'desktop / tablet keep 高');
+    assert.equal(defaultQuality(true), 'medium');
+    assert.equal(DEFAULT_SETTINGS.quality, 'high', 'the shared default is untouched');
+    assert.equal(sanitizeSettings(null, defaultQuality(true)).quality, 'medium', 'first run on a phone');
+    assert.equal(sanitizeSettings({ bgm: 0.5 }, defaultQuality(true)).quality, 'medium', 'settings saved without a quality');
+    assert.equal(sanitizeSettings({ quality: 'ultra' }, defaultQuality(true)).quality, 'medium', 'an unknown value is no choice');
+    for (const q of ['high', 'medium', 'low']) assert.equal(sanitizeSettings({ quality: q }, defaultQuality(true)).quality, q, `saved ${q} wins on a phone`);
+    assert.equal(sanitizeSettings(null).quality, 'high', 'no fallback given: unchanged behaviour');
+    assert.deepEqual({ ...sanitizeSettings(null, 'medium'), quality: 'high' }, { ...DEFAULT_SETTINGS }, 'only the quality differs');
   });
 });
 

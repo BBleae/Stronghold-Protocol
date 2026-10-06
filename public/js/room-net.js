@@ -82,7 +82,7 @@ export class RoomNet extends Net {
    * request ({ application } for a join application). A failure closes the socket, returns to the menu (or to 'lost'
    * when the login is invalid) and rejects.
    * @param {{ kind: 'create'|'join'|'joinApproved'|'resume'|'spectate', code?: string, ticket?: string,
-   *   token?: string, mode?: string, difficulty?: string }} intent
+   *   token?: string, mode?: string, difficulty?: string, capacity?: number }} intent
    */
   async enter(intent) {
     if (this.state === 'entering') throw new NetError('BUSY');
@@ -116,7 +116,7 @@ export class RoomNet extends Net {
    * (NOT_IN_ROOM) and while the login is invalid (LOGIN_REQUIRED).
    */
   request(type, fields = {}, opts = {}) {
-    if (type === 'room.create') return this.enter({ kind: 'create', mode: fields.mode, difficulty: fields.difficulty });
+    if (type === 'room.create') return this.enter({ kind: 'create', mode: fields.mode, difficulty: fields.difficulty, capacity: fields.capacity });
     if (type === 'room.join') return this.enter({ kind: 'join', code: fields.code });
     if (this.state === 'menu') return Promise.reject(new NetError('NOT_IN_ROOM'));
     const reply = this.state === 'lost'
@@ -243,7 +243,11 @@ export class RoomNet extends Net {
   // an approved application joins it, a seat in a running room is resumed.
   async _enterSeat(seat, intent) {
     const welcome = await this._open({ code: seat.code, ticket: seat.ticket });
-    if (seat.reserved) return super.request('room.create', { mode: intent.mode, difficulty: intent.difficulty });
+    if (seat.reserved) {
+      // capacity: the co-op room's seats when the page asks for more than the default (room.create { capacity? })
+      return super.request('room.create', { mode: intent.mode, difficulty: intent.difficulty,
+        ...(Number.isInteger(intent.capacity) ? { capacity: intent.capacity } : {}) });
+    }
     if (seat.join) return super.request('room.join', { code: seat.code });
     return this._resumed(welcome);
   }

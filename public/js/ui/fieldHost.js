@@ -14,7 +14,11 @@ import { data } from '../data.js';
 import { audio } from '../audio.js';
 import { settingsStore } from './settings.js';
 
-const LOAD_TIMEOUT_MS = 12000;
+// The engine gets this long to mount, all stages together (script downloads + its own startup, which waits ≤ 4 s for
+// optional parts — render/app.js STARTUP_WAIT_MS): the DOM fallback is far smaller and flatter, so a slow phone link
+// must not land there for a whole match (it did at 12 s on 4G — user report 2026-10-06). An engine that turns up after
+// the timeout is destroyed (the fallback owns the host by then).
+const LOAD_TIMEOUT_MS = 30000;
 const METHODS = ['setStage', 'setCamera', 'setPrep', 'enterBattle', 'pushSnapshot', 'pushEvents', 'highlightTiles', 'on', 'resize', 'destroy'];
 // direction-step hooks (ui/facingWheel.js): optional — the wheel falls back to the engine's dev hooks when absent;
 // setPen (enemy preview pen list), prepField ({ kind, side, mirror } of the Final Assault prep), stripesUnder (the view
@@ -75,7 +79,9 @@ export const HUD_REM = Object.freeze({
  * @param {string} kind
  * @param {{ width: number, height: number }} size
  * @param {{ shop?: boolean }} [opts] `shop: false` = the folded shop's band
- * @returns {{ top: number, bottom: number }|null}
+ * On a touch screen with the shop bar shown the bands carry `minZoom: 1` (render/projection.js clearHud): the board is
+ * never zoomed out below the official framing, so its pieces stay big enough to tap.
+ * @returns {{ top: number, bottom: number, minZoom?: number }|null}
  */
 export function hudBands(kind, size, opts) {
   if (kind !== 'prep' && kind !== 'bossPrep') return null;
@@ -85,8 +91,10 @@ export function hudBands(kind, size, opts) {
   let safeTop = 0;
   let safeBottom = 0;
   let corner = 0;
+  let touch = false;
   try {
     rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 100;
+    touch = document.documentElement.classList.contains('sp-coarse');
     // the HUD layer starts below the top safe-area inset and ends above the bottom one (css/devices.css .gm__hud)
     const hud = document.querySelector('.gm__hud')?.getBoundingClientRect();
     safeTop = Math.max(0, hud?.top || 0);
@@ -98,10 +106,15 @@ export function hudBands(kind, size, opts) {
   const bottom = folded
     ? Math.max(safeBottom + rem * HUD_REM.shopTabTop + HUD_REM.shopTabBorderPx, corner || safeBottom + rem * HUD_REM.cornerTop)
     : rem * HUD_REM.shopBarTop + HUD_REM.shopBarBorderPx;
-  return {
+  const bands = {
     top: Math.min(h * 0.4, safeTop + rem * HUD_REM.bondStripBottom),
     bottom: Math.min(h * 0.4, bottom),
   };
+  // with the shop bar shown, a touch screen never zooms the board out below the official framing (render/projection.js
+  // clearHud minZoom): the bench stays clear and the back rows may go under the top HUD — with the browser's bars showing
+  // (780×300) the zoom-out shrank the pieces to 15 px, too small to tap (user report 2026-10-06). Folded, the
+  // shop-collapsed camera is bigger already and keeps the whole board in view (public issue #5).
+  return touch && !folded ? { ...bands, minZoom: 1 } : bands;
 }
 
 /**
@@ -192,16 +205,23 @@ export async function mountFieldView(host) {
   const pref = renderPref();
   const opts = { data, assets: data.get('assets'), audio, settings: settingsStore.get(), padding: hudPadding, hud: hudBands };
   if (pref !== 'fallback') {
+    // one deadline for the whole mount (the imports and the view's startup): LOAD_TIMEOUT_MS each would add up to 90 s
+    const deadline = Date.now() + LOAD_TIMEOUT_MS;
+    const left = () => Math.max(0, deadline - Date.now());
     try {
       // the shared asset store (public/js/assets.js) keeps its Spine cache across remounts (next match, reconnect)
-      const am = await withTimeout(import('../assets.js'), LOAD_TIMEOUT_MS, 'asset store import').catch(() => null);
+      const am = await withTimeout(import('../assets.js'), left(), 'asset store import').catch(() => null);
       if (am?.assets && typeof am.assets.ready === 'function') {
         opts.assets = am.assets;
         seedAssets(am.assets);
       }
-      const mod = await withTimeout(import('../render/app.js'), LOAD_TIMEOUT_MS, 'render engine import');
+      const mod = await withTimeout(import('../render/app.js'), left(), 'render engine import');
       if (typeof mod?.createFieldView !== 'function') throw new Error('createFieldView missing');
-      const view = await withTimeout(Promise.resolve(mod.createFieldView(host, opts)), LOAD_TIMEOUT_MS, 'createFieldView');
+      const mounting = Promise.resolve(mod.createFieldView(host, opts));
+      const view = await withTimeout(mounting, left(), 'createFieldView').catch((err) => {
+        mounting.then((late) => { try { late?.destroy?.(); } catch { /* ignore */ } }, () => {});
+        throw err;
+      });
       const missing = METHODS.filter((k) => typeof view?.[k] !== 'function');
       if (missing.length) {
         try { view?.destroy?.(); } catch { /* ignore */ }

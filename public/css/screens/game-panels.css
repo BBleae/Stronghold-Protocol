@@ -465,6 +465,37 @@ button.bpop__harmony:hover { border-style: solid; color: #fff; }
 .spcard__confirm b { font-size: .18rem; font-weight: 900; letter-spacing: .22em; padding-left: .22em; }
 .spcard__confirm small { font-size: .12rem; letter-spacing: .1em; opacity: .75; }
 .spov__confirm { animation: pulse-gold 1.2s var(--ease-in-out) infinite; }
+/* A larger room's draft (5–8 players, a remake extension: 7–10 cards — ui/choiceOverlay.js spGridLayout): ceil(n / 2)
+   columns × 2 rows (--sp-cols), a smaller icon and name and the same text size; the effect text fills the card under
+   the head and scrolls inside it when it is longer, with a fade at its foot while more is below (scroll-driven: no fade
+   when it fits; the card's tooltip has the whole text). Up to 6 cards keep the rules above. */
+.spov__grid--wide { grid-template-columns: repeat(var(--sp-cols, 5), minmax(0, 1fr)); gap: .14rem; }
+.spov__grid--wide .spcard { --sp-px: .14rem; --tk: .42rem; --tk-at: .05rem; gap: .08rem; padding: .12rem var(--sp-px); }
+.spov__grid--wide .spcard__tier { left: .04rem; top: .04rem; }
+.spov__grid--wide .spcard__head { gap: .1rem; }
+.spov__grid--wide .spcard__icon { width: .72rem; height: .72rem; padding: .03rem; }
+.spov__grid--wide .spcard__name { font-size: .24rem; }
+.spov__grid--wide .spcard__desc {
+  flex: 1 1 auto; min-height: 0; display: block; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain;
+  scrollbar-width: thin; scrollbar-color: rgba(200, 220, 212, .35) transparent;
+}
+@supports (animation-timeline: scroll()) {
+  .spov__grid--wide .spcard__desc { animation: spcard-more linear both; animation-timeline: scroll(self); }
+}
+@keyframes spcard-more {
+  0%, 97% { -webkit-mask-image: linear-gradient(#000 calc(100% - .3rem), transparent); mask-image: linear-gradient(#000 calc(100% - .3rem), transparent); }
+  100% { -webkit-mask-image: none; mask-image: none; }
+}
+/* the pick order of more than 4 players: tighter entries with shorter names (the name is the entry's tooltip) */
+.spov__order--dense { flex-wrap: wrap; gap: .06rem; }
+.spov__order--dense .spov__who { gap: .05rem; padding: .04rem .08rem .04rem .04rem; }
+.spov__order--dense .spov__idx { width: .16rem; font-size: .14rem; }
+.spov__order--dense .spov__wname { max-width: .7rem; font-size: .14rem; }
+.spov__order--dense .spov__who.is-self .spov__idx { color: var(--mint-400); }
+/* narrow phones (< 768 px, 1rem = 40 px): avatars, numbers and states only — the header names the current picker */
+@media (max-width: 767.98px) {
+  .spov__order--dense .spov__wname { display: none; }
+}
 /* Short landscape phones (height < 10.8rem: the root size is clamped at 40 px, theme.css, so the page is only ≈ 9rem
    tall): a tighter header (no CONTINGENCY micro line, smaller margins) gives the grid ≈ .65rem more, and a smaller icon
    and tighter spacing leave a 3×2 card room for 7 lines of text (≈ 4 – 5.4 × 2.9rem: 162 × 116 px at 640×360, the
@@ -488,6 +519,16 @@ button.bpop__harmony:hover { border-style: solid; color: #fff; }
    line room (QA, playtest #6). */
 @media (max-height: 431.98px) and (max-width: 699.98px) {
   .spcard__desc { line-height: 1.3; -webkit-line-clamp: 8; }
+}
+/* the wide grid (7–10 cards) on those phones: the phones' text size (≥ 7.5 px) in a card of 95–120 × ≈ 115 px at
+   640×360 — a still smaller icon and tighter padding give the text most of the card */
+@media (max-height: 431.98px) {
+  .spov__grid--wide .spcard { --sp-px: .08rem; --tk: .34rem; --tk-at: .03rem; gap: .05rem; padding: .06rem var(--sp-px); }
+  .spov__grid--wide .spcard__tier { left: .02rem; top: .02rem; }
+  .spov__grid--wide .spcard__head { gap: .07rem; }
+  .spov__grid--wide .spcard__icon { width: .52rem; height: .52rem; padding: .02rem; }
+  .spov__grid--wide .spcard__name { font-size: .2rem; }
+  .spov__grid--wide .spcard__tag { font-size: .12rem; padding: 0 .05rem; }
 }
 
 /* Grid image boxes: definite 100% tracks so `height: 100%` images resolve against the box (an auto track would
@@ -587,7 +628,7 @@ button.bpop__harmony:hover { border-style: solid; color: #fff; }
 .uframe__btn:hover:not(:disabled) .uframe__glyph { background: #ff4a2b; }
 .uframe__btn:hover:not(:disabled) .uframe__plate { filter: brightness(1.12) drop-shadow(0 0 .08rem rgba(255, 198, 90, .7)); }
 .uframe__btn--destroy:hover:not(:disabled) .uframe__plate { filter: brightness(1.12) drop-shadow(0 0 .08rem rgba(255, 90, 60, .7)); }
-.uframe__label { font-size: .14rem; font-weight: 700; letter-spacing: .12em; padding: 0 .06rem; background: rgba(8, 11, 10, .82); text-shadow: 0 1px 2px #000; }
+.uframe__label { font-size: .14rem; font-weight: 700; letter-spacing: .12em; white-space: nowrap; padding: 0 .06rem; background: rgba(8, 11, 10, .82); text-shadow: 0 1px 2px #000; }
 .uframe__btn--sell .uframe__label { color: #ffd98a; }
 .uframe__price { position: absolute; right: -.12rem; top: -.06rem; --hex-h: .24rem; }
 

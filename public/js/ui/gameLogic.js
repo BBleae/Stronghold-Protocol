@@ -22,13 +22,14 @@
 //   (research 09 §1.2); board drops of units go through the wheel before g.move {uid, to, dir} (ui/facing.js).
 
 import { GEO, PHASE, UF } from '../../../shared/constants.js';
-import { resolveLoadout, loadoutOptions, MODULE_NONE } from '../../../shared/protocol.js';
+import { resolveLoadout, loadoutOptions, MODULE_NONE, SP_CARDS_MAX } from '../../../shared/protocol.js';
 import { resolveRecordLoadout, loadoutRecord, attackRangeGrid } from '../../../shared/loadoutRecord.js';
 import { meleeOnHighGround } from '../../../shared/highGround.js';
 import { rangeTiles, pieceDir } from './facing.js';
 import { layoutPen } from '../render/pen.js';
 import { BOSS_ROW_SHIFT, MAX_COL } from '../render/prepfield.js';
 import { bossLevelSeconds } from './matchStatus.js';
+import { multiUnite, uniteFields, uniteFieldOf, uniteFieldNo } from '../battle/observe.js';
 
 // ---- small helpers -------------------------------------------------------------------------------
 
@@ -150,6 +151,13 @@ export function boardTileOf(field, r, c) {
   return [r - BOSS_ROW_SHIFT, field === 'bossR' ? MAX_COL - c : c];
 }
 
+/** The band (策略) a player picked, from m.public.players[].bandId (Match.js marksPublic) — the detail card shows it
+ *   on a teammate's unit (user playtest #2 item 2: watching a teammate revealed nothing about their 策略). */
+export function ownerBandId(pub, ownerId) {
+  const p = Array.isArray(pub?.players) ? pub.players.find((x) => x && x.playerId === ownerId) : null;
+  return typeof p?.bandId === 'string' && p.bandId ? p.bandId : null;
+}
+
 /** Banner shown when a phase starts: { title, sub?, tone } or null. */
 export function phaseBanner(phase, pub) {
   const r = int(pub?.round, 0);
@@ -161,6 +169,11 @@ export function phaseBanner(phase, pub) {
     case PHASE.COMBAT: return { title: '作战开始', micro: 'COMBAT', tone: 'orange', sub: '各自行动阶段' };
     case PHASE.UNITE: {
       const names = new Map(sortedPlayers(pub).map((p) => [p.playerId, p.name || '博士']));
+      // several 联防 fields (more than 4 alive): each field's helpers, the fields apart — "联防：A、B / C、D"
+      if (multiUnite(pub)) {
+        const groups = uniteFields(pub).map((f) => f.helpers.map((id) => names.get(id)).filter(Boolean).join('、')).filter(Boolean);
+        if (groups.length) return { title: '联防阶段', micro: 'JOINT DEFENSE', tone: 'orange', sub: `联防：${groups.join(' / ')}` };
+      }
       const helpers = Array.isArray(pub?.unite?.helpers) ? pub.unite.helpers.map((id) => names.get(id)).filter(Boolean) : [];
       return { title: '联防阶段', micro: 'JOINT DEFENSE', tone: 'orange', sub: helpers.length ? `联防：${helpers.join('、')}` : '完美作战的博士迎战突破防线的敌人' };
     }
@@ -220,7 +233,9 @@ export function phaseTotalSeconds(pub, config, myId = null) {
     case PHASE.SP_DRAFT: {
       const sp = normalizeSp(pub.sp, pub.players);
       const first = !sp || sp.pickedCount === 0;
-      return first ? (num(timers.spFirst) ?? 30) : (num(timers.spTurn) ?? 16);
+      // a room of more than 4 players (remake extension) has shorter later picks: the server says the turn's length
+      // (m.public sp.turnSeconds, sent only then); 1–4 players: the config's timers
+      return num(pub.sp?.turnSeconds) ?? (first ? (num(timers.spFirst) ?? 30) : (num(timers.spTurn) ?? 16));
     }
     case PHASE.PREP: return num(mode?.rounds?.[String(pub.round)]?.prepTime);
     case PHASE.COMBAT:
@@ -298,7 +313,9 @@ export function watchTarget(p, pub, myId) {
   if (!isObj(p)) return { reason: '无效的目标' };
   if (p.alive === false) return { reason: '该队友已被淘汰，无法查看其阵地' };
   const combat = isCombatPhase(pub?.phase);
-  const fieldId = (combat && typeof p.fieldId === 'string' && p.fieldId) || ownFieldId(p.playerId);
+  // several 联防 fields (more than 4 alive): a leaker's row watches the field holding its enemies
+  const leakerField = combat && pub?.phase === PHASE.UNITE && multiUnite(pub) && !(typeof p.fieldId === 'string' && p.fieldId) ? uniteFieldOf(pub, p.playerId) : null;
+  const fieldId = (combat && typeof p.fieldId === 'string' && p.fieldId) || leakerField || ownFieldId(p.playerId);
   if (combat) {
     const fields = Array.isArray(pub?.fields) ? pub.fields.filter(isObj) : [];
     const f = fields.find((x) => x.fieldId === fieldId);
@@ -339,7 +356,12 @@ export function fieldLabel(field, pub, myId) {
   if (!isObj(field)) return '—';
   const names = new Map(sortedPlayers(pub).map((p) => [p.playerId, p.name || '博士']));
   const ps = Array.isArray(field.players) ? field.players : [];
-  if (field.kind === 'unite') return ps.includes(myId) ? '联防（自己）' : '联防阵地';
+  if (field.kind === 'unite') {
+    if (ps.includes(myId)) return '联防（自己）';
+    // several 联防 fields (more than 4 alive): numbered in field order — 联防阵地 1 ('u'), 联防阵地 2 ('u2') …
+    const no = uniteFieldNo(pub, field.fieldId);
+    return no ? `联防阵地 ${no}` : '联防阵地';
+  }
   if (field.kind === 'boss' || field.kind === 'hidden') {
     if (ps.includes(myId)) return ps.length > 1 ? '全景' : '自己';
     return ps.map((id) => names.get(id) || '博士').join(' · ') || '领袖战场';
@@ -1354,7 +1376,8 @@ export function normalizeDraft(draft, players = []) {
 
 /**
  * Normalise m.public.sp ({family, cards, turn, picks, order?}).
- * Cards: string ids or objects; picks: {playerId: cardIdx} | [{playerId, idx}] | card.takenBy.
+ * Cards: string ids or objects, at most shared/protocol.js SP_CARDS_MAX (co-op max(6, alive + 2): 6 for 1–4 players,
+ * up to 10 for 8); picks: {playerId: cardIdx} | [{playerId, idx}] | card.takenBy.
  * @param {any} sp
  * @param {any[]} [players]
  */
@@ -1362,7 +1385,7 @@ export function normalizeSp(sp, players = []) {
   if (!isObj(sp)) return null;
   const ids = (Array.isArray(players) ? players : []).filter(isObj).map((p) => p.playerId);
   const order = Array.isArray(sp.order) && sp.order.length ? sp.order.filter((x) => typeof x === 'string') : ids;
-  const cards = (Array.isArray(sp.cards) ? sp.cards : []).slice(0, 6).map((c, idx) => {
+  const cards = (Array.isArray(sp.cards) ? sp.cards : []).slice(0, SP_CARDS_MAX).map((c, idx) => {
     const card = typeof c === 'string' ? { id: c } : isObj(c) ? { ...c } : {};
     return { ...card, idx, takenBy: typeof card.takenBy === 'string' ? card.takenBy : null };
   });
@@ -1680,11 +1703,11 @@ export function rangeGridBox(grid, mirror = false) {
 // ---- keyboard ---------------------------------------------------------------------------------------------------
 
 /**
- * Map a keydown to a game shortcut (R refresh, F freeze, D level-up, Space ready, Esc close).
+ * Map a keydown to a game shortcut (R refresh, F freeze, D level-up, Q retreat, X sell, Space ready, Esc close).
  * Space means ready even while a HUD button has focus (a mouse click leaves the shop card / 刷新 focused, and
  * Space must not re-trigger it); the caller prevents the button's own activation. Enter still activates buttons.
  * @param {{ key?: string, code?: string, ctrlKey?: boolean, metaKey?: boolean, altKey?: boolean, repeat?: boolean, target?: any }} e
- * @returns {'refresh'|'freeze'|'levelUp'|'ready'|'escape'|null}
+ * @returns {'refresh'|'freeze'|'levelUp'|'retreat'|'sell'|'ready'|'escape'|null}
  */
 export function shortcutFor(e) {
   if (!e || e.ctrlKey || e.metaKey || e.altKey) return null;
@@ -1698,6 +1721,8 @@ export function shortcutFor(e) {
   if (code === 'KeyR' || key === 'r') return 'refresh';
   if (code === 'KeyF' || key === 'f') return 'freeze';
   if (code === 'KeyD' || key === 'd') return 'levelUp';
+  if (code === 'KeyQ' || key === 'q') return 'retreat';
+  if (code === 'KeyX' || key === 'x') return 'sell';
   if (code === 'Space' || key === ' ') return 'ready';
   return null;
 }
@@ -1713,7 +1738,7 @@ export const closesOnFieldPress = (detail) => detail?.kind === 'piece' || detail
  * Whether an open overlay swallows a game shortcut: a modal / the guide own the keyboard (Esc included — they close
  * themselves); the 本局信息 / 敌方情报 drawer is a dialog too — only Esc (it closes the drawer) passes, R / F / D / Space
  * never act behind it.
- * @param {'refresh'|'freeze'|'levelUp'|'ready'|'escape'|null} act shortcutFor
+ * @param {'refresh'|'freeze'|'levelUp'|'retreat'|'sell'|'ready'|'escape'|null} act shortcutFor
  * @param {{ modal?: boolean, drawer?: boolean }} open
  */
 export function shortcutBlocked(act, { modal = false, drawer = false } = {}) {
@@ -1726,15 +1751,22 @@ export function shortcutBlocked(act, { modal = false, drawer = false } = {}) {
 
 export const DEFAULT_SETTINGS = Object.freeze({ bgm: 0.6, sfx: 0.8, voice: 0.8, voiceLang: 'cn', muted: false, damageNumbers: true, quality: 'high' });
 const QUALITIES = ['high', 'medium', 'low'];
+/**
+ * The quality of a player who never chose one: 中 on a phone (phone audit P6 — 高 renders two full-screen WebGL canvases
+ * at resolution 2, hot and slow on a phone), 高 elsewhere. Only a default: a saved quality always wins (sanitizeSettings).
+ * @param {boolean} phone ui/device.js isPhone()
+ */
+export const defaultQuality = (phone) => (phone ? 'medium' : DEFAULT_SETTINGS.quality);
 /** Operator voice languages (js/audio.js VOICE_LANGS) + 'off'. */
 const VOICE_LANG_KEYS = ['cn', 'jp', 'off'];
 
 /**
  * Sanitize persisted settings.
  * @param {any} raw
+ * @param {'high'|'medium'|'low'} [fallbackQuality] the quality when none (or an unknown one) was saved: defaultQuality(phone)
  * @returns {{ bgm: number, sfx: number, muted: boolean, damageNumbers: boolean, quality: 'high'|'medium'|'low' }}
  */
-export function sanitizeSettings(raw) {
+export function sanitizeSettings(raw, fallbackQuality = DEFAULT_SETTINGS.quality) {
   const r = isObj(raw) ? raw : {};
   const vol = (v, d) => (Number.isFinite(v) ? clamp(Math.round(v * 100) / 100, 0, 1) : d);
   return {
@@ -1744,7 +1776,7 @@ export function sanitizeSettings(raw) {
     voiceLang: VOICE_LANG_KEYS.includes(r.voiceLang) ? r.voiceLang : DEFAULT_SETTINGS.voiceLang,
     muted: typeof r.muted === 'boolean' ? r.muted : DEFAULT_SETTINGS.muted,
     damageNumbers: typeof r.damageNumbers === 'boolean' ? r.damageNumbers : DEFAULT_SETTINGS.damageNumbers,
-    quality: QUALITIES.includes(r.quality) ? r.quality : DEFAULT_SETTINGS.quality,
+    quality: QUALITIES.includes(r.quality) ? r.quality : fallbackQuality,
   };
 }
 

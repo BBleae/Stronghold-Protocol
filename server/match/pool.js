@@ -3,7 +3,9 @@
 //
 // Model:
 //   * Every visible (non-hidden, non-DIY) base chess that is not banned this match has `cap` copies
-//     (config.economy.poolCopies[tier], overrides e.g. 缪尔赛思 4). `left[baseId]` = copies not owned by anyone.
+//     (config.economy.poolCopies[tier], overrides e.g. 缪尔赛思 4; a co-op match of 5–8 seats has ceil(cap × seats / 4),
+//     gamedata.js poolCopies — a remake extension —, sized once at match start: an eliminated seat's copies just
+//     return). `left[baseId]` = copies not owned by anyone.
 //   * Owning a piece takes copies: a normal piece holds 1, an elite holds 3 (merge of 3 normals). Shop displays
 //     do NOT reserve copies; buying fails (SOLD_OUT) when left = 0.
 //   * Pieces remember how many copies they hold (`piece.poolCopies`), so selling / elimination / temp wipes return
@@ -51,16 +53,17 @@ function sample(arr, n, rng) {
 export class SharedPool {
   /**
    * @param {import('./gamedata.js').GameData} gd
-   * @param {{ banned?: Iterable<string> }} [opts]
+   * @param {{ banned?: Iterable<string>, players?: number }} [opts] players: the match's seats (humans + bots) at match
+   *   start — 1–4 or omitted keep the official copy counts, 5–8 scale them (gamedata.js poolCopies)
    */
-  constructor(gd, { banned = [] } = {}) {
+  constructor(gd, { banned = [], players = undefined } = {}) {
     this.gd = gd;
     const ban = new Set(banned);
     /** @type {Map<string, { cap: number, left: number, tier: number }>} */
     this.entries = new Map();
     for (const id of gd.visibleChess) {
       if (ban.has(id)) continue;
-      const cap = gd.poolCopies(id);
+      const cap = gd.poolCopies(id, players);
       if (cap <= 0) continue;
       this.entries.set(id, { cap, left: cap, tier: gd.tierOf(id) });
     }

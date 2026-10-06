@@ -5,10 +5,21 @@ export const PROTOCOL_VERSION = 1;
  * (test/version.test.js); PROTOCOL_VERSION above is the separate wire-format number. */
 export const APP_VERSION = '0.1.3';
 
-export const MAX_SEATS = 4;
+/**
+ * Player seats of a co-op room (humans + AI teammates). The official room has 1–4 players (research 09 §3.1): that is
+ * DEFAULT_SEATS, the size every co-op room starts with and the fewest seats a host may choose. Rooms of 5–8 seats are a
+ * remake extension (owner's decision): the host chooses the room's capacity, DEFAULT_SEATS..MAX_SEATS, in its lobby
+ * (room.create { capacity? } / room.setCapacity { capacity } → room.state.capacity; server/lobby.js). MAX_SEATS is the
+ * protocol maximum (seat indexes 0..MAX_SEATS-1); a solo room has one seat. A match of 1–4 players plays the official
+ * rules whatever its room's capacity; only matches of 5–8 players scale (docs).
+ */
+export const MAX_SEATS = 8;
+/** Seats of a co-op room unless its host chooses more, and the fewest a co-op room has: the official room (1–4 players). */
+export const DEFAULT_SEATS = 4;
 /**
  * Spectator seats of a co-op room (community report #26, owner's decision 2026-10-04) — a remake feature: the official
  * room has 1–4 players and no spectator seat (there only eliminated players and 联防 bystanders watch, research 09 §3.1).
+ * Every room has these MAX_SPECTATORS, whatever its capacity.
  * A spectator never counts as a player, may not act, and watches like an eliminated player (server/lobby.js spectate,
  * server/match/Match.js addSpectator). Node server only: on Workers, strangers watch public matches instead
  * (worker/rooms/spectators.js).

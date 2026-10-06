@@ -1,0 +1,17 @@
+// The Android app (docs/ANDROID.md): a full-screen WebView of a game server with the game's resources inside the APK.
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+rootProject.name = 'stronghold-android'
+include ':app'

@@ -54,6 +54,13 @@ export function allowedBands(bands, modeType) {
     .sort((a, b) => sid(a) - sid(b) || (a.bandId < b.bandId ? -1 : a.bandId > b.bandId ? 1 : 0));
 }
 
+/**
+ * Whether the draft order of `n` players uses the dense rows (`draft-order--dense`, css/screens/draft.css): a room of
+ * 5–8 players (a remake extension), so the 查看禁用盟约与干员 button and the tip stay on screen; 1–4 keep the official rows.
+ * @param {number} n
+ */
+export const draftOrderDense = (n) => Number(n) > 4;
+
 /** The official default strategy of an automatic assignment (data/config.json bandDraft.timeoutBandId). */
 export const DEFAULT_TIMEOUT_BAND = 'band_bldsk';
 
@@ -251,7 +258,7 @@ export function BandDraftScreen() {
     <${StepHeader} step=${2} of=${2} title="选择策略" micro="STRATEGY // BAND CHECK" pub=${clock ? { ...pub, deadline: clock.deadline } : { ...pub, deadline: 0 }}
       total=${clock ? clock.total : null} onExit=${() => setExit(true)} />
     <main class="draft__main">
-      <aside class="draft-order">
+      <aside class=${cx('draft-order', draftOrderDense(solo ? 1 : draft.order.length) && 'draft-order--dense')}>
         <h3 class="brief-h"><span>${solo ? '独立模拟' : '决策顺序'}</span><${MicroLabel}>${solo ? 'FREE PICK' : 'RANDOM ORDER'}</${MicroLabel}></h3>
         ${(solo ? players.filter((p) => p.playerId === myId) : draft.order.map((pid) => players.find((p) => p.playerId === pid)).filter(Boolean)).map((p, i) => {
           const picked = draft.picks.get(p.playerId) || (p.playerId === myId ? myPick : p.bandId) || null;
@@ -290,7 +297,7 @@ export function BandDraftScreen() {
             <span class="dband__name">${b.name}</span>
             <span class="dband__lp num"><i></i>${b.totalHp}</span>
             <${BandOffTag} names=${offNames} />
-            ${who.length ? html`<span class="dband__who">${who.slice(0, 4).map((p) => html`<${PlayerAvatar} key=${p.playerId} player=${p} size="sm" />`)}</span>` : null}
+            ${who.length ? html`<span class="dband__who">${who.map((p) => html`<${PlayerAvatar} key=${p.playerId} player=${p} size="sm" />`)}</span>` : null}
             ${isTaken ? html`<span class="dband__taken">队友已选</span>` : null}
           </button>`;
         })}

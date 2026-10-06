@@ -4,6 +4,12 @@ Owner: match / balance. Tools: `tools/balance.mjs` (competent-board model — no
 `tools/matchrun.mjs` (bot matches). Tests: `test/match/balance.test.js`, `test/match/waves-official.test.js`,
 `test/match/waves.test.js`, `test/sim/pathing.test.js`.
 
+**Player count.** Every co-op number below is measured with **4 boards / 4 AI** — the official room. Co-op rooms of 5–8
+players (a remake extension, DESIGN §24) scale the pool copies, the leader pool, the overtime drain and the Hidden Core
+threshold × n / 4, give 机变 drafts alive + 2 cards and split a big 联防 over several fields; their difficulty is not
+measured here yet (the soak suites `test/match/fullmatch-coop-5seats.test.js` / `-8seats.test.js` only check that such
+matches run clean and follow the rules).
+
 **Every enemy number is the official one; the custom balance layer was removed** (user request: rules, numbers, enemy
 kinds / counts and routes must follow the official game; research 08 §6–§7, DESIGN §14 corrections):
 

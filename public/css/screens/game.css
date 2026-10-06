@@ -220,12 +220,22 @@
 .readybtn.is-busy { opacity: .7; }
 
 /* ---- bond strip ---------------------------------------------------------------------------------------- */
-.gm__bonds { position: absolute; left: 1.56rem; top: 1.36rem; right: 5.2rem; pointer-events: none; }
+.gm__bonds { position: absolute; left: 1.56rem; top: 1.36rem; right: 5.2rem; pointer-events: none;
+  display: flex; align-items: flex-start; gap: max(.1rem, 8px); }
 /* Only the bond discs (and the +N chip) take the pointer: the strip's box spans the width under the top bar, where the
    top board row's units stand (row 12 at 16:9 / 21:9 / 720p / phones, the boss field's row 5 in a boss prep) — it used
    to swallow the taps and drags on them (review of user playtest #2 item 8: every own unit reachable). */
 .gm__bonds > *, .gm__bonds .bstrip { pointer-events: none; }
 .gm__bonds .bslot, .gm__bonds .bstrip__more { pointer-events: auto; }
+.gm__bond-list { min-width: 0; }
+/* The hidden list leaves no hit area over the board; only this compact tab can reopen it (GitHub #142). */
+.gm__bonds .bonds-toggle { pointer-events: auto; flex: none; display: inline-flex; align-items: center; justify-content: center;
+  gap: max(.03rem, 2px); min-width: 44px; min-height: 44px; padding: .06rem .08rem;
+  color: var(--text-hi); background: var(--bg-1); border: 1px solid var(--line-2); cursor: pointer;
+  font-size: max(.14rem, 11px); line-height: 1; }
+.bonds-toggle .icon { width: max(.18rem, 14px); height: max(.18rem, 14px); }
+.bonds-toggle:hover { color: var(--mint-500); border-color: var(--mint-500); }
+.bonds-toggle:focus-visible { outline: 2px solid var(--mint-500); outline-offset: 2px; }
 .bstrip { display: flex; align-items: flex-start; gap: .1rem; flex-wrap: nowrap; }
 .bstrip.is-frozen .bslot { opacity: .5; filter: saturate(.4); }
 .bstrip--empty { display: inline-flex; align-items: center; gap: .12rem; padding: .08rem .16rem; font-size: .15rem; color: var(--text-dim); background: rgba(8, 11, 10, .6); border: 1px dashed var(--line-2); }
@@ -306,6 +316,34 @@
 .team__ob, .team__back { align-self: flex-start; margin-top: .04rem; min-width: 1.1rem; animation: pop-in var(--t-fast) var(--ease-out); }
 .team__ob .btn__label, .team__back .btn__label { letter-spacing: .12em; }
 .team__back { border-color: rgba(255, 255, 255, .7); color: #fff; }
+/* 5–8 players (a remake extension; ui/teamPanel.js teamCompact): compact rows — a smaller avatar with smaller badges,
+   the name, LP and status on one line, 前往查看 / 返回战场 beside the row (it never pushes the rows below down) and a
+   smaller emote bubble — so 8 rows end above the corner buttons (交流 / ⚙ / 📖 / ⛶) on desktop and on phones. 1–4
+   players keep the rules above. */
+.team--compact { gap: .08rem; }
+.team--compact .pavatar { --pa: .6rem; }
+.team--compact .team__seat { font-size: .1rem; left: -.03rem; top: -.05rem; padding: 0 .03rem; }
+.team--compact .team__ai { font-size: .1rem; right: -.03rem; bottom: -.03rem; padding: 0 .03rem; }
+.team--compact .team__you { width: .18rem; height: .18rem; right: -.06rem; top: -.06rem; }
+.team--compact .team__you .icon { width: .11rem; height: .11rem; }
+.team--compact .team__info { flex-direction: row; align-items: center; gap: .08rem; padding: .03rem .1rem .03rem .05rem; }
+.team--compact .team__name { max-width: 1rem; }
+.team--compact .team__band { --bi: .2rem; }
+.team--compact .team__line { gap: .07rem; }
+.team--compact .team__status, .team--compact .team__status.has-sprite .lsprite { width: .22rem; height: .22rem; }
+.team--compact .team__status .icon { width: .15rem; height: .15rem; }
+.team--compact .team__status .lsprite { width: .17rem; height: .17rem; }
+.team--compact .team__ob, .team--compact .team__back {
+  position: absolute; left: calc(100% + .06rem); top: 50%; margin: 0; translate: 0 -50%; white-space: nowrap; z-index: 3;
+}
+/* (the bubble's own pop / fade animate `scale` — css/emotes.css —, so the compact size goes through `transform`: one row tall) */
+.team--compact .team__bubble { transform: translateY(-50%) scale(.64); transform-origin: 0 50%; }
+/* short screens (phones: the page is ≈ 9–10.8rem tall at 1rem = 40 px): still smaller rows */
+@media (max-height: 431.98px) {
+  .team--compact { gap: .05rem; }
+  .team--compact .pavatar { --pa: .48rem; }
+  .team--compact .team__bubble { transform: translateY(-50%) scale(.54); }
+}
 
 /* player avatar (band icon / glyph) */
 .pavatar {
@@ -471,6 +509,10 @@
 .chud__prog .num { color: var(--gold); font-size: .16rem; }
 .chud__prog.is-done { border-left-color: var(--mint-500); }
 .chud__prog__ok { color: var(--mint-400); font-weight: 900; }
+/* the 4–7 teammates of a 5–8-player room (ui/combatHud.js progressDense): shorter pills, two rows at most */
+.chud__progress--dense { gap: .08rem .1rem; }
+.chud__progress--dense .chud__prog { gap: .05rem; padding: .03rem .08rem; }
+.chud__progress--dense .chud__prog b { max-width: .9rem; }
 .chud__observe { gap: .14rem; padding: 0 .08rem 0 .16rem; border-color: rgba(246, 163, 41, .55); }
 .chud__observe .vswitch__label, .chud__layers .vswitch__label { display: inline-flex; align-items: center; justify-content: center; gap: .08rem; }
 .chud__observe .vswitch__label .icon { width: .24rem; height: .24rem; color: var(--amber); }

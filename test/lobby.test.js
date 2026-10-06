@@ -19,7 +19,7 @@ import { normalizeName, sanitizeName, TokenBucket, SessionRegistry, clientAddres
 import { StubMatch as Match } from '../server/match/StubMatch.js';
 import { Match as RealMatch } from '../server/match/Match.js';
 import { TestClient } from './helpers/wsClient.js';
-import { ERR, MAX_SEATS, MAX_SPECTATORS, PHASE, EMOTES } from '../shared/constants.js';
+import { ERR, MAX_SEATS, DEFAULT_SEATS, MAX_SPECTATORS, PHASE, EMOTES } from '../shared/constants.js';
 
 const CODE_RE = new RegExp(`^[${CODE_ALPHABET}]{4}$`);
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
@@ -542,7 +542,8 @@ describe('websocket lobby', () => {
     assert.equal(st.mode, 'coop');
     assert.equal(st.difficulty, 'HARD');
     assert.equal(st.inMatch, false);
-    assert.equal(st.seats.length, MAX_SEATS);
+    assert.equal(st.seats.length, DEFAULT_SEATS, 'a co-op room has the default (official) 4 seats');
+    assert.equal(st.capacity, DEFAULT_SEATS);
     assert.deepEqual(st.seats[0], { seat: 0, playerId: host.id, name: 'Host', isBot: false, ready: false, connected: true });
     assert.deepEqual(st.seats.slice(1), [null, null, null]);
 
@@ -604,6 +605,136 @@ describe('websocket lobby', () => {
     assert.equal(soloState.mode, 'solo');
     await expectError(late, { t: 'room.join', code: soloState.code }, ERR.ROOM_FULL);
     await expectError(solo, { t: 'room.addBot' }, ERR.ROOM_FULL);
+  });
+
+  // 5–8 seats (a remake extension, owner's decision): the host chooses the co-op room's capacity, 4 by default
+  test('room capacity: room.create {capacity}, 8 seats fill with humans and up to 7 AI teammates, a 9th is ROOM_FULL', async () => {
+    assert.equal(MAX_SEATS, 8);
+    assert.equal(DEFAULT_SEATS, 4);
+    const host = await pool.player('Host');
+    const r = await host.request({ t: 'room.create', mode: 'coop', difficulty: 'NORMAL', capacity: MAX_SEATS });
+    assert.equal(r.t, 'ok', JSON.stringify(r));
+    const st = await host.waitFor('room.state', (s) => s.hostId === host.id);
+    assert.equal(st.capacity, MAX_SEATS);
+    assert.deepEqual(st.seats, [st.seats[0], ...Array(MAX_SEATS - 1).fill(null)]);
+    const guests = [];
+    for (let i = 0; i < 3; i++) {
+      const g = await pool.player(`G${i}`);
+      const joined = await joinRoom(g, st.code);
+      assert.equal(seatOf(joined, g.id).seat, i + 1);
+      guests.push(g);
+    }
+    for (let i = 0; i < MAX_SEATS - 4; i++) await expectOk(host, { t: 'room.addBot' });
+    const full = await host.waitFor('room.state', (s) => s.seats.every(Boolean));
+    assert.equal(full.seats.length, MAX_SEATS);
+    assert.deepEqual(full.seats.filter((x) => x.isBot).map((x) => x.name), BOT_NAMES.slice(0, MAX_SEATS - 4));
+    const late = await pool.player('Late');
+    await expectError(late, { t: 'room.join', code: st.code }, ERR.ROOM_FULL);
+    await expectError(host, { t: 'room.addBot' }, ERR.ROOM_FULL);
+    // the last seat (index 7) is addressable: remove its AI, a late player takes it
+    assert.ok(full.seats[MAX_SEATS - 1].isBot);
+    await expectOk(host, { t: 'room.removeBot', seat: MAX_SEATS - 1 });
+    const sat = await joinRoom(late, st.code);
+    assert.equal(seatOf(sat, late.id).seat, MAX_SEATS - 1);
+    await expectError(host, { t: 'room.kick', seat: MAX_SEATS, playerId: late.id }, ERR.BAD_MSG); // beyond the protocol maximum
+    await expectOk(host, { t: 'room.kick', seat: MAX_SEATS - 1, playerId: late.id });
+    assert.equal((await late.waitFor('room.closed')).reason, 'kicked');
+
+    // a room of one human and 7 AI teammates: every bot gets its own name (and so its portrait), and the match gets 8 seats
+    const lead = await pool.player('Lead');
+    const r2 = await lead.request({ t: 'room.create', mode: 'coop', difficulty: 'FUNNY', capacity: MAX_SEATS });
+    assert.equal(r2.t, 'ok');
+    for (let i = 0; i < MAX_SEATS - 1; i++) await expectOk(lead, { t: 'room.addBot' });
+    const bots = await lead.waitFor('room.state', (s) => s.hostId === lead.id && s.seats.every(Boolean));
+    const names = bots.seats.slice(1).map((x) => x.name);
+    assert.deepEqual(names, BOT_NAMES.slice(0, MAX_SEATS - 1), 'BOT_NAMES covers 7 bots (no AI·N fallback)');
+    assert.equal(new Set(names).size, MAX_SEATS - 1);
+    await expectOk(lead, { t: 'room.start' });
+    await lead.waitFor('m.public', (m) => m.phase === 'INFO_CHECK');
+    const match = srv.lobby.getRoom(bots.code).match;
+    assert.deepEqual([...match.players.values()].map((p) => p.seat), [0, 1, 2, 3, 4, 5, 6, 7]);
+    await expectError(lead, { t: 'room.setCapacity', capacity: DEFAULT_SEATS }, ERR.ROOM_STARTED);
+    await expectOk(lead, { t: 'room.leave' });
+  });
+
+  test('every AI teammate name of the largest room has a portrait (an operator or a strategy with art)', async () => {
+    // the client's lookup (screens/room.js SeatCard, ui/gameComponents.js PlayerAvatar): strip 'AI·', then a non-golden
+    // chess of that name, else a band of that name; no art ⇒ the generic robot glyph
+    const { chessAvatarUrl, bandIconUrl } = await import('../public/js/ui/assetUrls.js');
+    const read = (f) => JSON.parse(fs.readFileSync(new URL(`../data/${f}`, import.meta.url), 'utf8'));
+    const chess = Object.values(read('chess.json'));
+    const bands = Object.values(read('bands.json'));
+    const assets = read('assets.json');
+    assert.ok(BOT_NAMES.length >= MAX_SEATS - 1);
+    assert.deepEqual(BOT_NAMES.slice(0, 3), ['AI·华法琳', 'AI·阿米娅', 'AI·惊蛰'], 'a 4-seat room (≤ 3 bots) names its bots as before');
+    for (const full of BOT_NAMES.slice(0, MAX_SEATS - 1)) {
+      const name = full.replace(/^AI[·・\s]*/, '');
+      const c = chess.find((x) => !x.isGolden && x.name === name);
+      const b = bands.find((x) => x.name === name);
+      assert.ok(chessAvatarUrl(assets, c) || bandIconUrl(assets, b?.bandId), `${full} resolves to an operator or strategy portrait`);
+    }
+  });
+
+  test('room capacity: host-only room.setCapacity in the lobby, 4..8, never below the occupied seats; shrinking moves members down', async () => {
+    // default: a co-op room has 4 seats; a capacity out of range is a bad message; a solo room has one seat whatever it asks
+    const host = await pool.player('Host');
+    const st = await createRoom(host);
+    assert.equal(st.capacity, DEFAULT_SEATS);
+    assert.equal(st.seats.length, DEFAULT_SEATS);
+    for (const capacity of [DEFAULT_SEATS - 1, MAX_SEATS + 1, 5.5, '6', null]) {
+      await expectError(host, { t: 'room.create', mode: 'coop', difficulty: 'NORMAL', capacity }, ERR.BAD_MSG);
+      await expectError(host, { t: 'room.setCapacity', capacity }, ERR.BAD_MSG);
+    }
+    await expectError(host, { t: 'room.setCapacity' }, ERR.BAD_MSG);
+    const soloHost = await pool.player('Solo');
+    const sr = await soloHost.request({ t: 'room.create', mode: 'solo', difficulty: 'FUNNY', capacity: MAX_SEATS });
+    assert.equal(sr.t, 'ok');
+    const soloSt = await soloHost.waitFor('room.state', (s) => s.mode === 'solo');
+    assert.equal(soloSt.capacity, 1);
+    assert.equal(soloSt.seats.length, 1);
+    await expectError(soloHost, { t: 'room.setCapacity', capacity: MAX_SEATS }, ERR.BAD_TARGET);
+
+    // grow: the seats keep their places; a guest may not resize; a spectator neither
+    const guest = await pool.player('Guest');
+    await joinRoom(guest, st.code);
+    await expectError(guest, { t: 'room.setCapacity', capacity: 6 }, ERR.NOT_HOST);
+    await expectOk(host, { t: 'room.setCapacity', capacity: 6 });
+    const grown = await guest.waitFor('room.state', (s) => s.capacity === 6);
+    assert.equal(grown.seats.length, 6);
+    assert.equal(seatOf(grown, host.id).seat, 0);
+    assert.equal(seatOf(grown, guest.id).seat, 1);
+    const watcher = await pool.player('Watcher');
+    await expectOk(watcher, { t: 'room.spectate', code: st.code });
+    await expectError(watcher, { t: 'room.setCapacity', capacity: 8 }, ERR.NOT_HOST);
+    await expectOk(watcher, { t: 'room.leave' });
+    await expectOk(host, { t: 'room.setCapacity', capacity: 6 }); // unchanged: ok, nothing to do
+
+    // a member seated beyond the new size moves to the lowest free seat (seat order kept), ready state and all
+    for (let i = 0; i < 3; i++) await expectOk(host, { t: 'room.addBot' }); // seats 2, 3, 4
+    const late = await pool.player('Late');
+    const lateSt = await joinRoom(late, st.code);
+    assert.equal(seatOf(lateSt, late.id).seat, 5);
+    await expectOk(late, { t: 'room.ready', ready: true });
+    await expectOk(guest, { t: 'room.ready', ready: true });
+    await expectError(host, { t: 'room.setCapacity', capacity: DEFAULT_SEATS }, ERR.BAD_TARGET); // 6 seated > 4
+    await expectOk(host, { t: 'room.removeBot', seat: 2 });
+    await expectOk(host, { t: 'room.removeBot', seat: 3 });
+    await host.waitFor('room.state', (s) => s.seats.filter(Boolean).length === 4);
+    await expectOk(host, { t: 'room.setCapacity', capacity: DEFAULT_SEATS });
+    const shrunk = await late.waitFor('room.state', (s) => s.capacity === DEFAULT_SEATS);
+    assert.equal(shrunk.seats.length, DEFAULT_SEATS);
+    shrunk.seats.forEach((x, i) => assert.equal(x.seat, i, 'seat indexes match their slots'));
+    const who = (x) => (x.playerId === host.id ? 'host' : x.playerId === guest.id ? 'guest' : x.playerId === late.id ? 'late' : 'bot');
+    assert.deepEqual(shrunk.seats.map(who), ['host', 'guest', 'bot', 'late'], 'the bot (seat 4) took seat 2, the late player (seat 5) seat 3');
+    assert.equal(seatOf(shrunk, late.id).ready, true, 'nobody is un-readied');
+    assert.equal(seatOf(shrunk, guest.id).ready, true);
+    await expectError(host, { t: 'room.removeBot', seat: 4 }, ERR.BAD_TARGET); // beyond the room now
+    const extra = await pool.player('Extra');
+    await expectError(extra, { t: 'room.join', code: st.code }, ERR.ROOM_FULL);
+    // the start still works with the moved seats
+    await expectOk(host, { t: 'room.start' });
+    await host.waitFor('m.public', (m) => m.phase === 'INFO_CHECK');
+    assert.deepEqual([...srv.lobby.getRoom(st.code).match.players.values()].map((p) => p.seat), [0, 1, 2, 3]);
   });
 
   // community report #26 (a remake feature): spectator seats — server/lobby.js header
@@ -963,7 +1094,17 @@ describe('websocket lobby', () => {
     await expectError(probe, { t: 'room.join', code: st.code }, ERR.ROOM_NOT_FOUND);
   });
 
-  test('protocol fuzz: random intents never crash the server or corrupt lobby invariants', async () => {
+  test('protocol fuzz: random intents never crash the server or corrupt lobby invariants', async (t) => {
+    // Its own server: the walk picks join / spectate targets among all open rooms, so rooms other tests left behind would
+    // change what it does (and whether steps such as g.infoReady ever succeed).
+    const ownCap = captureLog();
+    const srv = await startServer({ port: 0, host: '127.0.0.1', log: ownCap.log, MatchClass: Match });
+    const pool = clientPool(() => `ws://127.0.0.1:${srv.port}/ws`);
+    t.after(async () => {
+      await pool.closeAll();
+      await srv.close();
+      assert.deepEqual(ownCap.errors, [], 'no server errors logged');
+    });
     let seed = 0x5eed1234;
     const rnd = () => { seed = (seed + 0x6d2b79f5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
     const pick = (a) => a[Math.floor(rnd() * a.length)];
@@ -997,22 +1138,41 @@ describe('websocket lobby', () => {
       return pick([{ t: 'hello', name: pick(['Re', '', 'x'.repeat(20)]) }, { t: 'ping', c: pick([1, 'x']) }, { t: pick(['nope', '__proto__', 'toString']) }, { t: 'room.join', code: pick(junk) }]);
     };
     const okCounts = {};
+    // Stay well under the per-connection rate limit (net.js 40 msg/s, burst 40): at most PACE frames per connection in
+    // any second. A RATE reply changes what the rest of the walk does, so without this the walk (and whether a step such
+    // as g.infoReady ever succeeds) depends on how fast the machine runs it.
+    const PACE = 30;
+    const sentAt = new WeakMap(); // connection → its send times in the last second
+    const pace = async (conn) => {
+      const list = sentAt.get(conn) || [];
+      sentAt.set(conn, list);
+      for (;;) {
+        const now = Date.now();
+        while (list.length && now - list[0] >= 1000) list.shift();
+        if (list.length < PACE) break;
+        await delay(1000 - (now - list[0]) + 5);
+      }
+      list.push(Date.now());
+    };
     for (let i = 0; i < 500; i++) {
       const k = Math.floor(rnd() * clients.length);
       let c = clients[k];
       if (rnd() < 0.04) { // drop & resume
         await c.terminate();
         const back = await pool.connect();
+        await pace(back);
         const w = await back.hello(`F${k}`, c.token);
         Object.assign(back, { id: w.playerId, token: w.token });
         clients[k] = c = back;
         continue;
       }
       const msg = gen();
+      await pace(c);
       const reply = await c.request(msg, 3000);
       assert.ok(['ok', 'error', 'welcome', 'pong'].includes(reply.t));
       if (reply.t === 'ok') okCounts[msg.t] = (okCounts[msg.t] || 0) + 1;
       if (reply.t === 'error') assert.ok(Object.hasOwn(ERR, reply.code), reply.code);
+      assert.notEqual(reply.code, ERR.RATE, `step ${i} (${msg.t}) was rate-limited: the pacing above must keep the walk independent of machine speed`);
       if (i % 50 === 0) await delay(30); // stay well under the rate limit
     }
     for (const t of ['room.create', 'room.join', 'room.start', 'room.addBot', 'g.infoReady']) assert.ok(okCounts[t] > 0, `fuzz never succeeded at ${t}`);

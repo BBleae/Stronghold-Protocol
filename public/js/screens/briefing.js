@@ -1,8 +1,9 @@
 // Briefing — INFO_CHECK "1/2 确认本局信息" (research 06 §4.1, D1): enemy leader (silhouette, name,
 // abilities), stage (+ its pool: 战场固定 / 战场随机（共N张）), 特训敌人 factions (icon, name, description), the difficulty
-// tag, the ready count x/N with person pips, the 准备就绪 button (g.infoReady) and the countdown. The right column — 核心盟约
-// / 附加盟约 rows of bond discs (disabled bonds greyed with the banned-member badge), the legend and the 本局禁用干员
-// avatars — is ui/matchInfo.js MatchInfo, the same blocks the strategy draft's 本局信息 dialog shows (screens/bandDraft.js).
+// tag, the ready count x/N with person pips (smaller ones for a room of 5–8 players), the 准备就绪 button (g.infoReady)
+// and the countdown. The right column — 核心盟约 / 附加盟约 rows of bond discs (disabled bonds greyed with the
+// banned-member badge), the legend and the 本局禁用干员 avatars — is ui/matchInfo.js MatchInfo, the same blocks the
+// strategy draft's 本局信息 dialog shows (screens/bandDraft.js).
 
 import { useState } from '../../vendor/hooks.module.js';
 import { html, Button, Icon, MicroLabel } from '../ui/components.js';
@@ -90,7 +91,7 @@ export function BriefingScreen() {
       <${LoadoutButton} from="briefing" size="lg" class="brief-loadout" />
       <div class="brief-ready">
         <span class="brief-ready__txt">已就绪 <b class="num">${readyN}</b><span class="num">/${players.length}</span></span>
-        <span class="brief-ready__pips">${players.map((p) => html`<i key=${p.playerId} class=${cx(p.ready && 'on', p.playerId === myId && 'me')} title=${p.name}><${Icon} name="user" /></i>`)}</span>
+        <span class=${cx('brief-ready__pips', players.length > 4 && 'brief-ready__pips--dense')}>${players.map((p) => html`<i key=${p.playerId} class=${cx(p.ready && 'on', p.playerId === myId && 'me')} title=${p.name}><${Icon} name="user" /></i>`)}</span>
       </div>
       <${Button} variant="primary" size="xl" icon=${me?.ready ? 'check' : me ? 'play' : 'eye'} active=${!!me?.ready} loading=${busy}
         disabled=${!!me?.ready || !me} onClick=${ready}>${me?.ready ? '已就绪' : me ? '准备就绪' : '观战中'}<//>

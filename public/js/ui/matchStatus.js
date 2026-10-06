@@ -4,7 +4,8 @@
 //     maxPlayTime countdown (120 real s, config modes[…].rounds[r].levelMaxPlayTime) — "计时结束后战斗仍然会继续" —
 //     and m.public.overtimeAt is when the overtime drain starts (bossTurnHpReduceTime, 150 real s): from then on the
 //     merged team LP loses config.bossOvertimeDrainPerSec (1) per whole real second (server gamedata.js
-//     bossOvertimeDue: the first point at overtimeAt + 1 s). `overtimeState` says what the red DOT warning shows.
+//     bossOvertimeDue: the first point at overtimeAt + 1 s; 5–8 players alive at the phase start: × alive / 4, sent as
+//     m.public.overtimeDrainPerSec, the running total floored). `overtimeState` says what the red DOT warning shows.
 //   * Solo pause (official 独立模拟 battles): C2S g.pause {on}; the server says so in m.public.paused (optionally
 //     m.public.pausedAt, ms epoch). Only solo battles offer it (`pauseAvailable`); while paused every HUD clock is
 //     frozen at the pause moment (`frozenNow`).
@@ -34,8 +35,16 @@ export function bossLevelSeconds(pub, config) {
   return Number.isFinite(v) && v > 0 ? v : BOSS_LEVEL_SECONDS;
 }
 
-/** Team LP lost per real second of overtime (config.bossOvertimeDrainPerSec, default 1). */
-export function overtimeDrainPerSec(config) {
+/**
+ * Team LP lost per real second of overtime: m.public.overtimeDrainPerSec when the server sends it (only a boss phase that
+ * started with more than 4 players alive — remake extension, × alive / 4: 1.25 … 2), else config.bossOvertimeDrainPerSec
+ * (default 1).
+ * @param {any} config data/config.json
+ * @param {any} [pub] m.public
+ */
+export function overtimeDrainPerSec(config, pub = null) {
+  const p = pub?.overtimeDrainPerSec;
+  if (Number.isFinite(p) && p >= 0) return p;
   const v = config?.bossOvertimeDrainPerSec;
   return Number.isFinite(v) && v >= 0 ? v : 1;
 }
@@ -62,7 +71,23 @@ export function overtimeState(pub, now, { perSec = 1, warnBefore = OVERTIME_WARN
   }
   const secs = Math.floor((now - at) / 1000);
   const rate = Number.isFinite(perSec) && perSec >= 0 ? perSec : 1;
-  return { state: 'drain', secs, lost: secs * rate, perSec: rate };
+  // the server takes whole LP: a fractional rate (5–8 players) floors the running total (gamedata.js bossOvertimeDue)
+  return { state: 'drain', secs, lost: Number.isInteger(rate) ? secs * rate : Math.floor(secs * rate + 1e-9), perSec: rate };
+}
+
+/**
+ * The number on the DOT warning's per-second "−N" tick (hud.js OvertimeWarning), or null for no tick. A whole rate (1–4
+ * players, and 8 alive) shows `perSec` every second as before. A fractional rate (5–7 alive at the phase start: 1.25 …
+ * 1.75 LP/s) takes whole LP — 1, 1, 1, 2 … at 1.25 — so the tick is what the latest second really took,
+ * lost(secs) − lost(secs − 1); nothing at second 0 (nothing taken yet).
+ * @param {ReturnType<typeof overtimeState>} ot
+ */
+export function overtimeTick(ot) {
+  if (ot?.state !== 'drain') return null;
+  if (Number.isInteger(ot.perSec)) return ot.perSec;
+  if (!(ot.secs > 0)) return null;
+  const step = ot.lost - Math.floor((ot.secs - 1) * ot.perSec + 1e-9);
+  return step > 0 ? step : null;
 }
 
 /**

@@ -4,6 +4,9 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { estimatePeriod, createLoadGovernor, maxAnimInterval } from '../../public/js/render/loadlevel.js';
 
 /** Deterministic pseudo-random [0, 1). */
@@ -94,5 +97,22 @@ describe('maxAnimInterval', () => {
     assert.equal(maxAnimInterval(1000 / 120), 6);
     assert.equal(maxAnimInterval(1000 / 144), 7);
     assert.equal(maxAnimInterval(NaN), 3);
+  });
+});
+
+// phone audit P8 (DESIGN §20.17): a 90 / 120 Hz phone drew 120 fps in the nearly static prep phase
+describe('render/app.js frame-rate cap (source)', () => {
+  const src = readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '../../public/js/render/app.js'), 'utf8');
+  test('the ticker is capped at about 60 fps when the app is created, on every device', () => {
+    const cap = Number(src.match(/^const MAX_FPS = (\d+);/m)?.[1]);
+    // PIXI's limiter compares whole milliseconds: exactly 60 skips frames on a 60 Hz display, a little headroom does not
+    assert.ok(cap >= 60 && cap <= 64, `MAX_FPS ${cap}`);
+    assert.match(src, /new P\.Application\(\{[^]*?\}\);\s*app\.ticker\.maxFPS = MAX_FPS;/, 'set right after the Application is created');
+    assert.equal((src.match(/maxFPS/g) || []).length, 1, 'once, unconditionally (no device test)');
+  });
+  test('animation time does not depend on the cap: dt comes from performance.now()', () => {
+    assert.match(src, /function frame\(\) \{[^]{0,120}const now = performance\.now\(\);[^]{0,80}frameBody\(now\)/);
+    assert.match(src, /const dtRaw = \(now - lastNow\) \/ 1000;/);
+    assert.doesNotMatch(src, /ticker\.deltaTime|ticker\.deltaMS/, 'no tick-count based timing');
   });
 });

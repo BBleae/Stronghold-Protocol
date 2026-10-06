@@ -698,7 +698,8 @@ export function specBounds(spec, gd = null) {
  * 联防: the most enemies settlement can bill each leaker — what it sent in plus what those enemies can leave behind
  * (splits / summons within offspringPerParent, maxTotal without a data bound): validateClientResult's (key, leaker)
  * budgets summed per leaker. Bounds the live counter (Match._uniteLeft; user playtest #6 item 7).
- * @param {object[]} spawns the 联防 spawns (unite.js plan.leaked: { enemyKey, sourcePlayerId, … })
+ * @param {object[]} spawns one 联防 field's spawns (unite.js — its group's `leaked`: { enemyKey, sourcePlayerId, … }; with
+ *   several fields above 4 alive each field is bounded on its own leaks, like validateClientResult on its own spec)
  * @returns {Map<string, number>} leaker id → bound
  */
 export function uniteBillBounds(spawns, gd = null) {

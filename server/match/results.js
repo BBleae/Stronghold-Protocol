@@ -10,7 +10,9 @@
 // 'min' titles (坚若磐石 "目标生命值损失最少" = least LP lost): every player still alive at the end is a candidate,
 // ranked low → high (the eliminated lost everything). Candidates are ranked by the player's rank for that stat
 // (0 = best), then by closeness to the best value, then title order, then seat; greedy assignment gives each player
-// ≤ 1 title and uses each title ≤ once (config.titleRule [ASSUMED]).
+// ≤ 1 title and uses each title ≤ once (config.titleRule [ASSUMED]). A match of more than 4 players (remake extension,
+// gamedata.js DEFAULTS.largeRoom) then runs a second pass: each player still without a title gets its best-ranked
+// eligible title even when a teammate already holds it (a player with no eligible title stays without one).
 
 import { bondList } from './bondsMeta.js';
 import { boardOrder } from './board.js';
@@ -25,7 +27,14 @@ const STAT_OF = {
   fundsSpent: (ps) => ps.stats.gold,
 };
 
-export function assignTitles(gd, players, victory) {
+/**
+ * playerId → title (module header). `repeat: false` stops after the one-title-each pass (the auditor's reference).
+ * @param {import('./gamedata.js').GameData} gd
+ * @param {object[]} players every player of the match (eliminated / departed included)
+ * @param {boolean} victory
+ * @param {{ repeat?: boolean }} [o]
+ */
+export function assignTitles(gd, players, victory, { repeat = true } = {}) {
   const titles = Array.isArray(gd.titles) ? gd.titles : Array.isArray(gd.config.titles) ? gd.config.titles : [];
   const cands = [];
   titles.forEach((t, ti) => {
@@ -52,12 +61,21 @@ export function assignTitles(gd, players, victory) {
   cands.sort((a, b) => a.rank - b.rank || b.rel - a.rel || a.ti - b.ti || a.ps.seat - b.ps.seat);
   const out = new Map();
   const used = new Set();
+  const award = (c) => out.set(c.ps.playerId, { id: c.t.id, name: c.t.name, picId: c.t.picId, text: c.t.text });
   for (const c of cands) {
     if (out.has(c.ps.playerId) || used.has(c.t.id)) continue;
-    out.set(c.ps.playerId, { id: c.t.id, name: c.t.name, picId: c.t.picId, text: c.t.text });
+    award(c);
     used.add(c.t.id);
   }
+  // more than 4 players (remake extension, gamedata.js largeRoom; 6 official titles cannot cover 7–8): a second pass
+  // gives every player still without one its best-ranked eligible title, which may repeat one already given
+  if (repeat && largeRoom(gd, players.length)) for (const c of cands) if (!out.has(c.ps.playerId)) award(c);
   return out;
+}
+
+/** Whether `n` players make a large co-op room (gamedata.js isLargeRoom; > 4 for a data view without it). */
+function largeRoom(gd, n) {
+  return gd && typeof gd.isLargeRoom === 'function' ? gd.isLargeRoom(n) : !gd?.isSolo && n > 4;
 }
 
 function trophiesFor(gd, roundsPassed, hiddenCleared) {

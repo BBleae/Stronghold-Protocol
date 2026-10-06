@@ -2,7 +2,8 @@
 // (test/match/harness.js checkInvariants asserts the list is empty) and by tools/matchrun.mjs --check sweeps.
 //
 // collectViolations(m) → string[] (empty when every invariant holds):
-//   pool     0 ≤ left ≤ cap and left + Σ copies held by pieces == cap per base chess; non-pool chess hold 0 copies
+//   pool     cap = gd.poolCopies(base, seats) (5–8 seats scale it); 0 ≤ left ≤ cap and left + Σ copies held by
+//            pieces == cap per base chess; non-pool chess hold 0 copies
 //   economy  funds / pendingFunds non-negative integers, LP finite, shop level in range, prices ≥ 0
 //   pieces   unique uids; hand 10 / temp 5 slots; chess carry ≤ equipPerChess known items; a normal piece holds ≤ 1
 //            copy, an elite ≤ goldenCopies; merges are immediate (never `mergeCount` normal copies of one chess, never
@@ -163,7 +164,10 @@ export function collectViolations(m, { limit = 25 } = {}) {
   }
 
   // shared pool accounting
+  // the copies per chess were sized for the match's seats at its start (1–4 official, 5–8 × seats / 4: gamedata.js)
+  const seats = Array.isArray(m.order) ? m.order.length : undefined;
   for (const [base, e] of m.pool.entries) {
+    if (typeof gd.poolCopies === 'function' && e.cap !== gd.poolCopies(base, seats)) fail(`pool ${base}: cap ${e.cap} != ${gd.poolCopies(base, seats)} for ${seats} seats`);
     if (!(e.left >= 0 && e.left <= e.cap)) fail(`pool ${base}: left ${e.left} cap ${e.cap}`);
     const h = held.get(base) || 0;
     if (e.left + h !== e.cap) fail(`pool ${base}: left ${e.left} + held ${h} != cap ${e.cap}`);

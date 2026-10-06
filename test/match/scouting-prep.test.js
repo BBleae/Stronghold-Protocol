@@ -17,7 +17,7 @@ function reset(ps) {
   ps.temp.fill(null);
 }
 
-test('a normal round\'s scouting board carries the bench and temp operators on rows 7 / 8 (items stay out)', REAL, () => {
+test('a normal round\'s scouting board carries the bench and temp pieces on rows 7 / 8 (a held item as an item unit)', REAL, () => {
   const h = makeMatch({ mode: 'coop', humans: 2, seed: 7 }).start();
   const m = h.m;
   h.toPrep(1);
@@ -31,16 +31,22 @@ test('a normal round\'s scouting board carries the bench and temp operators on r
   const temp = p1.newPiece('chess', c);
   p1.temp[1] = temp;
   const itemId = Object.keys(DATA.items)[0];
-  p1.hand[4] = p1.newPiece('item', itemId);
+  const item = p1.newPiece('item', itemId);
+  p1.hand[4] = item;
   assert.equal(m.phase, PHASE.PREP);
   assert.deepEqual(m.handle('p_0', { t: 'g.watch', fieldId: 'n:p_1' }), { ok: true });
   const meta = wire(h.lastTo('p_0', 'm.field'));
   assert.equal(meta.kind, 'normal');
   const by = new Map(meta.units.map((u) => [u.uid, u]));
-  assert.equal(by.size, 3, 'board + bench + temp operators, no item');
+  assert.equal(by.size, 4, 'board + bench + temp operators, and the held item (GitHub #44 / PR #129)');
   assert.deepEqual([by.get(onBoard.uid).area, by.get(onBoard.uid).y, by.get(onBoard.uid).x], ['board', 10, 3]);
   assert.deepEqual([by.get(bench.uid).area, by.get(bench.uid).y, by.get(bench.uid).x, by.get(bench.uid).dir], ['hand', GEO.HAND_ROW, 2, 'RIGHT']);
   assert.deepEqual([by.get(temp.uid).area, by.get(temp.uid).y, by.get(temp.uid).x], ['temp', GEO.TEMP_ROW, GEO.TEMP_C0 + 1]);
+  // the client draws a held item's floating plate (render/app.js scoutItemInfo → ItemView)
+  assert.deepEqual([by.get(item.uid).kind, by.get(item.uid).area, by.get(item.uid).y, by.get(item.uid).x, by.get(item.uid).defId],
+    ['item', 'hand', GEO.HAND_ROW, 4, itemId]);
+  // the effects column follows the scouted player (user playtest #2)
+  assert.ok(Array.isArray(meta.effects), 'the scouted player\'s effects view');
 });
 
 test('a boss round\'s scouting board is the pair\'s boss field: both halves mapped, the leader at its spawn tile', REAL, () => {

@@ -2,7 +2,8 @@
 // solo × every difficulty and co-op 2/3/4 (humans on "AI 托管" + AI teammates), 20 seeds each; invariants checked at
 // every phase change; every m.public / m.private frame JSON-safe. Plus boosted-LP runs that reach the Final Assault
 // with the real sim.
-// The co-op configurations live in fullmatch-coop*.test.js (separate files run in parallel).
+// The co-op configurations live in fullmatch-coop*.test.js (separate files run in parallel): 2–4 seats in
+// fullmatch-coop{,2,3}.test.js, the remake's 5- and 8-seat rooms in fullmatch-coop-{5,8}seats.test.js (bounded seeds).
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { makeMatch, checkInvariants } from './harness.js';

@@ -1,6 +1,6 @@
 // Broadcast ticker (m.ticker): a strip under the top bar; each line slides in from the right, stays
-// TICKER_MS and leaves; queued lines play by their broadcast priority, first in first out among equals (QUEUE_MAX kept;
-// enqueueTickerLines).
+// TICKER_MS and leaves; queued lines play by their broadcast priority, first in first out among equals (QUEUE_MAX kept,
+// one per player in a room of 5–8: tickerQueueMax; enqueueTickerLines).
 // A leader-damage line (BOSS_HIT "{0}博士对敌方领袖造成的伤害超过X%!") is news about the leader in play: it is dropped,
 // queued or on screen, once the round it came in is over — the queue can lag a line by up to QUEUE_MAX × TICKER_MS, and
 // a Final Assault line must never play over the Hidden Core's fresh leader (player report after 0.1.0: "隐藏boss还没打
@@ -17,6 +17,13 @@ import { audio } from '../audio.js';
 
 const TICKER_MS = 5200;
 const QUEUE_MAX = 4;
+
+/**
+ * Lines the queue keeps in a match of `players` players: QUEUE_MAX (4) for 1–4 players, one per player in a room of 5–8
+ * (a remake extension) — each player's BOSS_HIT milestone line of a boss round then still has a place, as with 4.
+ * @param {number} [players]
+ */
+export const tickerQueueMax = (players) => Math.max(QUEUE_MAX, Number.isInteger(players) ? players : 0);
 
 /**
  * @typedef {{ id: number, text: string, at?: number, type?: string|null, playerId?: string|null, round?: number|null, priority?: number }} TickerLine
@@ -105,6 +112,7 @@ export function nextTickerLine(queue, round) {
 export function Ticker() {
   const items = useStore((s) => s.ticker);
   const round = useStore((s) => s.match?.public?.round ?? null);
+  const playerCount = useStore((s) => (Array.isArray(s.match?.public?.players) ? s.match.public.players.length : 0));
   const seen = useRef(null);
   const queue = useRef([]);
   const roundRef = useRef(round);
@@ -122,7 +130,7 @@ export function Ticker() {
     const fresh = list.filter((t) => t && t.id > seen.current && Date.now() - t.at < 30000);
     if (!fresh.length) return;
     seen.current = fresh[fresh.length - 1].id;
-    const r = enqueueTickerLines(queue.current, cur, fresh);
+    const r = enqueueTickerLines(queue.current, cur, fresh, tickerQueueMax(playerCount));
     queue.current = r.queue;
     if (r.cur !== cur) show(r.cur); // a player's newer leader-damage line replaces their older one on screen
     else if (!cur) next();

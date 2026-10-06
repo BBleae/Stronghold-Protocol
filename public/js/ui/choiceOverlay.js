@@ -15,6 +15,12 @@
 // spinner over its text — user playtest #3 item 9), dropped as soon as the pick shows in m.public (spBusy itself resets
 // when the request settles, ≤ 8 s, or the phase moves on). Untimed drafts (solo, a single-human match: sp.untimed) show
 // no countdown and say so.
+// Rooms of 5–8 players (a remake extension) draft max(6, alive + 2) cards — 7 to 10 (shared/protocol.js SP_CARDS_MAX):
+// more than 6 cards are laid out as ceil(n / 2) columns × 2 rows (spGridLayout: 4 × 2 for 7–8 cards, 5 × 2 for 9–10;
+// `spov__grid--wide`) with a smaller icon and the same text size, the effect text filling the card and scrolling inside
+// it when it is longer (a fade at its foot while more is below; the card's tooltip has it whole); a pick order of more
+// than 4 players is dense (`spov__order--dense`: shorter names, none on phones — the header names the current picker).
+// Up to 6 cards and 4 players keep the official layout above.
 
 import { useEffect, useState } from '../../vendor/hooks.module.js';
 import { html, Icon, TierChip, Countdown, MicroLabel, Button, PlayerName } from './components.js';
@@ -27,6 +33,22 @@ import { data } from '../data.js';
 const cx = (...p) => p.flat().filter(Boolean).join(' ');
 
 const bare = (t) => String(t || '').replace(/\s+/g, '');
+
+/** Cards of the official grid (co-op 3 × 2); a larger room's draft (7–10 cards) gets the wide grid. */
+export const SP_GRID_CARDS = 6;
+/**
+ * The card grid's layout for `n` cards: ≤ 3 (solo) the centred row of 3 (`spov__grid--3`), 4–6 the official 3 × 2
+ * (no modifier), more (a 5–8-player room) ceil(n / 2) columns × 2 rows (`spov__grid--wide`, `--sp-cols`).
+ * @param {number} n
+ * @returns {{ cls: string|null, cols: number|null }}
+ */
+export function spGridLayout(n) {
+  if (n <= 3) return { cls: 'spov__grid--3', cols: null };
+  if (n <= SP_GRID_CARDS) return { cls: null, cols: null };
+  return { cls: 'spov__grid--wide', cols: Math.ceil(n / 2) };
+}
+/** Whether the pick order strip of `n` players is dense (more than the official 4). */
+export const spOrderDense = (n) => Number(n) > 4;
 
 /**
  * A card's effect text: the card's own rich text, else the data's rich text (highlighted numbers, 下场作战, set bonuses,
@@ -164,6 +186,8 @@ export function ChoiceView({ pub, sp, myId, solo, busyIdx = null, total = null, 
   const timed = !solo && !sp.untimed;
   const armedCardRec = armed != null ? sp.cards.find((c) => c && c.idx === armed) : null;
   const armedName = armedCardRec ? resolveSpCard(armedCardRec, sp.family).name : null;
+  const grid = spGridLayout(sp.cards.length);
+  const dense = spOrderDense(order.length);
   // a press anywhere but a card or the confirm button drops the selection
   const onDown = (e) => {
     if (armed == null) return;
@@ -189,13 +213,13 @@ export function ChoiceView({ pub, sp, myId, solo, busyIdx = null, total = null, 
           ${timed ? html`<${Countdown} deadline=${pub?.deadline} total=${total ?? undefined} size="sm" />` : null}
         </div>
       </header>
-      ${order.length ? html`<div class="spov__order" aria-label="决策顺序">
+      ${order.length ? html`<div class=${cx('spov__order', dense && 'spov__order--dense')} aria-label="决策顺序">
         ${order.map((pid, i) => {
           const p = players.get(pid);
           const picked = sp.pickOf.has(pid);
           const cur = sp.turnPid === pid && !picked;
           const left = p?.status === 'left';
-          return html`<div key=${pid} class=${cx('spov__who', cur && 'is-cur', picked && 'is-done', pid === myId && 'is-self')}>
+          return html`<div key=${pid} class=${cx('spov__who', cur && 'is-cur', picked && 'is-done', pid === myId && 'is-self')} title=${dense ? p?.name || '博士' : undefined}>
             <span class="spov__idx num">${i + 1}</span>
             <${PlayerAvatar} player=${p || { name: '?' }} size="sm" self=${pid === myId} />
             <span class="spov__wname"><${PlayerName} name=${p?.name || '博士'} /></span>
@@ -203,7 +227,7 @@ export function ChoiceView({ pub, sp, myId, solo, busyIdx = null, total = null, 
           </div>`;
         })}
       </div>` : null}
-      <div class=${cx('spov__grid', sp.cards.length <= 3 && 'spov__grid--3')}>
+      <div class=${cx('spov__grid', grid.cls)} style=${grid.cols ? `--sp-cols:${grid.cols}` : undefined}>
         ${sp.cards.map((card) => {
           const r = resolveSpCard(card, sp.family);
           const taker = card.takenBy ? players.get(card.takenBy) : null;

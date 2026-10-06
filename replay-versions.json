@@ -77,6 +77,27 @@
         "engine.js": "9efd07f60c358860fbb1a63bd28aaa27c4bcc90fddfc17f8f1a50e48b68eb646",
         "recovery.mjs": "aa376b9e4c52ed0d5332fff5f87bdabec5e2edf0370ba1661af17a146fc7e338"
       }
+    },
+    {
+      "id": "5d7578a4491df850638f",
+      "hashes": {
+        "engine.js": "b8cb8bfe76a88aec52d5c9b01645b966fb8d94d94af32e5fccea93fa400b8499",
+        "recovery.mjs": "c26a15483c656371ed4bac28acc8a2df3e417fbdb1a9f5987610c56c67b9bba1"
+      }
+    },
+    {
+      "id": "8c0044ab064572c58c63",
+      "hashes": {
+        "engine.js": "a472094d7cfbccb1c16323855747cd30b229ece5fa102cb07ab92f6be6c23142",
+        "recovery.mjs": "ae9bbfaa804ad3a4cf3bac356d7f39e263cd16c37a452e3c4562ff68f9801b89"
+      }
+    },
+    {
+      "id": "c9d8e0a46e1bb4257a21",
+      "hashes": {
+        "engine.js": "2a132556a98ce2c0214e36479e45e00ae6a09e0dd28b12000009c622efedb16f",
+        "recovery.mjs": "7b57edd8636fc0b3002c2d6f67ffe322286e7b9c6a9723ab80ca93cc66bca179"
+      }
     }
   ]
 }

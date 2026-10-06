@@ -30,7 +30,7 @@ import { Sprite, LpTower, GIcon, LocalSprite } from './gameComponents.js';
 import { localAsset } from '../data.js';
 import { serverNow } from '../store.js';
 import { isCombatPhase, isBossPhase, prepCapsuleLabel, bossFrac, bossPctText, fmtNum, shopBlockReason } from './gameLogic.js';
-import { overtimeState, overtimeDrainPerSec, remainAt } from './matchStatus.js';
+import { overtimeState, overtimeDrainPerSec, overtimeTick, remainAt } from './matchStatus.js';
 
 const cx = (...p) => p.flat().filter(Boolean).join(' ');
 
@@ -266,6 +266,8 @@ export function OvertimeWarning({ ot }) {
       <span class="otwarn__txt"><b class="num">${ot.secs}</b> 秒后全队生命值开始流失</span>
     </div>`;
   }
+  // the per-second tick: the LP this second took (a fractional 5–7-player rate takes 1 or 2, never "−1.25")
+  const tick = overtimeTick(ot);
   return html`<div class="otwarn otwarn--drain" role="alert" data-state="drain">
     <span class="otwarn__blood">
       <${LocalSprite} name="blood_icon" class="otwarn__icon" fallback=${html`<${Icon} name="rook" class="otwarn__icon" />`} />
@@ -273,7 +275,7 @@ export function OvertimeWarning({ ot }) {
     <span class="otwarn__tag">DOT</span>
     <span class="otwarn__txt">超时 · 生命值 <b class="num">−${ot.perSec}</b>/秒</span>
     ${ot.lost > 0 ? html`<span class="otwarn__lost">已流失 <b class="num">${ot.lost}</b></span>` : null}
-    <span key=${ot.secs} class="otwarn__tick num" aria-hidden="true">−${ot.perSec}</span>
+    ${tick != null ? html`<span key=${ot.secs} class="otwarn__tick num" aria-hidden="true">−${tick}</span>` : null}
   </div>`;
 }
 
@@ -323,7 +325,7 @@ export function TopBar({ pub, priv, conn, hud, total, drawer, onExit, onDrawer, 
   const otLive = boss && Number(pub?.overtimeAt) > 0;
   useTicker(otLive && frozenAt == null ? 250 : 0);
   const now = Number.isFinite(frozenAt) ? frozenAt : serverNow();
-  const ot = otLive ? overtimeState(pub, now, { perSec: overtimeDrainPerSec(config) }) : null;
+  const ot = otLive ? overtimeState(pub, now, { perSec: overtimeDrainPerSec(config, pub) }) : null;
   const draining = ot?.state === 'drain';
   const lowLp = (Number.isFinite(lp) && lp - pending <= 5) || draining;
   const cap = Number(config?.lpCapPerRound) > 0 ? Number(config.lpCapPerRound) : 10;

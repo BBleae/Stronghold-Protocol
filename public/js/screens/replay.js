@@ -6,6 +6,21 @@ import { verifyReplayChunks, createReplayRunner } from '../battle/replay-runner.
 import { useFieldView } from '../ui/fieldHost.js';
 import { useGameData } from '../ui/gameComponents.js';
 
+/**
+ * A replay battle button's label: `第 N 回合 · names`. A round with several 联防 fields (5–8 players, a remake extension:
+ * fieldId 'u', 'u2', …) names them `联防 1`, `联防 2` … (fieldId 'u' → 1, 'uN' → N); a round with one 联防 field (every
+ * match of 1–4 players) reads as before.
+ * @param {{ round: number, players?: string[], kind?: string, fieldId?: string }} b one recorded battle
+ * @param {any[]} battles every recorded battle of the match
+ * @param {(playerId: string) => string} nameOf
+ */
+export function replayBattleLabel(b, battles, nameOf) {
+  const names = (b?.players || []).map(nameOf).join(' / ');
+  const unite = b?.kind === 'unite' && (battles || []).filter((x) => x?.round === b.round && x?.kind === 'unite').length > 1;
+  const no = !unite ? 0 : b.fieldId === 'u' ? 1 : Number(/^u(\d+)$/.exec(String(b.fieldId))?.[1]) || 0;
+  return `第 ${b?.round} 回合 · ${no ? `联防 ${no} · ` : ''}${names}`;
+}
+
 export function ReplayScreen() {
   const gd = useGameData();
   const matchId = useStore((s) => s.ui.replayMatchId),
@@ -82,7 +97,7 @@ export function ReplayScreen() {
           runner?.pause();
           setSelected(i);
         }}>
-        第 ${b.round} 回合 · ${(b.players || []).map((id) => loaded.facts.result.players?.find((p) => p.playerId === id)?.name || id).join(' / ')}<//>`,
+        ${replayBattleLabel(b, loaded.replay.battles, (id) => loaded.facts.result.players?.find((p) => p.playerId === id)?.name || id)}<//>`,
       )}
     </div>${error ? html`<${Panel}><p role="alert">${error}</p><//>` : !loaded ? html`<${Spinner}/>` : !loaded.replay.battles.length ? html`<p class="t-lo">本局没有进入战斗阶段</p>` : null}
     ${battle && !battle.complete ? html`<p class="t-lo" role="status">此战场录制不完整，无法播放。结算结果仍保存在对局记录中。</p>` : null}

@@ -396,9 +396,10 @@ const HUD_GAP = 1;
  * fits between the HUD bands; else a new camera whose image is panned vertically by the smallest shift that clears
  * the HUD (by up to HUD_GAP where there is room) or — only when the band is taller than the space between — zoomed
  * out about the viewport's centre so it fills that space less HUD_GAP at both ends. The screen y of a horizontal
- * world line is the same at every x (the camera has no roll), so one point per edge decides.
+ * world line is the same at every x (the camera has no roll), so one point per edge decides. `hud.minZoom` (0–1,
+ * touch screens) floors that zoom-out: below it the near edge is kept clear and the band's back rows go under the top HUD.
  * @param {Camera} cam
- * @param {{ top?: number, bottom?: number }|null} hud
+ * @param {{ top?: number, bottom?: number, minZoom?: number }|null} hud
  * @param {{ near: number, zNear?: number, far: number, zFar?: number }|null} keep
  * @param {{ width: number, height: number }} viewport CSS px
  * @returns {Camera}
@@ -415,13 +416,18 @@ export function clearHud(cam, hud, keep, viewport) {
   const spare = bottom - top - (yNear - yFar);
   const gap = spare >= 0 ? Math.min(HUD_GAP, spare / 2) : HUD_GAP;
   const lo = top + gap, hi = bottom - gap;
-  const f = spare >= 0 ? 1 : (hi - lo) / (yNear - yFar);
+  const fit = spare >= 0 ? 1 : (hi - lo) / (yNear - yFar);
+  // a touch screen keeps the pieces big enough to tap (hud.minZoom): the near edge (the bench) stays clear of the
+  // bottom band and the back rows may go under the top one (the shop collapsed or a pinch shows them)
+  const minZoom = clamp(finite(hud.minZoom, 0), 0, 1);
+  const f = Math.max(fit, minZoom);
   const out = cam.clone();
-  // image transform x' = xc + f·(x − xc), y' = lo + f·(y − yFar) (zoom) or y' = y + dy (pan, the smallest shift
-  // that puts [yFar, yNear] inside [lo, hi]): scale the focal length by f and move the principal point accordingly
+  // image transform x' = xc + f·(x − xc), y' = lo + f·(y − yFar) (zoom; capped: y' = hi + f·(y − yNear)) or
+  // y' = y + dy (pan, the smallest shift that puts [yFar, yNear] inside [lo, hi]): scale the focal length by f and
+  // move the principal point accordingly
   out.scale = cam.scale * f;
   out.cx = W / 2 + f * (cam.cx - W / 2);
-  out.cy = f < 1 ? lo + f * (cam.cy - yFar) : cam.cy + Math.min(Math.max(0, lo - yFar), hi - yNear);
+  out.cy = f > fit ? hi + f * (cam.cy - yNear) : f < 1 ? lo + f * (cam.cy - yFar) : cam.cy + Math.min(Math.max(0, lo - yFar), hi - yNear);
   return out.update();
 }
 

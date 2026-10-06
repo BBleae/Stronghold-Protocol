@@ -76,7 +76,8 @@
 
 import { net as appNet } from '../net.js';
 import { store as appStore } from '../store.js';
-import { unitStatsEntry, fxForm } from '../../../shared/protocol.js';
+import { unitStatsEntry, fxForm, RESULT_LIMITS } from '../../../shared/protocol.js';
+import { spectateEffects } from './observe.js';
 
 const TICK = 1 / 30;
 /** Fast-forward budget per frame (ticks) when far behind. */
@@ -84,6 +85,13 @@ export const CATCHUP_TICKS = 240;
 /** Silent catch-up slice (ticks) while a new battle is prepared before it is shown. */
 const PREPARE_SLICE = 600;
 const MAX_ENTRIES = 4;
+/**
+ * Battles the cache keeps (evict(), besides the current, own, authoritative-unsent and undelivered ones): one round of
+ * the room — the own battle and every teammate's display replica — so cycling through teammates never rebuilds and
+ * fast-forwards a replica it saw: MAX_ENTRIES (4) for 1–4 players, one per player in a room of 5–8.
+ * @param {number} [players] the match's players (m.public players)
+ */
+export const runnerCacheMax = (players) => Math.max(MAX_ENTRIES, Number.isInteger(players) ? players : 0);
 const STATE_EV = new Set(['spawn', 'die', 'deploy', 'status', 'skill', 'leak']);
 /**
  * The b.ev tuples a catch-up frame or the hidden-tab backlog keeps: the state-bearing kinds, and every fx that sets an
@@ -506,13 +514,14 @@ export function createBattleRunner(deps) {
       msg.bossDmg = pool && Number.isFinite(pool.cum) ? pool.cum : 0;
       if (pool && pool.byPlayer) {
         const by = {};
-        for (const pid of Object.keys(pool.byPlayer).slice(0, 4)) by[pid] = pool.byPlayer[pid];
+        for (const pid of Object.keys(pool.byPlayer).slice(0, RESULT_LIMITS.players)) by[pid] = pool.byPlayer[pid];
         msg.by = by;
       }
     } else {
       msg.leaks = Math.min(1e6, p.leaks);
-      // 联防: the leakers' enemies still standing (shared/protocol.js b.progress `left`, ≤ 4 players)
-      if (p.left) msg.left = Object.fromEntries(Object.entries(p.left).slice(0, 4));
+      // 联防: the leakers' enemies still standing (shared/protocol.js b.progress `left`, ≤ RESULT_LIMITS.players keys —
+      // one per leaker of the field, so never cut in a room of up to MAX_SEATS players)
+      if (p.left) msg.left = Object.fromEntries(Object.entries(p.left).slice(0, RESULT_LIMITS.players));
     }
     if (!net.accountMode) return net.send('b.progress', msg);
     if (!e.segment || e.segment.session !== session) e.segment = { id: crypto.randomUUID(), session, seq: 0, sent: 0 };
@@ -654,6 +663,8 @@ export function createBattleRunner(deps) {
     const field = {
       t: 'm.field', ...meta, fieldId: e.fieldId, kind: e.kind, rect: meta.rect ?? e.spec.rect, stageId: meta.stageId ?? e.spec.stageId,
       live: !e.done, battleId: e.battleId, players: e.members.slice(), local: true, speed: e.speed,
+      // the watched player's effects column (user playtest #2; undefined for 联防 / boss pairs and server-run fields)
+      effects: spectateEffects(e.spec, e.members),
       // which half each player holds (联防: the first helper takes the right half; boss pairs: L / R)
       sides: Object.fromEntries((e.spec.players || []).filter((p) => p && p.playerId).map((p) => [p.playerId, p.side === 'R' || Number(p.colOffset) >= 8 ? 'R' : 'L'])),
     };
@@ -666,9 +677,12 @@ export function createBattleRunner(deps) {
   }
 
   function evict() {
-    if (entries.size <= MAX_ENTRIES) return;
+    let players;
+    try { players = store?.get?.()?.match?.public?.players?.length; } catch { /* a store without a match slice */ }
+    const max = runnerCacheMax(players);
+    if (entries.size <= max) return;
     for (const [id, e] of entries) {
-      if (entries.size <= MAX_ENTRIES) break;
+      if (entries.size <= max) break;
       if (e === cur || (e.authoritative && !e.resultSent) || e.own || e.delivery === 'pending' || e.delivery === 'undelivered') continue;
       entries.delete(id);
     }

@@ -345,7 +345,7 @@ function Filters({ m, filters, onFilters, bonds }) {
         ${[1, 2, 3, 4, 5, 6].map((t) => html`<button key=${t} type="button" class=${cx('lo-chip', 'lo-chip--tier', `lo-chip--t${t}`, filters.tier === t && 'is-on')}
           aria-pressed=${filters.tier === t ? 'true' : 'false'} title=${`${t}阶`} onClick=${() => set({ tier: filters.tier === t ? null : t })}><span class="num">${ROMAN[t]}</span></button>`)}
       </div>
-      <${TextField} size="sm" icon="search" value=${filters.query} placeholder="搜索干员 / 职业 / 盟约" class="lo-search"
+      <${TextField} size="sm" icon="search" value=${filters.query} placeholder="搜索干员 / 职业 / 盟约" class="lo-search" enterKeyHint="search"
         onInput=${(v) => set({ query: String(v).slice(0, 24) })} />
     </div>
     <div class="lo-frow">
