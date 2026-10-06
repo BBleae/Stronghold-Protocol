@@ -99,7 +99,8 @@ test('灰烬 T2: knocked out, she waits for her timer and the DP (WAIT_DP), then
     h.b.getPlayer('p1').dp = rec(id).stats.cost - 1;
     h.run(rec(id).stats.respawnTime + 1);
     assert.ok(!u.alive, 'still down');
-    assert.equal(h.b._downState(u), DOWN_STATE.WAIT_DP);
+    assert.ok(h.b.isDown(u));
+    assert.equal(h.snapshot().down.find((x) => x[0] === u.id)[3], DOWN_STATE.WAIT_DP);
     h.b.addDp('p1', 1);
     h.step(1);
     assert.ok(u.alive && u.deployed, 'redeployed once the DP is there');
@@ -213,6 +214,31 @@ test('灰烬 S2 突击战术: flashbang at the cast, 31 bullets, BAT −0.8 s, A
   done(h);
 });
 
+test('灰烬 S2: ×atk_scale only on 晕眩 (not 冻结 / 浮空) and only while the 31 bullets last', () => {
+  const sc = skillOf(ELITE6, S2).bb['ash_s_2[atk_scale].atk_scale'];
+  const h = run({ units: [U(ELITE6, S2, 10, 3, { carryState: READY })], enemies: [{ key: 'enemy_nostun', pos: [10, 5] }] });
+  const u = h.unit(ELITE6);
+  assert.ok(h.runUntil(() => u.skill.active, 3));
+  const e = h.enemy('enemy_nostun'), A = u.s.atk;
+  const window = (status, dur, opts = {}) => {
+    const t = h.b.time;
+    assert.ok(h.b.applyStatus(e, status, { duration: dur, ...opts }), status);
+    h.run(dur + 0.3);
+    return hitsBy(h, u, (c) => c.dmg.isAttack && c.t > t + 0.05 && c.t < t + dur - 0.05);
+  };
+  const frozen = window('freeze', 1);
+  assert.ok(frozen.length >= 3 && frozen.every((c) => near(c.amount, A)), '冻结: ×1');
+  const lev = window('levitate', 1);
+  assert.ok(lev.length >= 3 && lev.every((c) => near(c.amount, A)), '浮空: ×1');
+  const stun = window('stun', 1, { force: true });
+  assert.ok(u.skill.active && stun.length >= 3 && stun.every((c) => near(c.amount, A * sc)), `晕眩: ×${sc}`);
+  assert.ok(h.runUntil(() => !u.skill.active, 10));
+  assert.equal(h.hooksOf('skillEnd').find((c) => c.unit === u).reason, 'ammo', 'the 31 bullets are spent');
+  const after = window('stun', 3, { force: true });
+  assert.ok(after.length >= 2 && after.every((c) => near(c.amount, A)), 'after the skill: ×1 on a stunned enemy');
+  done(h);
+});
+
 test('灰烬 S3 攻坚榴弹: path hit + push, burst at the line end (not_hitwall_scale), every loadout', () => {
   for (const [id, moduleId] of LOADOUTS) {
     const bb = skillOf(id, S3).bb;
@@ -264,6 +290,43 @@ test('灰烬 S3: from low ground into a 高台 it bursts at once for hitwall_sca
   assert.ok(fm > 1);
   const path = hitsBy(h, u, tagged('ashGrenadePath'));
   assert.ok(near(path[0].amount, u.s.atk * bb.atk_scale * fm), 'MAR-X fly ×atk_scale on her own skill damage');
+  done(h);
+});
+
+test('灰烬 S3: the line reaches 4 tiles ahead (trigger and path); the burst takes flyers, ×1.1 on them under MAR-X', () => {
+  const far = run({ units: [U(ELITE6, S3, 10, 3, { carryState: READY })], enemies: [{ key: 'enemy_heavy', pos: [10, 8] }] });
+  far.run(3);
+  assert.equal(far.unit(ELITE6).skill.activations, 0, '5 tiles ahead: outside the line');
+  done(far);
+  for (const moduleId of [null, MAR_X]) {
+    const bb = skillOf(ELITE6, S3).bb;
+    const h = run({ units: [U(ELITE6, S3, 10, 3, { moduleId, carryState: READY })],
+      enemies: [{ key: 'enemy_heavy', pos: [10, 6] }, { key: 'enemy_heavy', pos: [10, 7] }, { key: 'enemy_heavy', pos: [10, 8] }, { key: 'enemy_fly', pos: [9, 7], route: 2 }] });
+    const u = h.unit(ELITE6);
+    assert.ok(h.runUntil(() => u.skill.activations > 0, 2));
+    const A = u.s.atk, fm = flyMulOf(ELITE6, moduleId);
+    const path = hitsBy(h, u, tagged('ashGrenadePath')).map((c) => c.target.x).sort();
+    assert.deepEqual(path, [6, 7], 'path: 3 and 4 tiles ahead, not 5');
+    const blast = hitsBy(h, u, tagged('ashGrenadeBlast'));
+    assert.equal(blast.length, 4, 'burst at (10, 7): the three heavies and the flyer');
+    const fly = blast.find((c) => c.target.defId === 'enemy_fly');
+    assert.ok(near(fly.amount, A * bb.not_hitwall_scale * fm), `flyer ×${fm}`);
+    assert.ok(blast.filter((c) => c !== fly).every((c) => near(c.amount, A * bb.not_hitwall_scale)), 'ground ×1');
+    done(h);
+  }
+});
+
+test('灰烬 S3: the push follows her facing (facing left: towards −x)', () => {
+  const bb = skillOf(ELITE6, S3).bb;
+  const h = run({ units: [U(ELITE6, S3, 10, 8, { dir: 'LEFT', carryState: READY })], enemies: [{ key: 'enemy_dummy', pos: [10, 6] }] });
+  const u = h.unit(ELITE6);
+  assert.equal(u.dir, 'LEFT');
+  assert.ok(h.runUntil(() => u.skill.activations > 0, 2));
+  const e = h.enemy('enemy_dummy');
+  assert.ok(near(e.x, 6 - h.b.pushDistance(e, bb.force), 1e-3) && near(e.y, 10), `pushed to x=${e.x}`);
+  const blast = hitsBy(h, u, tagged('ashGrenadeBlast'));
+  assert.equal(h.eventsOf('fx').find((x) => x[1] === 'explode')[2], 4, 'burst at the line end, 4 tiles to her left');
+  assert.equal(blast.length, 1);
   done(h);
 });
 

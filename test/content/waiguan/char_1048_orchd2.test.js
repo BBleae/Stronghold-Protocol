@@ -31,7 +31,7 @@ const DEFS = {
   chess: REC,
   enemies: {
     enemy_dummy: dummy('enemy_dummy'), enemy_armor: dummy('enemy_armor', { def: 300 }), enemy_heavy: dummy('enemy_heavy', { mass: 5 }),
-    enemy_fly: dummy('enemy_fly', { motion: 'FLY' }), enemy_frail: dummy('enemy_frail', { hp: 10 }),
+    enemy_fly: dummy('enemy_fly', { motion: 'FLY' }), enemy_fly2: dummy('enemy_fly2', { motion: 'FLY' }), enemy_frail: dummy('enemy_frail', { hp: 10 }),
   },
 };
 const READY = { sp: 999 };
@@ -103,6 +103,9 @@ test('焰狐龙梓兰 S1 刚射: 4 arrows (atk_scale_1), then 刚连射 on a spa
     assert.equal(st.length, 5, 'a stun roll per 刚连射 arrow');
     assert.ok(st.every((c) => near(c.duration, bb.stun)) && rolls.length === 5 && rolls.every((p) => p === bb.stun_prob));
     assert.equal(u.skill.charges, sk.maxChargeTime - 2, 'two charges spent');
+    const vfx = h.eventsOf('fx').filter((e) => e[1] === 'volley');
+    assert.equal(vfx.length, 1);
+    assert.deepEqual(vfx[0][4].targets, [combo[0].target.id], 'the 刚连射 fx names its target (render/fx.js volley reads `targets`)');
     done(h);
   }
   // no roll succeeds ⇒ no stun; a target dead after the first arrows ⇒ no 刚连射, the charge stays
@@ -122,23 +125,59 @@ test('焰狐龙梓兰 S1 刚射: 4 arrows (atk_scale_1), then 刚连射 on a spa
   done(g);
 });
 
-test('焰狐龙梓兰 S1: "充能至最大层数时自动释放一次" — at full charges it casts during the operation cooldown, not before', () => {
+test('焰狐龙梓兰 S1: "充能至最大层数时自动释放一次" — at full charges it casts during the operation cooldown (left unchanged); its guards', () => {
+  const full = (sk) => { sk.charges = sk.maxCharges; sk.sp = sk.spCost; };
   for (const id of [ID6, ELITE6]) {
     const h = run({ units: [U(id, S1, 10, 3, { carryState: READY })], enemies: [{ key: 'enemy_heavy', pos: [10, 5] }] });
     const u = h.unit(id), sk = u.skill;
     assert.ok(h.runUntil(() => sk.activations === 1 && !sk.pending, 3));
     h.step(1);
     assert.ok(sk.opCooling, 'the 3 s operation cooldown runs');
+    const ready = sk.opReadyAt;
     sk.charges = sk.maxCharges - 1;
     sk.sp = 0;
     h.step(3);
     assert.equal(sk.activations, 1, 'not full: waits for the cooldown');
-    sk.charges = sk.maxCharges;
-    sk.sp = sk.spCost;
-    h.step(1);
-    assert.equal(sk.activations, 2, 'full: casts at once');
-    assert.equal(h.hooksOf('skillStart').filter((c) => c.unit === u).at(-1).reason, 'auto');
+    h.b.applyStatus(u, 'silence', { duration: 0.5 });
+    full(sk);
+    h.step(3);
+    assert.equal(sk.activations, 1, 'silenced: no cast');
+    h.run(0.6);
     assert.ok(sk.opCooling);
+    assert.equal(sk.activations, 2, 'full: casts once the silence is over, inside the cooldown');
+    assert.equal(h.hooksOf('skillStart').filter((c) => c.unit === u).at(-1).reason, 'auto');
+    assert.equal(sk.opReadyAt, ready, 'the skill\'s own cast is no operation: the cooldown is not restarted');
+    assert.ok(sk.pending, 'waits for her next attack');
+    full(sk);
+    h.step(3);
+    assert.equal(sk.activations, 2, 'no second cast while one is pending');
+    done(h);
+    // nobody to shoot: no cast
+    const g = run({ units: [U(id, S1, 10, 3, { carryState: READY })], enemies: [{ key: 'enemy_heavy', pos: [10, 5] }] });
+    const v = g.unit(id);
+    assert.ok(g.runUntil(() => v.skill.activations === 1 && !v.skill.pending, 3));
+    g.b.kill(g.enemy('enemy_heavy'));
+    full(v.skill);
+    g.step(10);
+    assert.ok(v.skill.opCooling);
+    assert.equal(v.skill.activations, 1, 'no enemy in her attack selection');
+    done(g);
+  }
+});
+
+test('焰狐龙梓兰 S1 with exactly one charge: the 4 arrows only, no 刚连射', () => {
+  for (const [id, carryState] of [[ID6, undefined], [ELITE6, { sp: skillOf(ELITE6, S1).spCost }], [ELITE5, { sp: skillOf(ELITE5, S1).spCost }]]) {
+    const left = [];
+    const h = run({ units: [U(id, S1, 10, 3, { carryState })], enemies: [{ key: 'enemy_heavy', pos: [10, 5] }],
+      setup: (b) => b.on('skillStart', (c) => left.push(c.skill.charges)) });
+    const u = h.unit(id);
+    assert.ok(h.runUntil(() => u.skill.activations === 1 && !u.skill.pending, 3));
+    assert.deepEqual(left, [0], 'the cast took her only charge');
+    h.run(0.5);
+    assert.equal(hitsBy(h, u, tagged('orchd2Combo')).length, 0, 'no 刚连射');
+    const first = attacksOf(h, u)[0];
+    assert.equal(first.length, 4);
+    assert.equal(u.skill.charges, 0);
     done(h);
   }
 });
@@ -147,7 +186,8 @@ test('焰狐龙梓兰 S2 飞翔瞪射: free cast at every deployment; 起飞; vo
   for (const [id, moduleId] of LOADOUTS) {
     const sk = skillOf(id, S2), bb = sk.bb, ds = dsOf(id), pw = talOf(id, 0, moduleId).power_attack_scale;
     const h = run({ units: [U(id, S2, 10, 3, { moduleId })],
-      enemies: [{ key: 'enemy_dummy', pos: [10, 5] }, { key: 'enemy_armor', pos: [10, 7] }, { key: 'enemy_heavy', pos: [10, 8] }, { key: 'enemy_fly', pos: [9, 6], route: 2 }] });
+      enemies: [{ key: 'enemy_dummy', pos: [10, 5] }, { key: 'enemy_armor', pos: [10, 7] }, { key: 'enemy_heavy', pos: [10, 8] }, { key: 'enemy_fly', pos: [9, 6], route: 2 },
+        { key: 'enemy_fly2', pos: [11, 4], route: 3 }] });
     const u = h.unit(id);
     h.step(1);
     const start = h.hooksOf('skillStart').filter((c) => c.unit === u);
@@ -171,7 +211,7 @@ test('焰狐龙梓兰 S2 飞翔瞪射: free cast at every deployment; 起飞; vo
     assert.ok(vol.filter((c) => c.target === d).every((c) => near(c.amount, A * bb['attack@atk_scale_loop'] * pw * ds)), 'loop scale × T1 × damage_scale');
     assert.ok(vol.filter((c) => c.target === a).every((c) => near(c.amount, phys(A * bb['attack@atk_scale_loop'] * pw, 300) * ds)));
     const land = hitsBy(h, u, tagged('orchd2Landing'));
-    assert.deepEqual(land.map((c) => c.target), [d], 'landing: her own grid only');
+    assert.deepEqual(land.map((c) => c.target.defId).sort(), ['enemy_dummy', 'enemy_fly2'], 'landing: her own grid only, flyers too');
     assert.ok(near(land[0].amount, A * bb['attack@atk_scale_end']) && Math.abs(land[0].t - (t0 + sk.duration)) <= 0.07, 'at the end');
     const te = h.hooksOf('skillEnd').find((c) => c.unit === u).t;
     assert.ok(Math.abs(te - t0 - sk.duration) <= 0.05);
@@ -203,6 +243,40 @@ test('焰狐龙梓兰 S2: SKILL_RANGE casts a charge once an enemy is on the ski
   }
 });
 
+test('焰狐龙梓兰 S2: take-off releases the ground enemies she blocks; no new ground block in flight', () => {
+  for (const id of [ID6, ELITE6]) {
+    const h = run({ units: [U(id, S2, 10, 3, { carryState: READY })], enemies: [{ key: 'enemy_dummy', pos: [10, 3] }, { key: 'enemy_heavy', pos: [10, 6], time: 6 }] });
+    const u = h.unit(id);
+    h.run(5.5);
+    const e = h.enemy('enemy_dummy');
+    assert.equal(u.skill.activations, 1);
+    assert.ok(e.blockedBy === u && u.blocking.includes(e), 'landed: she blocks the one on her tile');
+    assert.ok(h.runUntil(() => u.skill.activations === 2, 2), 'an enemy enters the skill grid: S2 again');
+    assert.ok(e.blockedBy !== u && !u.blocking.length, 'released at the take-off');
+    h.run(1);
+    assert.ok(u.skill.active && !u.blocking.length, 'none blocked in flight');
+    done(h);
+  }
+});
+
+test('焰狐龙梓兰 S2 ended early (knock-out / stop): no more volleys, no landing', () => {
+  for (const end of ['death', 'stopped']) {
+    const h = run({ units: [U(ELITE6, S2, 10, 3)], enemies: [{ key: 'enemy_dummy', pos: [10, 5] }, { key: 'enemy_armor', pos: [10, 7] }] });
+    const u = h.unit(ELITE6);
+    assert.ok(h.runUntil(() => hitsBy(h, u, tagged('orchd2Volley')).length > 0, 3), 'the first volley');
+    h.step(1);
+    const n = hitsBy(h, u, tagged('orchd2Volley')).length;
+    assert.equal(n, 6, '3 arrows × 2 enemies');
+    if (end === 'death') h.b.kill(u); else u.skill.stop();
+    assert.equal(h.hooksOf('skillEnd').filter((c) => c.unit === u).at(-1).reason, end);
+    h.run(5);
+    assert.equal(hitsBy(h, u, tagged('orchd2Volley')).length, n, `${end}: no more volleys`);
+    assert.equal(hitsBy(h, u, tagged('orchd2Landing')).length, 0, `${end}: no landing`);
+    assert.ok(!u.s.flags.liftoff);
+    done(h);
+  }
+});
+
 test('焰狐龙梓兰 S3 龙之箭: charge 3 s (no attack), then the arrow: 5 hits on an enemy it passes (phys + arts), pushes after — every loadout', () => {
   for (const [id, moduleId] of LOADOUTS) {
     const sk = skillOf(id, S3), bb = sk.bb;
@@ -229,6 +303,9 @@ test('焰狐龙梓兰 S3 龙之箭: charge 3 s (no attack), then the arrow: 5 hi
     }
     assert.equal(arrow.filter((c) => c.target === hv).length, 0, 'a tile off the line: missed');
     assert.equal(arrow.filter((c) => c.target === h.enemy('enemy_fly')).length, 10, 'a flyer on the line: hit');
+    const beams = h.eventsOf('fx').filter((e) => e[1] === 'beam').map((e) => e[4]);
+    assert.ok(beams.every((x) => x.from === u.id && x.kind === 'dragonArrow'), 'shooter → target beams');
+    assert.deepEqual(beams.map((x) => x.to).sort(), [d.id, a.id, h.enemy('enemy_fly').id].sort(), 'one per enemy it passed');
     assert.ok(near(d.x, x0.d + h.b.pushDistance(d, bb.force), 1e-3) && near(a.x, x0.a + h.b.pushDistance(a, bb.force), 1e-3), 'pushed along her facing');
     done(h);
   }
@@ -277,6 +354,25 @@ test('焰狐龙梓兰 T1 强击瓶专家: from her first skill of a deployment, 
   }
 });
 
+test('焰狐龙梓兰 T1: a 【移动】 keeps the open window (no exit: the buff stays)', () => {
+  for (const id of [ID6, ELITE6]) {
+    const t0 = talOf(id, 0), ds = dsOf(id);
+    const h = run({ units: [U(id, S3, 10, 3, { carryState: { sp: skillOf(id, S3).spCost } })], enemies: [{ key: 'enemy_heavy', pos: [10, 5] }] });
+    const u = h.unit(id);
+    assert.ok(h.runUntil(() => u.skill.activations === 1 && !u.skill.active, 6));
+    h.run(4);
+    const left = u.mem.orchd2.left;
+    assert.ok(attacksOf(h, u).length >= 2 && left > 0 && left < t0.power_attack_count, `window open (${left} left)`);
+    assert.ok(h.b.moveRedeploy(u, 10, 4));
+    assert.equal(u.mem.orchd2.left, left, 'kept');
+    const t = h.b.time;
+    h.run(4);
+    const after = attacksOf(h, u, (c) => c.t > t + 0.3);
+    assert.ok(after.length >= 2 && after.flat().every((c) => near(c.amount, u.s.atk * t0.power_attack_scale * ds)), 'still powered after the move');
+    done(h);
+  }
+});
+
 test('焰狐龙梓兰 T2 翔虫机动: redeploy time −respawn_time (once), each redeploy costs her cost (never raised), WAIT_DP — every loadout', () => {
   for (const [id, moduleId] of LOADOUTS) {
     const r = raw(id, moduleId), cost = r.stats.cost;
@@ -297,7 +393,8 @@ test('焰狐龙梓兰 T2 翔虫机动: redeploy time −respawn_time (once), eac
     h.b.kill(u);
     h.b.getPlayer('p1').dp = cost - 1;
     h.run(wait + 0.5);
-    assert.equal(h.b._downState(u), DOWN_STATE.WAIT_DP);
+    assert.ok(h.b.isDown(u));
+    assert.equal(h.snapshot().down.find((x) => x[0] === u.id)[3], DOWN_STATE.WAIT_DP);
     h.b.addDp('p1', 1);
     h.step(1);
     assert.ok(u.alive && dp(h) === 0, 'redeploys once the DP is there, paying all of it');
@@ -319,6 +416,12 @@ test('焰狐龙梓兰 T2: ATK +atk for atk_duration s on a redeploy near her exi
     assert.ok(near(u.s.atk, u.base.atk * (1 + t1.atk)));
     h.run(t1.atk_duration + 0.1);
     assert.equal(u.findBuff('orchd2:wirebug'), null, 'lapses');
+    // a retreat is an exit too (the marker is left where she stood): her automatic redeploy on that tile gets it
+    h.b.retreat(u);
+    h.b.getPlayer('p1').dp = 99;
+    h.run(u.respawnAt - h.b.time + 0.1);
+    assert.ok(u.alive && u.findBuff('orchd2:wirebug'), 'after a retreat');
+    h.b.removeBuff(u, 'orchd2:wirebug');
     // a tile (+1 row, +2 cols) away: inside x-2 (ARC-X level 3), outside x-1
     h.b.kill(u);
     assert.ok(h.b.redeploy(u, { tile: [11, 5] }));

@@ -12,7 +12,8 @@
 //   scales her ranged normal-attack damage by damage_scale): every arrow her attack ability shoots deals damage_scale of its
 //   hit (after mitigation: dmg.mul), and a normal attack shoots round(1 / damage_scale) arrows (3 × 0.333) at its target.
 //   The skills' arrows (S1 and 刚连射, the S2 volleys) are arrows of that ability too and take the same damage_scale; the
-//   S2 landing blast and S3 ("造成攻击力N%的…伤害") are not arrows and do not.
+//   S2 landing blast and S3 ("造成攻击力N%的…伤害") are not arrows and do not. (Owner decision pending — the other
+//   reading: a skill arrow "攻击力N%的箭矢" deals N% of ATK whole, i.e. no damage_scale on the S1 / 刚连射 arrows.)
 // Trait (重射手 "高精度的近距离射击"): the closerange profile (nothing to add).
 // S1 刚射 (MANUAL, DEFAULT kept; charges from the record): the next attack shoots the desc's first "发射N支" arrows at
 //   atk_scale_1; then, while she still holds a charge, one more is spent on 刚连射 against the same target (when it is
@@ -20,7 +21,7 @@
 //   none is spent): the second "发射N支" arrows at atk_scale_2, each with stun_prob of 晕眩 `stun` s (rolled after its hit
 //   while the target lives; battle RNG). "充能至最大层数时自动释放一次" (orchd2_s_1[auto], the skill's own trigger, not an
 //   operation): at full charges she casts it even while the 3 s automatic-operation cooldown runs, as soon as an enemy is
-//   in her attack selection.
+//   in her attack selection — and that cast does not restart the cooldown (no pending cast, not silenced, able to act).
 // S2 飞翔瞪射 (MANUAL, SKILL_RANGE + the record's customRangeGrid kept; duration and charges from the record): 起飞 for the
 //   skill's duration (蒂比's flags: blocks flyers only, no ground enemy selects her; the ground enemies she blocked walk on;
 //   no normal attack), the desc's "分别射出a、b、c支" volleys at every selectable enemy on the skill grid, each arrow
@@ -34,7 +35,9 @@
 //   facing with 力度 `force` (orchd2_s_3[knockback] KnockBackWithCharacterDirection: a fixed direction).
 // T1 强击瓶专家 (orchd2_t_2): at her first skill activation of each deployment (S2's free cast counts), her next
 //   power_attack_count attacks get ATK ×power_attack_scale (pre-mitigation: an atk scale on every arrow of the attack,
-//   刚连射 included). An attack = one engine attack (S1's cast and its 刚连射 are one) or one S2 volley that has a target.
+//   刚连射 included). An attack = one engine attack (S1's cast and its 刚连射 are one: they share dmg.attackId; it is
+//   counted at its first arrow that lands) or one S2 volley that has a target. The window is the INFINITY buff
+//   orchd2_t_2[power_atk]: a 【移动】 (no exit, the buffs stay) keeps it; a deployment after an exit restarts it.
 // T2 翔虫机动 (DP, REQUIREMENTS §1): "再部署时间−N秒" = the hidden part 3 respawn_time on her redeploy time
 //   (`unit.base.respawnTime`, read by Battle._remove with the redeploy multipliers on top) — applied once; "且不提高部署费用"
 //   (not_add_respawn_cost_cnt): the engine never raises an operator's redeploy cost — every redeploy charges her player
@@ -46,7 +49,8 @@
 //   changes placement in this mode (REQUIREMENTS §6), not modelled.
 // Module ARC-X (梓兰特制箭靶): its trait "再部署时间减少" is the module's respawnTime attribute (already in the elite's stats)
 //   and its talent changes (talent 1, hidden part 3) come through the record — nothing module-specific in the code.
-// fx: 'volley' (S1 刚连射, S2 volleys), 'takeoff' (S2), 'aoe' (S2 landing, its tiles), 'beam' (S3 arrow), 'buff' (翔虫机动).
+// fx: 'volley' (S1 刚连射, S2 volleys: `targets`), 'takeoff' (S2), 'aoe' (S2 landing, its tiles), 'beam' (S3 arrow: one per
+//   enemy it passed, from / to; 'strike' at its end when it passed none), 'buff' (翔虫机动).
 //
 // [ASSUMED] (no data / PRTS unreachable): the normal attack's arrow count (round(1 / damage_scale)); damage_scale on the
 //   skills' arrows (above); the S2 volleys at k × duration / (volleys + 1) of the flight and the landing at its end; the
@@ -129,7 +133,9 @@ function dragonArrow(battle, unit, bb) {
       if (arts > 0 && hasHp(e)) battle.dealDamage(unit, e, { amount: arts, type: 'arts', isSkill: true, tags: ['skill', ARROW_TAG] });
     }
   }
-  battle.fx('beam', { x: unit.x, y: unit.y, id: unit.id, tx: end.x, ty: end.y, kind: 'dragonArrow' });
+  // (a beam per enemy it passed, shooter → target, as the enemy beams do; render/fx.js 'beam' reads from / to)
+  for (const e of passed) battle.fx('beam', { x: unit.x, y: unit.y, from: unit.id, to: e.id, kind: 'dragonArrow' });
+  if (!passed.length) battle.fx('strike', { x: end.x, y: end.y, id: unit.id, kind: 'dragonArrow' });
   const force = num(bb.force), dir = { x: fc, y: fr };
   for (const e of passed) if (e.alive) battle.push(e, force, { from: unit, dir, fixed: true });
 }
@@ -163,7 +169,7 @@ export default function orchd2(bb, chess, def) {
               if (!sk || sk.id !== S1 || sk.charges < 1) return;
               if (sk.charges >= sk.maxCharges) sk.sp = 0;
               sk.charges -= 1;
-              battle.fx('volley', { x: unit.x, y: unit.y, id: unit.id, target: target.id, n: n2 });
+              battle.fx('volley', { x: unit.x, y: unit.y, id: unit.id, targets: [target.id], n: n2 });
               const amount = unit.s.atk * unit.s.atkScaleMul * sc2;
               for (let i = 0; i < n2 && hasHp(target); i++) {
                 battle.dealDamage(unit, target, { amount, type: 'phys', isAttack: true, isSkill: true, attackId, tags: ['skill', COMBO_TAG] });
@@ -225,7 +231,7 @@ export default function orchd2(bb, chess, def) {
         const st = stateOf(unit);
         st.scale = scale;
         battle.on('deploy', (c) => {
-          if (c.unit !== unit) return;
+          if (c.unit !== unit || c.move) return;
           st.opened = false;
           st.left = 0;
           st.powered.clear();
@@ -235,15 +241,6 @@ export default function orchd2(bb, chess, def) {
           st.opened = true;
           st.left = count;
         }, { owner: unit, priority: 10 });
-        // the engine attack's id (Battle._attackSeq: every damage instance of the attack carries it as dmg.attackId) is
-        // the current one when `attack` fires — her arrows are projectiles, none has landed yet
-        battle.on('attack', (c) => {
-          if (c.attacker !== unit) return;
-          const sc = takePower(unit);
-          if (sc === 1) return;
-          st.powered.set(battle._attackSeq, sc);
-          if (st.powered.size > POWERED_KEEP) st.powered.delete(st.powered.keys().next().value);
-        }, { owner: unit, priority: 100 });
       } },
       { install(battle, unit) { // 翔虫机动
         const rt = num(respawnPart.respawn_time);
@@ -273,15 +270,23 @@ export default function orchd2(bb, chess, def) {
         const d = c.dmg;
         if (c.source !== unit || !d.isAttack || !c.target || c.target.side !== 'enemy') return;
         if (ds > 0) d.mul *= ds;
-        const p = d.attackId ? st.powered.get(d.attackId) : undefined;
-        if (p) d.amount *= p;
+        if (d.attackId) { // T1: the engine attack's first arrow that lands counts it (all its arrows share the id)
+          if (!st.powered.has(d.attackId)) {
+            st.powered.set(d.attackId, takePower(unit));
+            if (st.powered.size > POWERED_KEEP) st.powered.delete(st.powered.keys().next().value);
+          }
+          const p = st.powered.get(d.attackId);
+          if (p !== 1) d.amount *= p;
+        }
       }, { owner: unit });
       // S1 "充能至最大层数时自动释放一次": at full charges, also during the operation cooldown
       if (sid === S1) {
         battle.on('tick', () => {
           const sk = unit.skill;
           if (!sk || sk.maxCharges < 2 || sk.charges < sk.maxCharges || sk.pending || !sk.opCooling || !unit.canAct || unit.s.flags.silence) return;
-          if (attackCandidates(battle, unit).length) sk.activate('auto');
+          if (!attackCandidates(battle, unit).length) return;
+          const ready = sk.opReadyAt; // the skill's own cast is no automatic operation: the cooldown runs on unchanged
+          if (sk.activate('auto')) sk.opReadyAt = ready;
         }, { owner: unit });
       }
       // S2 "部署后立即释放一次": a free cast at every deployment
