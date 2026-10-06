@@ -267,7 +267,7 @@ export function collectEnemyIds({ assets07, enemies05, maps05, ops03 }) {
  *   used in the order the file lists them (its first URL is the reachable mirror).
  * @returns {{ template: any, models: Map<string, any>, notes: string[] }}
  */
-export function buildPlan({ assets07, ops03, enemies05, maps05, audio, modelsData, extraEnemyIds = [], extraTokenIds = [], extraHandbook = {}, localEnemySpines = {}, voice = null, extraOperators = {} }) {
+export function buildPlan({ assets07, ops03, enemies05, maps05, audio, modelsData, extraEnemyIds = [], extraTokenIds = [], extraHandbook = {}, localEnemySpines = {}, voice = null, extraOperators = {}, extraTokens = {} }) {
   const notes = [];
   /** @type {Map<string, any>} */
   const models = new Map();
@@ -301,8 +301,8 @@ export function buildPlan({ assets07, ops03, enemies05, maps05, audio, modelsDat
   // loop below (avatar / portrait / battle Spine / skill icons / unit SFX), so an operator of the roster is planned
   // exactly like a pool operator.
   const operatorsById = { ...(assets07?.operators || {}), ...extraOperators };
-  // the pool's own characters (research 07): their battle voice is planned below; a 外援 operator has none
-  const charIds = Object.keys(assets07?.operators || {}).sort();
+  // every operator a player can field — the pool's (research 07) and the 外援 roster: their battle voice is planned below
+  const charIds = Object.keys(operatorsById).sort();
   for (const id of Object.keys(operatorsById).sort()) {
     const o = operatorsById[id];
     // Alternatives in the order the entry lists them. A research 07 entry names raw.githubusercontent.com (fetch-assets
@@ -353,8 +353,12 @@ export function buildPlan({ assets07, ops03, enemies05, maps05, audio, modelsDat
   const tokenIds = new Set(Object.keys(assets07?.tokens || {}));
   for (const id of extraTokenIds) if (typeof id === 'string' && /^token_\d+_[a-z0-9_]+$/i.test(id)) tokenIds.add(id);
   for (const id of [...tokenIds].sort()) {
-    // Tokens unknown to research 07: default avatar/Spine locations (misses are tolerated).
-    const t = assets07?.tokens?.[id] ?? {
+    // Tokens unknown to research 07: the 外援 roster's summons name their Spine (tools/assets/waiguan-operators.json
+    // `tokens`: the upstream repository has only skin variants of them), any other gets the default avatar/Spine
+    // locations (misses are tolerated).
+    const t = assets07?.tokens?.[id] ?? (extraTokens?.[id] ? {
+      avatar: { url: `${RAW.yuanyan}avatar/${id}.png` }, battleSpineDefault: null, ...extraTokens[id],
+    } : null) ?? {
       avatar: { url: `${RAW.yuanyan}avatar/${id}.png` },
       battleSpineDefault: null,
       battleSpineSkinVariantsOnly: [id],

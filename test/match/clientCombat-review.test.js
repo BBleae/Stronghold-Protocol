@@ -399,6 +399,11 @@ test('loadBrowserSim: a data file that cannot be fetched fails the loader (no ba
   const once = served();
   const sim = await loadBrowserSim({ base, fetchFn: (u, o) => { if (first && /enemies/.test(u)) { first = false; return Promise.reject(new Error('net')); } return once(u, o); } });
   assert.ok(sim.spec && sim.ds);
+  // the browser's battles resolve the 外援 / 甄选 operators like the server's (DESIGN §27: waiguan is a sim data file)
+  assert.ok(SIM_DATA_FILES.includes('waiguan'));
+  for (const id of ['chess_char_diy_6_char_003_kalts_a', 'chess_char_diy_6_char_003_kalts_b', 'chess_char_diy_5_char_003_kalts_a', 'chess_char_diy_5_char_003_kalts_b']) {
+    assert.ok(sim.ds.getChess(id), `${id} resolves in the browser sim`);
+  }
   const spec = buildBattleSpec({ battleId: 'l1', fieldId: 'n:p', kind: 'normal', seed: 5, round: 1, stageId: Object.keys(DATA.stages)[0], timeLimit: 30,
     players: [{ playerId: 'p', units: [], bonds: {} }], spawns: [{ enemyKey: plainKey, count: 1, time: 1 }], flags: { layerGainsEnabled: true } });
   const b = sim.spec.createBattleFromSpec(spec, sim.ds, { quiet: true, recordEvents: false });

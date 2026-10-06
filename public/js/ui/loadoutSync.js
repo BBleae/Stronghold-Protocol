@@ -39,9 +39,15 @@ export const loadoutStore = createStore({
   sync: 'idle',
 });
 
-// Cloud hydration happens after module evaluation and can also recover after a failed initial fetch.
+// Cloud hydration happens after module evaluation and can also recover after a failed initial fetch. Both the loadout and
+// the 甄选 picks follow the account (preferenceSchema.js PREFERENCE_KEYS) in account mode; the Node server keeps them in
+// this browser (sp.pref.*). A store change is what the sync below sends, so a hydrated selection reaches the room too.
 subscribePrefs(key => {
   if (key === LOADOUT_PREF) loadoutStore.set({entries:readStored()});
+  if (key === PICKS_PREF) {
+    const picks = readStoredPicks();
+    if (JSON.stringify(picks) !== JSON.stringify(loadoutStore.get().picks || {})) loadoutStore.set({picks});
+  }
 });
 
 /** Replace the stored entries (persisted at once; the sync picks the change up). */
@@ -131,7 +137,6 @@ export function installLoadoutSync({ net, getChessReady, lookupChess, loadWaigua
     try {
       const current = target.get().picks || {};
       const empty = Object.keys(current).length === 0;
-      if (globalThis.__SP_DBG_PICKS) console.log('[dbg-flush] current =', JSON.stringify(current), ' empty =', empty, ' targetIsStore =', typeof target.reset);
       // an empty selection needs no data: a player who never touched 甄选 must not download waiguan.json in the lobby
       if (!empty) await loadRoster();
       if (disposed) return;

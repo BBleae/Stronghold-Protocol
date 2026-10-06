@@ -11,6 +11,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { Client, sleep as csleep, hasChrome, startRealServer, problemsOf } from '../e2e/client.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const OUT = path.join(ROOT, 'test/e2e/out');
@@ -279,5 +280,159 @@ describe('外援 / 甄选 slots (real server, headless Chrome)', { skip: !ENABLE
     assert.equal(await page.$$eval('.lo-wg__slot.is-filled', (els) => els.length), 1, 'the tap selected a candidate');
     assert.deepEqual(problems, [], 'no console / page / request errors');
     await ctx.close();
+  });
+});
+
+// ---- a bought 外援 in a running match (DESIGN §27) ------------------------------------------------------------------
+//
+// The bug this locks down, end to end: the player's own picks never reached its shop (the server rolled without the
+// player's id), a bought 外援 resolved to nothing in the browser (the in-match lookups read data/chess.json only: blank
+// shop card, no piece art, no unit detail, no deploy voice) and never fought (no battle data source knew the record: zero
+// ally units). A solo match on test/e2e/fastServer.mjs (SP_START_ROUND 2 + SP_START_SHOP: the picked operator in the first
+// shop slot, the hook test/ui/playtest6-elite.e2e.test.js uses; SP_START_KIT 0: nothing else) — the pick is made in the
+// 干员调配 picker, the card is bought with real taps, the piece is dragged onto the board, and the battle the browser runs
+// must field it and report its damage. Zero console errors.
+
+
+const MATCH_ENABLED = process.env.SP_E2E === '1' && hasChrome() && existsSync(path.join(ROOT, 'public/assets'));
+const DIY_CHAR = 'char_180_amgoat';
+const DIY_NAME = '艾雅法拉';
+const DIY_ID = `chess_char_diy_6_${DIY_CHAR}_a`;
+
+describe('外援 in a running match: shop card, hand piece, unit detail and the battle (fast server, headless Chrome)', { skip: !MATCH_ENABLED && 'set SP_E2E=1 (and have Chrome + assets) to run' }, () => {
+  test('solo: the picked 外援 is offered, bought, shown with its name and art, deployed, and fights', { timeout: 300000 }, async () => {
+    const puppeteer = (await import('puppeteer-core')).default;
+    const srv = await startRealServer({ fast: { timerScale: 0.5, combatSpeed: 3, startRound: 2, kit: 0, shop: [DIY_ID] } });
+    const c = new Client(puppeteer, srv.base, 'waiguan', { prefix: 'waiguan-match' });
+    try {
+      await c.open();
+      await c.enter('外援');
+      // the pick, through the 干员调配 picker (tier VI slot 1, found by name)
+      await c.click('.lobby-screen [data-testid="loadout-open"]');
+      await c.page.waitForSelector('[data-testid="waiguan-slot-diy6a"]', { visible: true, timeout: 20000 });
+      await c.click('[data-testid="waiguan-slot-diy6a"]');
+      await c.page.waitForSelector('.lo-wgpick input', { visible: true, timeout: 15000 });
+      await c.page.click('.lo-wgpick input');
+      await c.page.keyboard.type(DIY_NAME);
+      await c.page.waitForFunction((ch) => document.querySelectorAll('.lo-wgpick__grid .lo-card').length === 1
+        && document.querySelector(`.lo-wgpick__grid [data-char="${ch}"]`), { timeout: 8000 }, DIY_CHAR);
+      await c.click(`.lo-wgpick__grid [data-char="${DIY_CHAR}"]`);
+      await c.page.waitForFunction(() => !document.querySelector('.lo-wgpick'), { timeout: 10000 });
+      await c.click('.lo-back');
+      await c.page.waitForSelector('.lobby-screen', { visible: true, timeout: 10000 });
+      await c.hookRequests();
+
+      // solo room → briefing → strategy → the first prep (round 2 by the hook)
+      await c.click('.mode-card', '独立模拟');
+      await c.click('.diff-card', '险境');
+      await c.click('.create-box button', '开始独立模拟');
+      await c.waitFor((s) => !!s.room, 'solo room');
+      // the selection reached the server before the match (room.pick → room.state.picks, the viewer's own)
+      await c.page.waitForFunction((ch) => globalThis.__SP__.store.get().room?.picks?.diy6a === ch, { timeout: 15000 }, DIY_CHAR);
+      if (!(await c.st()).phase) await c.click('.room-bar__right button', '开始模拟', { timeout: 20000 });
+      await c.waitFor((s) => s.phase === 'INFO_CHECK', 'briefing', 30000);
+      await c.click('.brief__foot .btn--primary', '准备就绪');
+      await c.waitFor((s) => s.phase === 'BAND_DRAFT', 'band draft', 30000);
+      await c.click('.dband', null, { nth: 1 });
+      await c.click('.draft-detail__btns .btn--primary', '确认选择');
+      await c.waitFor((x) => x.phase === 'PREP' && !x.ready, 'prep', 60000);
+      await csleep(1500);
+
+      // the match holds the pick (m.private.picks: the match's own, locked selection)
+      const priv0 = await c.page.evaluate(() => globalThis.__SP__.store.get().match.private);
+      assert.equal(priv0.picks?.diy6a, DIY_CHAR, `the match holds the pick (${JSON.stringify(priv0.picks)})`);
+      const slotIdx = priv0.shop.slots.findIndex((s) => s && s.id === DIY_ID);
+      assert.ok(slotIdx >= 0, 'the 外援 is in the shop');
+
+      // the shop card: the operator's name and portrait (it used to be a blank card: no record in chess.json)
+      const card = await c.page.evaluate((name) => {
+        const el = [...document.querySelectorAll('.shopbar__cards .scard')].find((x) => x.querySelector('.scard__name')?.textContent.trim() === name);
+        if (!el) return null;
+        const img = el.querySelector('img.scard__art');
+        return { name: el.querySelector('.scard__name').textContent.trim(), src: img?.getAttribute('src') || null };
+      }, DIY_NAME);
+      assert.ok(card, `a shop card named ${DIY_NAME}`);
+      assert.ok(card.src && card.src.includes(DIY_CHAR), `the card shows the operator's portrait (${card.src})`);
+      await c.page.waitForFunction((name) => {
+        const el = [...document.querySelectorAll('.shopbar__cards .scard')].find((x) => x.querySelector('.scard__name')?.textContent.trim() === name);
+        const img = el?.querySelector('img.scard__art');
+        return !!(img && img.complete && img.naturalWidth > 0);
+      }, { timeout: 15000 }, DIY_NAME);
+      await c.shot('shop');
+
+      // buy it: first tap arms, the second buys
+      await c.click('.shopbar__cards .scard', DIY_NAME);
+      await csleep(300);
+      await c.click('.shopbar__cards .scard.is-armed');
+      await c.page.waitForFunction((id) => (globalThis.__SP__.store.get().match.private?.hand || []).some((p) => p && p.id === id), { timeout: 8000 }, DIY_ID);
+      assert.equal((await c.requests('g.buy')).length, 1, 'one g.buy');
+      const piece = (await c.handPieces('chess')).find((p) => p.id === DIY_ID);
+      assert.ok(piece, 'the bought 外援 is in the hand');
+
+      // the hand piece: the render view knows the operator (spine / avatar = its charId, not a blank null)
+      await c.page.waitForFunction((uid) => !!globalThis.__SP_VIEW__?.raw?.debug?.views?.get('p:' + uid), { timeout: 8000 }, piece.uid);
+      const info = await c.page.evaluate((uid) => {
+        const v = globalThis.__SP_VIEW__.raw.debug.views.get('p:' + uid);
+        return { spine: v?.info?.spine ?? null, avatar: v?.info?.avatar ?? null, tier: v?.info?.tier ?? null };
+      }, piece.uid);
+      assert.deepEqual(info, { spine: DIY_CHAR, avatar: DIY_CHAR, tier: 6 }, 'the hand piece is drawn as the operator');
+
+      // the unit detail: tap the piece → name, portrait, skills
+      const at = await c.piecePoint(piece.uid);
+      assert.ok(at, 'the hand piece is on screen');
+      await c.page.mouse.click(at.x, at.y);
+      await c.page.waitForSelector('.dpanel .dhead__name', { visible: true, timeout: 8000 });
+      const detail = await c.page.evaluate(() => ({
+        name: document.querySelector('.dpanel .dhead__name')?.textContent.trim() || null,
+        art: document.querySelector('.dpanel .dhead__art img')?.getAttribute('src') || null,
+        text: document.querySelector('.dpanel')?.textContent || '',
+      }));
+      assert.equal(detail.name, DIY_NAME, 'the detail card names the operator');
+      assert.ok(detail.art && detail.art.includes(DIY_CHAR), `the detail card shows its art (${detail.art})`);
+      const rec = await c.page.evaluate((id) => globalThis.__SP__.data.lookup('chess', id), DIY_ID);
+      assert.ok(rec && rec.skills?.length, 'the record resolves in the page');
+      assert.ok(detail.text.includes(rec.skills.find((s) => s.isDefault)?.name || rec.skills[0].name), 'the skill is described');
+      await c.shot('detail');
+      await c.click('.dpanel__close', null, { optional: true, timeout: 2000 });
+
+      // deploy it (drag + direction wheel), then fight
+      const tile = await c.freeTileFor(piece.uid);
+      assert.ok(tile, 'a free tile for the operator');
+      const from = await c.piecePoint(piece.uid);
+      const to = await c.tilePoint(tile.row, tile.col);
+      await c.drag(from, to);
+      await c.page.waitForSelector('.fwheel__dia', { timeout: 4000 });
+      await c.swipe('LEFT');
+      await c.page.waitForFunction((uid) => (globalThis.__SP__.store.get().match.private?.board || []).some((p) => p.uid === uid), { timeout: 8000 }, piece.uid);
+      await c.shot('deployed');
+      await c.click('.readybtn');
+      // the battle the browser simulates fields the 外援: the field view draws a battle unit of that chess id (its spawn
+      // info), with the operator's model
+      const fielded = () => c.page.evaluate((id) => {
+        const views = globalThis.__SP_VIEW__?.raw?.debug?.views;
+        const s = globalThis.__SP__.store.get();
+        if (!views || !s.match.battle || s.match.public?.phase !== 'COMBAT') return null;
+        for (const v of views.values()) if (v?.info?.defId === id && v.info.side !== 'enemy') return { spine: v.info.spine, side: v.info.side };
+        return null;
+      }, DIY_ID);
+      let unit = null;
+      for (let t0 = Date.now(); !(unit = await fielded()); await csleep(100)) {
+        if (Date.now() - t0 > 60000) throw new Error(`the 外援 never stood on the battle field: ${JSON.stringify(await c.st())}`);
+      }
+      assert.equal(unit.spine, DIY_CHAR, 'drawn with the operator\u2019s model');
+      await csleep(600);
+      await c.shot('combat');
+      // ... and it fought: the battle's own report (b.result) credits it with damage
+      await c.page.waitForFunction(() => (globalThis.__e2eReq || []).some((r) => r[0] === 'b.result'), { timeout: 120000 });
+      const result = (await c.requests('b.result'))[0][1].result;
+      const me = await c.page.evaluate(() => globalThis.__SP__.store.get().me.playerId);
+      const stats = (result.perPlayer?.[me]?.unitStats || []).find((u) => u.defId === DIY_ID);
+      assert.ok(stats, `the battle report lists the 外援 (${JSON.stringify(result.perPlayer?.[me]?.unitStats)})`);
+      assert.ok(stats.dmg > 0, `it dealt damage (${JSON.stringify(stats)})`);
+      assert.deepEqual(problemsOf([c]), [], 'no console / page / request errors');
+    } finally {
+      await c.close();
+      await srv.stop();
+    }
   });
 });

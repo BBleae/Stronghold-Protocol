@@ -537,17 +537,22 @@ function EnemyDetail({ enemy, snapHp, count, live = null }) {
  * How a summon piece placed in the prep phase takes the field (user playtest #6; sim/content/tokens.js): a talent
  * summon deploys with the board; a skill's summon (赫默's 医疗探机, 巫恋's 诅咒娃娃) once at the battle start and again
  * with each skill (`startDeploy`: shared/constants.js SKILL_SUMMON_START_DEPLOY, the PRTS reading the user settled) —
- * or, with the switch off, only when its owner's skill fires. null for tokens that are no hand piece.
+ * or, with the switch off, only when its owner's skill fires; a return during the battle pays the summon's deploy cost for a
+ * 外援 summoner only (pool summons come back free). A 外援 talent summon (sim/content/genericSummons.js) also comes back on its tile after its redeploy time, paying, while its
+ * per-battle count lasts. null for tokens that are no hand piece.
  * @param {any} token tokens.json record
  * @param {boolean} [startDeploy] the sim's switch (tests pass both values)
  */
 export function summonDeployHint(token, startDeploy = SKILL_SUMMON_START_DEPLOY) {
   if (!token || token.kind !== 'summon' || token.placeable !== true) return null;
   const talent = Object.values(token.variants || {}).some((v) => (v?.sources || []).includes('talent'));
-  if (talent) return '作战开始时在摆放的位置部署';
+  const waiguan = Object.keys(token.variants || {}).length > 0 && Object.keys(token.variants || {}).every((k) => k.startsWith('chess_char_diy_'));
+  if (talent) {
+    return waiguan ? '作战开始时在摆放的位置部署；离场后经过再部署时间在原位再部署（消耗部署费用，有使用数量的用完即止）' : '作战开始时在摆放的位置部署';
+  }
   return startDeploy
-    ? '作战开始时在摆放的位置部署一次，之后所属干员每次发动技能时再次出现（未摆放则不会出现）'
-    : '所属干员发动技能时才在摆放的位置出现（未摆放则不会出现）';
+    ? `作战开始时在摆放的位置部署一次，之后所属干员每次发动技能时再次出现（${waiguan ? '消耗部署费用；' : ''}未摆放则不会出现）`
+    : `所属干员发动技能时才在摆放的位置出现（${waiguan ? '消耗部署费用；' : ''}未摆放则不会出现）`;
 }
 
 /**

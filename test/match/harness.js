@@ -195,7 +195,9 @@ function legacyInvariants(m) {
         for (const it of p.items) { note(it); assert.equal(it.kind, 'item'); assert.ok(m.gd.item(it.id), `unknown item ${it.id}`); }
         assert.ok(Number.isInteger(p.poolCopies) && p.poolCopies >= 0);
         const base = m.gd.baseIdOf(p.id);
-        held.set(base, (held.get(base) || 0) + p.poolCopies);
+        // a copy of a player's own 甄选 entry counts against that player's entry (pool.js owned)
+        const key = pool.ownedBy(ps.playerId).has(base) ? `${base}@${ps.playerId}` : base;
+        held.set(key, (held.get(key) || 0) + p.poolCopies);
       } else if (p.kind === 'item') {
         assert.ok(m.gd.item(p.id), `unknown item ${p.id}`);
       } else if (p.kind === 'token') {
@@ -211,11 +213,15 @@ function legacyInvariants(m) {
       if (need > 1 && m.gd.goldenIdOf(b)) assert.ok(n < need, `${ps.playerId} owns ${n} copies of ${b} (merge ${need})`);
     }
   }
-  for (const [base, e] of pool.entries) {
-    assert.ok(e.left >= 0 && e.left <= e.cap, `pool ${base} left ${e.left} cap ${e.cap}`);
-    assert.equal(e.left + (held.get(base) || 0), e.cap, `pool accounting ${base}: left ${e.left} + held ${held.get(base) || 0} != cap ${e.cap}`);
-  }
-  for (const [base, n] of held) if (!pool.has(base)) assert.equal(n, 0, `non-pool chess ${base} holds copies`);
+  const counted = new Set();
+  const account = (key, e) => {
+    counted.add(key);
+    assert.ok(e.left >= 0 && e.left <= e.cap, `pool ${key} left ${e.left} cap ${e.cap}`);
+    assert.equal(e.left + (held.get(key) || 0), e.cap, `pool accounting ${key}: left ${e.left} + held ${held.get(key) || 0} != cap ${e.cap}`);
+  };
+  for (const [base, e] of pool.entries) account(base, e);
+  for (const [owner, mine] of pool.owned) for (const [base, e] of mine) account(`${base}@${owner}`, e);
+  for (const [key, n] of held) if (!counted.has(key)) assert.equal(n, 0, `non-pool chess ${key} holds copies`);
   return true;
 }
 
@@ -224,7 +230,8 @@ export function give(m, ps, chessId, where = 'hand', at = null) {
   const rec = m.gd.chess(chessId);
   assert.ok(rec, `unknown chess ${chessId}`);
   const base = m.gd.baseIdOf(chessId);
-  const taken = m.pool.take(base, rec.isGolden ? m.gd.goldenCopies : 1);
+  // copies from this player's pool (its own 甄选 entry when the chess is one of its picks)
+  const taken = m.pool.take(base, rec.isGolden ? m.gd.goldenCopies : 1, ps.playerId);
   const piece = ps.newPiece('chess', chessId, { poolCopies: taken });
   if (where === 'board') {
     ps.board.set(tileKey(at[0], at[1]), piece);

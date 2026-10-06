@@ -15,6 +15,11 @@
 // Rolls: each chess slot draws ONE copy uniformly from all remaining copies of eligible chess with tier ≤ shop level
 // ("copy-weighted"; duplicates within a roll allowed). The item slot picks a tier with the same tier shares, then a
 // uniform shop-eligible item of that tier (falling back to lower tiers).
+//
+// 甄选 (DIY) entries (addOwned, DESIGN §27) belong to ONE player. Every draw made for a player — its shop, its reward
+// offers, the random grants of its effects — passes that player's `playerId`, so its own picks are part of its pool and
+// nobody else's are; `take` gives an owned entry's copies to its owner only. A call without `playerId` sees the shared
+// pool alone.
 
 /**
  * Per-match disabled bond set D and banned chess (research 01 A2): D = uniform sample of `core` core bonds and `addon`
@@ -44,6 +49,8 @@ export function drawDisabledBonds(gd, rng) {
   return { drawn, staticOff, banned };
 }
 
+const EMPTY = new Map();
+
 function sample(arr, n, rng) {
   const a = arr.slice();
   rng.shuffle(a);
@@ -59,7 +66,7 @@ export class SharedPool {
   constructor(gd, { banned = [], players = undefined } = {}) {
     this.gd = gd;
     const ban = new Set(banned);
-    /** @type {Map<string, { cap: number, left: number, tier: number, owner: string|null }>} */
+    /** The SHARED pool: base chess id → entry (every player's). @type {Map<string, { cap: number, left: number, tier: number, owner: null }>} */
     this.entries = new Map();
     for (const id of gd.visibleChess) {
       if (ban.has(id)) continue;
@@ -67,6 +74,13 @@ export class SharedPool {
       if (cap <= 0) continue;
       this.entries.set(id, { cap, left: cap, tier: gd.tierOf(id), owner: null });
     }
+    /**
+     * The private 甄选 (DIY) entries, per owner: playerId → (base chess id → entry). Keyed per owner because two players
+     * may bring the same operator (two humans, or bots with the same preferences): each then has its own private pool of
+     * it — a single map keyed by the chess id let only the first owner have it.
+     * @type {Map<string, Map<string, { cap: number, left: number, tier: number, owner: string }>>}
+     */
+    this.owned = new Map();
     this.banned = [...ban].sort();
   }
 
@@ -77,55 +91,89 @@ export class SharedPool {
    * @param {string} owner playerId
    * @param {string} baseId the 甄选 chess id (data/waiguan.json, already merged into the match's chess table)
    * @param {number} cap copies (the official per-tier pool copies: 8 at tier V, 5 at tier VI)
-   * @returns {boolean} false when the chess is unknown / already taken by another owner
+   * @returns {boolean} false when the chess is unknown / part of the shared pool / cap ≤ 0 (an existing own entry: true)
    */
   addOwned(owner, baseId, cap) {
+    if (typeof owner !== 'string' || !owner || !this.gd.chess(baseId)) return false;
     const tier = this.gd.tierOf(baseId);
     if (!Number.isInteger(tier)) return false;
     const n = Math.max(0, Math.floor(cap) || 0);
-    if (n <= 0) return false;
-    const existing = this.entries.get(baseId);
-    if (existing) return existing.owner === owner;
-    this.entries.set(baseId, { cap: n, left: n, tier, owner });
+    if (n <= 0 || this.entries.has(baseId)) return false;
+    let mine = this.owned.get(owner);
+    if (!mine) { mine = new Map(); this.owned.set(owner, mine); }
+    if (!mine.has(baseId)) mine.set(baseId, { cap: n, left: n, tier, owner });
     return true;
   }
 
-  /** Whether `playerId` may see / buy a base chess (an unowned entry is everybody's). */
-  visibleTo(baseId, playerId = null) {
-    const e = this.entries.get(baseId);
-    if (!e) return false;
-    return e.owner == null || e.owner === playerId;
+  /**
+   * Drop a player's own 甄选 entry (Match.setPicks, a slot changed before the shop opened): only when every copy is back
+   * (left === cap), so the accounting invariant holds. A dropped pick then leaves its owner's shop.
+   * @returns {boolean} whether the entry was removed
+   */
+  removeOwned(owner, baseId) {
+    const mine = this.owned.get(owner);
+    const e = mine ? mine.get(baseId) : null;
+    if (!e || e.left !== e.cap) return false;
+    mine.delete(baseId);
+    if (!mine.size) this.owned.delete(owner);
+    return true;
   }
+
+  /** `playerId`'s own 甄选 entries (base chess id → entry; empty for nobody / a player without picks). */
+  ownedBy(playerId) {
+    return (playerId != null && this.owned.get(playerId)) || EMPTY;
+  }
+
+  /** The entry `playerId` draws `baseId` from: the shared one, else its own 甄选 entry; null when it has none. */
+  entryFor(baseId, playerId = null) {
+    return this.entries.get(baseId) || (playerId != null ? this.owned.get(playerId)?.get(baseId) : null) || null;
+  }
+
+  /** Every entry `playerId` may draw from — the shared pool plus its own picks — as [baseId, entry] pairs. */
+  *entriesFor(playerId = null) {
+    yield* this.entries;
+    if (playerId != null) yield* this.ownedBy(playerId);
+  }
+
+  /** Whether `playerId` may see / buy a base chess (a shared entry is everybody's, a 甄选 entry its owner's). */
+  visibleTo(baseId, playerId = null) { return !!this.entryFor(baseId, playerId); }
 
   /** Whether a base chess is part of this match's pool (visible, not banned) — for `playerId`, when given. */
   has(baseId, playerId = null) { return this.visibleTo(baseId, playerId); }
-  cap(baseId) { return this.entries.get(baseId)?.cap ?? 0; }
-  left(baseId, playerId = null) { const e = this.entries.get(baseId); return e && this.visibleTo(baseId, playerId) ? e.left : 0; }
+  cap(baseId, playerId = null) { return this.entryFor(baseId, playerId)?.cap ?? 0; }
+  left(baseId, playerId = null) { return this.entryFor(baseId, playerId)?.left ?? 0; }
 
-  /** Take up to n copies; returns the number actually taken (0 when not in the pool / empty). */
-  take(baseId, n = 1) {
-    const e = this.entries.get(baseId);
+  /**
+   * Take up to n copies for `playerId`; returns the number actually taken (0 when not in its pool / empty). A player's
+   * own 甄选 entry gives copies to its owner only: anybody else (a teammate receiving it as a gift, a caller that names
+   * no player) takes 0 — the piece then holds no copy, like a chess from outside the pool — so a private pool is never
+   * drained by someone else and its copies are always held by its owner (invariants.js).
+   */
+  take(baseId, n = 1, playerId = null) {
+    const e = this.entryFor(baseId, playerId);
     if (!e || !(n > 0)) return 0;
     const k = Math.min(e.left, Math.floor(n));
     e.left -= k;
     return k;
   }
 
-  /** Return n copies (clamped at the cap). Returns the number actually returned. */
-  give(baseId, n = 1) {
-    const e = this.entries.get(baseId);
+  /**
+   * Return n copies (clamped at the cap) to the entry `playerId` took them from. Returns the number actually returned
+   * (a 甄选 piece held by a non-owner holds no copy, so nothing goes back anywhere).
+   */
+  give(baseId, n = 1, playerId = null) {
+    const e = this.entryFor(baseId, playerId);
     if (!e || !(n > 0)) return 0;
     const k = Math.min(e.cap - e.left, Math.floor(n));
     e.left += k;
     return k;
   }
 
-  /** Remaining copies of eligible chess (tier ≤ maxTier, or exactly `tier`), for `playerId` when given. */
+  /** Remaining copies of eligible chess (tier ≤ maxTier, or exactly `tier`): the shared pool plus `playerId`'s picks. */
   _eligible({ maxTier = 6, tier = null, filter = null, playerId = null } = {}) {
     const out = [];
-    for (const [id, e] of this.entries) {
+    for (const [id, e] of this.entriesFor(playerId)) {
       if (e.left <= 0) continue;
-      if (e.owner != null && e.owner !== playerId) continue;
       if (tier != null ? e.tier !== tier : e.tier > maxTier) continue;
       if (filter && !filter(id, e)) continue;
       out.push([id, e.left]);
@@ -135,7 +183,7 @@ export class SharedPool {
 
   /**
    * Copy-weighted roll: one copy uniformly among remaining copies of eligible chess. Returns a base id or null.
-   * `playerId` restricts the draw to the shared chess plus that player's own 甄选 picks (DESIGN §27).
+   * `playerId` adds that player's own 甄选 picks to the shared chess (DESIGN §27); without it only the shared pool draws.
    * @param {Function} rng
    * @param {{ maxTier?: number, tier?: number|null, filter?: (id: string, e: object) => boolean, playerId?: string|null }} [opts]
    */
@@ -149,13 +197,15 @@ export class SharedPool {
     return el[el.length - 1][0];
   }
 
-  /** Tier shares of a copy-weighted roll at shop level `maxTier` (current remaining copies), for `playerId` when given. */
+  /**
+   * Tier shares of a copy-weighted roll at shop level `maxTier` (current remaining copies) — what `roll({ maxTier,
+   * playerId })` draws, `playerId`'s own picks included.
+   */
   tierShares(maxTier, playerId = null) {
     const t = {};
     let total = 0;
-    for (const [, e] of this.entries) {
+    for (const [, e] of this.entriesFor(playerId)) {
       if (e.tier > maxTier || e.left <= 0) continue;
-      if (e.owner != null && e.owner !== playerId) continue;
       t[e.tier] = (t[e.tier] || 0) + e.left;
       total += e.left;
     }
@@ -190,13 +240,14 @@ export class SharedPool {
     return null;
   }
 
-  /** { baseId: left } snapshot (tests / diagnostics). */
+  /** { baseId: left } snapshot of the SHARED pool (tests / diagnostics; `ownedBy` lists a player's 甄选 entries). */
   snapshot() {
     const o = {};
     for (const [id, e] of this.entries) o[id] = e.left;
     return o;
   }
 
+  /** Copies left in the SHARED pool. */
   totalLeft() {
     let n = 0;
     for (const e of this.entries.values()) n += e.left;

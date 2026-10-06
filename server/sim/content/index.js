@@ -34,12 +34,15 @@ async function safeImport(path) {
 }
 
 const TIERS = await Promise.all([1, 2, 3, 4, 5, 6].map((t) => safeImport(`./kits/tier${t}.js`)));
+// 外援 / 甄选 (DESIGN §27): one kit file per operator under kits/waiguan/, registered for both chess ids of the operator by
+// the GENERATED kits/waiguan/index.js (tools/gen-waiguan-kits.mjs)
+const WAIGUAN = await safeImport('./kits/waiguan/index.js');
 const DOMAIN_NAMES = ['tokens', 'devices', 'enemies', 'bosses', 'bonds', 'garrisons', 'items', 'bands', 'choices'];
 const DOMAINS = await Promise.all(DOMAIN_NAMES.map((n) => safeImport(`./${n}.js`)));
 const tokens = DOMAINS[0];
 
 /** Merged kit registry: baseChessId → (bb, chess, def) => Kit */
-export const KITS = Object.freeze(Object.assign({}, ...TIERS.map((m) => (m && m.default && typeof m.default === 'object' ? m.default : {}))));
+export const KITS = Object.freeze(Object.assign({}, ...[...TIERS, WAIGUAN].map((m) => (m && m.default && typeof m.default === 'object' ? m.default : {}))));
 
 /** Domain modules in install order: tokens, devices, enemies, bosses, bonds, garrisons, items, bands, choices. */
 export const MODULES = Object.freeze(DOMAIN_NAMES.map((n, i) => [n, DOMAINS[i]]));
@@ -56,7 +59,13 @@ export function setupUnitKit(battle, unit, mode = 'full') {
     if (typeof tk === 'function') {
       try { const k = tk(bb, raw, def); if (k) return k; } catch (e) { battle._handlerError(`tokenKit:${def.id}`, unit, e); }
     }
-    return def.skill ? genericKit(bb, raw, def) : {};
+    // a summon without a token kit (外援): full mode — tokens.genericTokenKit (the owner kit's `tokenKits[id]`, a trap
+    // kit, or the generic kit + generic summon talents, genericSummons.js); otherwise the generic kit (its skill, if any,
+    // and its generic talents — genericTalents.js)
+    if (mode === 'full' && typeof tokens.genericTokenKit === 'function') {
+      try { const k = tokens.genericTokenKit(battle, unit, bb, raw, def); if (k) return k; } catch (e) { battle._handlerError(`genericTokenKit:${def.id}`, unit, e); }
+    }
+    return genericKit(bb, raw, def);
   }
   if (unit.kind !== 'op') return {};
   const injected = battle.opts && battle.opts.kits;
@@ -157,7 +166,7 @@ export function selectSkillSpec(kit, bb, raw, def) {
   const map = kit && kit.skills && typeof kit.skills === 'object' ? kit.skills : null;
   if (id && map && Object.prototype.hasOwnProperty.call(map, id)) return { ...kit, skill: map[id] ?? null, skillSource: 'skills' };
   if (skillIsDefault(def)) return kit;
-  const g = genericKit(bb, raw, def);
+  const g = genericKit(bb, raw, def, { talents: false });
   const own = typeof kit.install === 'function' ? kit.install : null;
   const gen = typeof g.install === 'function' ? g.install : null;
   const out = { ...kit, skill: g.skill ?? null, skillSource: 'generic' };

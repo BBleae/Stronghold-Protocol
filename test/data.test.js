@@ -16,7 +16,8 @@ import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { waiguanRecords, WAIGUAN_SLOTS, WAIGUAN_TIER_FIELDS } from '../shared/waiguan.js';
+import { waiguanRecords, WAIGUAN_SLOTS, WAIGUAN_TIER_FIELDS, WAIGUAN_ELITE_TIER_FIELDS } from '../shared/waiguan.js';
+import { composeStats, composeTalents } from '../shared/loadoutRecord.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 // DATA_DIR lets the suite validate an alternative build output (e.g. `--out /tmp/x`).
@@ -263,7 +264,7 @@ test('waiguan: bond derivation uses mainPower AND subPower — checked against t
   }
 });
 
-test('waiguan: the two tiers of one operator are the same operator (tier V = tier VI + the tier fields)', () => {
+test('waiguan: the two tiers of one operator are the same operator (tier V = tier VI + the tier fields; an elite + its 模组 level)', () => {
   for (const c of waiguanCandidates) {
     for (const suffix of ['_a', '_b']) {
       const id5 = c.chessIds[5].replace(/_a$/, suffix);
@@ -273,20 +274,88 @@ test('waiguan: the two tiers of one operator are the same operator (tier V = tie
       assert.ok(r5 && r6, `${c.charId}${suffix}: tier records (${id5} / ${id6})`);
       assert.equal(r5.tier, 5);
       assert.equal(r6.tier, 6);
-      // everything but the nine tier fields is the same record (the overlay is exactly what the tier changes)
-      for (const k of Object.keys(r6)) {
-        if (WAIGUAN_TIER_FIELDS.includes(k)) continue;
+      // everything but the nine tier fields is the same record — and, on an elite, what its slot's 模组 level decides
+      // (tier V elite equipLevel 1, tier VI 3: the module bonus, the module trait / talent parts, the module choices)
+      const allowed = new Set([...WAIGUAN_TIER_FIELDS, ...(r6.isGolden ? WAIGUAN_ELITE_TIER_FIELDS : [])]);
+      for (const k of new Set([...Object.keys(r5), ...Object.keys(r6)])) {
+        if (allowed.has(k)) continue;
         assert.deepEqual(r5[k], r6[k], `${id5}.${k} differs from ${id6}`);
       }
+      // what the module level does not touch stays shared
+      for (const k of ['statsBase', 'traitBase', 'talentsBase', 'skills', 'skill']) assert.deepEqual(r5[k], r6[k], `${id5}.${k} is module-independent`);
       const tpl = chess[r6.isGolden ? 'chess_char_5_diy1_b' : 'chess_char_5_diy1_a'];
+      const tpl6 = chess[r6.isGolden ? 'chess_char_6_diy1_b' : 'chess_char_6_diy1_a'];
       assert.equal(r5.status.equipLevel, tpl.status.equipLevel, `${id5}: the tier V slot's 模组 level`);
+      assert.equal(r6.status.equipLevel, tpl6.status.equipLevel, `${id6}: the tier VI slot's 模组 level`);
       assert.equal(r5.status.skillLevel, tpl.status.skillLevel, `${id5}: the tier V slot's skill level`);
       assert.equal(r6.status.skillLevel, r6.isGolden ? 7 : 4);
+      assert.deepEqual([r5.status.equipLevel, r6.status.equipLevel], r6.isGolden ? [1, 3] : [0, 0], `${c.charId}${suffix}: 模组 levels`);
+      if (r6.isGolden) {
+        assert.equal(r5.module.level, 1, `${id5}: module level`);
+        assert.equal(r6.module.level, 3, `${id6}: module level`);
+      }
     }
   }
 });
 
-test('waiguan: token variants exist for both tiers of every summoning candidate', () => {
+test('waiguan: every elite composes back from statsBase / traitBase / talentsBase at its OWN tier\'s 模组 level', () => {
+  let nMods = 0;
+  let nElites = 0;
+  for (const [id, c] of Object.entries(allChess)) {
+    if (!id.includes('_diy_') || !c.isGolden) continue;
+    nElites++;
+    assert.equal(c.module.level, c.status.equipLevel, `${id}: module.level = status.equipLevel`);
+    assert.ok(Array.isArray(c.modules) && c.statsBase && c.traitBase && c.talentsBase, `${id}: module choices`);
+    const defs = c.modules.filter((m) => m.isDefault);
+    assert.equal(defs.length, c.module.active ? 1 : 0, `${id}: default module iff active`);
+    if (defs.length) assert.equal(defs[0].uniEquipId, c.module.id, `${id}: the default is the equipped one`);
+    const dm = defs[0] ?? null;
+    for (const m of c.modules) {
+      nMods++;
+      assert.equal(m.level, c.status.equipLevel, `${id} ${m.uniEquipId}: level`);
+    }
+    // the default loadout = the record's own stats / trait / talents (the pool's rule, test 'chess: golden modules[]')
+    assert.deepEqual(composeStats(c.statsBase, dm?.attr), c.stats, `${id}: statsBase + default attr = stats`);
+    assert.deepEqual(dm?.traitOverride ?? c.traitBase, c.trait, `${id}: trait`);
+    assert.deepEqual(composeTalents(c.talentsBase, dm?.talentChanges), c.talents, `${id}: talents`);
+  }
+  assert.equal(nElites, waiguanCandidates.length * 2);
+  // 144 module choices per tier (85 operators carry 1-3 modules, 2 carry none); the same ids at both tiers
+  assert.equal(nMods, 2 * 144, 'module choices over both tiers');
+  for (const c of waiguanCandidates) {
+    const ids = (tier) => allChess[c.chessIds[tier].replace(/_a$/, '_b')].modules.map((m) => m.uniEquipId);
+    assert.deepEqual(ids(5), ids(6), `${c.charId}: the same module choices at tier V and VI`);
+  }
+  // 阿 (official battle_equip_table uniequip_002_haak / _003_haak): GEE-X level 1 +135 HP / +37 ATK, level 3 +240 / +57;
+  // E2 Lv60 base 1897 / 663. Talent 0's module upgrade (`prob`, the second effect) arrives only at level 2+.
+  const h5 = allChess.chess_char_diy_5_char_225_haak_b, h6 = allChess.chess_char_diy_6_char_225_haak_b;
+  assert.deepEqual(h5.modules.map((m) => [m.typeName, m.level, m.attr]), [['GEE-X', 1, { maxHp: 135, atk: 37 }], ['GEE-Y', 1, { atk: 43, aspd: 3, respawnTime: -15 }]]);
+  assert.deepEqual(h6.modules.map((m) => [m.typeName, m.level, m.attr]), [['GEE-X', 3, { maxHp: 240, atk: 57 }], ['GEE-Y', 3, { atk: 75, aspd: 5, respawnTime: -15 }]]);
+  assert.deepEqual([h5.statsBase.maxHp, h5.statsBase.atk, h5.stats.maxHp, h5.stats.atk, h6.stats.maxHp, h6.stats.atk], [1897, 663, 2032, 700, 2137, 720]);
+  assert.equal(h5.talents[0].bb.prob, undefined, 'tier V: talent 0 not upgraded at module level 1');
+  assert.equal(h6.talents[0].bb.prob, 0.3, 'tier VI: talent 0 upgraded at module level 3');
+  // the module-less operators: the placeholder module, no choices, at both tiers
+  for (const tier of [5, 6]) {
+    const k = allChess[`chess_char_diy_${tier}_char_1052_kalts2_b`];
+    assert.deepEqual(k.modules, [], `凯尔希·思衡托 tier ${tier}: no module`);
+    assert.deepEqual(k.module, { id: null, name: null, type: null, level: tier === 5 ? 1 : 3, active: false });
+    assert.deepEqual(k.stats, k.statsBase);
+  }
+});
+
+test('waiguan: a normal record carries the inactive module stub a pool normal has', () => {
+  for (const [id, c] of Object.entries(allChess)) {
+    if (!id.includes('_diy_') || c.isGolden) continue;
+    const g = allChess[c.goldenId];
+    if (g.module?.id) assert.deepEqual(c.module, { ...g.module, level: 0, active: false }, `${id}: stub`);
+    else assert.equal(c.module, null, `${id}: module-less operator`);
+    for (const k of ['modules', 'statsBase', 'traitBase', 'talentsBase']) assert.equal(c[k], undefined, `${id}: normal chess has no ${k}`);
+  }
+  // the pool's shape, for comparison (data/chess.json: 圣约送葬人 normal)
+  assert.deepEqual(chess.chess_char_5_01_a.module, { id: 'uniequip_002_excu2', name: '待解答', type: 'REA-X', level: 0, active: false });
+});
+
+test('waiguan: token variants exist for both tiers of every summoning candidate; tier V elites summon with 模组 level 1', () => {
   for (const t of Object.values(tokens)) {
     for (const owner of Object.keys(t.variants || {})) {
       if (!owner.includes('_diy_')) continue;
@@ -294,6 +363,20 @@ test('waiguan: token variants exist for both tiers of every summoning candidate'
       assert.ok(allChess[owner].tokens.includes(t.tokenId), `${t.tokenId}: ${owner} does not list the token`);
     }
   }
+  for (const [id, c] of Object.entries(allChess)) {
+    if (!id.includes('_diy_')) continue;
+    for (const tok of c.tokens) assert.ok(tokens[tok]?.variants?.[id], `${id}: no variant of ${tok}`);
+  }
+  // 令 SUM-Y (default) adds summon attributes at every level: level 1 −3 cost only, level 3 also +HP / +ATK
+  const soul = tokens.token_10020_ling_soul1;
+  const v5 = soul.variants.chess_char_diy_5_char_2023_ling_b, v6 = soul.variants.chess_char_diy_6_char_2023_ling_b;
+  assert.deepEqual([v5.stats.maxHp, v5.stats.atk, v5.stats.cost], [2407, 529, 9]);
+  assert.deepEqual([v6.stats.maxHp, v6.stats.atk, v6.stats.cost], [2557, 574, 9]);
+  assert.deepEqual(v5.byModule.none.stats, v6.byModule.none.stats, 'no module: the same summon at both tiers');
+  assert.deepEqual(soul.variants.chess_char_diy_5_char_2023_ling_a, soul.variants.chess_char_diy_6_char_2023_ling_a, 'normal: the same summon at both tiers');
+  // the token's top-level defaults stay the first owner's (tier VI normal)
+  assert.deepEqual(soul.owners.slice(0, 1), ['chess_char_diy_6_char_2023_ling_a']);
+  assert.deepEqual(soul.stats, soul.variants.chess_char_diy_6_char_2023_ling_a.stats);
 });
 
 test('waiguan: slots match the official four (2 at tier V, 2 at tier VI)', () => {
@@ -627,12 +710,25 @@ test('chess/tokens: talent tokens resolve and every token variant says where it 
   assert.equal(svash.talents[0].containerTokenKey, 'token_10057_svash2_eagle');
   assert.equal(svash.skill.overrideTokenKey, 'token_10057_svash2_eagle2');
   const allowed = new Set(['talent', 'skill', 'display']);
+  const madeBy = (list) => Array.isArray(list) && (list.includes('talent') || list.includes('skill'));
   for (const t of Object.values(tokens)) {
     for (const [owner, v] of Object.entries(t.variants)) {
-      assert.ok(Array.isArray(v.sources) && v.sources.length && v.sources.every((s) => allowed.has(s)), `${t.tokenId}@${owner}: sources`);
+      // a summon only a non-default skill makes (W S2 地雷 …) has no default sources: one of its skills makes it
+      const altOnly = !v.sources?.length && Object.values(v.bySkill || {}).some((b) => madeBy(b.sources));
+      assert.ok(Array.isArray(v.sources) && (v.sources.length || altOnly) && v.sources.every((s) => allowed.has(s)), `${t.tokenId}@${owner}: sources`);
       assert.ok(allChess[owner]?.tokens.includes(t.tokenId), `${t.tokenId}: owner ${owner}`);
     }
   }
+  // every selectable skill's summon is a token of its chess (DESIGN_BC D1): W S2 地雷, 黑键 S2, 贝洛内 S3, 予愿安洁莉娜 S3
+  const cqbw = waiguanRecords(waiguan).chess_char_diy_6_char_113_cqbw_a;
+  assert.ok(cqbw.tokens.includes('token_10008_cqbw_box'), 'W lists its S2 mine');
+  assert.deepEqual(tokens.token_10008_cqbw_box.variants.chess_char_diy_6_char_113_cqbw_a.sources, []);
+  assert.deepEqual(tokens.token_10008_cqbw_box.variants.chess_char_diy_6_char_113_cqbw_a.bySkill[1].sources, ['skill']);
+  // 部署数量上限 = maxDeployCount + the summon's talent max_deploy_count (令: 1 + 2, SUM-Y 1 + 3); pool summons unchanged
+  assert.equal(tokens.token_10020_ling_soul1.variants.chess_char_diy_6_char_2023_ling_a.stats.deployLimit, 3);
+  assert.equal(tokens.token_10020_ling_soul1.variants.chess_char_diy_6_char_2023_ling_b.stats.deployLimit, 4);
+  assert.equal(tokens.token_10020_ling_soul1.variants.chess_char_diy_6_char_2023_ling_b.byModule.none.stats.deployLimit, 3);
+  assert.equal(tokens.token_10041_cathy_catsld.variants.chess_char_4_11_a.stats.deployLimit, 2, '凯瑟琳 2 devices');
   assert.deepEqual(tokens.token_10057_svash2_eagle1.variants.chess_char_5_14_a.sources, ['display']);
   // 夕's skill "cnt" is a charge count, not a token count.
   assert.equal(tokens.token_10015_dusk_drgn.variants.chess_char_5_12_a.count, null);
@@ -984,6 +1080,44 @@ test('independent re-derivation of every chess and enemy stat from the raw offic
     assert.equal(e.stats.atk, 400, `${k}: spawned with the season ATK`);
     assert.notEqual(e.attrPower, e.stats.maxHp + 5 * e.stats.atk + 3 * e.stats.def + 3 * e.stats.res, `${k}: power from the database ATK`);
   }
+});
+
+test('independent re-derivation of every 外援 record\'s stats and modules at its slot\'s official 模组 level', { skip: !HAS_CACHE && 'no .cache/gamedata' }, () => {
+  // Catches a slot level silently copied from the other tier again (the tier V elites once carried tier VI's level 3).
+  const act = raw('excel/activity_table.json').activity.AUTOCHESS_SEASON.act2autochess;
+  const CT = raw('excel/character_table.json'), BE = raw('excel/battle_equip_table.json'), UE = raw('excel/uniequip_table.json');
+  const PH = { PHASE_0: 0, PHASE_1: 1, PHASE_2: 2 };
+  const map = { max_hp: 'maxHp', atk: 'atk', def: 'def', magic_resistance: 'res', attack_speed: 'aspd', block_cnt: 'blockCnt', cost: 'cost',
+    respawn_time: 'respawnTime', base_attack_time: 'bat', max_deploy_count: 'deployLimit', max_deck_stack_cnt: 'deckStack' };
+  let n = 0;
+  for (const [id, c] of Object.entries(allChess)) {
+    if (!id.includes('_diy_')) continue;
+    const slot = act.charChessDataDict[`chess_char_${c.tier}_diy1_${c.isGolden ? 'b' : 'a'}`].status;
+    assert.equal(c.status.equipLevel, slot.equipLevel, `${id}: the official slot's equipLevel`);
+    const advanced = (UE.charEquip[c.charId] || []).filter((u) => UE.equipDict[u]?.type !== 'INITIAL');
+    const def = advanced[0] ?? null;
+    assert.equal(c.module?.id ?? null, def, `${id}: default module = the operator's first ADVANCED uniequip`);
+    const P = CT[c.charId].phases[PH[slot.evolvePhase]];
+    const k0 = P.attributesKeyFrames[0], k1 = P.attributesKeyFrames[P.attributesKeyFrames.length - 1];
+    const t = (slot.charLevel - k0.level) / (k1.level - k0.level || 1);
+    const f = (key) => k0.data[key] + (k1.data[key] - k0.data[key]) * t;
+    const exp = { maxHp: f('maxHp'), atk: f('atk'), def: f('def'), res: f('magicResistance'), aspd: f('attackSpeed'), blockCnt: f('blockCnt'), cost: f('cost') };
+    const attrAt = (u) => {
+      const out = {};
+      for (const b of BE[u]?.phases.find((p) => p.equipLevel === slot.equipLevel)?.attributeBlackboard || []) out[map[b.key] ?? b.key] = (out[map[b.key] ?? b.key] || 0) + b.value;
+      return out;
+    };
+    if (slot.equipLevel > 0 && def) for (const [k, v] of Object.entries(attrAt(def))) if (k in exp) exp[k] += v;
+    for (const [key, v] of Object.entries(exp)) assert.ok(Math.abs(v - c.stats[key]) <= 0.5 + 1e-9, `${id}: ${key} ${c.stats[key]} vs official ${v}`);
+    if (c.isGolden) {
+      assert.deepEqual(c.modules.map((m) => m.uniEquipId), advanced, `${id}: every ADVANCED module is a choice`);
+      for (const m of c.modules) {
+        for (const [k, v] of Object.entries(attrAt(m.uniEquipId))) assert.ok(Math.abs(m.attr[k] - v) < 1e-6, `${id} ${m.uniEquipId}: attr ${k} ${m.attr[k]} vs official ${v}`);
+      }
+    }
+    n++;
+  }
+  assert.equal(n, waiguanCandidates.length * 4);
 });
 
 test('offline rebuild reproduces data/ byte-for-byte (data/ is not stale)', { skip: (!HAS_CACHE && 'no .cache/gamedata') || (process.env.DATA_DIR && 'DATA_DIR set') }, (t) => {

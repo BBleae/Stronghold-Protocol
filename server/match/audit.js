@@ -136,7 +136,7 @@ export function attachAudit(m, { invariants = true, limit = 200 } = {}) {
         check('shop roll', () => {
           const base = gd.baseIdOf(s.id);
           if (t > ps.shop.level) fail(`${ps.playerId}: rolled tier ${t} at shop level ${ps.shop.level}`);
-          if (!m.pool.has(base)) fail(`${ps.playerId}: rolled ${s.id} outside the match pool (banned/hidden)`);
+          if (!m.pool.has(base, ps.playerId)) fail(`${ps.playerId}: rolled ${s.id} outside its pool (banned/hidden, or another player's 甄选)`);
           if (s.basePrice !== gd.chessPrice(s.id)) fail(`${ps.playerId}: ${s.id} basePrice ${s.basePrice} != ${gd.chessPrice(s.id)}`);
         });
       }
