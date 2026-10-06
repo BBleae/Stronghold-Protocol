@@ -20,7 +20,7 @@ import assert from 'node:assert/strict';
 import { Match } from '../../server/match/Match.js';
 import { VirtualScheduler } from '../../server/match/scheduler.js';
 import { getData } from '../../server/data.js';
-import { FIELD, canPlace, placeClass, piecePlaceClass, tileKey } from '../../server/match/board.js';
+import { FIELD, canPlace, placeClass, positionClass, tileKey } from '../../server/match/board.js';
 import { FakeBattle } from './fakeBattle.js';
 import { GEO } from '../../shared/constants.js';
 import { collectViolations } from '../../server/match/invariants.js';
@@ -179,7 +179,7 @@ function legacyInvariants(m) {
       assert.ok(r >= FIELD.r0 && r <= FIELD.r1 && c >= FIELD.c0 && c <= FIELD.c1, `piece outside the board ${k}`);
       const rec = p.kind === 'token' ? m.gd.token(p.id) : m.gd.chess(p.id);
       assert.ok(rec, `unknown board piece ${p.id}`);
-      const cls = piecePlaceClass(ps, p);
+      const cls = p.kind === 'chess' ? placeClass(ps, rec) : positionClass(rec);
       assert.ok(canPlace(dmap, cls, r, c), `illegal tile ${p.id} @ ${k}`);
       assert.notEqual(p.kind, 'item', 'items never stand on the board');
       if (p.kind === 'chess') deployed++;

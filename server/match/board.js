@@ -27,11 +27,7 @@
 // HOK-Y 淡金坠饰 (uniequip_003_glady: `placeClass` / shared/highGround.js ⇒ any deployable tile). The branch trait
 // 「可以放置于远程位」 is not read (owner's decision 2026-10-04, reversing DESIGN §22.6): 崖心, 见行者, a normal record,
 // any other module and no module are ground-only. The equipped module is the player's loadout at place time.
-// Module texts that grant the ranged tile explicitly widen it the same way (owner's decision 2026-10-06,
-// shared/highGround.js): elite 帕拉斯 carrying INS-Y (外援) ⇒ any deployable tile.
-// Tokens follow their own `position` (ALL ⇒ any deployable tile, MELEE ⇒ melee tiles, RANGED ⇒ any deployable), except a
-// summon its owner's module lets onto the ranged tiles: 艾拉's trap when its owner is elite 艾拉 carrying TRP-D (外援,
-// "陷阱可以额外部署在远程位"; `piecePlaceClass` / shared/highGround.js summonOnHighGround — the owner's loadout).
+// Tokens follow their own `position` (ALL ⇒ any deployable tile, MELEE ⇒ melee tiles, RANGED ⇒ any deployable).
 // A token whose text reads "只能部署在召唤者攻击范围内" (tokens.json `ownerRange`: the tacticians' 援军 — 伺夜's 狼群,
 // 缪尔赛思's 流形; PRTS 狼群 特性) also needs a tile of its owner's attack range: `ownerRangeKeys` = the owner's range
 // grid (loadout-resolved, shared/loadoutRecord.js attackRangeGrid) rotated by its facing around its board tile
@@ -40,7 +36,7 @@
 // `parseDir` validates an intent's optional direction.
 
 import { GEO } from '../../shared/constants.js';
-import { meleeOnHighGround, summonOnHighGround } from '../../shared/highGround.js';
+import { meleeOnHighGround } from '../../shared/highGround.js';
 import { DEFAULT_DIR, isDir, rotateOffset } from '../sim/dir.js';
 import { BOSS_ROW_OFFSET, COLS } from '../sim/constants.js';
 
@@ -139,10 +135,9 @@ export function buildDeployMap(stage, { deviceOverrides = {}, tileOverrides = {}
 }
 
 /**
- * Placement class of a chess / token record: 'melee' | 'ranged' | 'all'. Widened to 'all' only for an elite whose
- * equipped module grants the ranged (高台) tiles (shared/highGround.js meleeOnHighGround): 歌蕾蒂娅 carrying HOK-Y
- * (`moduleId` = uniequip_003_glady), 帕拉斯 carrying INS-Y (uniequip_003_pallas). Any other module, no module, and every
- * other MELEE record stay 'melee'. `chess.json` has no `placement` field.
+ * Placement class of a chess / token record: 'melee' | 'ranged' | 'all'. Widened to 'all' only for elite 歌蕾蒂娅
+ * carrying HOK-Y (`moduleId` = uniequip_003_glady, shared/highGround.js): she may stand on the ranged (高台) tiles.
+ * Any other module, no module, and every other MELEE record stay 'melee'. `chess.json` has no `placement` field.
  * @param {object|null} rec
  * @param {string|null} [moduleId] equipped module; ignored for tokens and non-golden records
  */
@@ -150,56 +145,21 @@ export function positionClass(rec, moduleId = null) {
   return meleeOnHighGround(rec, moduleId) ? 'all' : basePositionClass(rec);
 }
 
-/** The module a player's loadout equips on a chess record (`ps.loadoutFor`, defaults included), or null. */
-function loadoutModuleOf(ps, rec) {
-  if (!rec || !rec.chessId || !ps || typeof ps.loadoutFor !== 'function') return null;
-  try {
-    const lo = ps.loadoutFor(rec);
-    return lo && typeof lo.moduleId === 'string' ? lo.moduleId : null;
-  } catch {
-    return null;
-  }
-}
-
 /**
  * Placement class of a record under a player's loadout (the module `ps.loadoutFor` resolves, defaults included).
- * Tokens and records without a chess id ignore the loadout (a summon's owner: `summonPlaceClass`).
+ * Tokens and records without a chess id ignore the loadout.
  * @param {{ loadoutFor?: (rec: object) => { moduleId?: string|null }|null }|null} ps
  */
 export function placeClass(ps, rec) {
-  return positionClass(rec, loadoutModuleOf(ps, rec));
-}
-
-/**
- * Placement class of a summon under its owner's loadout: its own position, widened to 'all' when the owner's equipped
- * module lets its summons onto the ranged tiles (艾拉's trap, owner elite 艾拉 carrying TRP-D: shared/highGround.js
- * summonOnHighGround).
- * @param {{ loadoutFor?: Function }|null} ps
- * @param {object|null} tokenRec tokens.json record
- * @param {object|null} ownerRec the owner's chess record (null: the summon's own position)
- */
-export function summonPlaceClass(ps, tokenRec, ownerRec) {
-  return summonOnHighGround(tokenRec, ownerRec, loadoutModuleOf(ps, ownerRec)) ? 'all' : positionClass(tokenRec);
-}
-
-/**
- * Placement class of a player's piece (chess or summon) under that player's loadout — what PlayerState._legal, the match
- * invariants and the test harness check a board tile against. A summon's owner is the chess piece `piece.ownerUid`
- * names, wherever it is (board, hand, temp). A pure read.
- * @param {{ gd: any, board: Map<string, any>, hand: any[], temp: any[], loadoutFor?: Function }} ps
- * @param {any} piece
- */
-export function piecePlaceClass(ps, piece) {
-  const gd = ps && ps.gd;
-  if (!piece || !gd) return positionClass(null);
-  if (piece.kind !== 'token') return placeClass(ps, gd.chess(piece.id));
-  let owner = null;
-  if (piece.ownerUid != null) {
-    for (const p of [...(ps.board ? ps.board.values() : []), ...(ps.hand || []), ...(ps.temp || [])]) {
-      if (p && p.kind === 'chess' && p.uid === piece.ownerUid) { owner = p; break; }
-    }
+  if (!rec || !rec.chessId || !ps || typeof ps.loadoutFor !== 'function') return positionClass(rec);
+  let moduleId = null;
+  try {
+    const lo = ps.loadoutFor(rec);
+    moduleId = lo && typeof lo.moduleId === 'string' ? lo.moduleId : null;
+  } catch {
+    moduleId = null;
   }
-  return summonPlaceClass(ps, gd.token(piece.id), owner ? gd.chess(owner.id) : null);
+  return positionClass(rec, moduleId);
 }
 
 /**

@@ -21,7 +21,7 @@
 //   match    phase known; teamLp / boss pool within range; combat fields match the alive players
 
 import { PHASE, BOND_LAYER_CAP } from '../../shared/constants.js';
-import { FIELD, canPlace, piecePlaceClass, parseKey } from './board.js';
+import { FIELD, canPlace, placeClass, positionClass, parseKey } from './board.js';
 import { computeBonds } from './bondsMeta.js';
 import { WAIGUAN_POOL_COPIES } from '../../shared/waiguan.js';
 
@@ -123,7 +123,7 @@ export function collectViolations(m, { limit = 25 } = {}) {
       if (!(r >= FIELD.r0 && r <= FIELD.r1 && c >= FIELD.c0 && c <= FIELD.c1)) fail(`${id}: piece outside the board at ${k}`);
       if (p.kind === 'item') { fail(`${id}: item ${p.id} stands on the board`); continue; }
       const rec = p.kind === 'token' ? gd.token(p.id) : gd.chess(p.id);
-      const cls = piecePlaceClass(ps, p);
+      const cls = p.kind === 'chess' ? placeClass(ps, rec) : positionClass(rec);
       if (rec && !canPlace(dmap, cls, r, c)) fail(`${id}: ${p.id} on an illegal tile ${k}`);
       // a "只能部署在召唤者攻击范围内" summon inside its owner's attack range (PlayerState.summonRange: a pure read)
       const range = p.kind === 'token' && typeof ps.summonRange === 'function' ? ps.summonRange(p) : null;
