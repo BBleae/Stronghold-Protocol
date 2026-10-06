@@ -154,3 +154,19 @@ test('NODE_COMPAT: a lobby at its per-address socket cap refuses the next upgrad
   assert.equal(other.status, 101);
   other.webSocket?.accept();
 });
+
+test('匹配: a group forms by the queue clock alone, its frames committed without another client message', { timeout: 120_000 }, async (t) => {
+  const h = await world(t);
+  const a = await client(h, 'A', '8.8.8.8');
+  const b = await client(h, 'B', '9.9.9.9');
+  assert.equal((await a.request('queue.join', { difficulty: 'NORMAL' })).t, 'ok');
+  assert.equal((await b.request('queue.join', { difficulty: 'NORMAL' })).t, 'ok');
+  // the grace runs 3 s from the last arrival; neither client sends anything meanwhile
+  let matched = null;
+  for (let i = 0; i < 100 && !matched; i++) { matched = b.take('queue.matched'); if (!matched) await new Promise((r) => setTimeout(r, 100)); }
+  assert.ok(matched, 'queue.matched within 10 s, without another client message');
+  assert.equal(matched.seated, true);
+  assert.equal((await a.wait('queue.matched')).code, matched.code, 'both in one room');
+  const stats = await h.request('https://test.example/healthz').then((r) => r.json());
+  assert.equal(stats.rooms, 1, 'the room the queue opened is the lobby\'s');
+});

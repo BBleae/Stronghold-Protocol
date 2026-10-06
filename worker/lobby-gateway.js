@@ -64,6 +64,19 @@ class GatewayLobby extends Lobby {
     super.clearResync(playerId);
     this.resyncDue.delete(playerId);
   }
+  // 匹配 (DESIGN §28): the base Lobby re-examines its queue on a setInterval clock while somebody
+  // waits. Here a tick is a deadline like the grace and resync expiries, so a group forms inside
+  // an event and its frames are committed and released with it (an interval's output would wait
+  // in the sockets' buffers for the next client message, and its rooms for the next save).
+  queueDue = null;
+  startQueueClock() { if (this.queueDue == null && this.opts.queueTickMs > 0) this.queueDue = this.now() + this.opts.queueTickMs; }
+  stopQueueClock() { this.queueDue = null; }
+  expireQueue() {
+    if (this.queueDue == null || this.queueDue > this.now()) return;
+    this.queueDue = null;
+    this.startQueueClock(); // the next tick; queueTick stops the clock once nobody waits
+    this.queueTick();
+  }
   expireResync() {
     for (const [playerId, at] of [...this.resyncDue]) {
       if (at > this.now()) continue;
@@ -108,6 +121,12 @@ export class LobbyRuntime {
       }
       for (const [playerId, at] of snapshot.deadlines || []) this.lobby.deadlines.set(playerId, at);
       for (const [playerId, at] of snapshot.resyncDue || []) this.lobby.resyncDue.set(playerId, at);
+      // The 匹配 queue, re-examined at once (queueTick drops whoever did not come back connected).
+      for (const { playerId, difficulty, since } of snapshot.queue || []) {
+        const session = this.registry.byId(playerId);
+        if (session) this.lobby.queue.push({ playerId, session, difficulty, since });
+      }
+      if (this.lobby.queue.length) this.lobby.queueDue = now();
     }
   }
 
@@ -170,6 +189,7 @@ export class LobbyRuntime {
     }
     this.lobby.expireGrace();
     this.lobby.expireResync();
+    this.lobby.expireQueue();
     this.network.sweep();
   }
 
@@ -218,9 +238,10 @@ export class LobbyRuntime {
     return deadlines.length ? Math.max(this.now() + 100, Math.min(...deadlines)) : null;
   }
 
-  /** The nearest running match's next step (null: none). */
+  /** The nearest running match's next step, or the 匹配 queue's next tick (null: none). */
   timerDue() {
-    let due = null;
+    // the queue ticks like a match step: everybody in it is connected (queueTick drops the rest)
+    let due = this.lobby.queueDue;
     for (const room of this.lobby.rooms.values()) {
       const next = room.match?.sched?.nextAt?.();
       if (next != null && (due == null || next < due)) due = next;
@@ -260,7 +281,9 @@ export class LobbyRuntime {
     for (const code of [...this.savedCps.keys()]) if (!this.lobby.rooms.has(code)) this.savedCps.delete(code);
     return { version: 1, generation: this.generation,
       sessions: [...this.registry.all()].map(({ ws, ...s }) => ({ ...s, resyncAt: Number.isFinite(s.resyncAt) ? s.resyncAt : null })),
-      rooms, deadlines: [...this.lobby.deadlines], resyncDue: [...this.lobby.resyncDue] };
+      rooms, deadlines: [...this.lobby.deadlines], resyncDue: [...this.lobby.resyncDue],
+      // the 匹配 queue (not its tick time: a tick a second would rewrite the snapshot every second)
+      queue: this.lobby.queue.map(({ playerId, difficulty, since }) => ({ playerId, difficulty, since })) };
   }
 }
 
