@@ -161,7 +161,11 @@ test('郁金香 S3 只余芬芳 (SKILL_RANGE kept): any enemy on x-1, no attack 
     for (const e of [A, B]) {
       const mine = sl.filter((c) => c.target === e);
       assert.equal(mine.length, b.times, `${b.times} slashes`);
-      for (const c of mine) { assert.equal(c.type, 'phys'); assert.ok(near(c.amount, phys(u.s.atk * b.atk_scale, 400, b.def_penetrate)), `${c.amount}`); }
+      for (const c of mine) {
+        assert.equal(c.type, 'phys');
+        assert.ok(c.dmg.isSkill && has(c, 'skill') && !c.dmg.isAttack, 'skill damage, not an attack');
+        assert.ok(near(c.amount, phys(u.s.atk * b.atk_scale, 400, b.def_penetrate)), `${c.amount}`);
+      }
     }
     assert.ok(!sl.some((c) => c.target === F || c.target === Z), 'no flyer, nothing off the range');
     assert.equal(h.hooksOf('attack').filter((c) => c.attacker === u).length, 0, 'not an attack');
@@ -198,6 +202,13 @@ test('郁金香 T1 无垠之心: SP recovery +sp_recovery_per_sec from each depl
     h.b.retreat(u);
     assert.ok(h.b.redeploy(u));
     assert.ok(near(u.s.spRecovery, 1 + t0.sp_recovery_per_sec), 'back with the next deployment');
+    // the count restarts with the deployment: it lasts two casts again
+    u.skill.addCharge(1);
+    assert.ok(h.runUntil(() => u.skill.activations === 3, 5));
+    assert.ok(near(u.s.spRecovery, 1 + t0.sp_recovery_per_sec), 'one cast of this deployment: kept');
+    u.skill.addCharge(1);
+    assert.ok(h.runUntil(() => u.skill.activations === 4, 5));
+    assert.equal(u.s.spRecovery, 1, 'gone at the second cast of this deployment');
     done(h);
   }
   assert.ok(talOf(ELITE6, 0).sp_recovery_per_sec > talOf(ELITE6, 0, 'none').sp_recovery_per_sec, 'SOL-X level 3 upgrades it');

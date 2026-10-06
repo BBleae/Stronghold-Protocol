@@ -28,7 +28,7 @@ const hiddenCost = (id, moduleId = null) => raw(id, moduleId).talents.find((t) =
 const dummy = (key, o = {}) => enemyRec({ key, hp: 1e7, speed: 0, ...o });
 const op = (id, profession, o = {}) => chessRec({ id, profession, skill: null, stats: { maxHp: 3000, atk: 1, def: 100, cost: 10, respawnTime: 2, ...o } });
 const DEFS = {
-  chess: { ...REC, test_guard_a: op('test_guard_a', 'WARRIOR'), test_sniper_a: op('test_sniper_a', 'SNIPER', { cost: 9 }) },
+  chess: { ...REC, test_guard_a: op('test_guard_a', 'WARRIOR'), test_sniper_a: op('test_sniper_a', 'SNIPER', { cost: 9 }), test_cheap_a: op('test_cheap_a', 'WARRIOR', { cost: 1 }) },
   enemies: {
     enemy_dummy: dummy('enemy_dummy'),
     enemy_fly: dummy('enemy_fly', { motion: 'FLY' }),
@@ -88,25 +88,31 @@ test('琴柳 triggers: 执旗手 SP_FULL kept for S1 / S2 — cast the tick SP f
   }
 });
 
-test('琴柳 S3 trigger: SP_FULL gated by a ground enemy on its 2-1 range (flyers / enemies off the range do not count)', () => {
-  for (const id of [ID6, ELITE6]) {
-    const s = skillOf(id, S3);
+test('琴柳 S3 trigger: 执旗手 SP_FULL kept — cast the tick SP fills with no ground enemy (none / a flyer only): DP, no throw', () => {
+  for (const id of ALL) for (const enemies of [[], [{ key: 'enemy_fly', pos: [10, 5] }]]) {
+    const s = skillOf(id, S3), b = s.bb;
     assert.equal(s.trigger.rule, 'SP_FULL', 'the record keeps the 执旗手 row');
-    // (10,4) facing right: 2-1 = (12,4) (11,4) (11,5) (10,4) (10,5) (10,6) (9,4) (9,5) (8,4)
-    const h = run({ units: [U(id, S3, 10, 4, { carryState: { sp: 999 } })], enemies: [{ key: 'enemy_fly', pos: [10, 5] }, { key: 'enemy_dummy', pos: [10, 7] }, { key: 'enemy_dummy', pos: [11, 6] }] });
+    const h = run({ flags: NO_DP, units: [U(id, S3, 10, 4)], enemies });
     const u = h.unit(id);
-    assert.equal(u.skill.rule, 'NEVER', 'cast by the kit');
-    h.run(5);
-    assert.ok(u.skill.ready && !u.skill.active && u.skill.activations === 0, 'a flyer on the range and ground enemies off it: no cast');
-    h.spawn('enemy_dummy', { pos: [9, 5] });
-    const t0 = h.b.time;
+    assert.equal(u.skill.rule, 'SP_FULL');
+    assert.ok(h.runUntil(() => u.skill.active, s.spCost + 2), `${id} casts`);
+    const t = h.hooksOf('skillStart')[0];
+    assert.equal(t.reason, 'SP_FULL');
+    assert.ok(Math.abs(t.t - (s.spCost - s.initSp)) <= TICK + 1e-6, `${id} at ${t.t} (SP ${s.initSp} → ${s.spCost})`);
     h.step(1);
-    assert.ok(u.skill.active, 'cast the tick a ground enemy is on the range');
-    assert.equal(h.hooksOf('skillStart')[0].t, t0);
-    assert.equal(h.hooksOf('skillStart')[0].reason, 'SP_FULL');
+    assert.equal(dpOf(h), b.cost, 'DP +cost at the cast');
+    assert.equal(u.mem.sleachFlag ?? null, null, 'no ground enemy: the flag stays with her');
+    assert.equal(h.hooksOf('damaged').filter((c) => has(c, 'sleachBanner')).length, 0, 'no impact');
+    assert.equal(h.hooksOf('statusApplied').filter((c) => c.status === 'stun').length, 0);
+    if (enemies.length) { // the flyer next to her: the 停顿 / 脆弱 field and T1 centre on her
+      const f = h.b.enemies[0];
+      h.run(0.5);
+      assert.ok(f.findBuff('sluggish') && near(f.s.dmgTakenMul, b.damage_scale), 'field around her');
+      assert.equal(f.s.aspd, 100 + talOf(id, 0)['sleach_t_1[enemy].attack_speed']);
+    }
     done(h);
   }
-  // the automatic-operation cooldown of the battle-start deployment holds the kit's cast too (and S1's SP_FULL)
+  // the automatic-operation cooldown of the battle-start deployment holds both rules' casts
   for (const sid of [S1, S3]) {
     const h = run({ flags: { startOpCooldown: 3 }, units: [U(ELITE6, sid, 10, 4, { carryState: { sp: 999 } })], enemies: [{ key: 'enemy_dummy', pos: [10, 5] }] });
     const u = h.unit(ELITE6);
@@ -200,6 +206,8 @@ test('琴柳 S2 信仰传承: DP drip (value in all, by the natural end); the fl
   h.step(2);
   assert.equal(u.findBuff('sleach:faith')?.source, u);
   assert.ok(near(u.s.def, u.base.def * (1 + skillOf(ELITE6, S2).bb.def)));
+  assert.ok(h.runUntil(() => !u.skill.active, skillOf(ELITE6, S2).duration + 1));
+  assert.ok(!u.findBuff('sleach:faith') && u.s.def === u.base.def, 'dropped on the tick the skill ends');
   done(h);
 });
 
@@ -234,6 +242,46 @@ test('琴柳 S3 光辉旗帜: +cost DP at once; impact on the 3×3 of a ground e
     h.run(0.5);
     for (const e of [G, H, F]) assert.ok(!e.findBuff('sluggish') && e.s.dmgTakenMul === 1 && e.s.aspd === 100, 'the flag came back');
     assert.equal(h.hooksOf('attack').filter((c) => c.attacker === u && c.t >= t0 && c.t < t0 + s.duration).length, 0);
+    done(h);
+  }
+});
+
+test('琴柳 S3 target: the first ground enemy of the engine order on its range (nearest the goal), never a flyer', () => {
+  // range from (10,4): G1 (10,6), G2 (9,5) nearer the goal (9,2), the flyer F (9,4) nearer still; H (11,6) is on G1's 3×3 only
+  const h = run({ flags: NO_DP, units: [U(ELITE6, S3, 10, 4, { carryState: { sp: 999 } })],
+    enemies: [{ key: 'enemy_dummy', pos: [10, 6] }, { key: 'enemy_dummy', pos: [9, 5] }, { key: 'enemy_fly', pos: [9, 4] }, { key: 'enemy_dummy', pos: [11, 6] }] });
+  const u = h.unit(ELITE6);
+  h.step(1);
+  const [G1, G2, F, H] = h.b.enemies;
+  assert.ok(h.b.remainingDistance(F) < h.b.remainingDistance(G2) && h.b.remainingDistance(G2) < h.b.remainingDistance(G1));
+  assert.ok(u.skill.active);
+  assert.deepEqual(u.mem.sleachFlag, [9, 5], 'thrown on G2');
+  const hit = h.hooksOf('damaged').filter((c) => c.source === u && has(c, 'sleachBanner')).map((c) => c.target);
+  assert.deepEqual(ids(hit), ids([G1, G2, F]), 'the 3×3 around G2 — not H');
+  assert.ok(!hit.includes(H));
+  done(h);
+});
+
+test('琴柳 modules outside the skill window: no BEA-X block for the operator in front, no BEA-Y 迷彩 — before and after', () => {
+  for (const E of ELITES) for (const moduleId of [null, BEA_Y]) {
+    const h = run({ units: [U(E, S1, 10, 4, { moduleId, uid: 1 }), { uid: 2, chessId: 'test_guard_a', row: 10, col: 5 }] });
+    const [u, g] = [h.unit(1), h.unit(2)];
+    const off = (when) => {
+      for (let i = 0; i < 45; i++) {
+        h.step(1);
+        assert.ok(!u.skill.active);
+        assert.equal(g.s.blockCnt, g.base.blockCnt, `${E} ${moduleId} ${when}: block`);
+        assert.ok(!g.findBuff('sleach:frontBlock') && !u.s.flags.camou && !u.findBuff('sleach:camou'), `${E} ${moduleId} ${when}`);
+      }
+    };
+    off('before');
+    u.skill.addCharge(1);
+    h.step(1);
+    assert.ok(u.skill.active);
+    if (moduleId === null) assert.equal(g.s.blockCnt, g.base.blockCnt + traitOf(E).block_cnt);
+    else assert.ok(u.s.flags.camou);
+    assert.ok(h.runUntil(() => !u.skill.active, 10));
+    off('after');
     done(h);
   }
 });
@@ -407,6 +455,102 @@ test('琴柳 T2 two copies: one cut at a time (−value, never doubled); two pla
   assert.equal(dpOf(k, 'p2'), 40, 'p2 pays in full, gains nothing');
   assert.equal(dpOf(k, 'p1'), 50 - 8 + hiddenCost(ELITE6, BEA_Y));
   done(k);
+});
+
+test('琴柳 T2: arming cuts the operators already waiting; she re-arms at her own redeploy; the cost never goes below 0', () => {
+  // she leaves (cut gone), the guard is knocked out meanwhile (full cost), she comes back: the waiting guard is cut
+  const h = run({ flags: { dpInit: 50, dpPerSec: 0 }, units: [U(ELITE6, S1, 10, 6, { uid: 1 }), { uid: 2, chessId: 'test_guard_a', row: 10, col: 3 }] });
+  h.step(1);
+  const [u, g] = [h.unit(1), h.unit(2)];
+  h.b.retreat(u);
+  h.b.kill(g);
+  assert.equal(g.base.cost, 10, 'no cut while she is off the field');
+  assert.ok(h.b.redeploy(u));
+  assert.equal(g.base.cost, 8, 're-armed: the operator already waiting is cut');
+  assert.ok(h.runUntil(() => g.alive, 5));
+  assert.equal(dpOf(h), 42);
+  assert.equal(g.base.cost, 10);
+  done(h);
+  // a cost-1 operator: cut to 0 (never negative), pays nothing, gets its 1 back
+  const k = run({ flags: { dpInit: 50, dpPerSec: 0 }, units: [U(ELITE6, S1, 10, 6, { uid: 1 }), { uid: 2, chessId: 'test_cheap_a', row: 10, col: 3 }] });
+  k.step(1);
+  const c = k.unit(2);
+  k.b.kill(c);
+  assert.equal(c.base.cost, 0);
+  assert.ok(k.runUntil(() => c.alive, 5));
+  assert.equal(dpOf(k), 50, 'a free redeploy');
+  assert.equal(c.base.cost, 1);
+  done(k);
+});
+
+test('琴柳 T2: neither a teammate\'s operator nor a summon deployed after her uses her cut', () => {
+  // p2's second guard (col 7) deploys right after her (p1's 2nd operator) at the start; it is not hers
+  const players = [
+    { playerId: 'p1', seat: 0, side: 'L', colOffset: 0, bonds: {}, units: [
+      { uid: 1, kind: 'chess', chessId: ELITE6, skillIndex: skillOf(ELITE6, S1).index, row: 10, col: 6 }, { uid: 2, kind: 'chess', chessId: 'test_guard_a', row: 10, col: 3 }] },
+    { playerId: 'p2', seat: 1, side: 'L', colOffset: 8, bonds: {}, units: [
+      { uid: 3, kind: 'chess', chessId: 'test_guard_a', row: 10, col: 3 }, { uid: 4, kind: 'chess', chessId: 'test_guard_a', row: 10, col: 7 }] },
+  ];
+  const h = run({ kind: 'unite', players, flags: { dpInit: 50, dpPerSec: 0 } });
+  h.step(1);
+  const [u, mine, late] = [h.unit(1), h.unit(2), h.unit(4)];
+  assert.ok(late.deploySeq > u.deploySeq, 'the teammate\'s guard came in after her');
+  h.b.kill(mine);
+  assert.equal(mine.base.cost, 8);
+  assert.ok(h.runUntil(() => mine.alive, 5));
+  assert.equal(dpOf(h), 42);
+  done(h);
+  // a summon (伺夜's wolf) deployed after her: not an operator, the cut stays
+  const k = run({ flags: { dpInit: 50, dpPerSec: 0 }, units: [{ uid: 2, chessId: 'chess_char_3_19_a', row: 12, col: 3 }, { uid: 4, chessId: 'test_guard_a', row: 10, col: 3 }, U(ELITE6, S1, 10, 6, { uid: 1 })] });
+  k.step(1);
+  const [v, g] = [k.unit(1), k.unit(4)];
+  const wolf = k.b.spawnToken(k.unit(2), 'token_10028_vigil_wolf', 11, 7, { anySource: true });
+  assert.ok(wolf && wolf.kind === 'token' && wolf.alive && wolf.deploySeq > v.deploySeq, 'the wolf came in after her');
+  k.b.kill(g);
+  assert.equal(g.base.cost, 8);
+  assert.ok(k.runUntil(() => g.alive, 5));
+  assert.equal(dpOf(k), 42);
+  done(k);
+});
+
+test('琴柳 T2 two copies: the earlier copy leaving keeps the later copy\'s cut (it also reaches that copy, now waiting)', () => {
+  // guard (10,2) → A (10,3) arms → B (10,6) uses A's cut (free) and arms; A is knocked out: B's cut stays, A is cut too
+  const h = run({ flags: { dpInit: 50, dpPerSec: 0 }, units: [U(ID6, S1, 10, 3, { uid: 1 }), U(ELITE6, S1, 10, 6, { uid: 2 }), { uid: 3, chessId: 'test_guard_a', row: 10, col: 2 }] });
+  h.step(1);
+  const [a, g] = [h.unit(1), h.unit(3)];
+  const cost = a.base.cost;
+  h.b.kill(a);
+  assert.equal(a.base.cost, cost - 2, 'A waits with B\'s cut');
+  h.b.kill(g);
+  assert.equal(g.base.cost, 8, 'B\'s cut survives A\'s knock-out');
+  assert.ok(h.runUntil(() => g.alive, 5));
+  assert.equal(dpOf(h), 42);
+  assert.equal(a.base.cost, cost, 'the cut is used up: A back to its cost');
+  done(h);
+});
+
+test('琴柳 T2 with 凛御银灰 S1 on the same waiting operator: both cuts are given back, the cost returns to its own', () => {
+  const svash = DS.getChess('chess_char_5_14_a', { skillIndex: 0 }).raw.skill;
+  assert.equal(svash.skillId, 'skchr_svash2_1');
+  const cut2 = svash.bb['svash2_s_1[deck].cost'];
+  const h = run({ flags: { dpInit: 60, dpPerSec: 0 }, units: [{ uid: 5, chessId: 'chess_char_5_14_a', row: 10, col: 4, skillIndex: 0 },
+    { uid: 2, chessId: 'test_guard_a', row: 10, col: 3 }, U(ELITE6, S1, 10, 6, { uid: 1 })] });
+  h.step(1);
+  const [sv, g] = [h.unit(5), h.unit(2)];
+  h.b.kill(g);
+  assert.equal(g.base.cost, 8, '琴柳\'s cut');
+  sv.skill.addCharge(1);
+  h.step(2);
+  assert.equal(sv.skill.activations, 1);
+  assert.equal(g.base.cost, Math.max(0, 8 - cut2), 'then 凛御银灰\'s');
+  const before = dpOf(h);
+  assert.ok(h.runUntil(() => g.alive, 5));
+  assert.equal(dpOf(h), before - Math.max(0, 8 - cut2), 'pays both cuts');
+  assert.equal(g.base.cost, 10, 'both given back: its own cost again');
+  h.b.kill(g);
+  assert.ok(h.runUntil(() => g.alive, 5));
+  assert.equal(g.base.cost, 10);
+  done(h);
 });
 
 test('琴柳 two players: skill DP goes to her player; the flag aura is positional (a teammate\'s operator next to her too)', () => {

@@ -7,16 +7,17 @@
 // DP (REQUIREMENTS §1): real DP only — Battle.addDp(her player) for every gain, `unit.base.cost` (the redeploy cost the
 //   engine pays in _checkRedeploys / redeploy) for 精神感召.
 // Triggers: every skill is MANUAL and the official 执旗手 class row is ALWAYS (= SP_FULL: "as soon as SP is full"), which
-//   the record carries. S1 / S2 keep it as is. S3 needs a ground enemy to throw the flag at, so it runs as `NEVER` with
-//   the kit's own cast: as soon as SP is full AND a selectable ground enemy stands on its 2-1 range (the 3 s automatic
-//   operation cooldown honoured, `skill.opCooling`) — still the SP_FULL strategy, gated by the skill's target.
+//   the record carries — kept for all three, none corrected. S3 needs no target to be cast (official sleach_s_3:
+//   TriggerAbility "DamageFlag" with _castDirectly and no _checkCanUseAblityFlag): with no ground enemy on its range the
+//   flag stays with her.
 // S1 支援号令·γ型 (duration): no attack; +cost DP every `interval` s, `value` DP in all (the rest at a natural end).
 // S2 信仰传承 (duration): no attack; +sleach_s_2[cost].cost DP every sleach_s_2[cost].interval s, `value` in all; the
 //   flag lands on the operator of her skill range (x-1) with the lowest HP ratio: that operator gets DEF +def and,
 //   every second, a heal of atk_to_hp_recovery_ratio × her ATK; the flag comes back at the end.
 // S3 光辉旗帜 (duration): no attack; +cost DP at once; the flag lands on a ground enemy of her 2-1 range: every enemy on
-//   the 3×3 around it takes atk_scale × ATK physical and `stun` s 晕眩; while it runs every enemy on that 3×3 is 停顿
-//   and 脆弱 +debuff.damage_scale; the flag comes back at the end.
+//   the 3×3 around it takes atk_scale × ATK physical and `stun` s 晕眩; while it runs every enemy on the 3×3 around the
+//   flag is 停顿 and 脆弱 +debuff.damage_scale; the flag comes back at the end. No ground enemy on the range: no throw and
+//   no impact — the flag stays with her, and the 停顿 / 脆弱 field and T1 centre on her for the skill.
 // T1 不退之旗: the flag (on her, or where S2 / S3 threw it) — every operator on the 3×3 around it ASPD
 //   +sleach_t_1[ally].attack_speed, every enemy there ASPD +sleach_t_1[enemy].attack_speed (negative); with two 琴柳 the
 //   stronger flag holds (allies: kept holder on a tie; enemies: Battle.applyStrongest).
@@ -41,8 +42,9 @@
 //     go to the nearest (herself first), then the earliest deployed; heals from 1 s after the throw, once per second,
 //     with her ATK of the moment; the DEF / heal follow that operator (not the tile); two 琴柳 on one operator: the
 //     stronger DEF holds and only its holder heals.
-//   * S3: needs a ground enemy (cannot be cast without one); the target is the first of the engine's attack order;
-//     damage and stun land before the 停顿 / 脆弱 field starts.
+//   * S3: the target is the first ground enemy of the engine's attack order; damage and stun land before the 停顿 / 脆弱
+//     field starts; cast with no ground enemy on its range, the flag stays with her (no impact) and the field and T1
+//     centre on her tile.
 //   * T1 / BEA-X: positional effects reach any allied operator on those tiles (no summons), whatever its player.
 //   * T2: the cut and the BEA-Y DP count operators only (summons neither consume nor get it); a move-deployment
 //     (Battle.moveRedeploy, "可以通过移动行为多次触发部署时触发的效果") counts as a deployment; with two 琴柳 one cut at a
@@ -163,7 +165,6 @@ export default function sleach(bb, chess) {
   const mtype = chess?.module?.active ? chess.module.type ?? null : null;
   const vAlly = num(t0['sleach_t_1[ally].attack_speed']);
   const vFoe = num(t0['sleach_t_1[enemy].attack_speed']);
-  const recOf = (id) => (chess?.skills ?? []).find((s) => s && s.skillId === id) ?? null;
 
   /** T1 不退之旗: one pulse of the flag's aura (allies ASPD +, enemies ASPD −) on the 3×3 around the flag. */
   const flagAura = (battle, unit) => {
@@ -233,7 +234,7 @@ export default function sleach(bb, chess) {
           },
         };
       },
-      // S3 光辉旗帜: +DP; the flag on a ground enemy: impact, then 停顿 + 脆弱 around it (cast by the kit, see install)
+      // S3 光辉旗帜: +DP; the flag on a ground enemy (if any): impact, then 停顿 + 脆弱 around the flag
       [S3]: (rec) => {
         const b = rec.bb ?? {};
         const cost = num(b.cost), scale = num(b.atk_scale), stun = num(b.stun), frag = num(b['debuff.damage_scale']);
@@ -246,7 +247,6 @@ export default function sleach(bb, chess) {
         };
         return {
           kind: 'duration',
-          trigger: 'NEVER',
           attack: { noAttack: true },
           onStart({ battle, unit }) {
             giveDp(battle, unit, cost);
@@ -346,14 +346,6 @@ export default function sleach(bb, chess) {
         }, { owner: unit });
         battle.on('skillEnd', (c) => { if (c.unit === unit) battle.removeBuff(unit, K_CAMOU); }, { owner: unit });
       }
-      // S3: the 执旗手 strategy (cast as soon as SP is full) once a ground enemy stands on its range
-      if (unit.skill?.id !== S3) return;
-      const grid = gridOf(recOf(S3));
-      battle.on('tick', () => {
-        const sk = unit.skill;
-        if (!sk || !sk.ready || !live(unit) || !unit.canAct || unit.s.flags.silence || (sk.active && sk.isTimed) || sk.opCooling) return;
-        if (bannerTarget(battle, unit, grid)) sk.activate('SP_FULL');
-      }, { owner: unit });
     },
   };
 }
