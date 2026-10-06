@@ -271,13 +271,19 @@ function wireNet() {
 
 /**
  * Download every data file of the match UI (gameComponents GAME_FILES: operators, skills, bonds, items, enemies, 特质 …)
- * in the background once the player is in a room — a match is near (the lobby alone never downloads them). The game's
+ * and the render engine's scripts in the background once the player is in a room — a match is near (the lobby alone never downloads them). The game's
  * texts are static data loaded once per page — never fetched during a match — and the match screen waits for these
  * files, so with them warmed it opens at once and no text ever appears late (user playtest #3 item 9). Idempotent (the
  * data store shares each file's promise).
  */
 function warmGameData() {
-  const go = () => { data.loadAll(GAME_FILES).catch(() => {}); };
+  const go = () => {
+    data.loadAll(GAME_FILES).catch(() => {});
+    // the render engine too (its module graph + Pixi / pixi-spine): on a phone link the match's first field otherwise
+    // waits for them (ui/fieldHost.js) — the 3D board's art stays lazy, it upgrades the 2D board when it lands
+    import('./render/app.js').then((m) => m.ensurePixi?.()).catch(() => {});
+    import('./assets.js').catch(() => {});
+  };
   if (typeof globalThis.requestIdleCallback === 'function') globalThis.requestIdleCallback(go, { timeout: 2500 });
   else setTimeout(go, 600);
 }

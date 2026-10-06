@@ -14,7 +14,11 @@ import { data } from '../data.js';
 import { audio } from '../audio.js';
 import { settingsStore } from './settings.js';
 
-const LOAD_TIMEOUT_MS = 12000;
+// The engine gets this long to mount (script downloads + its own startup, which waits ≤ 4 s for optional parts —
+// render/app.js STARTUP_WAIT_MS): the DOM fallback is far smaller and flatter, so a slow phone link must not land
+// there for a whole match (it did at 12 s on 4G — user report 2026-10-06). An engine that turns up after the timeout
+// is destroyed (the fallback owns the host by then).
+const LOAD_TIMEOUT_MS = 30000;
 const METHODS = ['setStage', 'setCamera', 'setPrep', 'enterBattle', 'pushSnapshot', 'pushEvents', 'highlightTiles', 'on', 'resize', 'destroy'];
 // direction-step hooks (ui/facingWheel.js): optional — the wheel falls back to the engine's dev hooks when absent;
 // setPen (enemy preview pen list), prepField ({ kind, side, mirror } of the Final Assault prep), stripesUnder (the view
@@ -209,7 +213,11 @@ export async function mountFieldView(host) {
       }
       const mod = await withTimeout(import('../render/app.js'), LOAD_TIMEOUT_MS, 'render engine import');
       if (typeof mod?.createFieldView !== 'function') throw new Error('createFieldView missing');
-      const view = await withTimeout(Promise.resolve(mod.createFieldView(host, opts)), LOAD_TIMEOUT_MS, 'createFieldView');
+      const mounting = Promise.resolve(mod.createFieldView(host, opts));
+      const view = await withTimeout(mounting, LOAD_TIMEOUT_MS, 'createFieldView').catch((err) => {
+        mounting.then((late) => { try { late?.destroy?.(); } catch { /* ignore */ } }, () => {});
+        throw err;
+      });
       const missing = METHODS.filter((k) => typeof view?.[k] !== 'function');
       if (missing.length) {
         try { view?.destroy?.(); } catch { /* ignore */ }

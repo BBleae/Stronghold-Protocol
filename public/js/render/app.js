@@ -137,6 +137,8 @@ const PIECE_DIRS = new Set(['UP', 'RIGHT', 'DOWN', 'LEFT']);
 /** Stored facing of a prep piece (m.private board pieces carry `dir`; bench pieces have none ⇒ undefined). */
 const pieceDirOf = (piece) => (typeof piece?.dir === 'string' && PIECE_DIRS.has(piece.dir.toUpperCase()) ? piece.dir.toUpperCase() : undefined);
 const CAMERA_MS = 750;
+/** Longest the view's startup waits for its optional parts (fonts, board art, the 3D board) — see createFieldView. */
+const STARTUP_WAIT_MS = 4000;
 /** Touch pinch on the field (see the pointer handlers): the deepest zoom, the pan's reach past the framing, a tap's slop. */
 const USER_ZOOM_MAX = 3;
 const USER_PAN_SLACK = 0.3;
@@ -441,6 +443,12 @@ export async function createFieldView(host, options = {}) {
   if (!host || typeof host.appendChild !== 'function') throw new TypeError('createFieldView: host element required');
   const opts = options && typeof options === 'object' ? options : {};
   const P = await ensurePixi();
+  // the optional waits below (asset manifest, fonts, board art, the 3D board) share one budget: they only spare the
+  // first frame a late swap — each upgrades in place when it lands — and on a slow phone link their sum (14 s) ran
+  // past ui/fieldHost.js's engine timeout, which then gave the whole match to the flat DOM board (user report
+  // 2026-10-06: "整个棋盘位于中间位置，缩放过小")
+  const waitUntil = performance.now() + STARTUP_WAIT_MS;
+  const waitFor = (ms) => Math.max(0, Math.min(ms, waitUntil - performance.now()));
   const assets = resolveAssets(opts.assets);
   const data = makeData(opts.data);
   const settings = { damageNumbers: true, quality: 'high', ...(opts.settings || {}) };
@@ -454,9 +462,9 @@ export async function createFieldView(host, options = {}) {
   // the manifest, and the optional local-art manifest in parallel: unit views pick an enemy's local-client model by it
   // (assets.js spineEntry, DESIGN §13 — 灼热源石虫 / 炽焰源石虫); absent or slow, they draw the web models
   await withTimeout(Promise.all([assets.ready ? assets.ready() : null, assets.local ? assets.local() : null]
-    .map((p) => Promise.resolve(p).catch(() => {}))), 4000);
+    .map((p) => Promise.resolve(p).catch(() => {}))), waitFor(4000));
   // web fonts for the bitmap damage numbers / tier chips (never block long)
-  try { if (document.fonts?.load) await withTimeout(Promise.all([document.fonts.load('700 40px Bender'), document.fonts.load('700 40px Oxanium')]), 1500); } catch { /* ignore */ }
+  try { if (document.fonts?.load) await withTimeout(Promise.all([document.fonts.load('700 40px Bender'), document.fonts.load('700 40px Oxanium')]), waitFor(1500)); } catch { /* ignore */ }
 
   const size = () => ({ width: Math.max(1, host.clientWidth || 1), height: Math.max(1, host.clientHeight || 1) });
   const dpr = () => Math.min(globalThis.devicePixelRatio || 1, QUALITY_RES[settings.quality] || 2);
@@ -626,7 +634,7 @@ export async function createFieldView(host, options = {}) {
     if (art && !destroyed) { tiles.setArt(art); tiles.project(cam, true); }
     return art;
   }, () => null);
-  await withTimeout(artPromise, 2500);
+  await withTimeout(artPromise, waitFor(2500));
 
   // ---- 3D board layer (render/board3d, DESIGN §15) -----------------------------------------------------------
   let board3d = null;          // BoardScene while the 3D board is on
@@ -705,7 +713,7 @@ export async function createFieldView(host, options = {}) {
   }
   if (want3d) {
     const ready = Promise.all([threePromise, packPromise]).then(([THREE, pack]) => (THREE && pack ? enable3d(THREE, pack) : false), () => false);
-    await withTimeout(ready, 6000);
+    await withTimeout(ready, waitFor(6000));
   }
   // the official soft shadow sprite replaces the procedural one once loaded (may already be cached; asked again when the
   // manifest arrives late)
