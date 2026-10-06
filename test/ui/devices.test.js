@@ -19,6 +19,8 @@ import { bannerVisible } from '../../public/js/ui/connBanner.js';
 import { layoutPen } from '../../public/js/render/pen.js';
 import { stripLoneSurrogates, sanitizeName } from '../../public/js/names.js';
 import { AudioManager } from '../../public/js/audio.js';
+import { inApp, appBundled } from '../../public/js/appShell.js';
+import { installMode } from '../../public/js/ui/install.js';
 
 // ---- fakes -----------------------------------------------------------------------------------------------------------
 
@@ -42,7 +44,7 @@ class FakeElement {
   closest(sel) { return this._closest(sel); }
   dispatchEvent(ev) { this.dispatched.push(ev); if (this._handles && ev.type === 'contextmenu') ev.preventDefault(); return !ev.defaultPrevented; }
 }
-function fakeWindow({ media = {}, touchPoints = 0, fs = true } = {}) {
+function fakeWindow({ media = {}, touchPoints = 0, fs = true, ua = '' } = {}) {
   const classes = new Set();
   const props = new Map();
   const doc = emitter();
@@ -51,7 +53,7 @@ function fakeWindow({ media = {}, touchPoints = 0, fs = true } = {}) {
   Object.assign(doc, { documentElement: el, fullscreenEnabled: fs, fullscreenElement: null, exitFullscreen: async () => { doc.fullscreenElement = null; } });
   const win = emitter();
   Object.assign(win, {
-    document: doc, navigator: { maxTouchPoints: touchPoints }, innerHeight: 390,
+    document: doc, navigator: { maxTouchPoints: touchPoints, userAgent: ua }, innerHeight: 390,
     matchMedia: (q) => ({ matches: !!media[q], addEventListener() {}, removeEventListener() {} }),
     Element: FakeElement, MouseEvent: FakeEvent, Event: FakeEvent, screen: {},
   });
@@ -122,6 +124,23 @@ describe('ui/device.js feature detection', () => {
     assert.equal(cls(w(coarse, {}, undefined)), true, 'unknown screen orientation on a touch device: the hint may show');
     assert.equal(cls(w(coarse, { orientation: { type: 'landscape-primary' } })), false, 'split-view iPad: the screen is landscape');
     assert.equal(cls(w(fine, { orientation: { type: 'portrait-primary' } })), false, 'a desktop window (even on a portrait monitor)');
+  });
+  test('the Android app (appShell.js, docs/ANDROID.md): its user-agent mark makes the page an installed, full-screen app', () => {
+    const chrome = 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0 Mobile Safari/537.36';
+    const webview = chrome.replace('Mobile Safari', 'Version/4.0 Mobile Safari').replace('Pixel 8)', 'Pixel 8; wv)');
+    assert.equal(inApp(chrome), false, 'Chrome on Android');
+    assert.equal(inApp(webview), false, 'another app\'s WebView');
+    assert.equal(inApp(`${webview} StrongholdApp/0.1.3`), true);
+    assert.equal(appBundled(`${webview} StrongholdApp/0.1.3`), false, 'a lite build downloads like a browser');
+    assert.equal(appBundled(`${webview} StrongholdApp/0.1.3 bundled`), true);
+    assert.equal(appBundled('StrongholdApp/ bundled'), false, 'no version: not the app');
+    const touch = { media: { '(any-pointer: coarse)': true }, touchPoints: 5 };
+    const app = detectFeatures(fakeWindow({ ...touch, ua: `${webview} StrongholdApp/0.1.3 bundled` }).win);
+    assert.equal(app.standalone, true, 'no 安装 button, standalone layout');
+    assert.equal(app.fullscreen, false, 'already full screen: no 全屏 button (a WebView has no element fullscreen)');
+    const browser = detectFeatures(fakeWindow({ ...touch, ua: chrome }).win);
+    assert.deepEqual({ standalone: browser.standalone, fullscreen: browser.fullscreen }, { standalone: false, fullscreen: true });
+    assert.equal(installMode({ ua: `${webview} StrongholdApp/0.1.3`, standalone: app.standalone }), null);
   });
   test('fullscreen: standard API, and unsupported (iPhone Safari) → false', async () => {
     const f = fakeWindow();

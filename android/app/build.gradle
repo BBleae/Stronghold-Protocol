@@ -1,0 +1,56 @@
+// The app's version follows the game's (package.json); the build number is the version as digits (0.1.3 → 103) unless
+// STRONGHOLD_VERSION_CODE sets it. Release signing comes from STRONGHOLD_KEYSTORE / _PASSWORD / STRONGHOLD_KEY_ALIAS /
+// _PASSWORD (environment or gradle.properties); without them the release APK is signed with the debug key, which
+// installs but cannot update an APK signed with the release key (docs/ANDROID.md).
+import groovy.json.JsonSlurper
+
+plugins {
+    id 'com.android.application'
+}
+
+def gameVersion = new JsonSlurper().parse(rootProject.file('../package.json')).version as String
+def parts = gameVersion.tokenize('.').collect { it.replaceAll(/\D.*/, '') as int }
+def prop = { String key -> System.getenv(key) ?: (project.findProperty(key) as String) }
+
+android {
+    namespace 'ag.lunar.stronghold'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'ag.lunar.stronghold'
+        minSdk 26
+        targetSdk 35
+        versionName gameVersion
+        versionCode((prop('STRONGHOLD_VERSION_CODE') ?: (parts[0] * 10000 + parts[1] * 100 + parts[2]).toString()) as int)
+    }
+
+    signingConfigs {
+        release {
+            def store = prop('STRONGHOLD_KEYSTORE')
+            if (store) {
+                storeFile file(store)
+                storePassword prop('STRONGHOLD_KEYSTORE_PASSWORD')
+                keyAlias prop('STRONGHOLD_KEY_ALIAS')
+                keyPassword prop('STRONGHOLD_KEY_PASSWORD')
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig prop('STRONGHOLD_KEYSTORE') ? signingConfigs.release : signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    // the game's resources (src/main/assets/game, written by tools/build-android.mjs): images and audio are stored as
+    // they are already (aapt leaves png / webp / mp3 / ogg uncompressed); Spine and JSON text compresses well
+    androidResources {
+        ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+    }
+}
