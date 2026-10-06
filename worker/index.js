@@ -3,8 +3,10 @@ import { APP_VERSION, DEFAULT_SEATS, PROTOCOL_VERSION } from '../shared/constant
 import { CODE_ALPHABET } from '../server/lobby.js';
 import { RoomRuntime, validCode } from './room-runtime.js';
 import { LobbyGatewayDurableObject } from './lobby-gateway.js';
-import { prepareMatchVersion, retainedMatchVersions } from './match-versions.js';
-import { RULES_VERSION } from '../shared/rules-version.js';
+// Adapt the Workers WebSocket surface to the existing Network's small EventEmitter-like contract (flush after the
+// event's commit), and the snapshot KV chunking / liveness rounding / rules-version check both Durable Objects share.
+import { SNAPSHOT_PART, liveness, knownRulesVersion, SocketAdapter } from './do-storage.js';
+import { prepareMatchVersion } from './match-versions.js';
 import { logInfo, logWarn, logError, errorFields } from './log.js';
 import { handleAuth, authenticate, accountOf, directoryOf } from './accounts/auth.js';
 import { handleGithub } from './accounts/github.js';
@@ -180,37 +182,8 @@ async function route(request, env) {
   return env.ASSETS ? env.ASSETS.fetch(request) : error(404, 'ROOM_NOT_FOUND');
 }
 
-// Adapt the Workers WebSocket surface to the existing Network's small EventEmitter-like contract. An event's output
-// waits for the event's commit (flush): its frames, then a close the event made.
-class SocketAdapter {
-  constructor(socket) { this.socket = socket; this.handlers = new Map(); this.closed = false; this.pending = []; this.closing = null; }
-  get readyState() { return this.closed ? 3 : this.socket.readyState; }
-  get bufferedAmount() { return this.socket.bufferedAmount || 0; }
-  on(type, fn) {
-    if (!this.handlers.has(type)) this.handlers.set(type, []);
-    this.handlers.get(type).push(fn);
-  }
-  emit(type, ...args) { for (const fn of this.handlers.get(type) || []) fn(...args); }
-  send(data, callback) { this.pending.push(data); callback?.(); }
-  flush() {
-    for (const data of this.pending) this.socket.send(data);
-    this.pending = [];
-    if (this.closing) this.socket.close(this.closing.code, this.closing.reason);
-    this.closing = null;
-  }
-  close(code, reason) {
-    if (this.closed) return;
-    this.closed = true;
-    this.closing = { code, reason };
-    this.emit('close');
-  }
-  terminate() { this.close(CLOSE.POLICY, 'connection terminated'); }
-}
-
 // Storage key of the restore-attempt counter (RoomDurableObject.restoreMatch).
 const RESTORE_ATTEMPTS = 'restore-attempts';
-// The room snapshot is stored as KV values of this many UTF-16 characters (a value holds at most 128 KiB).
-const SNAPSHOT_PART = 16_000;
 // A running match's log (its checkpoint in the snapshot says how many events to replay).
 const MATCH_EVENTS_TABLE = 'CREATE TABLE IF NOT EXISTS match_events (match_id TEXT NOT NULL, seq INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(match_id,seq))';
 // Finished matches waiting to be published to their MatchArchive: facts and manifest, and the encoded replay chunks.
@@ -225,12 +198,6 @@ const LEASE_REFRESH_MS = 20_000;
 // A room whose next timed step (a match timer) is due within this long stays in memory, and its in-memory timer never
 // waits longer than this (a pending timer keeps the platform from hibernating or evicting the object).
 const AWAKE_MS = 60_000;
-// A save compares the snapshot with liveness timestamps rounded to this: pings alone write at most this often.
-const LIVENESS_MS = 30_000;
-const liveness = (key, value) => (key === 'lastSeen' ? Math.floor(value / LIVENESS_MS) : value);
-
-/** A rules version this bundle can restore: its own or a retained one. */
-const knownRulesVersion = (id) => id === RULES_VERSION || Object.hasOwn(retainedMatchVersions, id);
 
 export class RoomDurableObject {
   constructor(ctx, env) {

@@ -116,6 +116,40 @@ test('the gateway speaks the lobby rules: room codes are the node alphabet, toke
   assert.ok(back.take('room.state'), 'the room state follows the resumed hello');
 });
 
+test('a session that does not return after a wake disconnects like its socket closed (no eternal 100 ms alarm)', (t) => {
+  // The review blocker: a session saved connected whose socket did not survive the restart
+  // must run Lobby.onDisconnect (seat disconnect / grace / match onDisconnect) at the wake.
+  // Without it isExpired never sees a disconnectedAt, nextAlarm clamps to now+100 forever,
+  // and the room's seat never frees (the object wakes and commits every 100 ms).
+  const { rt } = setup();
+  t.after(() => rt.lobby.shutdown());
+  const host = join(rt, '房主');
+  send(rt, host, { t: 'room.create', mode: 'coop', difficulty: 'FUNNY' });
+  const room = rt.lobby.getRoom(host.take('room.state').code);
+  const code = room.code;
+  const snapshot = rt.snapshot();
+
+  // Wake from the snapshot with NO sockets (a deployment closed them all), like load() does.
+  // One mutable clock for the whole wake (registry, network and lobby all capture it).
+  let at2 = Date.now();
+  const revived = new LobbyRuntime({ snapshot, now: () => at2 });
+  t.after(() => revived.lobby.shutdown());
+  revived.reconcileSockets();
+  const session = revived.registry.byId(host.take('welcome').playerId);
+  assert.equal(session.connected, false);
+  assert.notEqual(session.disconnectedAt, null, 'the wake marked the session disconnected');
+  const revivedRoom = revived.lobby.getRoom(code);
+  assert.equal(revivedRoom.seatOf(session.playerId).connected, false, 'the seat shows disconnected (grace started)');
+  const next = revived.nextAlarm();
+  assert.ok(next > at2 + 1000, `the next wake is a real deadline, not now+100 (got +${next - at2} ms)`);
+
+  // The client that never comes back expires with the window; the empty room clears.
+  at2 += revived.registry.reconnectWindowMs + 1000;
+  revived.sweep();
+  assert.ok(!revived.registry.byId(session.playerId), 'the session expired after its window');
+  assert.equal(revived.lobby.rooms.size, 0, 'the empty room is gone');
+});
+
 test('a spectator takes a seat, rides the snapshot, and its grace expires like a player seat', (t) => {
   const { rt, advance } = setup();
   t.after(() => rt.lobby.shutdown());

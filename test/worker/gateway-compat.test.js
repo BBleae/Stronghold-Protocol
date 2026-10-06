@@ -123,3 +123,34 @@ test('NODE_COMPAT: healthz answers the node shape; a plain /ws client rooms, joi
   assert.ok(back.frames.some((f) => f.t === 'm.private' || f.t === 'm.public'),
     `the running match resynced after the resume (saw: ${back.frames.map((f) => f.t).join(',')})`);
 });
+
+// The review's second blocker: a refused upgrade must answer the client's readable close
+// code (1013 try-again-later), not a 500. Before the fix the DO closed an un-accepted
+// WebSocket, which workerd throws on — the caller saw `openSocket` reject.
+test('NODE_COMPAT: a lobby at its per-address socket cap refuses the next upgrade with 1013', async (t) => {
+  const h = await world(t);
+  const { GATEWAY_LIMITS } = await import('../../worker/lobby-gateway.js');
+  const ip = '5.6.7.8';
+  // Open the per-address cap of raw upgrades (no hello needed — handleConnection counts the
+  // socket against the network key the moment it is adopted).
+  const held = [];
+  for (let i = 0; i < GATEWAY_LIMITS.socketsPerAddr; i++) {
+    const r = await h.request('https://test.example/ws', { headers: { Upgrade: 'websocket', 'CF-Connecting-IP': ip } });
+    assert.equal(r.status, 101, `socket ${i} accepted under the cap`);
+    r.webSocket?.accept();
+    held.push(r.webSocket);
+  }
+  // The next upgrade from the same network is refused — a 101 whose socket closes at once
+  // with the try-again code, exactly as a browser can observe it (no HTTP status on a refused
+  // WebSocket handshake).
+  const refused = await h.request('https://test.example/ws', { headers: { Upgrade: 'websocket', 'CF-Connecting-IP': ip } });
+  assert.equal(refused.status, 101, 'refused upgrades answer with a socket, not a 500');
+  const socket = refused.webSocket;
+  assert.ok(socket, 'the refusal carries a WebSocket');
+  const closed = await new Promise((resolve) => { socket.addEventListener('close', (e) => resolve(e)); socket.accept(); });
+  assert.equal(closed.code, 1013, 'the client reads "try again later"');
+  // A different network still gets in (the cap is per client address, not global).
+  const other = await h.request('https://test.example/ws', { headers: { Upgrade: 'websocket', 'CF-Connecting-IP': '5.6.7.9' } });
+  assert.equal(other.status, 101);
+  other.webSocket?.accept();
+});

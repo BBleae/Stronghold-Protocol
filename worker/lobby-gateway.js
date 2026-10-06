@@ -10,25 +10,25 @@
 // the whole lobby the way RoomRuntime persists a single room.
 //
 // Storage is key-value only (no SQLite): the lobby snapshot lives in chunked values; each
-// running match's event log lives as one value per event under a per-match prefix, so an
-// event's commit writes only the new rows (the same incremental idea the room objects use
-// with their events table).
+// running match's event log lives as one value per event at seq-derived keys, so an event's
+// commit writes only the new rows (the same incremental idea the room objects use with their
+// events table). Wake cost: the upstream client's 4 s heartbeat ({t:'ping',c:now}) cannot
+// match the platform auto-response (a literal {"t":"ping","c":0}), so every ping wakes the
+// DO for one event — cheap while the liveness-rounded snapshot deduplicates the commit — but
+// one connected client does keep the object off hibernation; account-mode rooms avoid this
+// because room-net.js rewrites the ping to the auto-response form.
 import { randomBytes } from 'node:crypto';
 import { Lobby, Room } from '../server/lobby.js';
 import { Network, Session, SessionRegistry } from '../server/net.js';
 import { RecordedMatch, exportMatch, restoreMatch } from '../server/match/checkpoint.js';
 import { prepareMatchVersion, retainedMatchVersions } from './match-versions.js';
-import { RULES_VERSION } from '../shared/rules-version.js';
 import { logWarn, logError, logInfo, errorFields } from './log.js';
-import { CLOSE } from './close-codes.js';
+import { CLOSE, refuseSocket } from './close-codes.js';
+import { SNAPSHOT_PART, liveness, knownRulesVersion, SocketAdapter } from './do-storage.js';
 
 export const GATEWAY_LIMITS = Object.freeze({ sockets: 256, socketsPerAddr: 32, sessions: 20_000,
   messageBytes: 65_536, heartbeatMs: 30_000, helloTimeoutMs: 30_000, idleSocketMs: 90_000, awakeMs: 60_000 });
 
-const SNAPSHOT_PART = 16_000; // a value holds at most 128 KiB; chunk by UTF-16 characters
-const LIVENESS_MS = 30_000;
-const liveness = (key, value) => (key === 'lastSeen' ? Math.floor(value / LIVENESS_MS) : value);
-const knownRulesVersion = (id) => id === RULES_VERSION || Object.hasOwn(retainedMatchVersions, id);
 const matchKey = (id, seq) => `matchlog:${id}:${String(seq).padStart(8, '0')}`;
 
 // The base Lobby's grace/resync timers are setTimeout; inside the DO they become alarm
@@ -57,7 +57,12 @@ class GatewayLobby extends Lobby {
       const wait = (Number.isFinite(session.resyncAt) ? session.resyncAt : -Infinity) + this.opts.resyncMinGapMs - this.now();
       if (wait > 0) { this.resyncDue.set(pid, this.now() + wait); return; }
     }
+    this.clearResync(pid);
     this.runResync(session);
+  }
+  clearResync(playerId) {
+    super.clearResync(playerId);
+    this.resyncDue.delete(playerId);
   }
   expireResync() {
     for (const [playerId, at] of [...this.resyncDue]) {
@@ -75,6 +80,7 @@ export class LobbyRuntime {
     this.now = now;
     this.generation = snapshot?.generation || randomBytes(8).toString('hex');
     this.socketMeta = new Map();
+    this.savedCps = new Map(); // room code -> { match, count, checkpoint } (RoomRuntime's `saved`)
     const log = { info() {}, debug() {},
       warn: (message) => logWarn('lobby_gateway', { message: String(message) }),
       error: (message, detail) => logError('lobby_gateway', { message: String(message), ...(detail ? { error: errorFields(detail) } : {}) }) };
@@ -174,8 +180,19 @@ export class LobbyRuntime {
     return steps;
   }
 
-  /** Sockets that survived a wake but whose sessions claim connected: reconcile the match. */
+  /**
+   * After a wake: a session saved while connected whose socket did not survive (a deployment
+   * closes every socket) disconnects now, the way a closing socket does (its seat, the match,
+   * a solo run's resume window, the lobby grace) — otherwise it never expires and its seat
+   * never leaves the room (RoomRuntime.reconcileSockets, same first step). Then reconcile each
+   * running match's per-player connected flags against the sessions that did come back.
+   */
   reconcileSockets() {
+    for (const session of this.registry.all()) {
+      if (session.connected || session.disconnectedAt != null) continue;
+      session.disconnectedAt = this.now();
+      this.network.handler.onDisconnect(session);
+    }
     for (const room of this.lobby.rooms.values()) {
       const match = room.match;
       if (!match) continue;
@@ -215,6 +232,19 @@ export class LobbyRuntime {
 
   isEmpty() { return !this.lobby.rooms.size && !this.registry.size && !this.network.connectionCount; }
 
+  // The running match's checkpoint, cached like RoomRuntime.checkpoint (keyed by room: a
+  // lobby may run several matches): a match changes only through logged events, so
+  // re-exporting after every ping (whose commit changes nothing) would rebuild the whole
+  // state + log for nothing.
+  checkpoint(room, match) {
+    const cached = this.savedCps.get(room.code);
+    const count = match.recording.events.length;
+    if (cached?.match !== match || cached.count !== count) {
+      this.savedCps.set(room.code, { match, count, checkpoint: exportMatch(match, { referenceEvents: true }) });
+    }
+    return this.savedCps.get(room.code).checkpoint;
+  }
+
   snapshot() {
     const rooms = [];
     for (const room of this.lobby.rooms.values()) {
@@ -223,10 +253,12 @@ export class LobbyRuntime {
         matchCount: room.matchCount, lastSummary: room.lastSummary, ownerKey: room.ownerKey,
         matchKey: room.matchKey, createdAt: room.createdAt,
         replay: room.replay ? { publicFrame: room.replay.publicFrame, frames: [...room.replay.frames], pending: [...room.replay.pending] } : null };
-      if (room.match?.recording) saved.matchCheckpoint = exportMatch(room.match, { referenceEvents: true });
+      if (room.match?.recording) saved.matchCheckpoint = this.checkpoint(room, room.match);
+      else this.savedCps.delete(room.code); // the match ended: no more reads of its cached checkpoint
       rooms.push(saved);
     }
-    return { version: 1, at: this.now(), generation: this.generation,
+    for (const code of [...this.savedCps.keys()]) if (!this.lobby.rooms.has(code)) this.savedCps.delete(code);
+    return { version: 1, generation: this.generation,
       sessions: [...this.registry.all()].map(({ ws, ...s }) => ({ ...s, resyncAt: Number.isFinite(s.resyncAt) ? s.resyncAt : null })),
       rooms, deadlines: [...this.lobby.deadlines], resyncDue: [...this.lobby.resyncDue] };
   }
@@ -369,26 +401,26 @@ export class LobbyGatewayDurableObject {
     const live = new Map(logs.map((entry) => [entry.code, entry]));
     const gone = [...this.savedLogs.keys()].filter((code) => !live.has(code));
     // Compare with liveness rounded: pings alone must not rewrite the snapshot every packet.
+    // An unchanged snapshot with no NEW event rows is a no-op too — a running match re-enters
+    // save() with a (non-empty) checkpoint on every event, but only its new rows are worth writing.
     const state = JSON.stringify(snapshot, liveness);
-    if (state === this.savedState && !logs.length && !gone.length) return;
+    if (state === this.savedState && !logs.some((entry) => entry.rows.length) && !gone.length) return;
     const full = JSON.stringify(snapshot);
     const parts = Math.ceil(full.length / SNAPSHOT_PART) || 1;
     const puts = { 'lobby-meta': { parts } };
     for (let i = 0; i < parts; i++) puts[`lobby-${i}`] = full.slice(i * SNAPSHOT_PART, (i + 1) * SNAPSHOT_PART);
     const deletes = Array.from({ length: this.parts > parts ? this.parts - parts : 0 }, (_, i) => `lobby-${i + parts}`);
     await this.ctx.storage.transaction(async (txn) => {
-      for (const entry of logs) {
-        const rows = {};
-        for (const [seq, payload] of entry.rows) rows[matchKey(entry.id, seq)] = payload;
-        await txn.put(rows);
-      }
+      // Batch like the room objects: at most 128 keys per put/delete call.
+      const entries = Object.entries(puts);
+      for (const entry of logs) for (const [seq, payload] of entry.rows) entries.push([matchKey(entry.id, seq), payload]);
+      for (let offset = 0; offset < entries.length; offset += 128) await txn.put(Object.fromEntries(entries.slice(offset, offset + 128)));
       for (const code of gone) {
         const { id, count } = this.savedLogs.get(code);
         const keys = Array.from({ length: count }, (_, seq) => matchKey(id, seq));
         for (let offset = 0; offset < keys.length; offset += 128) await txn.delete(keys.slice(offset, offset + 128));
       }
-      await txn.put(puts);
-      if (deletes.length) await txn.delete(deletes);
+      if (deletes.length) for (let offset = 0; offset < deletes.length; offset += 128) await txn.delete(deletes.slice(offset, offset + 128));
     });
     for (const entry of logs) this.savedLogs.set(entry.code, { id: entry.id, count: entry.count });
     for (const code of gone) this.savedLogs.delete(code);
@@ -403,8 +435,8 @@ export class LobbyGatewayDurableObject {
     const attemptsKey = 'lobby-attempts:' + room.code + ':' + (checkpoint.eventLogId || '');
     const attempts = ((await this.ctx.storage.get(attemptsKey)) ?? 0) + 1;
     const context = { room: room.code, rulesVersion: checkpoint.rulesVersion, events: checkpoint.eventCount, attempts };
-    if (!knownRulesVersion(checkpoint.rulesVersion)) { this.interruptRoom(room, 'rollback', context); return; }
-    if (attempts > 1) { this.interruptRoom(room, 'restart', context, new Error('RESTORE_UNFINISHED')); return; }
+    if (!knownRulesVersion(checkpoint.rulesVersion)) { await this.interruptRoom(room, checkpoint, attemptsKey, 'rollback', context); return; }
+    if (attempts > 1) { await this.interruptRoom(room, checkpoint, attemptsKey, 'restart', context, new Error('RESTORE_UNFINISHED')); return; }
     await this.ctx.storage.put(attemptsKey, attempts);
     await this.ctx.storage.sync();
     try {
@@ -417,17 +449,16 @@ export class LobbyGatewayDurableObject {
       lobby.MatchClass = class {
         constructor(options) { try { return restore({ ...checkpoint, events }, options); } catch (error) { failure = error; throw error; } }
       };
-      lobby.restoring = true;
       room.matchCount -= 1; // startMatch counts it again
       let result;
-      try { result = lobby.startMatch(room, room.matchKey); } finally { lobby.MatchClass = MatchClass; lobby.restoring = false; }
+      try { result = lobby.startMatch(room, room.matchKey); } finally { lobby.MatchClass = MatchClass; }
       if (result.error) throw failure || new Error('MATCH_RESTORE_FAILED: ' + result.detail);
       await this.ctx.storage.delete(attemptsKey);
       // Seed the incremental writer: the next commit appends only events after the replayed log.
       this.savedLogs.set(room.code, { id: checkpoint.eventLogId, count: checkpoint.eventCount });
       logInfo('lobby_match_restored', context);
     } catch (error) {
-      this.interruptRoom(room, 'restart', context, error);
+      await this.interruptRoom(room, checkpoint, attemptsKey, 'restart', context, error);
     }
   }
 
@@ -450,9 +481,18 @@ export class LobbyGatewayDurableObject {
     return events;
   }
 
-  interruptRoom(room, reason, context, error) {
+  // A match that cannot be replayed ends interrupted: dispose it, and give up its durable
+  // restore-attempt counter and its now-abandoned event log — save()'s writer only purges
+  // logs it had seeded into savedLogs (a successful restore), so an interrupted match's
+  // rows and attempts key would otherwise linger until the whole lobby empties (deleteAll).
+  async interruptRoom(room, checkpoint, attemptsKey, reason, context, error) {
     logError('lobby_match_restore_failed', { ...context, reason, ...(error ? { error: errorFields(error) } : {}) });
     this.runtime.lobby.disposeRoom(room, reason);
+    await this.ctx.storage.delete(attemptsKey);
+    if (checkpoint?.eventLogId) {
+      const keys = Array.from({ length: checkpoint.eventCount }, (_, seq) => matchKey(checkpoint.eventLogId, seq));
+      for (let offset = 0; offset < keys.length; offset += 128) await this.ctx.storage.delete(keys.slice(offset, offset + 128));
+    }
   }
 
   // Wake policy (the room objects' schedule, for one lobby): a connected match step keeps
@@ -464,7 +504,13 @@ export class LobbyGatewayDurableObject {
     const awake = rt.connected() && due != null && due - now < GATEWAY_LIMITS.awakeMs;
     this.arm(awake ? Math.min(due, now + GATEWAY_LIMITS.awakeMs) : null);
     const at = Math.min(rt.nextAlarm() ?? Infinity, due ?? Infinity);
-    if (at === Infinity || at === this.alarmAt) return;
+    if (at === Infinity) {
+      // Nothing waits any more: disarm the alarm (leaving it armed would wake an idle lobby
+      // forever — the room objects deleteAlarm for the same reason).
+      if (this.alarmAt != null) { await this.ctx.storage.deleteAlarm(); this.alarmAt = null; }
+      return;
+    }
+    if (at === this.alarmAt) return;
     const armed = this.alarmAt != null && this.alarmAt > now;
     if (armed && this.alarmAt < at && awake) return;
     await this.ctx.storage.setAlarm(at);
@@ -495,7 +541,7 @@ export class LobbyGatewayDurableObject {
   openSocket(request) {
     if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') return new Response('upgrade required', { status: 426 });
     const ip = request.headers.get('X-Lobby-IP') || '0.0.0.0';
-    if (this.runtime.network.admission({ socket: { remoteAddress: ip }, headers: {} })) return refuseUpgrade(CLOSE.TRY_LATER, 'connection limit');
+    if (this.runtime.network.admission({ socket: { remoteAddress: ip }, headers: {} })) return refuseSocket(CLOSE.TRY_LATER, 'connection limit');
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
     this.ctx.acceptWebSocket(server);
@@ -539,33 +585,4 @@ export class LobbyGatewayDurableObject {
     this.alarmAt = null;
     return this.event(() => {});
   }
-}
-
-/** A refused upgrade answered by a socket that closes at once (browsers read only the code). */
-export function refuseUpgrade(code, reason) {
-  const pair = new WebSocketPair();
-  const [client, server] = Object.values(pair);
-  server.close(code, reason);
-  return new Response(null, { status: 101, webSocket: client });
-}
-
-/**
- * Adapt the Workers WebSocket surface to the small EventEmitter-like contract net.js uses
- * (the same dialect the account rooms' adapter speaks).
- */
-export class SocketAdapter {
-  constructor(socket) { this.socket = socket; this.handlers = new Map(); this.closed = false; this.pending = []; this.closing = null; }
-  get readyState() { return this.closed ? 3 : this.socket.readyState; }
-  get bufferedAmount() { return this.socket.bufferedAmount || 0; }
-  on(type, fn) { if (!this.handlers.has(type)) this.handlers.set(type, []); this.handlers.get(type).push(fn); }
-  emit(type, ...args) { for (const fn of this.handlers.get(type) || []) fn(...args); }
-  send(data, callback) { this.pending.push(data); callback?.(); }
-  flush() {
-    for (const data of this.pending) this.socket.send(data);
-    this.pending = [];
-    if (this.closing) this.socket.close(this.closing.code, this.closing.reason);
-    this.closing = null;
-  }
-  close(code, reason) { if (this.closed) return; this.closed = true; this.closing = { code, reason }; this.emit('close'); }
-  terminate() { this.close(CLOSE.POLICY, 'connection terminated'); }
 }
