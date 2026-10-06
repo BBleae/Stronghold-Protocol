@@ -49,6 +49,11 @@ const CACHE = join(ROOT, '.cache');
 const MANIFEST = join(ROOT, 'data', 'assets.json');
 const REPORT = join(CACHE, 'assets-report.json');
 const LOCAL_SPINES = join(ROOT, LOCAL_ENEMY_SPINES_FILE);
+/**
+ * 外援 / 甄选 (DIY) roster asset entries (DESIGN §27): the 6★ operators outside the shop pool are not in research 07, so
+ * their avatar / portrait / battle Spine URLs live in this committed file (tools/gen-waiguan-operators, mirrors first).
+ */
+const WAIGUAN_OPERATORS_FILE = 'tools/assets/waiguan-operators.json';
 
 const HELP = `Usage: node tools/fetch-assets.mjs [options]
   --concurrency=N   parallel downloads (default 16)
@@ -240,6 +245,10 @@ async function main() {
   const extraHandbook = {};
   for (const b of Object.values(dataBosses || {})) if (b?.enemyKey && typeof b.handbookId === 'string') extraHandbook[b.enemyKey] = b.handbookId;
   const localEnemySpines = await syncLocalEnemySpines(opts);
+  // 外援 / 甄选 (DIY) roster (DESIGN §27): characters data/waiguan.json can field are not in research 07, so their asset
+  // entries come from the committed tools/assets/waiguan-operators.json. Missing / empty ⇒ the pool's own operators only.
+  const waiguanOperators = await readJson(WAIGUAN_OPERATORS_FILE).catch(() => null);
+  const extraOperators = waiguanOperators && typeof waiguanOperators === 'object' && waiguanOperators.operators ? waiguanOperators.operators : {};
   const plan = buildPlan({
     assets07, ops03, enemies05, maps05, audio, modelsData,
     extraEnemyIds: Object.keys(dataEnemies || {}),
@@ -247,6 +256,7 @@ async function main() {
     extraHandbook,
     voice,
     localEnemySpines,
+    extraOperators,
   });
   const leaves = collectLeaves(plan.template);
   log(`[plan] ${leaves.length} files + ${plan.models.size} Spine models ` +

@@ -230,6 +230,11 @@ function wireNet() {
   net.on('replaced', () => toast('该身份已在其他页面登录，本页已断开', 'warn', { ttl: 6000 }));
   net.on('unhandledError', (err) => toastError(err));
   net.on('room.state', onRoomState);
+  // 匹配 (matchmaking queue): the queue the player waits in, and the room the server put it in
+  net.on('queue.status', (msg) => store.set({ queue: { ...payload(msg), matched: null } }));
+  net.on('queue.matched', (msg) => {
+    store.patch('queue', { matched: { code: msg.code, difficulty: msg.difficulty, seated: !!msg.seated } });
+  });
   net.on('room.closed', (msg) => {
     // A match that ended with a result to show (spectators get it after room.closed: worker/rooms/spectators.js) stays on
     // screen for its final view and result; the result screen leads back to the lobby. Anything else leaves at once.
@@ -266,6 +271,14 @@ function wireNet() {
     if (s.room && !prev.room) warmGameData();
     // an approved join application enters the room from any page: the account pages give way to it
     if (s.room && !prev.room && s.ui.accountPage) store.patch('ui', { accountPage: null });
+    // 匹配: the queue put this player in a room — join it like a deep link would (once, while not already inside)
+    if (s.queue.matched && s.queue.matched !== (prev.queue && prev.queue.matched) && s.queue.matched.seated) {
+      const code = s.queue.matched.code;
+      if (!s.room) {
+        store.patch('ui', { pendingJoin: code });
+        schedulePendingJoin();
+      }
+    }
   });
 }
 

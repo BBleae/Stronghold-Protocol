@@ -96,7 +96,7 @@ The `stem` of a Spine model is the upstream file name. Two examples: `char_107_l
 
 ### Id scope
 
-- **Operators:** all 138 pool charIds from `activity_table` (`charShopChessDatas[*].charId ∪ backupCharId`), including hidden chess and backup operators.
+- **Operators:** all 138 pool charIds from `activity_table` (`charShopChessDatas[*].charId ∪ backupCharId`), including hidden chess and backup operators — **plus the 87 外援 / 甄选 (DIY) roster charIds** (DESIGN §27), whose entries are not in research 07 and come from the committed `tools/assets/waiguan-operators.json` (see below).
 - **Tokens:** the 20 pool tokens.
 - **Enemies:** 253 ids planned, 252 in the manifest (心烛 has no assets). The set is the union of:
   - the 07 enemy list;
@@ -181,6 +181,35 @@ game plays a line — and downloads them from the ArknightsAssets2 `voice` branc
 - Languages: `cn` = `CN_MANDARIN` (folder `voice_cn/`), `jp` = `JP` (`voice/`); a linkage operator with only its own
   `LINKAGE` voice uses it in both. 120 of the 138 pool operators have voice: 12 lines each, ~0.26 MB (中文) and
   ~0.34 MB (日文).
+
+### 外援 / 甄选 operator entries (`tools/assets/waiguan-operators.json`)
+
+The 87 6★ operators that `data/waiguan.json` can field (the 甄选 / DIY roster, DESIGN §27) are **not** in
+`docs/research/07-assets.json`, which only covers the mode's shop pool. Their avatar, portrait, battle Spine (Front and
+Back) and skill-icon entries live in the committed `tools/assets/waiguan-operators.json`, in the same shape as a research
+07 operator entry, and `tools/fetch-assets.mjs` merges them into the plan (`buildPlan({ extraOperators })`).
+
+- **URL order matters.** A research entry names `raw.githubusercontent.com`; `fetch-assets.mjs` adds the jsDelivr mirror
+  as a fallback when the raw URL fails. The roster entries are the other way round — the entry's first URL is the
+  **cdndelivr mirror** and `mirror` holds the raw URL — because the machine the roster was generated on cannot open
+  `raw.githubusercontent.com` at all. Both files are equivalent, so either order produces the same bytes.
+- **Size notes.** Avatar and portrait entries carry the byte counts measured from the mirror (a download that returns a
+  different size is flagged). Spine files carry none: jsDelivr refuses to list these repositories ("Package size exceeded
+  the configured limit of 50 MB"), so there is no authoritative size to record, and the downloader only compares sizes
+  when a file has one.
+- **Regenerating.** `node tools/probe-waiguan-assets.mjs` re-measures the mirror (174 HEADs: avatar + portrait of every
+  candidate, plus an optional `--spine-sample N` model-size sample) into `.cache/waiguan-assets-probe.json`, and
+  `node tools/gen-waiguan-operators.mjs` rebuilds `tools/assets/waiguan-operators.json` from it. Both are run by hand, not
+  by CI, and the generated file is committed like `tools/assets/local-enemy-spines.json`. The generator **skips the 9
+  candidates research 07 already lists** — `plan.mjs` merges `extraOperators` OVER the research entries, so a thinner entry
+  would silently drop the E2 art and skill SFX those entries carry.
+- **Flaky mirror.** The mirror drops large responses (operator Spine pages are 0.4–0.9 MB) now and then, and its host
+  names fail TLS in rotation on some networks (`cdn.jsdelivr.net`, `fastly.jsdelivr.net`, `gcore.jsdelivr.net` and
+  `jsdelivr.b-cdn.net` all serve the same path; measured here: `fastly` failed 100% of the time while the others answered).
+  When `fetch-assets.mjs` leaves files missing it refuses to write a smaller `data/assets.json`;
+  `node tools/fetch-assets-retry.mjs` then downloads **only the files that are missing on disk**, over several rounds with
+  growing timeouts and rotating host names (4 at a time). Run it until it reports none, then run `fetch-assets.mjs` again
+  to write the manifest.
 
 ## Post-processing
 

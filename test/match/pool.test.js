@@ -166,7 +166,11 @@ test('the match pool excludes banned chess; m.public lists disabled bonds and ba
   assert.equal(pub.drawnDisabledBonds.length, 7);
   assert.ok(pub.bannedChess.length > 0);
   for (const id of pub.bannedChess) assert.ok(!h.m.pool.has(id), `${id} should not be in the pool`);
-  assert.equal(h.m.pool.entries.size + pub.bannedChess.length, 112);
+  // the SHARED pool is the visible chess minus the banned ones: a 外援 / 甄选 entry (DESIGN §27) is owned by one player
+  // and is deliberately not part of it (`owner != null`), so the identity is asserted over the unowned entries.
+  const shared = [...h.m.pool.entries.values()].filter((e) => e.owner == null).length;
+  assert.equal(shared + pub.bannedChess.length, 112);
+  assert.ok(h.m.pool.entries.size > shared, 'a bot seat brought its own 甄选 entries');
   checkInvariants(h.m);
   h.m.dispose();
 });

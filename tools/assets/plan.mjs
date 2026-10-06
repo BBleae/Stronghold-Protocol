@@ -262,9 +262,12 @@ export function collectEnemyIds({ assets07, enemies05, maps05, ops03 }) {
  * @param {Record<string, import('./spine.mjs').LocalSpineMeta>} [p.localEnemySpines] metadata of the enemy models the
  *   local client has (the committed tools/assets/local-enemy-spines.json, never the disk): each planned enemy listed
  *   gets `spineLocal` = { group: 'spine/enemy/<id>', ...meta } beside its web `spine`
+ * @param {Record<string, any>} [p.extraOperators] operator asset entries (07-assets.json shape) for characters research
+ *   07 does not list — the 外援 / 甄选 (DIY) roster (tools/assets/waiguan-operators.json, DESIGN §27). Their URLs are
+ *   used in the order the file lists them (its first URL is the reachable mirror).
  * @returns {{ template: any, models: Map<string, any>, notes: string[] }}
  */
-export function buildPlan({ assets07, ops03, enemies05, maps05, audio, modelsData, extraEnemyIds = [], extraTokenIds = [], extraHandbook = {}, localEnemySpines = {}, voice = null }) {
+export function buildPlan({ assets07, ops03, enemies05, maps05, audio, modelsData, extraEnemyIds = [], extraTokenIds = [], extraHandbook = {}, localEnemySpines = {}, voice = null, extraOperators = {} }) {
   const notes = [];
   /** @type {Map<string, any>} */
   const models = new Map();
@@ -293,18 +296,26 @@ export function buildPlan({ assets07, ops03, enemies05, maps05, audio, modelsDat
   const skills = {};
   const skillsById = {};
   const unitsSfx = {};
-  const charIds = Object.keys(assets07?.operators || {}).sort();
-  for (const id of charIds) {
-    const o = assets07.operators[id];
+  // 外援 / 甄选 (DIY) roster (DESIGN §27): the characters data/waiguan.json can field are not in research 07, so their
+  // entries come from the committed tools/assets/waiguan-operators.json. They are merged here and processed by the SAME
+  // loop below (avatar / portrait / battle Spine / skill icons / unit SFX), so an operator of the roster is planned
+  // exactly like a pool operator.
+  const operatorsById = { ...(assets07?.operators || {}), ...extraOperators };
+  for (const id of Object.keys(operatorsById).sort()) {
+    const o = operatorsById[id];
+    // Alternatives in the order the entry lists them. A research 07 entry names raw.githubusercontent.com (fetch-assets
+    // adds its jsDelivr mirror when that fails); a waiguan-operators.json entry names the *reachable* mirror first,
+    // because the machine the roster is generated on cannot open raw.githubusercontent.com at all.
+    const urlsOf = (x) => (Array.isArray(x?.mirror) ? x.mirror : x?.mirror ? [x.mirror] : []).concat(x?.url ? [x.url] : []).filter((u) => typeof u === 'string' && u);
     // DESIGN §16 operator loadouts: any skill of the character can be equipped — the icons, skill SFX and Spine skill
     // clips of every skill index (the pool's primary index first, as before)
     const idx0 = skillIdx.get(id) || [0];
     const idx = [...idx0, ...(o.skills || []).map((k) => k.index).filter((i) => Number.isInteger(i) && i >= 0 && !idx0.includes(i)).sort((a, b) => a - b)];
     const c = {};
-    c.avatar = leaf(alt(`char/avatar/${id}.png`, o.avatar?.e0e1?.url, o.avatar?.e0e1?.bytes));
-    if (o.avatar?.e2?.url) c.avatarE2 = leaf(alt(`char/avatar/${id}_2.png`, o.avatar.e2.url, o.avatar.e2.bytes));
-    c.portrait = leaf(alt(`char/portrait/${id}_1.png`, o.portrait?.e0e1?.url, o.portrait?.e0e1?.bytes));
-    if (o.portrait?.e2?.url) c.portraitE2 = leaf(alt(`char/portrait/${id}_2.png`, o.portrait.e2.url, o.portrait.e2.bytes));
+    c.avatar = leaf(alt(`char/avatar/${id}.png`, urlsOf(o.avatar?.e0e1), o.avatar?.e0e1?.bytes));
+    if (o.avatar?.e2?.url) c.avatarE2 = leaf(alt(`char/avatar/${id}_2.png`, urlsOf(o.avatar.e2), o.avatar.e2.bytes));
+    c.portrait = leaf(alt(`char/portrait/${id}_1.png`, urlsOf(o.portrait?.e0e1), o.portrait?.e0e1?.bytes));
+    if (o.portrait?.e2?.url) c.portraitE2 = leaf(alt(`char/portrait/${id}_2.png`, urlsOf(o.portrait.e2), o.portrait.e2.bytes));
     c.spine = {};
     const front = fexliModel(`op:${id}:front`, 'op', `spine/op/${id}/front/`, o.battleSpine?.front, idx);
     if (front) c.spine.front = front; else notes.push(`${id}: no Front battle Spine in research data`);

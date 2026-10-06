@@ -80,6 +80,9 @@ export const initialState = Object.freeze({
   session: { entered: false },
   room: null,
   match: emptyMatch(),
+  // 匹配 (matchmaking queue): the last queue.status ({ waiting, difficulty, count, total, waitedMs, minSeats, seats }) plus
+  // the queue.matched payload the server sent when it put this player in a room ({ code, difficulty, seated }).
+  queue: { waiting: false, difficulty: null, count: 0, total: 0, waitedMs: 0, minSeats: 0, seats: 0, matched: null },
   ticker: [],
   emotes: [],
   clock: { offset: 0, rtt: null, synced: false },
