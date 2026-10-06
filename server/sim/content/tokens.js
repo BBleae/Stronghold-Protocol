@@ -61,26 +61,33 @@
 // the playtest #4 reading, `deferDeploy`: off the field until the skill). Then it is docked on its tile
 // (`dockSkillSummons`; the tile stays reserved) and takes the field there each time the owner's skill gives one
 // (`releaseSkillSummon`; PRTS "若战场区初始部署有召唤物，若召唤物在战斗期间退场，将在满足条件后立即原地再部署1个"): one
-// in stock at most ("最多可库存1个"), after the token's redeploy time once it left, free [ASSUMED: no DP], never while
-// its owner is off the field — a stocked one deploys as soon as the owner is back. A skill's summon or a device
+// in stock at most ("最多可库存1个"), after the token's redeploy time once it left — free for a pool summoner [ASSUMED: no
+// DP, the upstream reading kept], paying its deploy cost for a 外援 one (REQUIREMENTS §1: a 外援 summon that comes back
+// during the battle pays, only the battle-start deployment is free) —, never while its owner is off the field — a stocked one deploys as soon as the owner is back. A skill's summon or a device
 // (凯瑟琳) that was not placed never appears (the hidden 待部署区 deploys nothing by itself), nor does 海嗣; only the
 // tacticians' 狼群 / 流形 still come as 援军 on a tactical point (above).
 // Fallbacks (only while the summoner still uses the generic kit — a hand-authored kit takes over): skill summons
 // (赫默/巫恋 through their placed pieces as above; 蜜蜡/风丸/维娜/耀骑士临光/迷迭香 S3 on a tile of their own) spawn at
 // skill start — also under a hand-authored kit when only the SELECTED skill runs the generic spec (a non-default skill
 // the kit has no `skills` entry for) — and 夕 spawns 小自在 on its first attack.
+// Summons of operators without a hand-authored kit (the 外援 / 甄选 ones, no token kit here): content/genericSummons.js
+// — `genericTokenKit` (content/index.js: the owner kit's `tokenKits[id]`, a trap kit, or the generic kit + generic summon
+// talents minus the owner kit's `managedTokenTalents`) and `installGenericSummoner` (returns paying DP, consumable stock,
+// lifetimes, skill gains / recalls, owner → summon links), run for a generic-kit owner or a hand kit declaring
+// `genericSummons: true`; such summons obey the per-owner deploy limit too.
 // Operator loadouts (DESIGN §16): variants, `sources` and counts are those of the owner's selected skill / module
 // (variantOf / tokenSources: getToken(id, owner.defId, owner.def.loadout)); a skill summon runs only when that skill
 // makes the token (Battle.spawnToken also refuses summons the owner's loadout does not produce).
 //
 // Exports for other content: spawnYanyou, spawnMapChar, findSummonTile, summonToken, tacticalPoint, wolfShadows,
-// releaseSkillSummon, SKILL_SUMMON_START_DEPLOY, CAT_SHIELD_KEY, TOKEN_IDS.
+// releaseSkillSummon, SKILL_SUMMON_START_DEPLOY, CAT_SHIELD_KEY, TOKEN_IDS, genericTokenKit.
 
 import { COLS, ROWS, MOVE_SCALE } from '../constants.js';
 import { absoluteRangeKeys, sortEnemyTargets, canTargetEnemy } from '../targeting.js';
 import { bodyInKeys, bodyOnTile } from '../body.js';
 import { hasHp } from '../damage.js';
 import { genericKit } from './generic.js';
+import { installGenericSummoner, genericTokenKit as genericSummonKit } from './genericSummons.js';
 import { normDir, localOrder } from '../dir.js';
 import { SKILL_SUMMON_START_DEPLOY } from '../../../shared/constants.js';
 
@@ -309,15 +316,21 @@ function dockSkillSummons(battle) {
 }
 
 /**
- * Deploy a docked piece on its tile when its owner holds one and it is ready; retried while it waits. Not while the
+ * Deploy a docked piece on its tile when its owner holds one and it is ready (and its player has the DP: it pays its
+ * deploy cost); retried while it waits. Not while the
  * owner is off the field [ASSUMED: as in the base game, a summon is deployed only while its owner stands] — the stock
  * stays, and the piece deploys as soon as the owner is back (its `deploy` hook, dockSkillSummons).
  */
 function deployDocked(battle, u) {
   const stock = u.ownerUnit?.mem.summonStock;
   if (!stock || !(stock[u.defId] > 0) || u.alive || u.removed || battle.finished || !u.ownerUnit.alive) return false;
+  // a consumable summon of the generic summoner (genericSummons.js) whose battle stock is used up never comes again
+  if (typeof u.mem.gsCanDeploy === 'function' && !u.mem.gsCanDeploy()) return false;
   const wait = u.mem.readyAt - battle.time;
-  if (wait > 1e-9 || !battle.redeploy(u, { free: true })) {
+  // a 外援 summon taking the field during the battle pays its deploy cost (only the battle-start deployment is free); a
+  // pool summon stays free (upstream reading, unchanged)
+  const pays = String(u.ownerUnit.defId || '').startsWith('chess_char_diy_');
+  if (wait > 1e-9 || !battle.redeploy(u, { free: !pays })) {
     if (!u.mem.dockRetry) {
       u.mem.dockRetry = true;
       battle.after(Math.max(wait, DOCK_RETRY), () => { u.mem.dockRetry = false; deployDocked(battle, u); }, { owner: u });
@@ -1274,7 +1287,8 @@ function mapCharTalents(def) {
 
 /** 预备干员-医疗: generic kit (治疗强化·β型 ATK +50 %) + its stat talent. */
 function reserveMedicKit(bb, raw, def) {
-  const k = def?.skill ? genericKit(bb, raw, def) : { skill: null, talents: [] };
+  // its talent is mapCharTalents' (the generic talents of genericKit are left out: the stat would apply twice)
+  const k = def?.skill ? genericKit(bb, raw, def, { talents: false }) : { skill: null, talents: [] };
   return { ...k, talents: [...(k.talents ?? []), ...mapCharTalents(def)] };
 }
 
@@ -1477,13 +1491,15 @@ export function install(battle) {
     if (u && u.kind === 'op' && u.side === 'ally') st.lastOp.set(u.ownerId, u);
   }, { priority: -100 });
 
-  // deploy limit per owner (data deployLimit): a new summon withdraws the oldest one of the same kind
+  // deploy limit per owner (data deployLimit): a new summon withdraws the oldest one of the same kind — the summons of
+  // this file's kits and the generic ones (genericSummons.js; not a kit an owner kit hands its summon, `ownerManaged`)
+  const limited = (t) => !!(t.kit?.fromTokens || (t.kit?.generic && !t.kit.ownerManaged));
   battle.on('deploy', (ctx) => {
     const u = ctx.unit;
-    if (!u || u.kind !== 'token' || !u.ownerUnit || u.mem.isClone || !u.kit?.fromTokens || SKILL_SUMMON_UNCAPPED.has(u.defId)) return;
+    if (!u || u.kind !== 'token' || !u.ownerUnit || u.mem.isClone || !limited(u) || SKILL_SUMMON_UNCAPPED.has(u.defId)) return;
     const lim = deployLimitOf(u);
     if (!(lim >= 1) || !Number.isFinite(lim)) return;
-    const same = battle.allyUnits.filter((t) => t.alive && t.kind === 'token' && t.defId === u.defId && t.ownerUnit === u.ownerUnit && !t.mem.isClone && t.kit?.fromTokens);
+    const same = battle.allyUnits.filter((t) => t.alive && t.kind === 'token' && t.defId === u.defId && t.ownerUnit === u.ownerUnit && !t.mem.isClone && limited(t));
     if (same.length <= lim) return;
     same.sort((a, b) => a.deploySeq - b.deploySeq);
     for (const t of same.slice(0, same.length - lim)) {
@@ -1535,6 +1551,15 @@ export function install(battle) {
         }, { owner });
       }
     }
+    // summons without a token kit here (外援): the generic summoner (genericSummons.js) for a generic-kit owner, or a
+    // hand-authored owner kit that asks for it (`genericSummons: true` — it keeps stock / returns / lifetimes and may
+    // still take single summon talents over with `managedTokenTalents`)
+    if (kitGeneric || owner.kit?.genericSummons === true) {
+      const free = toks.filter((t) => !SKILL_SUMMONS[t] && typeof RAW_KITS[t] !== 'function');
+      if (free.length) {
+        try { installGenericSummoner(battle, owner, free, GS_HELPERS); } catch (e) { battle._handlerError?.('genericSummoner', owner, e); }
+      }
+    }
     if (!kitGeneric) continue;
     if (toks.includes(TOKEN_IDS.duskDragon) && base === 'chess_char_5_12') {
       const life = num(owner.def?.talents?.find((t) => t.tokenKey === TOKEN_IDS.duskDragon)?.bb?.['attack@tokenduration'], 0);
@@ -1551,6 +1576,18 @@ export function install(battle) {
       }, { owner });
     }
   }
+}
+
+/** tokens.js helpers the generic summoner (genericSummons.js) uses. */
+const GS_HELPERS = Object.freeze({ tokenSources, releaseSkillSummon, summonToken, scheduleLifetime, bindToOwnerSkill, deployLimitOf, tileFree });
+
+/**
+ * Kit of a summon this file has no token kit for (content/index.js, full mode): genericSummons.genericTokenKit — the
+ * owner kit's `tokenKits[id]` (owner-managed), a trap kit, or the generic kit with its generic summon talents (minus
+ * the owner kit's `managedTokenTalents`).
+ */
+export function genericTokenKit(battle, unit, bb, raw, def) {
+  return genericSummonKit(battle, unit, bb ?? {}, raw ?? {}, def, genericKit);
 }
 
 export function registerMeta(registry) {} // no prep-side effects: token pieces are handled by the match

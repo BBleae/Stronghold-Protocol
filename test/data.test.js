@@ -710,12 +710,25 @@ test('chess/tokens: talent tokens resolve and every token variant says where it 
   assert.equal(svash.talents[0].containerTokenKey, 'token_10057_svash2_eagle');
   assert.equal(svash.skill.overrideTokenKey, 'token_10057_svash2_eagle2');
   const allowed = new Set(['talent', 'skill', 'display']);
+  const madeBy = (list) => Array.isArray(list) && (list.includes('talent') || list.includes('skill'));
   for (const t of Object.values(tokens)) {
     for (const [owner, v] of Object.entries(t.variants)) {
-      assert.ok(Array.isArray(v.sources) && v.sources.length && v.sources.every((s) => allowed.has(s)), `${t.tokenId}@${owner}: sources`);
+      // a summon only a non-default skill makes (W S2 地雷 …) has no default sources: one of its skills makes it
+      const altOnly = !v.sources?.length && Object.values(v.bySkill || {}).some((b) => madeBy(b.sources));
+      assert.ok(Array.isArray(v.sources) && (v.sources.length || altOnly) && v.sources.every((s) => allowed.has(s)), `${t.tokenId}@${owner}: sources`);
       assert.ok(allChess[owner]?.tokens.includes(t.tokenId), `${t.tokenId}: owner ${owner}`);
     }
   }
+  // every selectable skill's summon is a token of its chess (DESIGN_BC D1): W S2 地雷, 黑键 S2, 贝洛内 S3, 予愿安洁莉娜 S3
+  const cqbw = waiguanRecords(waiguan).chess_char_diy_6_char_113_cqbw_a;
+  assert.ok(cqbw.tokens.includes('token_10008_cqbw_box'), 'W lists its S2 mine');
+  assert.deepEqual(tokens.token_10008_cqbw_box.variants.chess_char_diy_6_char_113_cqbw_a.sources, []);
+  assert.deepEqual(tokens.token_10008_cqbw_box.variants.chess_char_diy_6_char_113_cqbw_a.bySkill[1].sources, ['skill']);
+  // 部署数量上限 = maxDeployCount + the summon's talent max_deploy_count (令: 1 + 2, SUM-Y 1 + 3); pool summons unchanged
+  assert.equal(tokens.token_10020_ling_soul1.variants.chess_char_diy_6_char_2023_ling_a.stats.deployLimit, 3);
+  assert.equal(tokens.token_10020_ling_soul1.variants.chess_char_diy_6_char_2023_ling_b.stats.deployLimit, 4);
+  assert.equal(tokens.token_10020_ling_soul1.variants.chess_char_diy_6_char_2023_ling_b.byModule.none.stats.deployLimit, 3);
+  assert.equal(tokens.token_10041_cathy_catsld.variants.chess_char_4_11_a.stats.deployLimit, 2, '凯瑟琳 2 devices');
   assert.deepEqual(tokens.token_10057_svash2_eagle1.variants.chess_char_5_14_a.sources, ['display']);
   // 夕's skill "cnt" is a charge count, not a token count.
   assert.equal(tokens.token_10015_dusk_drgn.variants.chess_char_5_12_a.count, null);

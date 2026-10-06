@@ -21,7 +21,8 @@ const REC = waiguanRecords(DATA.waiguan);
 const DS = new DataSource({ chess: REC }, getDefaultSource());
 /** The hand pieces a player gets with a loadout (GameData.placeableTokens: token + count — KIT_CONVENTIONS 16). */
 const GD = new GameData(DATA, 'mode_multi_normal', { chess: REC });
-const PIECE_TILES = [[10, 6], [10, 7], [9, 6], [11, 7], [9, 7], [12, 6], [10, 8], [12, 7], [9, 8]];
+// beside and behind her (her own tile row): pieces in front of her would hold every enemy outside her range
+const PIECE_TILES = [[10, 5], [9, 5], [11, 4], [12, 4], [12, 5], [10, 3], [9, 3], [11, 3], [12, 3]];
 const handPieces = (id, skillIndex) => GD.placeableTokens(id, { skillIndex }).flatMap(({ tokenId, count }) => Array.from({ length: count }, () => tokenId))
   .slice(0, PIECE_TILES.length).map((tokenId, i) => ({ uid: 10 + i, kind: 'token', tokenId, ownerUid: 1, row: PIECE_TILES[i][0], col: PIECE_TILES[i][1] }));
 const rec = (id) => REC[id];
@@ -42,7 +43,7 @@ const maxLive = (id, sid, moduleId = null) => {
 };
 const tokBb = (id, sid, key) => { const bb = tokenDef(id, sid).skill?.bb ?? {}; const k = Object.keys(bb).find((x) => x === key || x.endsWith(`.${key}`)); return k ? bb[k] : undefined; };
 const dummy = (key, o = {}) => enemyRec({ key, hp: 1e7, speed: 0, ...o });
-const DEFS = { chess: REC, enemies: { enemy_dummy: dummy('enemy_dummy'), enemy_fly: dummy('enemy_fly', { motion: 'FLY' }) } };
+const DEFS = { chess: REC, enemies: { enemy_dummy: dummy('enemy_dummy'), enemy_fly: dummy('enemy_fly', { motion: 'FLY' }), ling_smoke_tank: enemyRec({ key: 'ling_smoke_tank', hp: 12000, def: 150, speed: 0.6 }) } };
 const HOOKS = ['damaged', 'skillStart', 'skillEnd', 'statusApplied', 'death', 'deploy', 'kill'];
 const run = (o) => makeBattle({ defs: DEFS, seed: 7, timeLimit: 300, autoFinish: false, hooks: HOOKS, captureNoisy: true, ...o });
 /** 令 (uid 1) with skill `sid`, facing right. */
@@ -338,9 +339,10 @@ test('令: every skill × tier (with her hand pieces placed: GameData.placeableT
     for (const s of rec(id).skills) {
       const h = makeBattle({ defs: DEFS, seed: 3, timeLimit: 60,
         units: [L(id, s.skillId, 10, 4, { carryState: READY }), ...handPieces(id, s.index), { uid: 3, chessId: 'chess_char_2_06_a', row: 11, col: 5 }],
-        enemies: [{ key: 'enemy_1007_slime', count: 8, interval: 1.5 }, { key: 'enemy_1007_slime', route: 1, count: 8, interval: 1.5, time: 3 }] });
+        enemies: [{ key: 'enemy_1007_slime', count: 8, interval: 1.5 }, { key: 'enemy_1007_slime', route: 1, count: 8, interval: 1.5, time: 3 }, { key: 'ling_smoke_tank', count: 2, interval: 6, time: 2 }] });
       h.runToEnd(90);
       done(h);
+      // (the sturdy walker: three souls per kind must not clear the slimes before she attacks)
       assert.ok(h.unit(1).skill.activations > 0, `${id} ${s.skillId} casts`);
     }
   }

@@ -3,7 +3,7 @@
 // Kits not written yet are listed (not failed) until WAIGUAN_STRICT=1 — the last integration commit sets it to 1.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { makeBattle, checkInvariants } from '../../helpers/battleHarness.js';
+import { makeBattle, checkInvariants, enemyRec } from '../../helpers/battleHarness.js';
 import { DataSource, getDefaultSource } from '../../../server/sim/simdata.js';
 import { getData } from '../../../server/data.js';
 import { waiguanRecords } from '../../../shared/waiguan.js';
@@ -18,6 +18,8 @@ const STRICT = process.env.WAIGUAN_STRICT === '1';
 /** The match's game data with the 外援 records (as a match holds its players' picks): GameData.placeableTokens. */
 const GD = new GameData(DATA, 'mode_multi_normal', { chess: REC });
 const authored = new Set(WAIGUAN_KITS.map(([charId]) => charId));
+/** A sturdy walker in every smoke wave: a summoner's pieces (令's 3 souls) must not clear the slimes before she attacks. */
+const SMOKE_ENEMIES = { smoke_tank: enemyRec({ key: 'smoke_tank', hp: 12000, def: 150, speed: 0.6 }) };
 
 test('外援 kits: every registered operator covers every skill × module of both tiers; the rest are listed', () => {
   const missing = DATA.waiguan.candidates.filter((c) => !authored.has(c.charId)).map((c) => `${c.name}(${c.charId})`);
@@ -42,7 +44,8 @@ test('外援 kits: every registered operator covers every skill × module of bot
  * loadout's placeable summons and the hand count of each, KIT_CONVENTIONS 16), every piece on a free tile in front of
  * the operator — a skill bound to its summon (凯尔希 S2/S3 "该技能与Mon3tr绑定") charges only with it on the field.
  */
-const PIECE_TILES = [[10, 6], [10, 7], [9, 6], [11, 7], [9, 7], [12, 6], [10, 8], [12, 7], [9, 8]];
+// beside and behind the operator: pieces in front of her would hold every enemy outside her range (DEFAULT never fires)
+const PIECE_TILES = [[10, 5], [9, 5], [11, 4], [12, 4], [12, 5], [10, 3], [9, 3], [11, 3], [12, 3]];
 function summonPieces(id, skillIndex) {
   const out = [];
   for (const { tokenId, count } of GD.placeableTokens(id, { skillIndex })) {
@@ -59,9 +62,9 @@ test('外援 kits: every skill of every authored operator (T6 normal + elite) su
     const base = REC[c.chessIds[6]];
     for (const id of [base.chessId, base.goldenId]) {
       for (const s of REC[id].skills) {
-        const h = makeBattle({ defs: { chess: REC }, seed: 3, timeLimit: 60,
+        const h = makeBattle({ defs: { chess: REC, enemies: SMOKE_ENEMIES }, seed: 3, timeLimit: 60,
           units: [{ uid: 1, chessId: id, row: 10, col: 4, skillIndex: s.index, carryState: { sp: 999 } }, { uid: 2, chessId: 'chess_char_1_01_a', row: 9, col: 4 }, { uid: 3, chessId: 'chess_char_2_06_a', row: 11, col: 5 }, ...summonPieces(id, s.index)],
-          enemies: [{ key: 'enemy_1007_slime', count: 8, interval: 1.5 }, { key: 'enemy_1007_slime', route: 1, count: 8, interval: 1.5, time: 3 }] });
+          enemies: [{ key: 'enemy_1007_slime', count: 8, interval: 1.5 }, { key: 'enemy_1007_slime', route: 1, count: 8, interval: 1.5, time: 3 }, { key: 'smoke_tank', count: 2, interval: 6, time: 2 }] });
         h.runToEnd(90);
         checkInvariants(h.b);
         assert.equal(h.b.errors.length, 0, `${id} ${s.skillId}: ${JSON.stringify(h.b.errors[0])}`);

@@ -41,6 +41,7 @@
 import { normalizeSkill } from '../simdata.js';
 import { sortEnemyTargets } from '../targeting.js';
 import { PUSH_EFFECT_SKILLS } from '../constants.js';
+import { genericTalentSpecs } from './genericTalents.js';
 
 const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : (typeof v === 'string' && v !== '' && Number.isFinite(+v) ? +v : undefined));
 
@@ -102,13 +103,48 @@ function enemiesInRange(battle, unit, n) {
   return n > 0 && list.length > n ? list.slice(0, n) : list;
 }
 
+/** Summon subjects of a skill text (DESIGN_BC R6). */
+const SUMMON_RE = '(?:召唤物|无人机|装置|机动盾牌|Mon3tr|虚影|“?打字机”?|结构性原理|中继器|重构体|沙地兽)';
+/** Stat keys a summon link may carry (atk, def, attack_speed, max_hp). */
+const LINK_KEYS = Object.freeze([['atk', 'atkPct', 'atkFlat'], ['def', 'defPct', 'defFlat'], ['max_hp', 'hpPct', 'hpFlat'], ['attack_speed', 'aspd', 'aspd']]);
+
+/**
+ * Owner → summon stat links of a skill text (DESIGN_BC R6): "自身和召唤物攻击力+35%" / "麦哲伦和她的无人机攻击速度+80" (both get
+ * the skill's stats) or "Mon3tr的攻击力+35%" / "机动盾牌防御力+100%" (only the summon: its `attack@` / `…token[x].y` keys, which
+ * then are NOT the operator's). Returns { both, summonOnly, summonMods } — summonMods null when the text names none.
+ */
+export function summonLink(desc, bb) {
+  const both = new RegExp(`(?:自身|[^，。；：]{1,8}?)(?:和|与|及)(?:她的|他的|其)?${SUMMON_RE}(?:的)?(?:攻击力|防御力|攻击速度|生命上限|最大生命)`).test(desc);
+  const named = new RegExp(`${SUMMON_RE}(?:的)?(?:攻击力|防御力|攻击速度|生命上限|最大生命)`).test(desc);
+  const out = {};
+  const put = (k, v) => {
+    const row = LINK_KEYS.find(([x]) => x === k);
+    if (!row || !Number.isFinite(v) || v === 0) return;
+    const key = k === 'attack_speed' ? row[1] : Math.abs(v) > 5 ? row[2] : row[1];
+    out[key] = (out[key] ?? 0) + v;
+  };
+  let summonOnly = false;
+  if (named) {
+    for (const [k, v] of Object.entries(bb || {})) {
+      const n = num(v);
+      let m = k.match(/^attack@(atk|def|max_hp|attack_speed)$/);
+      if (!m) m = k.match(/token\[(atk|def|max_hp|attack_speed)\]\.\1$/) ?? k.match(/token\[[^\]]*\]\.(atk|def|max_hp|attack_speed)$/);
+      if (m && n !== undefined) { put(m[1], n); if (!both || k.includes('token[')) summonOnly = true; }
+    }
+  }
+  if (both) for (const [k] of LINK_KEYS) { const n = num(bb?.[k]); if (n !== undefined && !(('attack@' + k) in (bb || {}))) put(k, n); }
+  return { both, summonOnly, summonMods: Object.keys(out).length ? out : null };
+}
+
 /** Build a SkillSpec from a normalised skill def and its blackboard. `def` (optional) = normalised unit def. */
 export function genericSkillSpec(sk, bb = sk?.bb ?? {}, def = null) {
   if (!sk) return null;
-  const g = getter(bb);
+  const desc = String(sk.description || '');
+  // a summon's own stats named with `attack@` keys ("Mon3tr的攻击力+35%") are not the operator's (DESIGN_BC R6)
+  const link = def && def.type !== 'token' ? summonLink(desc, bb) : { both: false, summonOnly: false, summonMods: null };
+  const g = link.summonOnly ? ((k) => num(bb[k]) ?? num(bb['skill@' + k])) : getter(bb);
   const ga = attackGetter(bb);
   let kind = genericKind(sk, bb);
-  const desc = String(sk.description || '');
   // "受到攻击时…造成…" numbers belong to a counter effect (the operator's own, or an ally's: 刺玫 "该角色受到攻击时")
   const counterCtx = /受到(敌人的)?攻击时/.test(desc);
   const counterText = counterCtx && !/该(角色|干员|单位)受到攻击时/.test(desc);
@@ -284,6 +320,8 @@ export function genericSkillSpec(sk, bb = sk?.bb ?? {}, def = null) {
 
   if (passiveTimed) Object.assign(spec, { activateOnDeploy: true, spCost: 0, spType: 'none', trigger: 'NEVER' });
   if (Object.keys(mods).length) spec.mods = mods;
+  // the summons' share of the skill (content/tokens.js applies it to the owner's summons while the skill runs)
+  if (link.summonMods) spec.summonMods = link.summonMods;
   if (Object.keys(targeting).length) spec.targeting = targeting;
   // instant/charges skills act on the next attack: mods/targeting without an explicit attack still need one
   if (!Object.keys(attack).length && (kind === 'instant' || kind === 'charges') && (spec.mods || spec.targeting)) spec.attack = {};
@@ -378,13 +416,16 @@ function installGeneric(spec) {
 }
 
 /**
- * Generic kit: `(bb, chess, def?) => Kit`. `chess` is the data record; `def` the normalised def when available.
+ * Generic kit: `(bb, chess, def?) => Kit`. `chess` is the data record; `def` the normalised def when available. Its
+ * talents are the generic ones of the def (genericTalents.js: the loadout-resolved talents and module trait addition);
+ * `opts.talents === false` leaves them out (a caller with talents of its own).
  */
-export function genericKit(bb, chess, def = null) {
+export function genericKit(bb, chess, def = null, opts = {}) {
   const sk = def?.skill ?? normalizeSkill(chess);
-  if (!sk) return { skill: null, talents: [], generic: true };
+  const talents = def && opts.talents !== false ? genericTalentSpecs(def, { token: def.type === 'token' }) : [];
+  if (!sk) return { skill: null, talents, generic: true };
   const spec = genericSkillSpec(sk, bb && Object.keys(bb).length ? bb : sk.bb, def);
-  const kit = { skill: spec, talents: [], generic: true };
+  const kit = { skill: spec, talents, generic: true };
   const inst = installGeneric(spec);
   if (inst) kit.install = inst;
   return kit;

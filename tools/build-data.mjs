@@ -960,21 +960,21 @@ function chessRecord(ctx, { chessId, baseId, isGolden, tier, shop, cd, charId, i
     };
     const defUse = tokenUse(rec.skill);
     const sources = defUse.use;
-    const resolvable = [...sources.keys()].filter((id) => {
+    const altSkills = rec.skills.filter((s) => s.index !== sIdx);
+    // Every selectable skill's summon is one of the chess's tokens (W S2 地雷, 黑键 S2, 贝洛内 S3, 予愿安洁莉娜 S3 are
+    // made by a non-default skill only and listed nowhere else): its default `sources` are then [] and the skill's
+    // own entry (`bySkill`) names 'skill' — loadouts summon it (DESIGN §16, DESIGN_BC D1).
+    const altOnly = new Set();
+    for (const s of altSkills) for (const id of tokenUse(s).use.keys()) if (charTable[id] && !sources.has(id)) altOnly.add(id);
+    const resolvable = [...sources.keys(), ...altOnly].filter((id) => {
       if (charTable[id]) return true;
       // A container id already remapped onto the skill token (see above) is expected; others are anomalies.
       if (!rec.talents.some((t) => t.containerTokenKey === id)) warn(`chess ${chessId}: token ${id} not in character_table (skipped)`);
       return false;
     }).sort(naturalCmp);
     rec.tokens = resolvable;
-    const altSkills = rec.skills.filter((s) => s.index !== sIdx);
-    for (const s of altSkills) {
-      for (const id of tokenUse(s).use.keys()) {
-        if (charTable[id] && !resolvable.includes(id)) warn(`chess ${chessId}: token ${id} of skill ${s.skillId} is not listed by the character (loadouts cannot summon it)`);
-      }
-    }
     for (const tokenId of resolvable) {
-      const src = sources.get(tokenId);
+      const src = sources.get(tokenId) ?? new Set();
       // Per selectable non-default skill: the token skill slot, count and sources change with it.
       const skillAlts = altSkills.map((s) => {
         const u = tokenUse(s);
@@ -1346,9 +1346,19 @@ function tokenVariant(ctx, tokenId, char, { phase, level, skillIndex, skillLevel
     skill.trigger = resolveTrigger(ctx, char, tokenId, sIdx, skill);
     skill.index = sIdx;
   }
+  const talents = buildTalents(ctx, char, ph, lv, moduleTokenParts, label, ownerPhase, ownerLevel);
+  const stats = statsFrom(attrs, bonus);
+  // 部署数量上限 (PRTS 卫戍协议/帮助 "根据召唤物部署数量上限…发送等量召唤物至手牌区"): the phase's maxDeployCount + the
+  // summon's own talent `max_deploy_count` (the hidden "TOKEN数+N" part: 令 / 麦哲伦 souls and drones 1 + 2 = "最多同时部署3个",
+  // 白铁 1 + 1, 夜莺 幻影 1 + 2; a module may raise it — 令 SUM-Y 1 + 3). The largest one counts: a module restates the
+  // talent under another index (夜莺 OPS 幻影: both parts carry 2). No pool summon has such a talent. [ASSUMED] the PRTS
+  // rule names only "部署数量上限"; that the hidden part belongs to it follows the owners' texts ("最多同时部署3个"), the
+  // hand count (GameData.placeableTokens) is this limit — the deploy cap, not a consumable's per-battle stock.
+  const deployBonus = talents.reduce((n, t) => Math.max(n, typeof t.bb?.max_deploy_count === 'number' ? t.bb.max_deploy_count : 0), 0);
+  if (stats && deployBonus > 0) stats.deployLimit += deployBonus;
   return {
     phase: ph, level: lv,
-    stats: statsFrom(attrs, bonus),
+    stats,
     immunities: immunitiesOf(attrs),
     rangeGrid: rangeGrid(ctx, char.phases?.[ph]?.rangeId),
     trait: {
@@ -1357,7 +1367,7 @@ function tokenVariant(ctx, tokenId, char, { phase, level, skillIndex, skillLevel
     },
     ...classifyToken(char, tp.desc),
     skill,
-    talents: buildTalents(ctx, char, ph, lv, moduleTokenParts, label, ownerPhase, ownerLevel),
+    talents,
   };
 }
 
@@ -3608,7 +3618,11 @@ function validateAll(f, extra = {}) {
   }
   for (const t of Object.values(tokens)) {
     if (!t.stats) err(`token ${t.tokenId}: no stats`);
-    for (const [o, v] of Object.entries(t.variants || {})) if (!Array.isArray(v.sources) || !v.sources.length) err(`token ${t.tokenId}@${o}: no sources`);
+    // a summon of a non-default skill only (DESIGN_BC D1) has no default sources; one of its skills then makes it
+    const makes = (l) => Array.isArray(l) && (l.includes('talent') || l.includes('skill'));
+    for (const [o, v] of Object.entries(t.variants || {})) {
+      if (!Array.isArray(v.sources) || (!v.sources.length && !Object.values(v.bySkill || {}).some((b) => makes(b.sources)))) err(`token ${t.tokenId}@${o}: no sources`);
+    }
   }
   for (const e of Object.values(enemies)) {
     const s = e.stats;

@@ -160,6 +160,8 @@ export function normalizeChess(rec) {
   const golden = !!(rec.isGolden ?? rec.golden ?? /_b$/.test(String(id)));
   const baseId = rec.baseChessId ?? rec.baseId ?? String(id).replace(/_b$/, '_a');
   const skill = normalizeSkill(rec);
+  // `index` (data talent index; −1/−2 = module-only parts), `hidden` and `fromModule` are kept for the generic talents
+  // (content/genericTalents.js: a part without text is never applied on its own)
   const talents = (rec.talents ?? []).map((t) => ({
     name: t.name ?? '',
     description: t.description ?? t.desc ?? '',
@@ -167,6 +169,9 @@ export function normalizeChess(rec) {
     bbStr: t.bbStr ? { ...t.bbStr } : {},
     rangeGrid: toArrayOfPairs(t.rangeGrid),
     tokenKey: t.tokenKey ?? null,
+    index: Number.isInteger(t.index) ? t.index : null,
+    hidden: !!t.hidden,
+    fromModule: !!t.fromModule,
   }));
   return {
     type: 'chess',
@@ -325,7 +330,7 @@ export function normalizeToken(id, t0, ownerChessId = null, variantOverride = nu
     // chess/token records carry a talent array; enemy-shaped records (炎佑 enemy_9012_acloon) one `{ bb, bbStr }` object
     talents: (Array.isArray(t.talents) ? t.talents : t.talents && typeof t.talents === 'object' ? [t.talents] : [])
       .filter((x) => x && typeof x === 'object')
-      .map((x) => ({ name: x.name ?? '', description: x.desc ?? x.description ?? '', bb: x.bb ? { ...x.bb } : flattenBlackboard(x.blackboard), bbStr: x.bbStr ? { ...x.bbStr } : {}, rangeGrid: toArrayOfPairs(x.rangeGrid), tokenKey: x.tokenKey ?? null })),
+      .map((x) => ({ name: x.name ?? '', description: x.desc ?? x.description ?? '', bb: x.bb ? { ...x.bb } : flattenBlackboard(x.blackboard), bbStr: x.bbStr ? { ...x.bbStr } : {}, rangeGrid: toArrayOfPairs(x.rangeGrid), tokenKey: x.tokenKey ?? null, index: Number.isInteger(x.index) ? x.index : null, hidden: !!x.hidden, fromModule: !!x.fromModule })),
     tokens: [],
     count: num(t.count, 1),
     // how the owner (with its loadout) produces this token: ⊆ ['talent','skill','display'] (data variant / bySkill);
