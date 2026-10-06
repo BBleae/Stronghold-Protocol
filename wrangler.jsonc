@@ -46,20 +46,23 @@
     { "name": "API_LIMIT", "namespace_id": "1006", "simple": { "limit": 600, "period": 60 } },
     { "name": "REGISTER_LIMIT", "namespace_id": "1007", "simple": { "limit": 3, "period": 60 } },
     { "name": "LOGIN_LIMIT", "namespace_id": "1008", "simple": { "limit": 10, "period": 60 } },
-    { "name": "USERNAME_LIMIT", "namespace_id": "1009", "simple": { "limit": 5, "period": 60 } }
+    { "name": "USERNAME_LIMIT", "namespace_id": "1009", "simple": { "limit": 5, "period": 60 } },
+    { "name": "QUEUE_LIMIT", "namespace_id": "1010", "simple": { "limit": 600, "period": 60 } }
   ],
   "durable_objects": {
     "bindings": [
       { "name": "ROOMS", "class_name": "RoomDurableObject" },
       { "name": "SITES", "class_name": "SiteDirectory" },
       { "name": "ACCOUNTS", "class_name": "AccountDurableObject" },
-      { "name": "MATCH_ARCHIVES", "class_name": "MatchArchive" }
+      { "name": "MATCH_ARCHIVES", "class_name": "MatchArchive" },
+      { "name": "MATCHMAKER", "class_name": "Matchmaker" }
     ]
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["RoomDurableObject", "AdmissionDurableObject"] },
     { "tag": "v2-accounts", "new_sqlite_classes": ["SiteDirectory", "AccountDurableObject", "MatchArchive"] },
     // The per-network limiter object, replaced by the ratelimits bindings (its storage held only short-lived counters).
-    { "tag": "v3-ratelimits", "deleted_classes": ["AdmissionDurableObject"] }
+    { "tag": "v3-ratelimits", "deleted_classes": ["AdmissionDurableObject"] },
+    { "tag": "v4-matchmaker", "new_sqlite_classes": ["Matchmaker"] }
   ]
 }

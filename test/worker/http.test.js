@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import worker from '../../worker/index.js';
 
 // Request limits that never refuse (wrangler.jsonc "ratelimits").
-const unlimited = Object.fromEntries(['RESERVE_LIMIT', 'CONNECT_LIMIT', 'STATUS_LIMIT', 'AUTH_LIMIT', 'APPLICATION_LIMIT', 'API_LIMIT']
+const unlimited = Object.fromEntries(['RESERVE_LIMIT', 'CONNECT_LIMIT', 'STATUS_LIMIT', 'AUTH_LIMIT', 'APPLICATION_LIMIT', 'API_LIMIT', 'QUEUE_LIMIT']
   .map((name) => [name, { limit: async () => ({ success: true }) }]));
 
 test('private routes never reach a Durable Object and protocol failures have stable HTTP statuses', async () => {
@@ -133,4 +133,17 @@ test('a request ends with its own status: client errors keep their code, failure
     { level: 'error', event: 'request_failed', method: 'GET', path: '/api/me/active-match', name: 'TypeError', message: 'boom' },
   ]);
   assert.ok(!JSON.stringify(lines).includes(token), 'no session token in the logs');
+});
+
+test('the 匹配 queue\'s polls count against their own limit, not the one every other /api request shares', async () => {
+  const counted = [];
+  const env = {
+    ...unlimited,
+    API_LIMIT: { async limit() { throw new Error('the queue never counts against API_LIMIT'); } },
+    QUEUE_LIMIT: { async limit({ key }) { counted.push(key); return { success: false }; } },
+  };
+  const response = await worker.fetch(new Request('https://game.example/api/queue', {
+    method: 'POST', headers: { 'CF-Connecting-IP': '8.8.8.8' }, body: '{"action":"poll"}' }), env);
+  assert.equal(response.status, 429);
+  assert.deepEqual(counted, ['net:8.8.8.8']);
 });

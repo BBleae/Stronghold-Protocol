@@ -231,9 +231,15 @@ function wireNet() {
   net.on('unhandledError', (err) => toastError(err));
   net.on('room.state', onRoomState);
   // 匹配 (matchmaking queue): the queue the player waits in, and the room the server put it in
-  net.on('queue.status', (msg) => store.set({ queue: { ...payload(msg), matched: null } }));
+  net.on('queue.status', (msg) => {
+    store.set({ queue: { ...payload(msg), matched: null } });
+    // the account Worker's queue could not open its group's room (room-net.js; the Node server sends an error frame)
+    if (msg.error) toastError(msg.error);
+  });
   net.on('queue.matched', (msg) => {
-    store.patch('queue', { matched: { code: msg.code, difficulty: msg.difficulty, seated: !!msg.seated } });
+    // `expect`: the humans a matched host waits for before AI teammates take the free seats (account mode only)
+    store.patch('queue', { matched: { code: msg.code, difficulty: msg.difficulty, seated: !!msg.seated,
+      expect: Number.isInteger(msg.expect) ? msg.expect : 0 } });
   });
   net.on('room.closed', (msg) => {
     // A match that ended with a result to show (spectators get it after room.closed: worker/rooms/spectators.js) stays on

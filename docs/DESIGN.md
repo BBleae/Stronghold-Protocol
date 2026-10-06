@@ -2345,23 +2345,42 @@ module-less elite shape the pool uses.
 of collecting a 4-letter 同盟密钥 by hand, and the server groups the waiting sessions into a fresh 同盟 room. **This is a
 remake feature — the official mode has no such queue.**
 
+### 28.1 The Node server's queue — `server/lobby.js`, `shared/protocol.js`, `public/js/screens/lobby.js` / `room.js`
+
 | Piece | Where | Rule |
 |---|---|---|
 | `queue.join { difficulty }` | `shared/protocol.js`, `server/lobby.js queueJoin` | Enters (or re-enters) the queue with the difficulty the lobby has selected. Refused while a match runs (`ROOM_STARTED`: leave it first). Joining twice keeps ONE entry |
 | `queue.leave` | `queueLeave` | Leaves the queue and is **always answered** with a `queue.status` — a cancel must not leave the client waiting for a frame. Never an error when the session was not queued (the client sends it on unload too) |
 | `queue.status` | per session | `{ waiting, difficulty, count, total, waitedMs, minSeats, seats }`. `count` = sessions waiting for the **same** difficulty (what a group is built from), `total` = everybody waiting. Sent on join / leave and to every waiting session whenever the queue changes |
 | `queue.matched` | per member | `{ code, difficulty, seated }` once a group is formed. The client then joins that code like any 同盟密钥 (`main.js` reuses the deep-link join path) and `screens/room.js` takes over (below) |
-| Grouping | `queueTick` (every `queueTickMs`) | Walks the queue in arrival order: the oldest entry heads a group, later entries of the **same difficulty** fill it up to `MAX_SEATS`. A group starts when it is full, or — with at least `queueMinSeats` humans — once the grace has passed, or when the head waited `queueTimeoutMs` |
+| Grouping | `queueTick` (every `queueTickMs`, only while somebody waits: an idle lobby keeps no timer) | Walks the queue in arrival order: the oldest entry heads a group, later entries of the **same difficulty** fill it up to `DEFAULT_SEATS` (4: a matched room is the official 4-seat 同盟 room; rooms of 5–8 seats (§24) are made by hand). A group starts when it is full, or — with at least `queueMinSeats` humans — once the grace has passed, or when the head waited `queueTimeoutMs` |
 | Grace | `queueGraceMs` | Measured from the **last arrival** in the queue, not from the head's own arrival: a second player whose `queue.join` is still in flight must not be split off into a group of its own (a real race the tests caught) |
 | Timeout | `queueTimeoutMs` | A lone player always gets a room: the seats the queue cannot fill are left to be filled with AI teammates, so nobody waits forever |
 | Liveness | `queueSilentMs` | A waiting session that disconnected or went silent is dropped by the tick, and `onDisconnect` drops it at once: the queue must never seat an unreachable player |
 | Leaving the queue | `removeMember` | Entering a room (join / create / placePlayer) takes the session out of the queue automatically |
 | Readiness | `startQueuedMatch` | Every matched human is `ready` before the room state is announced (it asked to be matched), so the room opens ready |
-| Auto-start | `screens/room.js` | In a room whose `queue.matched` the client saw, the HOST fills the free seats with AI teammates (`room.addBot`, up to `MAX_SEATS`) and then starts (`room.start`) once every other human is ready and connected. Runs once per room code, never for a hand-made room |
+| Auto-start | `screens/room.js` | In a room whose `queue.matched` the client saw, the HOST fills the free seats with AI teammates (`room.addBot`, up to the room's capacity) and then starts (`room.start`) once every other human is ready and connected. Runs once per room code, never for a hand-made room |
 | Observability | `GET /healthz` | `queued` = sessions waiting right now |
 | Tests | `test/matchmaking.test.js` (each test boots its own server: the queue and the room registry are per server), `test/ui/matchmaking.e2e.test.js` (browser: queue panel → auto-join → AI fill → the match starts; and 取消匹配) |
 
 **Deliberate choices.** Only same-difficulty players are grouped (mixing 标准 with 终极 would decide a match's difficulty by
-arrival order). A group never exceeds `MAX_SEATS`; a player that could not be seated keeps waiting instead of being
+arrival order). A group never exceeds `DEFAULT_SEATS`; a player that could not be seated keeps waiting instead of being
 dropped. The queue lives in memory like every room — a server restart empties it. The room is a normal 同盟 room: it has
 a code, it can be shared, and its AI teammates can still be removed by hand.
+
+### 28.2 匹配 in the room Worker (account mode) — `worker/matchmaker.js`, `worker/rooms/queue-routes.js`, `public/js/room-net.js`
+
+The Worker has no lobby every session is connected to: each room is its own Durable Object, and the menu of an account
+page has no socket (room-net.js). Its queue is one more Durable Object, `MATCHMAKER` (instance `'queue'`, binding and
+migration `v4-matchmaker` in `wrangler.jsonc`), reached over the account API; the room's own `Lobby` has no queue
+(`queueTickMs: 0`: a `queue.join` on a room socket is refused, and no queue clock keeps a room awake).
+
+| Piece | Rule |
+|---|---|
+| `POST /api/queue { action, difficulty?, code? }` | Signed in, from the game's own page (Origin), counted per network against its own `QUEUE_LIMIT` (a waiting page polls 40 times a minute: the queue does not use up `API_LIMIT`). `join` (the 匹配 click) is refused from a seat in a live room (`ALREADY_SEATED`, as applying elsewhere is) and starts over: a group the account was in before is left first. Answers the account's status: §28.1's `queue.status` fields, plus `matched` once a group was formed |
+| Polling | The menu page polls (`poll`, carrying the difficulty) every `QUEUE_POLL_MS` (1.5 s) while it waits; a page silent for `silentMs` (6 s) is dropped — from the queue, and from a group still waiting for its room (`expect` counts the live members only) — which is how the Worker learns of a closed page. The queue is memory only: an evicted instance starts empty and the next poll re-enters the player, except within `leftMs` (5 s) of a `leave` (a poll that crossed it). Entering a room any other way (an application, 继续对局) leaves the queue |
+| Grouping | `MatchQueue.tick`, run on every call (no timer): §28.1's rules — same difficulty, ≤ `DEFAULT_SEATS`, ≥ 2 after the grace, a lone player after the timeout. The grace runs from the last arrival **of the group** (the Node queue takes the whole queue's): players of another difficulty never hold a group back |
+| The room | The group's first account is its **host**: `matched { role: 'host', code: null, expect, members }`. Its page creates a co-op room the normal way (`POST /api/rooms`, `room.create`) and reports it (`hosted { code }`, refused unless the host sits in that room); a host that does not report within `hostMs` (20 s), or whose page went away before it was told, is dropped and the others go back to the front of the queue, keeping their waiting time. A host that cancels (its page leaves the room it opened) or queues again ends the group the same way. Members get `matched { role: 'member', code }` and join it like an invite (`main.js` pendingJoin → `room.join` → a join application); a room that could not be opened or reported is a toast |
+| Admission | The host's page approves the join applications of **its group's accounts only** (`QUEUE_APPROVE_MS`, 60 s); a stranger's application waits for the host as always. Nothing in the queue seats, approves or creates anything: every room write is one of the players' own requests, with its usual checks |
+| Readiness and start | A matched member says `room.ready` itself once inside (the Node server marks it; a failed try is repeated once the room is online again). The host's `screens/room.js` sequence first waits (≤ 30 s) until the `expect`ed humans are in — their seats must not go to AI teammates first — then fills the free seats and starts once the others are ready |
+| Tests | `test/worker/matchmaker.test.js` (MatchQueue rules, the Durable Object's answers), `test/worker/matchmaking.test.js` (workerd: queue → host opens and reports → the member is approved in), `test/worker-client.test.js` (the page: polling, leaving, host / member hand-over, approvals of the group only, a cancel while the host opens its room, entering another way, errors) |

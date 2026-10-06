@@ -10,6 +10,7 @@ import { handleGithub } from './accounts/github.js';
 import { handleAccountRoutes, seatOf } from './accounts/routes.js';
 import { handleAccountAdmin } from './accounts/admin.js';
 import { handleLobbyRoutes, roomApplications } from './rooms/routes.js';
+import { handleQueueRoutes } from './rooms/queue-routes.js';
 import { handleHistoryRoutes } from './archive/routes.js';
 import { publishArchive,prepareArchive } from './archive/outbox.js';
 import { handleBackupRoutes } from './storage/backup.js';
@@ -46,6 +47,8 @@ function apiLimit(env, method, path) {
   if (path === '/api/rooms') return method === 'POST' ? env.RESERVE_LIMIT : env.STATUS_LIMIT;
   if (/^\/api\/rooms\/[A-Za-z]{4}$/.test(path)) return env.STATUS_LIMIT;
   if (/^\/api\/rooms\/[A-Za-z]{4}\/applications$/.test(path)) return method === 'GET' ? env.STATUS_LIMIT : env.APPLICATION_LIMIT;
+  // 匹配: a waiting page polls every 1.5 s, so the queue has its own budget (several pages of one network wait at once)
+  if (path === '/api/queue') return env.QUEUE_LIMIT;
   // Everything else: the account's pages (/api/me…), history and replays (/api/matches…), visibility, registration,
   // login and logout (a credential attempt also counts against its own limits: worker/accounts/auth.js), the OAuth
   // callback.
@@ -72,6 +75,9 @@ async function route(request, env) {
   if (accountResponse) return accountResponse;
   const lobbyResponse = await handleLobbyRoutes(request, env);
   if (lobbyResponse) return lobbyResponse;
+  // 匹配 (DESIGN §28.2): the queue's Durable Object, polled by the lobby page
+  const queueResponse = await handleQueueRoutes(request, env);
+  if (queueResponse) return queueResponse;
   const historyResponse=await handleHistoryRoutes(request,env);
   if(historyResponse) return historyResponse;
   if (path === '/healthz') return request.method === 'GET'

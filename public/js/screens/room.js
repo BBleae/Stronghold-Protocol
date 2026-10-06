@@ -234,6 +234,7 @@ export function RoomScreen() {
   const alive = useRef(true);
   const inFlight = useRef(false); // synchronous guard against double clicks (state updates are async)
   const queuedRun = useRef(null); // 匹配: the auto-fill / auto-start sequence already started for this room
+  const readiedRun = useRef(null); // 匹配: the room this matched member already said ready in
   useEffect(() => () => { alive.current = false; }, []);
   useWakeLock();   // waiting for the others with the phone in hand: no lock screen while the room is open
 
@@ -294,6 +295,18 @@ export function RoomScreen() {
       queuedRun.current = code;
       // a short beat so the matched players' own room.join frames land before the seats are counted
       await sleep(400);
+      // account mode (room-net.js, DESIGN §28.2): the matched members come in through join applications this page
+      // approves, after the room opened — wait for them (≤ 30 s) before their seats could go to AI teammates. The Node
+      // server seats a group at once (`expect` absent).
+      const expect = queue.matched.expect || 0;
+      for (let i = 0; i < 120 && !cancelled; i++) {
+        const cur = store.get().room;
+        if (!cur || cur.code !== code || cur.inMatch) return;
+        const f = roomFacts(cur, me.playerId);
+        if (!f.isHost) return;
+        if (f.humans.length >= expect) break;
+        await sleep(250);
+      }
       for (let i = 0; i < 6 && !cancelled; i++) {
         const cur = store.get().room;
         if (!cur || cur.code !== code || cur.inMatch) return;
@@ -305,7 +318,7 @@ export function RoomScreen() {
         await sleep(120);
       }
       // wait until every other HUMAN is ready (a matched player is ready on arrival) and connected, then start
-      for (let i = 0; i < 40 && !cancelled; i++) {
+      for (let i = 0; i < 80 && !cancelled; i++) {
         const cur = store.get().room;
         if (!cur || cur.code !== code || cur.inMatch) return;
         const f = roomFacts(cur, me.playerId);
@@ -323,6 +336,19 @@ export function RoomScreen() {
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- re-running on every room.state would restart the sequence
   }, [queue.matched, room && room.code, me.playerId]);
+
+  // 匹配: a matched member is ready on arrival. The Node server marks it so; in a room Worker the member came in through
+  // a join application (DESIGN §28.2) and says so itself, once per room.
+  useEffect(() => {
+    const code = queue.matched && queue.matched.seated ? queue.matched.code : null;
+    if (!online || !code || !room || room.code !== code || room.inMatch || facts.isHost || !facts.mine || facts.mine.ready) return;
+    if (readiedRun.current === code) return;
+    readiedRun.current = code;
+    net.request('room.ready', { ready: true }).catch((err) => {
+      console.warn('[room] matched ready failed', err);
+      if (readiedRun.current === code) readiedRun.current = null; // said again once the room is back online
+    });
+  }, [queue.matched, room && room.code, facts.isHost, facts.mine && facts.mine.ready, online]);
   // spectator seats: the host frees one; a spectator takes a free player seat with room.join of this room
   const removeSpectator = (playerId) => run(`rs${playerId}`, () => net.request('room.removeSpectator', { playerId }));
   const sit = () => run('sit', () => net.request('room.join', { code: room.code }));
