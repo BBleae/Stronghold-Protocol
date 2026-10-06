@@ -1408,13 +1408,14 @@ export async function createFieldView(host, options = {}) {
   }
 
   // ---- touch: pinch zoom / two-finger pan (user report: on a phone the pieces were too small to tap) -------------
-  // One finger keeps every existing gesture (tap, long press, drag). A second finger on the field starts a pinch: an
-  // ongoing piece drag is cancelled (the piece goes home), and no finger counts again until all have lifted. Zoom
+  // One finger keeps every existing gesture (tap, long press, drag). A second finger on the field starts a pinch of that
+  // pair of fingers: an ongoing piece drag is cancelled (the piece goes home); a third finger is ignored, the pinch ends
+  // when one of its two lifts, and no finger counts again — no new pinch either — until all have lifted. Zoom
   // USER_ZOOM_MAX× at most, never below the camera's own framing; the pan may pull the board up to USER_PAN_SLACK of
   // the viewport past its framing (out from under the HUD). In battle a touch picks a unit on release (a tap), so the
   // first finger of a pinch selects nothing.
   const touches = new Map();  // pointerId → canvas point, fingers on the field
-  let pinch = null;           // { d0, mx0, my0, z0, ox0, oy0 } while two fingers are down
+  let pinch = null;           // { a, b (its two pointerIds), d0, mx0, my0, z0, ox0, oy0 } while both are down
   let gestured = false;       // a pinch happened: ignore the fingers until all have lifted
   let battleTap = null;       // { pointerId, x, y, e } a battle touch waiting for its release
 
@@ -1426,25 +1427,25 @@ export async function createFieldView(host, options = {}) {
     return c.update();
   }
 
-  function fingers() {
-    const it = touches.values();
-    const a = it.next().value, b = it.next().value;
-    return { d: Math.max(1, Math.hypot(b.x - a.x, b.y - a.y)), mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2 };
+  /** Distance and midpoint of the pinch's two fingers (pointerIds `a`, `b`). */
+  function fingers(a, b) {
+    const p = touches.get(a), q = touches.get(b);
+    return { d: Math.max(1, Math.hypot(q.x - p.x, q.y - p.y)), mx: (p.x + q.x) / 2, my: (p.y + q.y) / 2 };
   }
 
-  function startPinch() {
+  function startPinch(a, b) {
     drag.pointerCancel(null);  // a piece being pressed / dragged goes home (pieceDragEnd → endDragVisual)
     battleTap = null;
     if (camTo) stepCamera(camT0 + camMs + 1); // a camera still flying lands first
     if (!userBase) { userBase = cam; userZ = 1; userOx = userOy = 0; }
-    const f = fingers();
-    pinch = { d0: f.d, mx0: f.mx, my0: f.my, z0: userZ, ox0: userOx, oy0: userOy };
+    const f = fingers(a, b);
+    pinch = { a, b, d0: f.d, mx0: f.mx, my0: f.my, z0: userZ, ox0: userOx, oy0: userOy };
     gestured = true;
   }
 
   function movePinch() {
-    if (!pinch || !userBase || camTo) return;
-    const f = fingers();
+    if (!pinch || !userBase || camTo || !touches.has(pinch.a) || !touches.has(pinch.b)) return;
+    const f = fingers(pinch.a, pinch.b);
     const W = vp.width, H = vp.height;
     const z = Math.max(1, Math.min(USER_ZOOM_MAX, pinch.z0 * f.d / pinch.d0));
     // the base-camera point under the fingers' first midpoint stays under their midpoint
@@ -1476,8 +1477,12 @@ export async function createFieldView(host, options = {}) {
     const ev = evPayload(e);
     if (e.pointerType === 'touch') {
       touches.set(e.pointerId, { x: ev.x, y: ev.y });
-      if (touches.size >= 2) { if (!pinch) startPinch(); return; }
-      if (gestured) return;
+      if (gestured) return;          // a pinch ran: no finger counts (no new pinch) until all have lifted
+      if (touches.size >= 2) {
+        const [a, b] = touches.keys(); // the finger already down and this one
+        startPinch(a, b);
+        return;
+      }
     }
     if (mode === 'battle') {
       if (e.pointerType === 'touch') { battleTap = { pointerId: e.pointerId, x: ev.x, y: ev.y, e: { button: e.button, clientX: e.clientX, clientY: e.clientY } }; return; }
@@ -1499,8 +1504,7 @@ export async function createFieldView(host, options = {}) {
     const ev = evPayload(e);
     if (e.pointerType === 'touch' && touches.has(e.pointerId)) {
       touches.set(e.pointerId, { x: ev.x, y: ev.y });
-      if (pinch) { if (touches.size >= 2) movePinch(); return; }
-      if (gestured) return;
+      if (gestured) { if (pinch && (e.pointerId === pinch.a || e.pointerId === pinch.b)) movePinch(); return; }
       if (battleTap && battleTap.pointerId === e.pointerId && Math.hypot(ev.x - battleTap.x, ev.y - battleTap.y) > TAP_SLOP_PX) battleTap = null;
     }
     if (mode === 'battle') {
@@ -1519,7 +1523,7 @@ export async function createFieldView(host, options = {}) {
   function liftTouch(e) {
     if (e.pointerType !== 'touch' || !touches.has(e.pointerId)) return false;
     touches.delete(e.pointerId);
-    if (touches.size < 2) pinch = null;
+    if (pinch && (e.pointerId === pinch.a || e.pointerId === pinch.b)) pinch = null;
     const was = gestured;
     if (!touches.size) gestured = false;
     return was;
@@ -1529,7 +1533,12 @@ export async function createFieldView(host, options = {}) {
       if (mode === 'battle') {
         const t = battleTap;
         battleTap = null;
-        if (t && t.pointerId === e.pointerId) { touchPress = true; try { battlePress({ x: t.x, y: t.y }, t.e); } finally { touchPress = false; } }
+        // a tap: released within TAP_SLOP_PX of where it went down (the last move may not have come as a pointermove)
+        const up = evPayload(e);
+        if (t && t.pointerId === e.pointerId && Math.hypot(up.x - t.x, up.y - t.y) <= TAP_SLOP_PX) {
+          touchPress = true;
+          try { battlePress({ x: t.x, y: t.y }, t.e); } finally { touchPress = false; }
+        }
       } else drag.pointerUp(evPayload(e));
     }
     try { canvas.releasePointerCapture(e.pointerId); } catch { /* ignore */ }

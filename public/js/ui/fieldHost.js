@@ -14,10 +14,10 @@ import { data } from '../data.js';
 import { audio } from '../audio.js';
 import { settingsStore } from './settings.js';
 
-// The engine gets this long to mount (script downloads + its own startup, which waits ≤ 4 s for optional parts —
-// render/app.js STARTUP_WAIT_MS): the DOM fallback is far smaller and flatter, so a slow phone link must not land
-// there for a whole match (it did at 12 s on 4G — user report 2026-10-06). An engine that turns up after the timeout
-// is destroyed (the fallback owns the host by then).
+// The engine gets this long to mount, all stages together (script downloads + its own startup, which waits ≤ 4 s for
+// optional parts — render/app.js STARTUP_WAIT_MS): the DOM fallback is far smaller and flatter, so a slow phone link
+// must not land there for a whole match (it did at 12 s on 4G — user report 2026-10-06). An engine that turns up after
+// the timeout is destroyed (the fallback owns the host by then).
 const LOAD_TIMEOUT_MS = 30000;
 const METHODS = ['setStage', 'setCamera', 'setPrep', 'enterBattle', 'pushSnapshot', 'pushEvents', 'highlightTiles', 'on', 'resize', 'destroy'];
 // direction-step hooks (ui/facingWheel.js): optional — the wheel falls back to the engine's dev hooks when absent;
@@ -205,17 +205,20 @@ export async function mountFieldView(host) {
   const pref = renderPref();
   const opts = { data, assets: data.get('assets'), audio, settings: settingsStore.get(), padding: hudPadding, hud: hudBands };
   if (pref !== 'fallback') {
+    // one deadline for the whole mount (the imports and the view's startup): LOAD_TIMEOUT_MS each would add up to 90 s
+    const deadline = Date.now() + LOAD_TIMEOUT_MS;
+    const left = () => Math.max(0, deadline - Date.now());
     try {
       // the shared asset store (public/js/assets.js) keeps its Spine cache across remounts (next match, reconnect)
-      const am = await withTimeout(import('../assets.js'), LOAD_TIMEOUT_MS, 'asset store import').catch(() => null);
+      const am = await withTimeout(import('../assets.js'), left(), 'asset store import').catch(() => null);
       if (am?.assets && typeof am.assets.ready === 'function') {
         opts.assets = am.assets;
         seedAssets(am.assets);
       }
-      const mod = await withTimeout(import('../render/app.js'), LOAD_TIMEOUT_MS, 'render engine import');
+      const mod = await withTimeout(import('../render/app.js'), left(), 'render engine import');
       if (typeof mod?.createFieldView !== 'function') throw new Error('createFieldView missing');
       const mounting = Promise.resolve(mod.createFieldView(host, opts));
-      const view = await withTimeout(mounting, LOAD_TIMEOUT_MS, 'createFieldView').catch((err) => {
+      const view = await withTimeout(mounting, left(), 'createFieldView').catch((err) => {
         mounting.then((late) => { try { late?.destroy?.(); } catch { /* ignore */ } }, () => {});
         throw err;
       });

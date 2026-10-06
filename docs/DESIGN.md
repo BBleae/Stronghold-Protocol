@@ -2211,10 +2211,11 @@ A player tested on phones: Safari on iPhone, and Chrome and Firefox on Android. 
 **Pinch zoom and pan.**
 - A second finger on the field starts a pinch: an image transform of the camera (focal length × z, the principal point moved), the same as `clearHud`. Picking, the three.js board and every layer stay consistent.
 - Zoom range 1× to `USER_ZOOM_MAX` 3×. The point under the fingers stays under them. The pan reaches `USER_PAN_SLACK` 30 % of the viewport past the framing.
-- A piece being pressed or dragged goes home, and no finger counts again until all have lifted.
+- The pinch is that pair of fingers: a third finger is ignored, and the pinch ends when one of the two lifts.
+- A piece being pressed or dragged goes home, and no finger counts again (no new pinch either) until all have lifted.
 - Any camera request or resize resets the view.
 
-**Taps in battle.** A touch picks a unit on release, within `TAP_SLOP_PX` 12, so the first finger of a pinch opens nothing. The mouse still picks on press.
+**Taps in battle.** A touch picks a unit on release, when the release is within `TAP_SLOP_PX` 12 of the press, so the first finger of a pinch and a swipe open nothing. The mouse still picks on press.
 
 **A finger on an empty tile** picks the unit whose drawn body it is on (`pickBody`).
 - The body is an upright box `BODY_HALF_W` 0.4 tile either side of the feet, from the feet to the head; the front-most unit wins.
@@ -2229,7 +2230,7 @@ A player tested on phones: Safari on iPhone, and Chrome and Firefox on Android. 
 
 - **What went wrong.** The flat DOM fallback board (24 px tiles in the middle of the screen) is what the report also described. `createFieldView` waited for its optional parts one after another: the asset and local-art manifests 4 s, fonts 1.5 s, the board art 2.5 s and the 3D board 6 s. That is 14 s, more than `ui/fieldHost.js`'s 12 s engine timeout, which then mounted the fallback for the whole match.
 - **Now.** Those waits share one 4 s budget (`STARTUP_WAIT_MS`). Each part still upgrades the view in place when it lands.
-- **Timeout.** The engine timeout is 30 s. An engine that resolves after it is destroyed, because the fallback owns the host by then.
+- **Timeout.** The engine gets 30 s for the whole mount — one deadline shared by the imports and the view's startup. An engine that resolves after it is destroyed, because the fallback owns the host by then.
 - **Warm-up.** Entering a room warms the render engine's modules and Pixi / pixi-spine together with the game data.
 
 ### 26.3 Covered controls and wrong taps — `css/devices.css`, `css/screens/game-shop.css`, `screens/game.js`
