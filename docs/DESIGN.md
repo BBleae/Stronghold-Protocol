@@ -2193,3 +2193,113 @@ Reports after the 0.1.3 release. Each was checked against the official data and 
 - **A PASSIVE skill reaches none of this through `activate()`**: `Skill.activate()` returns early for `kind === 'passive'` (`sim/skills.js`); a passive goes through `_startPassive()` (active + mods + `onStart`). Three of the 57 instant clips are passives in the data — 琳琅诗怀雅 S1 仗义疏财 / S2 “见面礼” and 凯瑟琳 S1; 凯瑟琳 S1 turned out to be `kind: instant` in the sim (so it already casts), and the two 琳琅诗怀雅 ones now fire the same window from `_startPassive` — on at the deployment, off after `SKILL_ANIM_WINDOW` (0.5 s) while the passive itself stays active. So all 57 are live.
 - **Deploy-time passives with a duration are left alone** (缄默德克萨斯 S1–S3 8–12 s, 野鬃 S1, 伊内丝 S3, 耀骑士临光 S2): the sim keeps a passive active until death, so how long its stance should show is a separate question. A clip that IS the normal attack clip (`anims.skill.loop === anims.attack.loop`: 缄默德克萨斯 S1, 砾, 普罗旺斯, 斯卡蒂 S2) is never played as a skill animation — the new branch requires a distinct clip, so a deploy-time passive on those shows no attack twitch.
 - **Tests**: `test/render/feedback4-texas-skill-clip.test.js` (德克萨斯 S2: the clip plays, holds through the same-tick off, then the idle, with no base flash in between — asserted on the fork's `skillCast` mode; two more real instant entries — `char_140_whitew` S1 日晷, `char_206_gnosis` S2 零度爆发; 银灰 S3 真银斩 — the same shape but long — rests without freezing on the clip's last frame and still attacks with the loop; the deploy-time passives 琳琅诗怀雅 S1/S2 hold their 1 s clip through the sim's 0.5 s window and then idle; a clip that is the attack clip falls through to the base clip; unchanged: 折桠 S2 begin → idle, 耀骑士临光 S3 own idle, 宴 begin → loop, each the next clip update() plays after the begin). `test/sim/skills.test.js` covers the sim side (the passive window opens at the deployment and closes 0.5 s later, the passive staying active; a timed passive fires nothing). `test/render/feedback3-skill-idle.test.js`, `feedback3-move-deploy.test.js`, `loadout-skill.test.js` and the full suite stay green.
+
+## 26. Phones (player report and phone audit, 2026-10-06)
+
+A player tested on phones: Safari on iPhone, and Chrome and Firefox on Android. The report: "根本点不到干员。整个棋盘位于中间位置，缩放过小". An audit then ran the game in Chrome device emulation at 640×360 … 915×412, portrait, and an iPad. It covered screens, touch, platform quirks and performance. The items below are the ones that make the board hard to use or cover it. Everything here applies to touch screens only, unless it says otherwise; desktop framing and sizes are unchanged.
+
+### 26.1 Pieces big enough to tap — `render/projection.js clearHud`, `ui/fieldHost.js hudBands`, `render/app.js` (pinch, battle taps), `render/pick.js pickBody`, `render/drag.js`
+
+**Cause.** The HUD is sized in rem with the 40 px floor (§19.8). A phone in landscape with the browser's bars showing is about 780×300 CSS px. There the HUD takes 86 px at the top and 109 px at the bottom. `clearHud` zoomed the prep camera out until the bench-to-back-row band fitted the remaining 105 px: ×0.6 of the official framing, about 15 px pieces.
+
+**Zoom floor.**
+- `hudBands` adds `minZoom: 1` on touch screens, so `clearHud` never zooms the board out below the official framing.
+- The bench's near edge stays above the bottom band, and the back rows may go under the top HUD.
+- At 780×300 the pieces are about 2× bigger.
+- With the shop folded, the official collapsed camera of public issue #5 frames the whole board, so nothing stays hidden.
+
+**Pinch zoom and pan.**
+- A second finger on the field starts a pinch: an image transform of the camera (focal length × z, the principal point moved), the same as `clearHud`. Picking, the three.js board and every layer stay consistent.
+- Zoom range 1× to `USER_ZOOM_MAX` 3×. The point under the fingers stays under them. The pan reaches `USER_PAN_SLACK` 30 % of the viewport past the framing.
+- A piece being pressed or dragged goes home, and no finger counts again until all have lifted.
+- Any camera request or resize resets the view.
+
+**Taps in battle.** A touch picks a unit on release, within `TAP_SLOP_PX` 12, so the first finger of a pinch opens nothing. The mouse still picks on press.
+
+**A finger on an empty tile** picks the unit whose drawn body it is on (`pickBody`).
+- The body is an upright box `BODY_HALF_W` 0.4 tile either side of the feet, from the feet to the head; the front-most unit wins.
+- This applies to prep pieces and battle allies.
+- A unit on the pressed tile always wins, so the tile rule of §18.1 stays the rule. The mouse keeps it strictly.
+
+**Long press, decided at the next frame** (`drag.js nextFrame`).
+- The 480 ms timer is wall-clock. On a busy phone's long frame the finger's release arrives with the next frame, after the timer: the tap became a long press, which opened the detail instead of selecting the unit.
+- The decision now waits for that frame. Input events are dispatched before its animation callbacks, so a finger already lifted is still a tap.
+
+### 26.2 The engine on a slow link — `render/app.js STARTUP_WAIT_MS`, `ui/fieldHost.js`, `main.js warmGameData`
+
+- **What went wrong.** The flat DOM fallback board (24 px tiles in the middle of the screen) is what the report also described. `createFieldView` waited for its optional parts one after another: the asset and local-art manifests 4 s, fonts 1.5 s, the board art 2.5 s and the 3D board 6 s. That is 14 s, more than `ui/fieldHost.js`'s 12 s engine timeout, which then mounted the fallback for the whole match.
+- **Now.** Those waits share one 4 s budget (`STARTUP_WAIT_MS`). Each part still upgrades the view in place when it lands.
+- **Timeout.** The engine timeout is 30 s. An engine that resolves after it is destroyed, because the fallback owns the host by then.
+- **Warm-up.** Entering a room warms the render engine's modules and Pixi / pixi-spine together with the game data.
+
+### 26.3 Covered controls and wrong taps — `css/devices.css`, `css/screens/game-shop.css`, `screens/game.js`
+
+**The room's 复制密钥 / 复制链接 buttons.**
+- Problem: they are stacked, and the generic 44 px hit area of 复制链接 covered 复制密钥. A tap on the key copied the link.
+- Fix: each button's area now ends in the middle of the gap between them.
+
+**The promotion reward's tag.**
+- Problem: the vertical title shrank to one glyph.
+- Fix: `flex: none`, and short screens hide its English micro line.
+
+**A shop card's or an item's detail card.**
+- Problem: it stayed over the battlefield into combat.
+- Fix: it closes when combat starts.
+
+### 26.4 Type floor — `css/devices.css` §6 (short touch screens)
+
+The root is clamped at 40 px, so on a phone every rem size is 0.4 of its 1080p value: names, counts and descriptions in the match HUD came out at 4.4–7.6 px. The root cannot grow (the layout would not fit). So text that carries information gets `max(<its rem>, N px)`; boxes keep their sizes and long names ellipsize.
+
+| Text | Floor |
+|---|---|
+| Shop-card name | 10 px |
+| Shop-card bonds | 8 px |
+| Bond-strip names (slots widened to 35 px so 4-character names stay apart) and layer counts | 8 px |
+| Team names | 9 px |
+| Funds, round, remaining placements, the ready count, effect stacks | 8–9 px |
+| Detail card: stat values | 9 px |
+| Detail card: stat labels | 7 px |
+| Detail card: 特质 text | 9 px |
+
+Decorations make room:
+- Keyboard hints are hidden on devices without hover.
+- The HUD's English captions (COUNTDOWN, LEVEL, ms) are hidden on short screens.
+
+### 26.5 Phone keyboards — `ui/components.js TextField`
+
+`TextField` sets `autocorrect="off"` and `autocapitalize` off by default (iOS rewrote typed room codes). It passes `autoCapitalize` / `enterKeyHint` / `inputMode` through:
+- room code: `characters` + `go`;
+- callsign: `go`;
+- loadout search: `search`.
+
+### 26.6 Screen awake, sound with the silent switch, locked rotation, graphics default, frame cap — `ui/device.js keepScreenAwake / useWakeLock / isPhone`, `audio.js _playbackSession`, `index.html` + `css/theme.css .rotate-hint__fs`, `ui/gameLogic.js defaultQuality`, `ui/settings.js`, `render/app.js MAX_FPS`
+
+**Screen wake lock.** Held while the match or the room screen is mounted, and re-requested when the page is visible again. The player mostly watches a battle: the phone dimmed, locked and dropped the socket.
+
+**The iPhone silent switch.** Before the first `AudioContext` is created, `navigator.audioSession.type = 'playback'` (iOS 16.4+). The switch no longer mutes every sound.
+
+**The rotate hint.**
+- A line on rotation lock: iPhone, 控制中心 → 竖屏方向锁定; Android, 自动旋转.
+- Where the Fullscreen API exists (`html.sp-fs`), a 全屏并横屏 button enters fullscreen from the tap and locks landscape where allowed.
+
+**Graphics default.** `quality` defaults to `medium` on phones (`isPhone`: touch and a screen side under 500 CSS px), only while no quality was saved.
+
+**Frame cap.** `app.ticker.maxFPS = 62` on every device, so 90 / 120 Hz phones no longer draw 120 fps through a nearly static prep. It is 62, not 60, because PIXI's limiter compares whole milliseconds and a cap of exactly 60 drops frames on a 60 Hz display.
+
+### 26.7 Not done here (from the audit)
+
+- Portrait play: only the rotate hint shows.
+- Cold-load size: about 19 MB to the first battle, plus a 6.7 MB 3D board atlas.
+- Memory growth over many rounds.
+- The briefing / draft / result screens' type sizes.
+- Back-gesture and backgrounding handling beyond the wake lock.
+
+**[ASSUMED]:**
+- The 3× zoom limit and the 30 % pan reach.
+- The 0.4-tile body box.
+- The official framing as the floor, rather than a minimum tile size in px.
+- The 4 s startup budget and the 30 s engine timeout.
+- Each type floor.
+- The 500 px phone threshold.
+- 62 fps.
+- `playback` audio interrupting other apps' audio.
