@@ -421,7 +421,7 @@ test('淬羽赫默 S2 "技能期间可以使用一个辅助无人机": 夜灯 ta
 });
 
 // =================================================================================================================
-// owner-kit opt-outs (KIT_GUIDE §2.5)
+// owner-kit opt-outs (docs/WAIGUAN-KITS.md, last paragraph)
 
 /** A minimal hand-authored 凯尔希 kit (no skill) with the given flags. */
 const kaltsKit = (flags) => ({ [KALTS]: () => ({ skill: null, talents: [], genericSummons: true, ...flags }) });

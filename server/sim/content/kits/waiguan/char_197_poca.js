@@ -1,4 +1,4 @@
-// server/sim/content/kits/waiguan/char_197_poca.js — 早露 (狙击 · 攻城手 siegesniper) 外援 kit (DESIGN §27, KIT_GUIDE.md).
+// server/sim/content/kits/waiguan/char_197_poca.js — 早露 (狙击 · 攻城手 siegesniper) 外援 kit (DESIGN §27, docs/WAIGUAN-KITS.md).
 //
 // Chess ids: chess_char_diy_5_char_197_poca_a/_b, chess_char_diy_6_char_197_poca_a/_b (registered by ./index.js).
 // Sources: the records (data/waiguan.json; normal = skill Lv4, elite = Lv7 + module) and the official buff templates

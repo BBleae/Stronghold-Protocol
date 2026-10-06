@@ -1,4 +1,4 @@
-// server/sim/content/kits/waiguan/char_2014_nian.js — 年 (重装 · 铁卫 protector) 外援 kit (DESIGN §27, KIT_GUIDE.md).
+// server/sim/content/kits/waiguan/char_2014_nian.js — 年 (重装 · 铁卫 protector) 外援 kit (DESIGN §27, docs/WAIGUAN-KITS.md).
 //
 // Chess ids: chess_char_diy_5_char_2014_nian_a/_b, chess_char_diy_6_char_2014_nian_a/_b (registered by ./index.js).
 // Numbers: normal = skill Lv4, elite = Lv7 + its module (data/waiguan.json); every number below comes from a blackboard.

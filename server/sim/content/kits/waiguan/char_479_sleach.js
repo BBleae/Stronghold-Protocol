@@ -1,4 +1,4 @@
-// server/sim/content/kits/waiguan/char_479_sleach.js — 琴柳 (先锋 · 执旗手 bearer) 外援 kit (DESIGN §27, KIT_GUIDE.md).
+// server/sim/content/kits/waiguan/char_479_sleach.js — 琴柳 (先锋 · 执旗手 bearer) 外援 kit (DESIGN §27, docs/WAIGUAN-KITS.md).
 //
 // Chess ids: chess_char_diy_5_char_479_sleach_a/_b, chess_char_diy_6_char_479_sleach_a/_b (registered by ./index.js).
 // Numbers: normal = skill Lv4, elite = Lv7 + its module at the tier's level (tier V 1, tier VI 3; data/waiguan.json);

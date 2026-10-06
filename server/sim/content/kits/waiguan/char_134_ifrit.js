@@ -1,4 +1,4 @@
-// server/sim/content/kits/waiguan/char_134_ifrit.js — 伊芙利特 (术师 · 轰击术师 blastcaster) 外援 kit (DESIGN §27, KIT_GUIDE.md).
+// server/sim/content/kits/waiguan/char_134_ifrit.js — 伊芙利特 (术师 · 轰击术师 blastcaster) 外援 kit (DESIGN §27, docs/WAIGUAN-KITS.md).
 //
 // Chess ids: chess_char_diy_5_char_134_ifrit_a/_b, chess_char_diy_6_char_134_ifrit_a/_b (registered by ./index.js).
 // Numbers: normal = skill Lv4, elite = Lv7 + its module (data/waiguan.json); every number below comes from a blackboard.

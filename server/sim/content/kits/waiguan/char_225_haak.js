@@ -1,4 +1,4 @@
-// server/sim/content/kits/waiguan/char_225_haak.js — 阿 (特种 · 怪杰 geek) 外援 kit (DESIGN §27, KIT_GUIDE.md).
+// server/sim/content/kits/waiguan/char_225_haak.js — 阿 (特种 · 怪杰 geek) 外援 kit (DESIGN §27, docs/WAIGUAN-KITS.md).
 //
 // Chess ids: chess_char_diy_5_char_225_haak_a/_b, chess_char_diy_6_char_225_haak_a/_b (registered by ./index.js).
 // S1 快速射击 (duration): ASPD +attack_speed.

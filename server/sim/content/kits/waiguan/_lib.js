@@ -1,4 +1,4 @@
-// server/sim/content/kits/waiguan/_lib.js — shared helpers of the 外援 / 甄选 (DIY) kits (DESIGN §27, KIT_GUIDE).
+// server/sim/content/kits/waiguan/_lib.js — shared helpers of the 外援 / 甄选 (DIY) kits (DESIGN §27, docs/WAIGUAN-KITS.md).
 //
 // One place for the helpers every waiguan/<charId>.js file uses, so 87 kits read their data the same way. Re-exports the
 // tier-1 helpers (kits/tier1.js named exports) and adds the tier-5 / tier-6 conventions that were file-local there.

@@ -1,4 +1,4 @@
-// server/sim/content/kits/waiguan/char_456_ash.js — 灰烬 (狙击 · 速射手 fastshot) 外援 kit (DESIGN §27, KIT_GUIDE.md).
+// server/sim/content/kits/waiguan/char_456_ash.js — 灰烬 (狙击 · 速射手 fastshot) 外援 kit (DESIGN §27, docs/WAIGUAN-KITS.md).
 //
 // Chess ids: chess_char_diy_5_char_456_ash_a/_b, chess_char_diy_6_char_456_ash_a/_b (registered by ./index.js).
 // Sources: the records (data/waiguan.json; normal = skill Lv4, elite = Lv7 + module, tier V elite module level 1, tier VI

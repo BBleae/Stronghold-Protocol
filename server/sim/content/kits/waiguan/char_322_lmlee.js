@@ -1,4 +1,4 @@
-// server/sim/content/kits/waiguan/char_322_lmlee.js — 老鲤 (特种 · 行商 merchant) 外援 kit (DESIGN §27, KIT_GUIDE.md).
+// server/sim/content/kits/waiguan/char_322_lmlee.js — 老鲤 (特种 · 行商 merchant) 外援 kit (DESIGN §27, docs/WAIGUAN-KITS.md).
 //
 // Chess ids: chess_char_diy_5_char_322_lmlee_a/_b, chess_char_diy_6_char_322_lmlee_a/_b (registered by ./index.js).
 // Sources: the records (data/waiguan.json; normal = skill Lv4, elite = Lv7 + module; tier V elite = module level 1) and

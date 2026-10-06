@@ -1,4 +1,4 @@
-// server/sim/content/kits/waiguan/char_2023_ling.js — 令 (辅助 · 召唤师 summoner) 外援 kit (DESIGN §27, KIT_GUIDE.md).
+// server/sim/content/kits/waiguan/char_2023_ling.js — 令 (辅助 · 召唤师 summoner) 外援 kit (DESIGN §27, docs/WAIGUAN-KITS.md).
 //
 // Chess ids: chess_char_diy_5_char_2023_ling_a/_b, chess_char_diy_6_char_2023_ling_a/_b (registered by ./index.js).
 // Summons: one per skill (the skill record's overrideTokenKey) — S1 “清平” soul1 (melee, blocks 1), S2 “逍遥” soul2 (ranged,
@@ -31,7 +31,7 @@
 //   Passive merge: a soul3 that deploys with another basic soul3 of hers in its attack range merges with it — the
 //   newcomer is absorbed (leaves the field, T2 fires; its piece returns by T1 later) and the standing one becomes the
 //   高级形态 [ASSUMED which one stays: the text names no side]: its token skill's 2.* numbers — max HP +2.max_hp, ATK +2.atk,
-//   DEF +2.def (fractions), RES ×(1 + 2.magic_resistance), attack interval +2.base_attack_time s (flat, KIT_GUIDE batMod
+//   DEF +2.def (fractions), RES ×(1 + 2.magic_resistance), attack interval +2.base_attack_time s (flat, kits/tier1.js batMod
 //   convention), block +2.block_cnt [ASSUMED: the reading of these keys], arts attacks; "占据2个部署位" is a prep rule. An
 //   advanced one never merges again.
 // Summon traits the token data does not give the engine: soul3 "攻击阻挡的所有敌人" (token trait text) ⇒ _lib hitAllBlocked.

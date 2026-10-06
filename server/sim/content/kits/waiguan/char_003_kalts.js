@@ -1,4 +1,4 @@
-// server/sim/content/kits/waiguan/char_003_kalts.js — 凯尔希 (医疗 · 医师 physician) 外援 kit (DESIGN §27, KIT_GUIDE.md).
+// server/sim/content/kits/waiguan/char_003_kalts.js — 凯尔希 (医疗 · 医师 physician) 外援 kit (DESIGN §27, docs/WAIGUAN-KITS.md).
 //
 // Chess ids: chess_char_diy_5_char_003_kalts_a/_b, chess_char_diy_6_char_003_kalts_a/_b (registered by ./index.js).
 // Summon: Mon3tr (token_10002_kalts_mon3tr) — a talent summon the player places on the board (tokens.json `placeable`,

@@ -1,5 +1,5 @@
 // server/sim/content/kits/waiguan/char_1048_orchd2.js — 焰狐龙梓兰 (狙击 · 重射手 closerange) 外援 kit (DESIGN §27,
-// KIT_GUIDE.md).
+// docs/WAIGUAN-KITS.md).
 //
 // Chess ids: chess_char_diy_5_char_1048_orchd2_a/_b, chess_char_diy_6_char_1048_orchd2_a/_b (registered by ./index.js).
 // Sources: the records (data/waiguan.json; normal = skill Lv4, elite = Lv7 + module ARC-X, tier V level 1, tier VI level 3)
