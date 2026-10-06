@@ -41,8 +41,11 @@ test('messages never wait on the directory; a logout closes the socket at the ne
 
 test('a socket whose login expired closes at its next message', { timeout: 120000 }, async (t) => {
   const world = await createWorld(t);
-  const seeded = Date.now();
   await world.seed('a', 4000);
+  // Read after the seed returns: the Worker set the expiry from its own clock somewhere during the seed (several
+  // object calls, a second or more under a loaded test run), so a time read before it could run ahead of the expiry
+  // and the ping below arrive while the login is still valid.
+  const seeded = Date.now();
   const { player } = await lobby(world, 'a');
   await new Promise((resolve) => setTimeout(resolve, Math.max(0, seeded + 4100 - Date.now())));
   player.send({ t: 'ping', c: 1 });
