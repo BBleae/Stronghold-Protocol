@@ -19,6 +19,7 @@
 // `loadData(...)` to await, or the `useData(...)` hook to re-render when files arrive.
 
 import { useEffect, useReducer } from '../vendor/hooks.module.js';
+import { waiguanRecords } from '../../shared/waiguan.js';
 
 /** Known data files (name → URL basename). Unknown names are allowed too (`/data/<name>.json`). */
 export const DATA_FILES = Object.freeze({
@@ -121,7 +122,7 @@ export function createDataStore(opts = {}) {
   const timeoutMs = opts.timeoutMs === undefined ? ART_MANIFEST_TIMEOUT_MS : Number(opts.timeoutMs);
   const armTimer = opts.setTimeout || ((fn, ms) => setTimeout(fn, ms));
   const disarmTimer = opts.clearTimeout || ((id) => clearTimeout(id));
-  /** @type {Map<string, { status: 'loading'|'ready'|'missing', promise: Promise<any>, value: any, index: Map<string, any>|null }>} */
+  /** @type {Map<string, { status: 'loading'|'ready'|'missing', promise: Promise<any>, value: any, index: Map<string, any>|null, diy: Map<string, any>|null }>} */
   const entries = new Map();
   const listeners = new Set();
   const warned = new Set();
@@ -174,7 +175,7 @@ export function createDataStore(opts = {}) {
     if (typeof name !== 'string' || !/^[A-Za-z0-9_-]+$/.test(name)) return Promise.resolve(null);
     const cur = entries.get(name);
     if (cur) return cur.promise;
-    const entry = { status: 'loading', promise: null, value: null, index: null };
+    const entry = { status: 'loading', promise: null, value: null, index: null, diy: null };
     const art = ART_MANIFESTS.has(name);
     entry.promise = (async () => {
       let toldMissing = false;
@@ -192,6 +193,7 @@ export function createDataStore(opts = {}) {
           if (art && current && entry.status !== 'missing') {
             entry.value = null;
             entry.index = null;
+            entry.diy = null;
             entry.status = 'missing';
             toldMissing = true;
             notify(name);
@@ -208,6 +210,7 @@ export function createDataStore(opts = {}) {
             }
             entry.value = null;
             entry.index = null;
+            entry.diy = null;
             entry.status = 'missing';
           }
           break;
@@ -229,6 +232,14 @@ export function createDataStore(opts = {}) {
     return e.index;
   }
 
+  /** chessId → 外援 / 甄选 record (data/waiguan.json), or null while that file is not loaded. */
+  function diyIndex() {
+    const e = entries.get('waiguan');
+    if (!e || e.status !== 'ready' || !e.value) return null;
+    if (!e.diy) e.diy = new Map(Object.entries(waiguanRecords(e.value)));
+    return e.diy;
+  }
+
   return {
     /** Fetch (once) and return a file's JSON, or null when missing. */
     load,
@@ -238,10 +249,18 @@ export function createDataStore(opts = {}) {
     get: (name) => entries.get(name)?.value ?? null,
     /** 'idle' | 'loading' | 'ready' | 'missing' */
     status: (name) => entries.get(name)?.status ?? 'idle',
-    /** Record by id from a loaded file (null when unknown / not loaded). */
+    /**
+     * Record by id from a loaded file (null when unknown / not loaded). `chess` also resolves the 外援 / 甄选 records
+     * (`chess_char_diy_*`, tier V and VI, normal and elite: shared/waiguan.js waiguanRecords) once data/waiguan.json is
+     * loaded — the match files include it (gameComponents GAME_FILES) — so a bought 外援 renders like any pool chess
+     * everywhere a chess is looked up: shop card, hand / board piece, unit detail, bonds, portraits, voice, replays,
+     * spectators. `list('chess')` stays data/chess.json alone (the roster screens add the player's own picks).
+     */
     lookup(name, id) {
       if (id == null) return null;
-      return index(name)?.get(String(id)) ?? null;
+      const hit = index(name)?.get(String(id)) ?? null;
+      if (hit || name !== 'chess') return hit;
+      return diyIndex()?.get(String(id)) ?? null;
     },
     /** All records of a loaded file as an array (empty when not loaded). */
     list: (name) => [...(index(name)?.values() ?? [])],

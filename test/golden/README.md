@@ -59,23 +59,28 @@ node tools/golden.mjs --twice                   # determinism: the corpus twice 
 ## This fork
 
 The digests in this directory are the fork's own (BBleae/Stronghold-Protocol), regenerated after merging upstream
-0.1.4 and then fork PRs #15–#17. They differ from upstream's files in two ways, and in no other:
+0.1.4 and then fork PRs #15–#20. They differ from upstream's files in two ways, and in no other:
 
 - **Client effect counts** (`events.fx` and the `fx` kinds) of 31 scenarios (roster 13, bonds 5, fields 13): the fork's
   sim sends extra cosmetic effect events and parameters (fork commit 6d5c094, PR #5 — `snowTiles`, `motes`, the
   同盟支援 `link`, `shell` → `helmShell`, `beam` → `sentryRecall`). Every gameplay field of the roster, bonds and
   fields families (units, enemies, players, hooks, `rngDraws`, `snaps`) equals upstream's.
-- **3 of the 16 matches** — `solo-HARD-2`, `coop4-FUNNY-6`, `coop2-ABYSS-10-boosted` — since fork PR #17 (外援干员 /
-  甄选, DESIGN §27): every bot seat brings its own 甄选 picks (`botWaiguanPicks` in `server/match/Match.js`), which puts
-  that seat's private pool entries from `data/waiguan.json` into the match (all bots of a match pick alike and an entry
-  has one owner, so only the first bot's entries are accepted — DESIGN §27 Known gaps), and two bot shop heuristics
-  count those entries (`server/match/bot.js`: `refreshValue`'s copy total and `bondPoolStats`' supply include every
-  private entry, a teammate's too). So the bots refresh, buy and field their bonds a little differently: different `rng.shop` /
-  `rng.bots` / `rng.meta` counts, boards and bond layers, and `solo-HARD-2` now ends in an elimination in round 13
-  instead of a victory. No 甄选 chess reaches a board in these matches. With `data/waiguan.json` left out of the data
-  (or with those two heuristics skipping private entries) all 16 matches equal upstream's again.
+- **15 of the 16 matches** — all but `solo-FUNNY-1` — because the bots bring 外援 / 甄选 picks (DESIGN §27): since
+  fork PR #17 every bot seat brings its own picks (`botWaiguanPicks` in `server/match/Match.js`; all bots of a match
+  pick alike), and since PR #19's 524fb56 (2026-10-07) those picks are really in play: every player's picks are pool
+  entries of its own (`SharedPool.owned`, keyed by owner — each bot now holds its 4 entries, where only the first bot's
+  were accepted before), its shop, rewards and effect draws offer them (`Match.rollPool`, `choices.js`,
+  `effectsMeta.js` with the player id), and the bot heuristics (`server/match/bot.js` `refreshValue`,
+  `bondPoolStats`) and `Match.bondInPool` count the shared pool plus the player's own picks only. So the bots refresh,
+  buy and field their bonds differently: different `rng.shop` / `rng.bots` / `rng.meta` counts, boards and bond
+  layers; `solo-HARD-2` ends in an elimination in round 11 instead of a victory, `coop2-NORMAL-8-serverrun` in a
+  victory instead of both seats' elimination in round 13, and in `coop4-FUNNY-6` a bot fields a 甄选 chess (`ai_2`'s
+  阿, tier V from round 11, tier VI from round 12). With `data/waiguan.json` left out of the data all 16 matches equal
+  upstream's again (checked on 2026-10-07 against upstream 9f93096's `matches.json`).
 
 After each merge, run `npm run golden:update` and compare with upstream's files (`git show
-<upstream commit>:test/golden/<family>.json`): a moved value outside `events.fx` / `fx`, or in a match other than the
-three above, is a merge bug unless a fork change explains it — check by rerunning the moved scenarios with that change
-left out, then record the cause here.
+<upstream commit>:test/golden/<family>.json`): in the roster, bonds and fields families a moved value outside
+`events.fx` / `fx` is a merge bug unless a fork change explains it — check by rerunning the moved scenarios with that
+change left out, then record the cause here. For the matches, rerun the family in a copy of the tree without
+`data/waiguan.json` and with upstream's `matches.json` in place (`node tools/golden.mjs --family matches`): all 16 must
+match; one that does not is a merge bug unless a fork change explains it.

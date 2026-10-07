@@ -1804,10 +1804,13 @@ const KITS = {
       const pick = right.find((a) => PREF.includes(a.def?.profession)) ?? right[0] ?? left[0] ?? null;
       return { waiting, right, left, pick };
     };
+    // the cut he applied is kept as a delta (a.mem.svashCut) and given back additively when the op deploys, so a cut
+    // another effect makes on the same waiting op meanwhile (琴柳 精神感召, the generic 下一名部署费用) is never lost
     const cutCost = (a, v) => {
       if (!a || !(v > 0)) return;
-      a.mem.svashCostBase ??= a.base.cost;
-      a.base.cost = Math.max(0, a.base.cost - v);
+      const before = a.base.cost;
+      a.base.cost = Math.max(0, before - v);
+      a.mem.svashCut = num(a.mem.svashCut) + (before - a.base.cost);
     };
     const slash = (battle, caster, atk) => {
       // PRTS 备注: the slash ignores 隐匿 and hits flying enemies (and its reveal makes them targetable afterwards)
@@ -1851,14 +1854,16 @@ const KITS = {
             if (!unit.mem.svashSwapped) { // 首次开启时交换…基础部署费用
               unit.mem.svashSwapped = true;
               const { waiting } = waitingArea(battle, unit);
-              const baseCost = (a) => a.mem.svashCostBase ?? a.base.cost;
+              const baseCost = (a) => a.base.cost + num(a.mem.svashCut);
               const byCost = waiting.slice().sort((a, b) => baseCost(b) - baseCost(a) || a.id - b.id);
               const hi = byCost.find((a) => PREF.includes(a.def?.profession)) ?? byCost[0];
               const lo = byCost.filter((a) => a !== hi).pop();
               if (hi && lo && baseCost(hi) !== baseCost(lo)) {
                 const ch = baseCost(hi), cl = baseCost(lo);
                 for (const [a, v] of [[hi, cl], [lo, ch]]) {
-                  if (a.mem.svashCostBase != null) { a.base.cost = Math.max(0, v - (a.mem.svashCostBase - a.base.cost)); a.mem.svashCostBase = v; } else a.base.cost = v;
+                  const cut = num(a.mem.svashCut);
+                  a.base.cost = Math.max(0, v - cut);
+                  if (cut > 0) a.mem.svashCut = v - a.base.cost;
                 }
               }
             }
@@ -1936,7 +1941,7 @@ const KITS = {
         battle.on('deploy', (c) => {
           const a = c.unit;
           if (!isOp(a) || a.ownerId !== unit.ownerId) return;
-          if (a.mem.svashCostBase != null) { a.base.cost = a.mem.svashCostBase; a.mem.svashCostBase = null; }
+          if (num(a.mem.svashCut) > 0) { a.base.cost += a.mem.svashCut; a.mem.svashCut = 0; }
           if (num(a.mem.svashShield) > 0 && !c.initial) { // S1: 部署后获得…屏障
             battle.addBuff(a, { key: 'svash2:barrier', shield: a.mem.svashShield, visible: true });
             a.mem.svashShield = 0;

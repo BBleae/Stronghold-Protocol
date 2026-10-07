@@ -12,7 +12,7 @@ Cloudflare Workers 部署见 [Cloudflare 部署指南](CLOUDFLARE.md)，包括 S
 | 服务器 CPU | 战斗在各玩家浏览器里模拟（DESIGN §14），服务器只负责回合、经济和校验：**每个房间每个作战回合约 1 ms CPU**。AI 队友 / 掉线玩家的战场由服务器模拟：作战开始时 3 个 AI 战场在开发机上约 0.2–0.5 s CPU，小主机上可能要几秒（分成 8 ms 小片执行，不会卡住其他房间）。5–8 人的同盟房间最多有 7 个 AI 队友：AI 战场和 AI 每个休整期的布阵预演都按 AI 数量大致线性增加，7 个 AI 约是 3 个的 2–3 倍。`SP_VERIFY=all` 会复算每个真人战场，CPU 明显增加，小主机建议保持 `off` 或 `sample`。 |
 | 服务器内存 | 空闲约 100 MB，每个进行中的对局再增加几 MB。 |
 | 网络 | 4 人对局中服务器每回合下行约 0.25 MB（DESIGN §14 实测）。8 人对局的公共状态更大、收的人也更多，按人数的平方估算最多约为 4 人的 4 倍（未实测）。首次进入游戏时浏览器要从主机下载所需的图片 / Spine 模型 / 音频（按需加载，之后走浏览器缓存），公网隧道带宽小时第一次会慢一些。 |
-| 磁盘 | 素材约 500 MB（`public/assets`，含干员语音和 78 名外援干员）+ 依赖约 125 MB（`node_modules`）；可选的本地提取约 40 MB（`.venv-extract`）+ 70 MB 贴图（见第 6 节）。 |
+| 磁盘 | 素材约 590 MB（`public/assets`，含 78 名外援干员，以及 198 名干员（含这 78 名外援）的战斗语音）+ 依赖约 125 MB（`node_modules`）；可选的本地提取约 40 MB（`.venv-extract`）+ 70 MB 贴图（见第 6 节）。 |
 | 玩家设备 | 支持 WebGL 的现代浏览器（Chrome / Edge / Firefox / Safari 最新版），电脑或手机平板（横屏）。老旧设备可在设置里调低画质或访问 `/?board=2d`。 |
 
 服务器**无状态**：房间和对局只存在内存里，没有数据库和存档，**不需要备份**。重启服务器会结束正在进行的对局（包括断线后本可在 24 小时内回来继续的独立模拟）。
@@ -33,7 +33,7 @@ Cloudflare Workers 部署见 [Cloudflare 部署指南](CLOUDFLARE.md)，包括 S
      ```powershell
      git clone https://github.com/sganggs/Stronghold-Protocol.git C:\Stronghold-Protocol
      ```
-3. 双击 `C:\Stronghold-Protocol\scripts\start-windows.bat`。首次会：安装依赖（`npm ci`；完整包已含，跳过）→ 复制前端库 → 下载约 500 MB 素材（含干员语音和 78 名外援干员；完整包已含，跳过；显示进度，中断后再次启动会续传）→ 若检测到本机的明日方舟客户端，询问是否提取官方贴图（可跳过）→ 启动服务器并打开浏览器。
+3. 双击 `C:\Stronghold-Protocol\scripts\start-windows.bat`。首次会：安装依赖（`npm ci`；完整包已含，跳过）→ 复制前端库 → 下载约 590 MB 素材（含干员语音和 78 名外援干员；完整包已含，跳过；显示进度，中断后再次启动会续传）→ 若检测到本机的明日方舟客户端，询问是否提取官方贴图（可跳过）→ 启动服务器并打开浏览器。
 4. 窗口里会打印朋友可用的地址，例如 `http://192.168.1.23:3000`。用另一台设备打开它确认能进入。关闭窗口即停止服务器。
 
 等价的手动命令：`npm ci`、`node tools/setup.mjs`、`npm start`。
@@ -205,7 +205,7 @@ https / wss 说明：页面通过 https 打开时客户端自动连接 `wss://�
 ## 3. Docker
 
 ```bash
-# A) 构建时下载素材（需要联网，约 500 MB）
+# A) 构建时下载素材（需要联网，约 590 MB）
 docker build -t stronghold-protocol --build-arg FETCH_ASSETS=1 .
 docker run -d --name stronghold -p 3000:3000 --restart unless-stopped stronghold-protocol
 

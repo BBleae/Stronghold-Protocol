@@ -47,6 +47,11 @@ test('summonDeployHint: skill summons at the start and with the skill, talent su
   }
   assert.equal(summonDeployHint(TOKENS.token_10056_angel2_target), null, '投递坐标 is no hand piece');
   assert.equal(summonDeployHint(TOKENS.enemy_9012_acloon), null);
+  // a return during the battle pays for a 外援 summoner only (pool skill summons stay free); 外援 talent summons (Mon3tr,
+  // 雷鸣地雷) come back after their redeploy time
+  assert.doesNotMatch(summonDeployHint(TOKENS.token_10000_silent_healrb), /消耗部署费用/);
+  for (const id of ['token_10002_kalts_mon3tr', 'token_10033_ela_grzmot']) assert.match(summonDeployHint(TOKENS[id]), /^作战开始时在摆放的位置部署；离场后经过再部署时间在原位再部署（消耗部署费用/, id);
+  assert.equal(summonDeployHint(TOKENS.token_10028_vigil_wolf), '作战开始时在摆放的位置部署', 'pool talent summons unchanged');
 });
 
 test('one switch for the start-of-battle deploy: the sim and the hint read shared/constants.js SKILL_SUMMON_START_DEPLOY', () => {

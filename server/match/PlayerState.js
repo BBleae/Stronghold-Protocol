@@ -394,7 +394,7 @@ export class PlayerState {
   /** Return a piece's pool copies (and its equipped items are handled by the caller). */
   returnCopies(piece) {
     if (piece && piece.kind === 'chess' && piece.poolCopies > 0) {
-      this.m.pool.give(this.gd.baseIdOf(piece.id), piece.poolCopies);
+      this.m.pool.give(this.gd.baseIdOf(piece.id), piece.poolCopies, this.playerId);
       piece.poolCopies = 0;
     }
   }
@@ -484,7 +484,8 @@ export class PlayerState {
     if (!rec) return null;
     const base = this.gd.baseIdOf(chessId);
     const need = rec.isGolden ? this.gd.goldenCopies : 1;
-    const taken = fromPool ? this.m.pool.take(base, need) : 0;
+    // this player's copies: a 甄选 entry gives copies to its owner only (pool.js take)
+    const taken = fromPool ? this.m.pool.take(base, need, this.playerId) : 0;
     const piece = this.newPiece('chess', chessId, { poolCopies: taken });
     this.round.gainedChess++;
     let owned = piece;
@@ -565,7 +566,7 @@ export class PlayerState {
     // equipment, which would be lost in temp — a summon stack removed there comes back at the next round start)
     if (where === 'board') this.grantTokensFor(elite);
     if (!where) {
-      this.m.pool.give(baseId, copies);
+      this.m.pool.give(baseId, copies, this.playerId);
       this.m.toast(this, 'warn', '整备区已满，晋升的精锐干员无法放入');
       this.m.log.warn?.(`[match ${this.m.roomCode}] ${this.playerId}: merge result dropped (hand+temp full)`);
       this.recompute();
@@ -586,7 +587,7 @@ export class PlayerState {
     if (!goldenId) return false;
     const base = this.gd.baseIdOf(piece.id);
     const extra = Math.max(0, this.gd.goldenCopies - (piece.poolCopies || 0));
-    piece.poolCopies = (piece.poolCopies || 0) + this.m.pool.take(base, extra);
+    piece.poolCopies = (piece.poolCopies || 0) + this.m.pool.take(base, extra, this.playerId);
     piece.id = goldenId;
     this.recompute();
     return true;
@@ -660,7 +661,8 @@ export class PlayerState {
       const fresh = (id) => !list.includes(id);
       for (let i = 0; i < ro.count; i++) {
         let id = null;
-        for (let tt = t; tt >= 1 && !id; tt--) id = this.m.pool.roll(this.m.rngShop, { tier: tt, filter: fresh });
+        // this player's pool: the shared chess plus its own 甄选 picks (DESIGN §27), never a teammate's
+        for (let tt = t; tt >= 1 && !id; tt--) id = this.m.pool.roll(this.m.rngShop, { tier: tt, filter: fresh, playerId: this.playerId });
         if (id) list.push(id);
       }
     }
@@ -835,13 +837,15 @@ export class PlayerState {
     return Number.isFinite(p) ? Math.max(0, Math.round(p)) : slot.basePrice;
   }
 
+  /** One shop chess slot: a copy-weighted draw from this player's pool — the shared chess plus its own 甄选 picks. */
   _rollChessSlot() {
-    const id = this.m.pool.roll(this.m.rngShop, { maxTier: this.shop.level });
+    const id = this.m.pool.roll(this.m.rngShop, { maxTier: this.shop.level, playerId: this.playerId });
     return id ? { kind: 'chess', id, basePrice: this.gd.chessPrice(id), frozen: false, sold: false } : null;
   }
 
   _rollItemSlot() {
-    const id = this.m.pool.rollItem(this.m.rngShop, this.shop.level);
+    // the item slot's tier follows the same tier shares as this player's chess slots (its own 甄选 copies included)
+    const id = this.m.pool.rollItem(this.m.rngShop, this.shop.level, this.playerId);
     return id ? { kind: 'item', id, basePrice: this.gd.itemPrice(id), frozen: false, sold: false } : null;
   }
 
@@ -900,7 +904,7 @@ export class PlayerState {
       if (!rec) return fail(ERR.BAD_TARGET);
       const base = this.gd.baseIdOf(slot.id);
       const need = rec.isGolden ? this.gd.goldenCopies : 1;
-      if (this.m.pool.has(base) && this.m.pool.left(base) < need) return fail(ERR.SOLD_OUT);
+      if (this.m.pool.has(base, this.playerId) && this.m.pool.left(base, this.playerId) < need) return fail(ERR.SOLD_OUT);
       if (handFull && !this.completesChessMerge(slot.id)) return fail(ERR.HAND_FULL);
       this.spend(price);
       slot.sold = true;
@@ -1405,7 +1409,7 @@ export class PlayerState {
       if (!rec) return fail(ERR.BAD_TARGET);
       const base = this.gd.baseIdOf(slot.id);
       const need = rec.isGolden ? this.gd.goldenCopies : 1;
-      if (this.m.pool.has(base) && this.m.pool.left(base) < need) return fail(ERR.SOLD_OUT);
+      if (this.m.pool.has(base, this.playerId) && this.m.pool.left(base, this.playerId) < need) return fail(ERR.SOLD_OUT);
       if (handFull && !this.completesChessMerge(slot.id)) return fail(ERR.HAND_FULL);
     }
     const price = Number.isFinite(slot.price) && slot.price > 0 ? Math.trunc(slot.price) : 0;
@@ -1662,6 +1666,9 @@ export class PlayerState {
       nextEnemies: this.m.nextEnemiesFor(this),
       // DESIGN §16: the effective operator loadout ({ [baseChessId]: { skill, module } }; chess not listed use defaults)
       loadout: this.loadout,
+      // DESIGN §27: the 甄选 picks THIS match holds for the player ({ slotId: charId }) — what its shop draws from, which
+      // may differ from the lobby's stored selection (room.state.picks) once the match locked them. Own view only.
+      picks: { ...(this.m.waiguanPicks?.[this.playerId] || {}) },
       stats: {
         dmgDealt: Math.round(this.stats.dmgDealt), kills: this.stats.kills, leaks: this.stats.leaks, gold: this.stats.gold,
         refreshes: this.stats.refreshes, merges: this.stats.merges,

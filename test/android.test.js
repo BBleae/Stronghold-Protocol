@@ -37,7 +37,7 @@ test('晴猫\'s server is the default, and tools/build-android.mjs takes its res
   const list = /SERVERS\s*=\s*\{([\s\S]*?)\n\s*\};/.exec(activity);
   assert.ok(list, 'SERVERS in MainActivity.java');
   const origins = strings(list[1]).filter((s) => /^https?:\/\//.test(s));
-  assert.deepEqual(origins, ['https://stronghold.lunar.ag', 'https://xn--rlr.rinko.ai']);
+  assert.deepEqual(origins, ['https://stronghold.lunar.ag', 'https://xn--rlr.slapq.top']);
   assert.match(read(join(ROOT, 'tools/build-android.mjs')), /DEFAULT_SERVER = 'https:\/\/stronghold\.lunar\.ag'/);
 });
 

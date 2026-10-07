@@ -25,8 +25,8 @@ Unknown options or a missing option value are errors (exit code 2); `--refresh` 
   Integrity errors (see §17) make the exit code 1 **and leave the previous output untouched** (unless `--force`);
   warnings never do. Each output file is written atomically (temp file + rename).
 - **Determinism.** Same inputs ⇒ byte-identical outputs (stable key order, no timestamps, no randomness).
-- **Size.** ≈4.9 MB total (limit 6 MB; `chess.json` ≈1.65 MB with the loadout choices, `waiguan.json` ≈1.4 MB with the
-  外援 / 甄选 roster — see §14b), compact JSON (no indentation).
+- **Size.** ≈5.4 MiB total (5,685,493 bytes; limit 6 MiB; `chess.json` ≈1.65 MB with the loadout choices, `waiguan.json`
+  ≈1.6 MB with the 外援 / 甄选 roster — see §14b), compact JSON (no indentation).
 - **Derived paths.** `stages.json groundPaths*` come from the sim's own `server/sim/grid.js` pathing: a change there
   needs a rebuild (the offline-rebuild test catches a stale `data/`).
 
@@ -457,9 +457,9 @@ Glyph legend (`rows`):
 | `parts[]` | `["enemy_9014_acstma","enemy_9015_acstmb"]` | boss parts (random local groups / unharmful); not leaders — 限伤 never applies to them |
 | `abilities[]` | handbook texts | |
 
-## 14. `tokens.json` — `{ [tokenId]: Token }` (57)
+## 14. `tokens.json` — `{ [tokenId]: Token }` (61)
 
-`kind`: `summon` (54 chess summons, the pool's 19 + the 外援 / 甄选 roster's 35 — §14b), `bondSummon`
+`kind`: `summon` (58 chess summons, the pool's 19 + the 外援 / 甄选 roster's 39 — §14b), `bondSummon`
 (`enemy_9012_acloon` 炎佑 for 炎 6/9), `mapChar` (`char_605_cmedic` 预备干员-医疗 / `char_613_acmedc` Touch placed by band
 `band_amedic`).
 
@@ -472,9 +472,9 @@ Glyph legend (`rows`):
 | `owners[]` | `["chess_char_3_19_a","chess_char_3_19_b"]` | |
 | `stats`, `rangeGrid`, `dmgType`, `attackKind`, `projectile`, `canHitFly` | first owner's values | defaults |
 | `skill` | `{"skillId":"sktok_vigil_wolf_3","bb":{…}}` | default token skill (same slot as the owner's skill) |
-| `deployLimit`, `count` | `1`, `1` | `count` = copies sent to the hand / spawned (talent/skill `cnt`); `null` ⇒ use `deployLimit` |
+| `deployLimit`, `count` | `1`, `1` | `deployLimit` = 部署数量上限: the phase's `maxDeployCount` + the summon's own talent `max_deploy_count` (the hidden "TOKEN数+N" part of 外援 summons: 令 / 麦哲伦 1 + 2, 令 SUM-Y 1 + 3, 白铁 1 + 1, 夜莺 幻影 1 + 2; the largest part counts) — the hand count (PRTS "根据召唤物部署数量上限…发送等量召唤物至手牌区") and the battle's simultaneous cap; `count` = copies sent to the hand / spawned (talent/skill `cnt`); `null` ⇒ use `deployLimit` |
 | `abnormal[]` | `["healFree"]` | abnormal effects the summon holds from the start, no official table carries them — `tools/build-data.mjs TOKEN_ABNORMAL` from the PRTS summon pages (user playtest #6 item 18): `healFree` = 禁疗 (“小自在”, “耀阳”, 斯卡蒂的海嗣, 沙之碑, 流形, 狼群, 迷迭香的战术装备, 黄金盟誓, 保护目标（冻结状态）), `isolated` = 孤立 "无法被同阵营选中" (“炎佑”, 从不混淆的方向); `[]` otherwise. The sim sets `noHeal` / `isolated` (docs/SIM.md §3) |
-| `variants[ownerChessId]` | `{"phase":2,"level":1,"stats":{…},"immunities":{…},"rangeGrid":…,"trait":{…},"dmgType":…,"skill":{full skill record},"talents":[…],"count":1,"sources":["talent","display"]}` | stats at the owner's phase/level (clamped to the token's max level) + golden module `tokenAttributeBlackboard`; the owner's module parts flagged `isToken` upgrade the variant's `trait` (+`moduleDesc`) and `talents` (伺夜's wolves, 缪尔赛思's 流形 `scale` 1, 浊心斯卡蒂's 海嗣 30 s, “耀阳” `atk_scale` 1.15). `sources` ⊆ `talent`/`skill`/`display`: how the owner produces it (`display` only = listed on the character but unused by its default skill/talents, e.g. 迷迭香 S2, 凛御银灰 eagle1/3). `count` = copies from a talent `cnt` or the default skill's `cnt` when that skill overrides this token; `null` ⇒ use `deployLimit` |
+| `variants[ownerChessId]` | `{"phase":2,"level":1,"stats":{…},"immunities":{…},"rangeGrid":…,"trait":{…},"dmgType":…,"skill":{full skill record},"talents":[…],"count":1,"sources":["talent","display"]}` | stats at the owner's phase/level (clamped to the token's max level) + golden module `tokenAttributeBlackboard`; the owner's module parts flagged `isToken` upgrade the variant's `trait` (+`moduleDesc`) and `talents` (伺夜's wolves, 缪尔赛思's 流形 `scale` 1, 浊心斯卡蒂's 海嗣 30 s, “耀阳” `atk_scale` 1.15). `sources` ⊆ `talent`/`skill`/`display`: how the owner produces it (`display` only = listed on the character but unused by its default skill/talents, e.g. 迷迭香 S2, 凛御银灰 eagle1/3; `[]` = made only by a non-default skill — W S2 地雷, 黑键 S2, 贝洛内 S3, 予愿安洁莉娜 S3 — whose `bySkill[i].sources` name `skill`: every selectable skill's summon is a token of its chess). `count` = copies from a talent `cnt` or the default skill's `cnt` when that skill overrides this token; `null` ⇒ use `deployLimit` |
 | `variants[o].bySkill[i]` | `{"skill":{…},"count":1,"sources":["talent","display"]}` | owner loadout with the non-default skill index `i` (one entry per other selectable owner skill): the token skill of that slot (伺夜's wolves, 缪尔赛思's 流形, 凛御银灰's eagles…), the count and how the chess then produces it (`sources` may be `[]`: 风丸 S1 makes no 纸偶; 赫默 / 巫恋 S1 only `display` ⇒ no hand piece). The sim resolves them for an owner loadout: `simdata getToken(id, ownerChessId, loadout)` → `def.sources` / `def.count` |
 | `variants[o].byModule[m]` | `{"stats":{…},"immunities":{…},"trait":{…},"talents":[…]}` | golden owner with another module `m` or `'none'`: the token as that module makes it (module `tokenAttributeBlackboard`, `isToken` trait/talent parts) |
 | `assets` | `{"avatar":"token_10028_vigil_wolf","spine":"token_10028_vigil_wolf"}` | |
@@ -494,13 +494,19 @@ already fields; `TOKEN` / `TRAP` professions excluded). Three parts:
 |---|---|---|
 | `candidates[]` | `{ charId, name, appellation, rarity, profession, subProfessionId, position, nationId, bonds[], chessIds: { 5, 6 } }` | the light list the picker UI reads (no stats / skills / talents) |
 | `chess{}` | `{ [chessId]: Chess }` | the **tier VI** record of every candidate, normal (`_a`) and elite (`_b`) — a full chess record, built by the very same `chessRecord()` the shop chess go through |
-| `chessT5{}` | `{ [chessId]: { from, …9 fields } }` | the **tier V** records as overlays on their tier VI twin (`from` = that id): the two tiers differ only in `WAIGUAN_TIER_FIELDS` (chessId, baseId, goldenId, tier, identifier, price, sellPrice, upgradeChessId, status), so storing both in full would double the roster for nothing |
+| `chessT5{}` | `{ [chessId]: { from, …9 fields[, …module-level fields] } }` | the **tier V** records as overlays on their tier VI twin (`from` = that id), rebuilt by `shared/waiguan.js waiguanTier5Records`. Every record differs in `WAIGUAN_TIER_FIELDS` (chessId, baseId, goldenId, tier, identifier, price, sellPrice, upgradeChessId, status). An **elite** also differs in what its slot's 模组 level decides (tier V elite `equipLevel` 1, tier VI 3), so its overlay adds the `WAIGUAN_ELITE_TIER_FIELDS` (`stats`, `trait`, `talents`, `module`, `modules`) that differ from the tier VI elite — build-data builds the tier V elite in full and stores only that difference; `statsBase` / `traitBase` / `talentsBase` / the skills stay shared |
 
 - **Chess id**: `chess_char_diy_<tier>_<charId>[_b]`, e.g. `chess_char_diy_6_char_300_phenxi_a`. The four **empty slot
   templates** stay in `chess.json` (`chess_char_5_diy1_a` … `chess_char_6_diy2_b`: `isDiy`, no `stats`): the slot a pick
   fills is a different thing from the operator it holds.
-- **Status**: tier V = phase 2 / Lv1 / skill Lv4 / 模组 as the tier V slot; tier VI = phase 2 / Lv60 / skill Lv7 / 模组 as
-  the tier VI slot — exactly the status a 6★ of that tier fights at.
+- **Status**: the slot templates' official status (`charChessDataDict`): normal = phase 2 / Lv1 / skill Lv4 / no 模组
+  (both tiers); elite = phase 2 / Lv60 / skill Lv7 / 模组 level **1 at tier V, 3 at tier VI** — exactly the status a pool
+  6★ of that tier fights at (the pool's tier I–V elites are module level 1, its tier VI elites level 3).
+- **Modules (模组)**: the operator's own, like a pool chess. Default = its first ADVANCED uniequip
+  (`uniequip_002_<char>`); an elite equips it at the slot's level and offers every ADVANCED uniequip as a 干员调配 choice
+  (`modules[]`, 144 per tier over 85 operators; the same ids at both tiers, the level-1 / level-3 numbers per tier); a
+  normal record carries the inactive stub `{ id, name, type, level: 0, active: false }` a pool normal has. 凯尔希·思衡托 and
+  予愿安洁莉娜 have no uniequip: elite `module` `{ id: null, …, active: false }`, `modules: []`, normal `module: null`.
 - **Bonds**: derived from the operator's faction ids — `mainPower` and **every `subPower` entry** (`{ nationId, groupId,
   teamId }` each), plus the record's own top-level `nationId` / `groupId` / `teamId` — against each core bond's
   `powerIdList` (bonds.json), else the fallback 协防 `emptyShip` (research 02 §2.1). 34 of the 87 derive a core bond
@@ -527,17 +533,25 @@ already fields; `TOKEN` / `TRAP` professions excluded). Three parts:
     them (Sharp / Stormeye / Pith / Touch / Misery / Raidian / Mechanist / 郁金香 / 领主·Sharp) have no faction field at
     all — the same share as the pool, where the mode itself gives 41 of 121 operators no core bond.
 - **Not in `chess.json`**: the roster is merged per match by the server (`server/match/Match.js` — only the picked
-  records reach that match's chess table, `GameData.addChess`) and loaded on demand by the browser (`public/js/data.js`
-  `waiguan`, warmed with the other match files). A 甄选 record is `isDiy`, which is what keeps it out of `visibleChess`,
+  records, normal and elite, reach that match's chess table, `GameData.addChess`), resolved whole by every battle data
+  source built for a match (`server/sim/simdata.js DataSource` with `waiguan` in its data: `Match.ds`, the browser runner,
+  the Worker's replay / recovery engines; the default source leaves it out) and loaded by the browser as one of the match
+  files (`public/js/data.js` `waiguan`; `data.lookup('chess', id)` falls back to it — DESIGN §27 Data flow). A 甄选 record is `isDiy`, which is what keeps it out of `visibleChess`,
   the shop tier tables and the 禁用盟约 derivation; its `visible` flag is `true` because it is a real, fieldable operator
   (a 干员调配 target — DESIGN §27).
 - **Pool**: the picked record joins the match pool as an entry only its owner can roll or buy — `SharedPool.addOwned`,
-  the official per-tier pool copies (8 at tier V, 5 at tier VI). A teammate never sees it.
+  the official per-tier pool copies (8 at tier V, 5 at tier VI), kept per owner (`pool.owned`: two players who pick the
+  same operator each have their own copies). A teammate never sees it.
 - **Tokens**: a summoning candidate's summons are in `tokens.json` like any operator's, keyed by the 甄选 chess ids of
-  both tiers (the runtime looks a variant up by the piece's own id); the two tiers share the same variant data.
+  both tiers (the runtime looks a variant up by the piece's own id). The normal records' variants are the same at both
+  tiers; a tier V elite's variant carries its level-1 module data (token attributes, `isToken` parts, `byModule`), so it
+  differs from the tier VI elite's wherever the module touches the summon (19 variants, e.g. 令's 魂 −3 cost only at level 1).
 - **Rebuild**: `chessRecord()` is shared with `buildChess`, so an official change to skills / modules / talents reaches
-  both. `validateAll` checks every candidate resolves at both tiers, with valid bonds, one default skill, and (where the
-  operator has modules at all) one active default module of its own.
+  both. `validateAll` checks every candidate resolves at both tiers, with valid bonds and one default skill; every record
+  at its slot's official `equipLevel`, `module.level` = `equipLevel`, every elite composing back from `statsBase` /
+  `traitBase` / `talentsBase` + its default module (one active default iff it has choices), the same module ids at both
+  tiers, the normal stub, overlays holding only the allowed fields, and that the tier V overlays reproduce the tier V
+  elites built in full.
 
 ## 15. Anomalies found while joining (also in `.cache/build-data-report.json`)
 
@@ -602,8 +616,8 @@ already fields; `TOKEN` / `TRAP` professions excluded). Three parts:
 ## 16. Counts (current build)
 
 `chess 266 (112 visible; 283 selectable skills over the visible chess, 184 module choices over 129 goldens)`, `bonds 23`, `garrisons 249 (43 effect keys)`, `items 115`, `bands 40`, `effects 361`,
-`enemies 249`, `factions 67 entries`, `waves 38`, `stages 11 (8 active)`, `bosses 10`, `tokens 57 (54 summons: 19 pool + 35 外援)`, `choice events 109`,
-`bounty cards 129`, `tactic cards 43`, `waiguan 87 candidates (174 tier VI records + 174 tier V overlays)`.
+`enemies 249`, `factions 67 entries`, `waves 38`, `stages 11 (8 active)`, `bosses 10`, `tokens 61 (58 summons: 19 pool + 39 外援)`, `choice events 109`,
+`bounty cards 129`, `tactic cards 43`, `waiguan 87 candidates (174 tier VI records + 174 tier V overlays; 144 module choices per tier)`.
 
 ## 17. Integrity guarantees (checked by the builder and `test/data.test.js`)
 

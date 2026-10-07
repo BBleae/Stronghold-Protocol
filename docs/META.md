@@ -10,7 +10,8 @@ server/match/
   PlayerState.js   per-player economy / shop / hand / board / items / bonds / LP + every prep intent handler
   gamedata.js      typed, defaulted view of data/*.json (config tunables with research defaults) + the balance layer
                    (data/tuning.json, §3.1)
-  pool.js          SharedPool (copies per base chess, across players), per-match bans, copy-weighted rolls
+  pool.js          SharedPool (copies per base chess, across players), per-match bans, copy-weighted rolls; each
+                   player's private 甄选 entries (pool.owned, drawn only with that playerId — DESIGN §27)
   board.js         placement legality from the stage legend on the deploy field (own board / boss half); a 高台
                    also takes a melee chess whose trait reads 可以放置于远程位 (shared/highGround.js), slot helpers,
                    reading order (boardOrder), a merge's elite tile in deployment order (mergeTile)

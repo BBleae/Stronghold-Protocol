@@ -72,7 +72,7 @@ const HELP = `Usage: node tools/fetch-assets.mjs [options]
                     (without it such a run keeps the current manifest, lists the entries and exits 1)
   --local-spines    rewrite ${LOCAL_ENEMY_SPINES_FILE} from the enemy models extracted
                     by tools/local-extract/extract.py (public/assets/local/spine/enemy/)
-  --voice=LANGS     operator battle voice: cn,jp (default, ~92 MB), cn (~40 MB), jp (~52 MB), any comma list
+  --voice=LANGS     operator battle voice: cn,jp (default, ~155 MiB), cn (~68 MiB), jp (~87 MiB), any comma list
                     of cn, jp, en, kr (English / Korean dubs: opt-in), or none
   --voice-lang=L    one dub only (upstream's spelling): the same as --voice=L
   --help            this text
@@ -278,6 +278,7 @@ async function main() {
   // entries come from the committed tools/assets/waiguan-operators.json. Missing / empty ⇒ the pool's own operators only.
   const waiguanOperators = await readJson(WAIGUAN_OPERATORS_FILE).catch(() => null);
   const extraOperators = waiguanOperators && typeof waiguanOperators === 'object' && waiguanOperators.operators ? waiguanOperators.operators : {};
+  const extraTokens = waiguanOperators && typeof waiguanOperators === 'object' && waiguanOperators.tokens ? waiguanOperators.tokens : {};
   const plan = buildPlan({
     assets07, ops03, enemies05, maps05, audio, modelsData,
     extraEnemyIds: Object.keys(dataEnemies || {}),
@@ -286,6 +287,7 @@ async function main() {
     voice,
     localEnemySpines,
     extraOperators,
+    extraTokens,
   });
   const leaves = collectLeaves(plan.template);
   log(`[plan] ${leaves.length} files + ${plan.models.size} Spine models ` +

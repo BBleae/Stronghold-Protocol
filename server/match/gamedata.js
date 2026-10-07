@@ -601,7 +601,8 @@ export class GameData {
    * that the chess makes under `loadout` ({ skillIndex } from shared/protocol.js resolveLoadout; absent ⇒ its default
    * skill): the owner variant's `sources` (`bySkill[skillIndex]` for a non-default skill) name a talent or a skill —
    * 赫默 / 巫恋 on S1 make no drone / doll. `count` = the summon's deploy limit (PRTS 卫戍协议/帮助 "根据召唤物部署数量
-   * 上限（非初始持有量），发送等量召唤物至手牌区": 凯瑟琳 2 of her 3 devices).
+   * 上限（非初始持有量），发送等量召唤物至手牌区": 凯瑟琳 2 of her 3 devices; build-data adds the summon's talent
+   * `max_deploy_count` — 令 3 souls, 4 with SUM-Y), of the selected module when it changes it (`byModule[moduleId].stats`).
    */
   placeableTokens(chessId, loadout = null) {
     const c = this.chess(chessId);
@@ -617,7 +618,8 @@ export class GameData {
         const src = Array.isArray(alt?.sources) ? alt.sources : Array.isArray(v.sources) ? v.sources : [];
         if (!src.includes('talent') && !src.includes('skill')) continue;
       }
-      const count = posIntOr(v?.stats?.deployLimit, posIntOr(t.deployLimit, 1));
+      const mod = v && loadout && typeof loadout.moduleId === 'string' && v.byModule ? v.byModule[loadout.moduleId] : null;
+      const count = posIntOr(mod?.stats?.deployLimit, posIntOr(v?.stats?.deployLimit, posIntOr(t.deployLimit, 1)));
       out.push({ tokenId: tid, count: Math.min(count, 9) });
     }
     return out;

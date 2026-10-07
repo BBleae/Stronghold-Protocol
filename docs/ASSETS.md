@@ -21,7 +21,7 @@ npm run assets       # = node tools/vendor.mjs && node tools/fetch-assets.mjs
 | `--offline` | No network. Re-runs post-processing (atlas fixes, skeleton parsing, WOFF2) on what is already on disk, then rebuilds `data/assets.json`. |
 | `--dry-run` | Print the plan (file and model counts, alias notes) and exit. |
 | `--refresh-index` | Re-download the upstream indexes: `audio_data.json`, `models_data.json` and (with voice) `charword_table.json`. |
-| `--voice=LANGS` | Operator battle voice: `cn,jp` (default: 中文 and 日文, ~92 MB), `cn` (~40 MB), `jp` (~52 MB), any comma list of `cn`, `jp`, `en`, `kr` (the English / Korean dubs are opt-in), or `none`. See [Operator voice](#operator-voice). |
+| `--voice=LANGS` | Operator battle voice: `cn,jp` (default: 中文 and 日文, ~155 MiB), `cn` (~68 MiB), `jp` (~87 MiB), any comma list of `cn`, `jp`, `en`, `kr` (the English / Korean dubs are opt-in), or `none`. See [Operator voice](#operator-voice). |
 | `--voice-lang=L` | One dub only — upstream's spelling of `--voice=L` (`cn`, `jp`, `en` or `kr`). |
 | `--prune` | Delete files under `public/assets/` that the manifest no longer references, for example after a mapping change. Without this flag they are only listed in the report. `public/assets/local/` (written by `tools/local-extract`) is never pruned. Implies `--allow-shrink`. |
 | `--allow-shrink` | Write `data/assets.json` even when it loses entries the current one has (see "The manifest never shrinks by accident" below). |
@@ -54,10 +54,11 @@ How downloads are fetched:
 - A manifest entry with fallbacks (for example an enemy icon that falls back to its base enemy's icon) only moves on to the next alternative after a **definitive 404**. When the primary fails transiently (network error, 5xx or an invalid payload after all retries), no fallback is fetched. The path is listed under `downloadErrors` in the report, and the next run retries the primary.
 - A skeleton that fails to parse is deleted and removed from the ledger, so the next online run downloads it again.
 
-The first run downloads about **494 MiB in about 8,500 files** (`data/assets.json` `stats`; of which the operator voice,
-both languages: ~92 MB in 3,360 files, the 55 emote and 玩法说明 files, 21.3 MiB, and the 78 外援 / 甄选 operators of
-DESIGN §27, 126 MiB in 1,082 files). Without voice, emotes and 外援 it was 242 MiB in about 3,700 files, 134 s on a
-~3 MB/s link. A re-run takes about 1 s.
+The first run downloads about **560 MiB in about 10,700 files** (`data/assets.json` `stats`). Of that: the operator
+voice, both languages, ~155 MiB in 5,544 files (the 78 外援 operators' lines are 63 MiB in 2,184 of them); the 55 emote
+and 玩法说明 files, 21.3 MiB; the art of the 78 外援 / 甄选 operators of DESIGN §27, 126 MiB in 1,082 files; and the
+battle Spine of 25 of their summons, 2.7 MiB in 75 files. Without voice, emotes and 外援 it was 242 MiB in about
+3,700 files, 134 s on a ~3 MB/s link. A re-run takes about 1 s.
 
 Outputs:
 - `data/assets.json`: the manifest (committed).
@@ -103,7 +104,7 @@ The `stem` of a Spine model is the upstream file name. Two examples: `char_107_l
 ### Id scope
 
 - **Operators:** all 138 pool charIds from `activity_table` (`charShopChessDatas[*].charId ∪ backupCharId`), including hidden chess and backup operators — **plus the 外援 / 甄选 (DIY) roster charIds** (DESIGN §27): 87 candidates, 9 of them pool operators already; the other 78 are not in research 07 and their entries come from the committed `tools/assets/waiguan-operators.json` (see below). 216 operators in all.
-- **Tokens:** the 20 pool tokens, plus every token key of `data/tokens.json` (built by `tools/build-data.mjs`, when present) — the 35 summons of the 外援 roster: their avatar from the default location (34 found), no battle Spine upstream, so 13 of the 55 tokens have a model.
+- **Tokens:** the 20 pool tokens, plus every token key of `data/tokens.json` (built by `tools/build-data.mjs`, when present) — the 39 summons of the 外援 roster: their avatar from the default location (36 found); fexli/ArknightsResource has no default battle Spine of them, only skins, and 25 get the skin variant `tools/assets/waiguan-operators.json` `tokens` names (`buildPlan({ extraTokens })`, see below), so 38 of the 59 tokens have a model.
 - **Enemies:** 253 ids planned, 252 in the manifest (心烛 has no assets). The set is the union of:
   - the 07 enemy list;
   - every enemy in the `act1autochess_*` wave, boss and 联防 levels that act2 modes use (from `05-maps.json`; the tutorial is excluded);
@@ -122,7 +123,8 @@ The `stem` of a Spine model is the upstream file name. Two examples: `char_107_l
 
 ## Operator voice
 
-`tools/assets/voice.mjs` takes each pool operator's **battle lines** from the official `excel/charword_table.json`
+`tools/assets/voice.mjs` takes the **battle lines** of every operator a player can field — the pool's and the 外援 /
+甄选 roster's (DESIGN §27) — from the official `excel/charword_table.json`
 (Kengxxiao/ArknightsGameData, cached under `.cache/gamedata/excel/`), picked by the official `placeType` — the moment the
 game plays a line — and downloads them from the ArknightsAssets2 `voice` branch. The client plays them at upstream #73's
 moments (PR #73, @Convey123), ported onto this fork's voice engine (DESIGN §21.30):
@@ -202,17 +204,20 @@ moments (PR #73, @Convey123), ported onto this fork's voice engine (DESIGN §21.
 - A voice file that fails to load plays nothing (logged once) and starts no cooldown; it is fetched again by a request
   10 s or more after the failure (BGM and sound effects alike), never on every use meanwhile.
 - Voice has its own channel (设置 → 角色语音, 语音语言 中文 / 日文 / 关闭, plus 英文 / 韩文 when the site has them).
-  Summons, enemies, the reserve operators (预备干员, no voice in the game) and the 外援 / 甄选 operators (DESIGN §27;
-  no voice is planned for them) say nothing.
+  Summons, enemies and the reserve operators (预备干员, no voice in the game — the 9 of the 外援 roster among them)
+  say nothing. The 78 外援 / 甄选-only operators (DESIGN §27) speak like pool operators, with the same lines and rules.
 - Lines outside a battle (编入队伍, 任命队长, 干员报到, 精英化晋升, home and base lines) are not downloaded.
 - Languages: `cn` = `CN_MANDARIN` (folder `voice_cn/`), `jp` = `JP` (`voice/`); a linkage operator with only its own
-  `LINKAGE` voice uses it in both. 120 of the 138 pool operators have voice: 14 lines each (1,680 files per language),
-  ~0.33 MB per operator in 中文 (~40 MB in all) and ~0.43 MB in 日文 (~52 MB). On request (`--voice=…,en,kr`, from
-  upstream #73): `en` = `EN` (`voice_en/`), `kr` = `KR` (`voice_kr/`), the same file names; an operator without that
-  dub has no line in it, a linkage operator keeps its own.
+  `LINKAGE` voice uses it in both. 198 operators have voice (120 of the 138 pool operators and all 78 外援-only
+  ones): 14 lines each (2,772 files per language), ~0.34 MiB per operator in 中文 (~68 MiB in all) and ~0.44 MiB in
+  日文 (~87 MiB). On request (`--voice=…,en,kr`, from upstream #73): `en` = `EN` (`voice_en/`), `kr` = `KR`
+  (`voice_kr/`), the same file names; an operator without that dub has no line in it, a linkage operator keeps its own.
 - `combat` keeps its key although it is positional now: `tools/assets/manifest.mjs droppedEntries` takes an array as
   one entry, so a renamed key would read as every operator's `combat` dropped and trip the shrink guard. Adding
   `depart` and `win4` only grew the manifest (+240 files per language: +8.4 MB 中文, +10.9 MB 日文).
+- The 外援 operators' voice came with Slapq's PR #19 (`0f153b6`), planned with the earlier 12 lines. On the 14-line
+  roles each of the 78 has all 9 roles as well (their `charword_table.json` has every line): 1,092 files per language,
+  27.5 MiB 中文 and 35.6 MiB 日文, of which `depart` and `win4` are 156 files per language.
 
 ### 外援 / 甄选 operator entries (`tools/assets/waiguan-operators.json`)
 
@@ -229,6 +234,15 @@ Back) and skill-icon entries live in the committed `tools/assets/waiguan-operato
   (and so the atlas pages) and skill icons — so a roster download follows the same order as a pool operator: the prefix
   proxy when `--asset-source=mirror` is chosen, then raw, then jsDelivr. On a network that cannot open raw at all, the
   raw attempts fail and jsDelivr answers; `fetch-assets-retry.mjs` (below) tries the jsDelivr hosts first.
+- **Summons (`tokens`).** fexli/ArknightsResource has no default battle Spine of the roster's summons, only skin
+  variants (`spine/<tokenId>/<variant>/{Spine|Front}/`). The file's `tokens` names the variant each of 25 summons uses
+  (the first by name with a `Spine` or `Front` folder, read off a listing of that repository); `fetch-assets.mjs` passes
+  it as `buildPlan({ extraTokens })`, and the plan fetches that model like a research 07 token's skin variant. The
+  generator keeps `tokens` from the committed file. A summon not listed gets the default guess (its own id as the
+  variant), which finds nothing for these: 14 of the 39 have no model (the client falls back to the avatar; 3 have
+  none either).
+- **Voice.** The roster's operators are planned for voice like the pool's (`charIds` of `plan.mjs`, see
+  [Operator voice](#operator-voice)); the entries carry no voice field, `charword_table.json` names the lines.
 - **Size notes.** Avatar and portrait entries carry the byte counts measured from the mirror (a download that returns a
   different size is flagged). Spine files carry none: jsDelivr refuses to list these repositories ("Package size exceeded
   the configured limit of 50 MB"), so there is no authoritative size to record, and the downloader only compares sizes

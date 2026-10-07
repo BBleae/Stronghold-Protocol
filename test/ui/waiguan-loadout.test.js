@@ -89,6 +89,27 @@ test('外援: a switched skill survives the client sanitiser and the lobby check
   assert.equal(changedCount(sent, get), 1, 'and counts it as a change');
 });
 
+test('外援 modules: a tier V elite offers its modules at level 1, a tier VI elite at level 3; the two tiers are separate keys', () => {
+  // 阿: GEE-X (default) + GEE-Y, the same ids at both tiers, level-1 / level-3 numbers (official battle_equip_table)
+  const picks = { diy5a: 'char_225_haak', diy6a: 'char_225_haak', diy5b: 'char_1052_kalts2' };
+  const get = clientLookup(picks);
+  const lo = lobbyLookup(picks);
+  const id = (tier, g) => `chess_char_diy_${tier}_char_225_haak_${g ? 'b' : 'a'}`;
+  const opt = (tier) => chessOptions(get(id(tier)), get(id(tier, true))).moduleOptions.map((m) => [m.id, m.rec?.level ?? null, m.rec?.attr ?? null]);
+  assert.deepEqual(opt(5), [['uniequip_002_haak', 1, { maxHp: 135, atk: 37 }], ['uniequip_003_haak', 1, { atk: 43, aspd: 3, respawnTime: -15 }], ['none', null, null]]);
+  assert.deepEqual(opt(6), [['uniequip_002_haak', 3, { maxHp: 240, atk: 57 }], ['uniequip_003_haak', 3, { atk: 75, aspd: 5, respawnTime: -15 }], ['none', null, null]]);
+  assert.deepEqual(loadoutOptions(lo(id(5)), lo(id(5, true))).modules, ['uniequip_002_haak', 'uniequip_003_haak', 'none']);
+  // the screen sends, the lobby accepts: a non-default module, 'none', each tier on its own key
+  const entries = { [id(5)]: { module: 'uniequip_003_haak' }, [id(6)]: { module: 'none' } };
+  assert.deepEqual(sanitizeEntries(entries, get), entries);
+  assert.deepEqual(checkLoadout(entries, lo), { ok: true, loadout: { [id(5)]: { skill: 0, module: 'uniequip_003_haak' }, [id(6)]: { skill: 0, module: 'none' } } });
+  assert.deepEqual(checkLoadout({ [id(5)]: { module: 'uniequip_002_haak' } }, lo), { ok: true, loadout: {} }, 'the default is dropped');
+  // another operator's module, and any module on a module-less 外援 (凯尔希·思衡托: only 'none', its default)
+  assert.equal(checkLoadout({ [id(6)]: { module: 'uniequip_002_ling' } }, lo).error, 'BAD_TARGET');
+  assert.deepEqual(checkLoadout({ chess_char_diy_5_char_1052_kalts2_a: { module: 'none' } }, lo), { ok: true, loadout: {} });
+  assert.equal(checkLoadout({ chess_char_diy_5_char_1052_kalts2_a: { module: 'uniequip_002_kalts2' } }, lo).error, 'BAD_TARGET');
+});
+
 test('外援: without the pick, or with another operator picked, the same entry is refused everywhere', () => {
   const entry = { [A6]: { skill: 2 } };
   // the screen never even lists it

@@ -7,16 +7,27 @@
 //
 //   { candidates: [ { charId, name, profession, bonds, chessIds: { 5, 6 } } … ],
 //     chess:   { '<tier VI chessId>': <full chess record> … },
-//     chessT5: { '<tier V chessId>':  { from: '<tier VI chessId>', …nine tier fields } … } }
+//     chessT5: { '<tier V chessId>':  { from: '<tier VI chessId>', …nine tier fields[, …module-level fields] } … } }
 //
-// The two tiers of one operator differ ONLY in those nine fields (position in the shop, price, status), so the tier V
-// records are stored as overlays on the tier VI ones. `waiguanTier5Records` rebuilds them; the server merges the result
-// into the match's own chess table when a player's picks are known.
+// The two tiers of one operator differ in nine fields on every record (position in the shop, price, status) and, on the
+// ELITE, in what its slot's 模组 level changes: the tier V elite slot is equipLevel 1, the tier VI one 3 (official
+// charChessDataDict chess_char_{5,6}_diy1_b), so the module bonus, the module trait / talent parts and every module
+// choice differ. The tier V records are stored as overlays on the tier VI ones (an elite overlay carries the
+// WAIGUAN_ELITE_TIER_FIELDS that differ). `waiguanTier5Records` rebuilds them; the server merges the result into the
+// match's own chess table when a player's picks are known.
 
-/** Fields the tier changes on an otherwise identical 甄选 record (must match tools/build-data.mjs WAIGUAN_TIER_FIELDS). */
+/** Fields the tier changes on every 甄选 record (must match tools/build-data.mjs WAIGUAN_TIER_FIELDS). */
 export const WAIGUAN_TIER_FIELDS = Object.freeze([
   'chessId', 'baseId', 'goldenId', 'tier', 'identifier', 'price', 'sellPrice', 'upgradeChessId', 'status',
 ]);
+
+/**
+ * Fields the tier changes on an ELITE only — everything its slot's 模组 level decides (tier V equipLevel 1, tier VI 3):
+ * the stats with the module bonus, the trait and talents with the module parts, the equipped `module` and the `modules`
+ * choices. build-data writes the ones that differ from the tier VI twin into the elite's overlay; `statsBase`,
+ * `traitBase`, `talentsBase` and the skills do not depend on the module level and stay shared.
+ */
+export const WAIGUAN_ELITE_TIER_FIELDS = Object.freeze(['stats', 'trait', 'talents', 'module', 'modules']);
 
 /** The four 甄选 slots of the official mode, in screen order: `{ slot, chessId, tier }` (the ids data/chess.json carries). */
 export const WAIGUAN_SLOTS = Object.freeze([
@@ -49,6 +60,7 @@ export function waiguanTier5Records(chessT6, chessT5, warn = null) {
     if (!base) { if (warn) warn(`waiguan: tier V record ${id} has no tier VI base ${ov?.from}`); continue; }
     const rec = { ...base };
     for (const f of WAIGUAN_TIER_FIELDS) if (f in ov) rec[f] = ov[f];
+    for (const f of WAIGUAN_ELITE_TIER_FIELDS) if (f in ov) rec[f] = ov[f];
     out[id] = rec;
   }
   return out;

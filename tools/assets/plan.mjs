@@ -280,10 +280,13 @@ export function collectEnemyIds({ assets07, enemies05, maps05, ops03 }) {
  *   gets `spineLocal` = { group: 'spine/enemy/<id>', ...meta } beside its web `spine`
  * @param {Record<string, any>} [p.extraOperators] operator asset entries (07-assets.json shape) for characters research
  *   07 does not list — the 外援 / 甄选 (DIY) roster (tools/assets/waiguan-operators.json, DESIGN §27). Each file is
- *   tried at its raw.githubusercontent.com `mirror` first, then at its jsDelivr `url` (entryUrls).
+ *   tried at its raw.githubusercontent.com `mirror` first, then at its jsDelivr `url` (entryUrls). Their battle voice is
+ *   planned like a pool operator's (`voice`, the same 14 lines).
+ * @param {Record<string, any>} [p.extraTokens] the 外援 roster's summons (tools/assets/waiguan-operators.json `tokens`):
+ *   token id → `{ battleSpineSkinVariantsOnly: [variant] }`, the skin-variant Spine a token unknown to research 07 uses
  * @returns {{ template: any, models: Map<string, any>, notes: string[] }}
  */
-export function buildPlan({ assets07, ops03, enemies05, maps05, audio, modelsData, extraEnemyIds = [], extraTokenIds = [], extraHandbook = {}, localEnemySpines = {}, voice = null, extraOperators = {} }) {
+export function buildPlan({ assets07, ops03, enemies05, maps05, audio, modelsData, extraEnemyIds = [], extraTokenIds = [], extraHandbook = {}, localEnemySpines = {}, voice = null, extraOperators = {}, extraTokens = {} }) {
   const notes = [];
   /** @type {Map<string, any>} */
   const models = new Map();
@@ -318,8 +321,8 @@ export function buildPlan({ assets07, ops03, enemies05, maps05, audio, modelsDat
   // loop below (avatar / portrait / battle Spine / skill icons / unit SFX), so an operator of the roster is planned
   // exactly like a pool operator.
   const operatorsById = { ...(assets07?.operators || {}), ...extraOperators };
-  // the pool's own characters (research 07): their battle voice is planned below; a 外援 operator has none
-  const charIds = Object.keys(assets07?.operators || {}).sort();
+  // every operator a player can field — the pool's (research 07) and the 外援 roster: their battle voice is planned below
+  const charIds = Object.keys(operatorsById).sort();
   for (const id of Object.keys(operatorsById).sort()) {
     const o = operatorsById[id];
     // Alternatives: a research 07 entry names raw.githubusercontent.com (the Downloader adds its jsDelivr mirror, and
@@ -371,8 +374,12 @@ export function buildPlan({ assets07, ops03, enemies05, maps05, audio, modelsDat
   const tokenIds = new Set(Object.keys(assets07?.tokens || {}));
   for (const id of extraTokenIds) if (typeof id === 'string' && /^token_\d+_[a-z0-9_]+$/i.test(id)) tokenIds.add(id);
   for (const id of [...tokenIds].sort()) {
-    // Tokens unknown to research 07: default avatar/Spine locations (misses are tolerated).
-    const t = assets07?.tokens?.[id] ?? {
+    // Tokens unknown to research 07: the 外援 roster's summons name their Spine (tools/assets/waiguan-operators.json
+    // `tokens`: the upstream repository has only skin variants of them), any other gets the default avatar/Spine
+    // locations (misses are tolerated).
+    const t = assets07?.tokens?.[id] ?? (extraTokens?.[id] ? {
+      avatar: { url: `${RAW.yuanyan}avatar/${id}.png` }, battleSpineDefault: null, ...extraTokens[id],
+    } : null) ?? {
       avatar: { url: `${RAW.yuanyan}avatar/${id}.png` },
       battleSpineDefault: null,
       battleSpineSkinVariantsOnly: [id],

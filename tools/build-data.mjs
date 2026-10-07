@@ -34,9 +34,11 @@ import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isDeepStrictEqual } from 'node:util';
 import { Grid, DEPLOY_REFUSED_TILES } from '../server/sim/grid.js';
 import { bandBondIds } from '../shared/bandBonds.js';
-import { WAIGUAN_TIER_FIELDS as WAIGUAN_TIER_FIELDS_SHARED, waiguanTier5Records as waiguanTier5RecordsShared } from '../shared/waiguan.js';
+import { WAIGUAN_ELITE_TIER_FIELDS, WAIGUAN_TIER_FIELDS as WAIGUAN_TIER_FIELDS_SHARED, waiguanTier5Records as waiguanTier5RecordsShared } from '../shared/waiguan.js';
+import { composeStats, composeTalents } from '../shared/loadoutRecord.js';
 
 // ===== CLI & IO ==================================================================================
 
@@ -958,21 +960,21 @@ function chessRecord(ctx, { chessId, baseId, isGolden, tier, shop, cd, charId, i
     };
     const defUse = tokenUse(rec.skill);
     const sources = defUse.use;
-    const resolvable = [...sources.keys()].filter((id) => {
+    const altSkills = rec.skills.filter((s) => s.index !== sIdx);
+    // Every selectable skill's summon is one of the chess's tokens (W S2 地雷, 黑键 S2, 贝洛内 S3, 予愿安洁莉娜 S3 are
+    // made by a non-default skill only and listed nowhere else): its default `sources` are then [] and the skill's
+    // own entry (`bySkill`) names 'skill' — loadouts summon it (DESIGN §16, DESIGN_BC D1).
+    const altOnly = new Set();
+    for (const s of altSkills) for (const id of tokenUse(s).use.keys()) if (charTable[id] && !sources.has(id)) altOnly.add(id);
+    const resolvable = [...sources.keys(), ...altOnly].filter((id) => {
       if (charTable[id]) return true;
       // A container id already remapped onto the skill token (see above) is expected; others are anomalies.
       if (!rec.talents.some((t) => t.containerTokenKey === id)) warn(`chess ${chessId}: token ${id} not in character_table (skipped)`);
       return false;
     }).sort(naturalCmp);
     rec.tokens = resolvable;
-    const altSkills = rec.skills.filter((s) => s.index !== sIdx);
-    for (const s of altSkills) {
-      for (const id of tokenUse(s).use.keys()) {
-        if (charTable[id] && !resolvable.includes(id)) warn(`chess ${chessId}: token ${id} of skill ${s.skillId} is not listed by the character (loadouts cannot summon it)`);
-      }
-    }
     for (const tokenId of resolvable) {
-      const src = sources.get(tokenId);
+      const src = sources.get(tokenId) ?? new Set();
       // Per selectable non-default skill: the token skill slot, count and sources change with it.
       const skillAlts = altSkills.map((s) => {
         const u = tokenUse(s);
@@ -1047,21 +1049,20 @@ function buildChess(ctx) {
 // empty), as officially.
 //
 // Every candidate is emitted twice (tier V and tier VI), because the tier decides when the slot can be bought and
-// which record the board uses; `options` is the light list the picker UI reads.
+// which record the board uses; `options` is the light list the picker UI reads. The tier V records are stored as
+// overlays on the tier VI ones (`chessT5`): nine tier fields on every record, plus — on an ELITE only — the fields its
+// slot's 模组 level changes (the tier V elite slot is equipLevel 1, the tier VI one 3; official charChessDataDict
+// chess_char_{5,6}_diy1_b, the same split the pool has: tiers I–V elites level 1, tier VI elites level 3).
 
 /**
- * Fields a 甄选 slot's tier changes on an otherwise identical operator record (see buildWaiguan) — the single source of
- * truth is shared/waiguan.js, which the server and the browser read too.
+ * Fields a 甄选 slot's tier changes on every operator record (see buildWaiguan) — the single source of truth is
+ * shared/waiguan.js, which the server and the browser read too. WAIGUAN_ELITE_TIER_FIELDS are the module-level fields an
+ * elite overlay may add.
  */
 const WAIGUAN_TIER_FIELDS = WAIGUAN_TIER_FIELDS_SHARED;
 
 /** `shared/waiguan.js waiguanTier5Records` with this file's `warn`. */
 const waiguanTier5Records = (chessT6, chessT5) => waiguanTier5RecordsShared(chessT6, chessT5, warn);
-
-/**
- * Reconstruct a tier V 甄选 record from its tier VI twin plus `data/waiguan.json.chessT5` (the two differ only in the
- * slot's tier, price and status, so the roster stores each operator once). Shared with the server and the browser.
- */
 
 /** The four 甄选 slots of the official mode: their template chess id and the tier whose status they use. */
 const WAIGUAN_SLOTS = Object.freeze([
@@ -1134,7 +1135,9 @@ function waiguanBonds(char, bonds, fallbackBondId) {
  * @param {object} ctx loadContext() result
  * @param {object} chess chess.json map built by buildChess (read for the candidates' source records)
  * @param {object} bonds bonds.json map (powerIdList, fallback)
- * @returns {{ candidates: object[], chess: object }}
+ * @param {Map} ownersParam token-owners map (buildChess); the records' summons are registered in it
+ * @returns {{ candidates: object[], chess: object, chessT5: object, t5Elite: object }} `t5Elite` = the tier V elites
+ *   built in full (never written: validateAll checks that the overlays reproduce them)
  */
 function buildWaiguan(ctx, chess, bonds, ownersParam) {
   const { act, charTable } = ctx;
@@ -1151,81 +1154,84 @@ function buildWaiguan(ctx, chess, bonds, ownersParam) {
   cands.sort((a, b) => String(a.char.name).localeCompare(String(b.char.name), 'zh') || naturalCmp(a.charId, b.charId));
   if (!cands.length) warn('waiguan: no 6★ candidate outside the shop pool');
 
-  // (2) per tier: the operator's own record, at the slot's tier (a 6★ of that tier has exactly the status a DIY slot
-  // uses, so the record is built the same way the shop chess are — the operator is simply not in the shop pool).
-  // `out` holds the tier VI records; `tier5` holds the tier V overlays (see waiguanTier5Records) — the two tiers of one
-  // operator differ in nine fields, so storing both records in full doubled the roster for nothing.
+  for (const tier of [5, 6]) {
+    if (!chess[`chess_char_${tier}_diy1_a`] || !chess[`chess_char_${tier}_diy1_b`]) warn(`waiguan: tier ${tier} has no DIY slot template`);
+  }
+  // One record of one candidate at one tier, built through the DIY slot template (`chess_char_<tier>_diy1_<a|b>`): the
+  // operator's own record at the slot's status (a 6★ of that tier has exactly the status a DIY slot uses, so the record
+  // is built the same way the shop chess are — the operator is simply not in the shop pool). chessRecord registers its
+  // summons in `ownersParam` under the record's own chessId.
+  const buildOne = (tier, charId, char, golden) => {
+    const tpl = chess[`chess_char_${tier}_diy1_${golden ? 'b' : 'a'}`];
+    if (!tpl) return null;
+    const id = waiguanChessId(tier, charId, golden);
+    const srcCd = ctx.act.charChessDataDict?.[tpl.chessId] || null;
+    // The DIY slot's metadata, with the OPERATOR's charId. chessRecord reads the status/skills/talents/module from
+    // character_table by charId, so nothing of the template's own operator leaks into the record. Both statuses name the
+    // operator's default module, as a pool shop row does: the elite equips it at the slot's equipLevel, the normal record
+    // (equipLevel 0) carries the inactive stub `{ id, name, type, level: 0, active: false }` a pool normal has.
+    const shop = {
+      chessType: 'DIY',
+      isHidden: false,
+      chessLevel: tier,
+      shopLevelSortId: tpl.shopSortId,
+      charId,
+      goldenChessId: waiguanChessId(tier, charId, true),
+      defaultUniEquipId: defaultUniEquipIdOf(ctx, charId),
+      defaultSkillIndex: 0,
+    };
+    const rec = chessRecord(ctx, {
+      chessId: id,
+      baseId: waiguanChessId(tier, charId, false),
+      isGolden: golden,
+      tier,
+      shop,
+      cd: {
+        isGolden: golden,
+        // evolvePhase / charLevel decide the interpolated stats, the unlocked skills and the module level, so they
+        // come from the original charChessDataDict entries of this very slot (phase 2, Lv 1 | Lv 60) — never guessed
+        status: {
+          evolvePhase: srcCd?.status?.evolvePhase ?? 'PHASE_0',
+          charLevel: srcCd?.status?.charLevel ?? 1,
+          skillLevel: tpl.status.skillLevel,
+          equipLevel: tpl.status.equipLevel || 0,
+        },
+        bondIds: waiguanBonds(char, bonds, fallback),
+        garrisonIds: [],
+        upgradeNum: tpl.upgradeNum,
+        upgradeChessId: tpl.upgradeChessId,
+      },
+      charId,
+      isDiy: true,
+      owners: ownersParam,
+    });
+    if (!rec) { warn(`waiguan: ${charId} ${char.name} could not be built at tier ${tier}`); return null; }
+    rec.diyRequirement = 'TIER_6';
+    return rec;
+  };
+
+  // (2) the tier VI records, in full (`out`). Built before any tier V record so the token owner order — and with it the
+  // top-level defaults of every 外援 summon (buildTokens' `first` owner) — stays tier VI first.
   const out = {};
   const tier5 = {};
-  for (const tier of [5, 6]) {
-    const proto = chess[`chess_char_${tier}_diy1_a`];
-    const protoG = chess[`chess_char_${tier}_diy1_b`];
-    if (!proto || !protoG) { warn(`waiguan: tier ${tier} has no DIY slot template`); continue; }
-    // Tier V is only ever used to derive the tier V OVERLAY (buildWaiguan's step 3): its token variants and its
-    // stats/skills are byte-identical to the tier VI record's, so generating them twice doubled both waiguan.json and
-    // tokens.json for nothing. The tier V record the runtime sees is reconstructed from the overlay (shared/waiguan.js).
-    if (tier === 5) continue;
-    for (const { charId, char } of cands) {
-      const bnd = waiguanBonds(char, bonds, fallback);
-      for (const golden of [false, true]) {
-        const tpl = golden ? protoG : proto;
-        const id = waiguanChessId(tier, charId, golden);
-        const srcCd = ctx.act.charChessDataDict?.[tpl.chessId] || null;
-        // The DIY slot's metadata, with the OPERATOR's charId. chessRecord reads the status/skills/talents/module from
-        // character_table by charId, so nothing of the template's own operator leaks into the record.
-        const shop = {
-          chessType: 'DIY',
-          isHidden: false,
-          chessLevel: tier,
-          shopLevelSortId: tpl.shopSortId,
-          charId,
-          goldenChessId: waiguanChessId(tier, charId, true),
-          defaultUniEquipId: golden ? defaultUniEquipIdOf(ctx, charId) : null,
-          defaultSkillIndex: 0,
-        };
-        const rec = chessRecord(ctx, {
-          chessId: id,
-          baseId: waiguanChessId(tier, charId, false),
-          isGolden: golden,
-          tier,
-          shop,
-          cd: {
-            isGolden: golden,
-            // evolvePhase / charLevel decide the interpolated stats, the unlocked skills and the module level, so they
-            // come from the original charChessDataDict entries of this very slot (phase 2, Lv 1 | Lv 60) — never guessed
-            status: {
-              evolvePhase: srcCd?.status?.evolvePhase ?? 'PHASE_0',
-              charLevel: srcCd?.status?.charLevel ?? 1,
-              skillLevel: tpl.status.skillLevel,
-              equipLevel: tpl.status.equipLevel || 0,
-            },
-            bondIds: bnd,
-            garrisonIds: [],
-            upgradeNum: tpl.upgradeNum,
-            upgradeChessId: tpl.upgradeChessId,
-          },
-          charId,
-          isDiy: true,
-          owners: ownersParam,
-        });
-        if (!rec) { warn(`waiguan: ${charId} ${char.name} could not be built at tier ${tier}`); continue; }
-        rec.diyRequirement = 'TIER_6';
-        out[id] = rec;
-      }
+  const t5Elite = {};
+  for (const { charId, char } of cands) {
+    for (const golden of [false, true]) {
+      const rec = buildOne(6, charId, char, golden);
+      if (rec) out[rec.chessId] = rec;
     }
   }
 
-  // (3) the tier V overlays: the tier V slots of every candidate, stored as the nine fields the tier changes. They are
-  // built from the slot's own template (the same one step 2 reads), NOT from the tier VI record, so a difference the
-  // clone would have missed — a different shopSortId, price or status — still lands in the overlay.
+  // (3) the tier V overlays (`tier5`, read by waiguanTier5Records): the nine tier fields of every tier V record. They are
+  // built from the tier V slot's own template, NOT from the tier VI record, so a difference the clone would have missed
+  // — a different price or status — still lands in the overlay. A tier V NORMAL record is the tier VI one plus these
+  // nine fields: both normal slot templates are phase 2 / Lv 1 / skill 4 / equipLevel 0, so nothing else differs.
   for (const { charId } of cands) {
     for (const golden of [false, true]) {
       const tpl = golden ? chess.chess_char_5_diy1_b : chess.chess_char_5_diy1_a;
-      const srcCd = ctx.act.charChessDataDict?.[tpl.chessId] || null;
       const t6 = out[waiguanChessId(6, charId, golden)];
-      if (!t6) continue;
-      // The tier V record is the tier VI one with the tier V slot's shop position and status (the operator's own data —
-      // stats, skills, talents, modules, assets — is identical at both tiers). `from` is what waiguanTier5Records reads.
+      if (!tpl || !t6) continue;
+      const srcCd = ctx.act.charChessDataDict?.[tpl.chessId] || null;
       tier5[waiguanChessId(5, charId, golden)] = {
         from: t6.chessId,
         chessId: waiguanChessId(5, charId, golden),
@@ -1246,23 +1252,38 @@ function buildWaiguan(ctx, chess, bonds, ownersParam) {
     }
   }
 
-  // (4) token variants for the tier V records: the runtime looks a summon up by the piece's own chessId
-  // (server/sim/simdata.js `variants[ownerChessId]`), and a tier V 甄选 piece carries the tier V id, so the variants of
-  // its ~30 summoning operators are mirrored onto the tier V ids of both statuses. The variant data itself is shared
-  // (the same object), so this costs keys, not payload.
+  // (4) token variants for the tier V NORMAL records: the runtime looks a summon up by the piece's own chessId
+  // (server/sim/simdata.js `variants[ownerChessId]`), and a tier V 甄选 piece carries the tier V id, so the owner entries
+  // of the tier VI normal records are mirrored onto the tier V normal ids (same status, same variant data; buildTokens
+  // still writes each owner's variant out in full). The tier V elites register their own owner entries in step 5.
   for (const [id, rec] of Object.entries(out)) {
+    if (rec.isGolden) continue;
     for (const tokenId of rec.tokens || []) {
       const owners = ownersParam && ownersParam.get(tokenId);
       if (!Array.isArray(owners)) continue;
       const src = owners.find((o) => o.chessId === id);
       if (!src) continue;
-      for (const t5id of [waiguanChessId(5, rec.charId, rec.isGolden)]) {
-        if (!owners.some((o) => o.chessId === t5id)) owners.push({ ...src, chessId: t5id });
-      }
+      const t5id = waiguanChessId(5, rec.charId, false);
+      if (!owners.some((o) => o.chessId === t5id)) owners.push({ ...src, chessId: t5id });
     }
   }
 
-  // (5) the light list the picker reads (no stats / skills / talents)
+  // (5) the tier V ELITES: their slot's 模组 level is 1 (chess_char_5_diy1_b equipLevel 1; tier VI 3), which changes the
+  // module bonus, the module trait / talent parts, the module record, every module choice and the summons' module data.
+  // Built in full — after the tier VI records (owner order, step 2); chessRecord registers their summons with level-1
+  // module data — and diffed against the tier VI elite: the overlay stores only the module-level fields
+  // (WAIGUAN_ELITE_TIER_FIELDS) that differ. The full record is not written; validateAll checks the overlay rebuilds it.
+  for (const { charId, char } of cands) {
+    const id5 = waiguanChessId(5, charId, true);
+    const t6 = out[waiguanChessId(6, charId, true)];
+    if (!t6 || !tier5[id5]) continue;
+    const full = buildOne(5, charId, char, true);
+    if (!full) continue;
+    t5Elite[id5] = full;
+    for (const f of WAIGUAN_ELITE_TIER_FIELDS) if (!isDeepStrictEqual(full[f], t6[f])) tier5[id5][f] = full[f];
+  }
+
+  // (6) the light list the picker reads (no stats / skills / talents)
   const options = cands.map(({ charId, char }) => ({
     charId,
     name: char.name,
@@ -1276,7 +1297,7 @@ function buildWaiguan(ctx, chess, bonds, ownersParam) {
     // the two record ids the client resolves a board piece / shop card against
     chessIds: { 5: waiguanChessId(5, charId, false), 6: waiguanChessId(6, charId, false) },
   }));
-  return { candidates: options, chess: out, chessT5: tier5 };
+  return { candidates: options, chess: out, chessT5: tier5, t5Elite };
 }
 
 // ===== tokens ===================================================================================
@@ -1325,9 +1346,19 @@ function tokenVariant(ctx, tokenId, char, { phase, level, skillIndex, skillLevel
     skill.trigger = resolveTrigger(ctx, char, tokenId, sIdx, skill);
     skill.index = sIdx;
   }
+  const talents = buildTalents(ctx, char, ph, lv, moduleTokenParts, label, ownerPhase, ownerLevel);
+  const stats = statsFrom(attrs, bonus);
+  // 部署数量上限 (PRTS 卫戍协议/帮助 "根据召唤物部署数量上限…发送等量召唤物至手牌区"): the phase's maxDeployCount + the
+  // summon's own talent `max_deploy_count` (the hidden "TOKEN数+N" part: 令 / 麦哲伦 souls and drones 1 + 2 = "最多同时部署3个",
+  // 白铁 1 + 1, 夜莺 幻影 1 + 2; a module may raise it — 令 SUM-Y 1 + 3). The largest one counts: a module restates the
+  // talent under another index (夜莺 OPS 幻影: both parts carry 2). No pool summon has such a talent. [ASSUMED] the PRTS
+  // rule names only "部署数量上限"; that the hidden part belongs to it follows the owners' texts ("最多同时部署3个"), the
+  // hand count (GameData.placeableTokens) is this limit — the deploy cap, not a consumable's per-battle stock.
+  const deployBonus = talents.reduce((n, t) => Math.max(n, typeof t.bb?.max_deploy_count === 'number' ? t.bb.max_deploy_count : 0), 0);
+  if (stats && deployBonus > 0) stats.deployLimit += deployBonus;
   return {
     phase: ph, level: lv,
-    stats: statsFrom(attrs, bonus),
+    stats,
     immunities: immunitiesOf(attrs),
     rangeGrid: rangeGrid(ctx, char.phases?.[ph]?.rangeId),
     trait: {
@@ -1336,7 +1367,7 @@ function tokenVariant(ctx, tokenId, char, { phase, level, skillIndex, skillLevel
     },
     ...classifyToken(char, tp.desc),
     skill,
-    talents: buildTalents(ctx, char, ph, lv, moduleTokenParts, label, ownerPhase, ownerLevel),
+    talents,
   };
 }
 
@@ -3401,7 +3432,7 @@ function findNonFinite(obj, path, out) {
  * Cross-file referential integrity checks. Returns a list of error strings (empty = OK).
  * The same invariants are asserted by test/data.test.js.
  */
-function validateAll(f) {
+function validateAll(f, extra = {}) {
   const errors = [];
   const err = (m) => errors.push(m);
   const { config, chess, bonds, garrisons, items, bands, effects, choices, enemies, factions, waves, stages, bosses, tokens, waiguan } = f;
@@ -3453,9 +3484,6 @@ function validateAll(f) {
       if (c.garrisonIds.length) err(`waiguan: ${id} must have no 特质`);
       if (!c.stats || !c.skill || !Array.isArray(c.rangeGrid)) err(`waiguan: ${id} is not a full record`);
       if (!c.skills || c.skills.filter((s) => s.isDefault).length !== 1) err(`waiguan: ${id} skills[] has no single default`);
-      if (c.isGolden && (!c.module || !c.module.active || (c.modules || []).filter((m) => m.isDefault).length !== 1)) {
-        err(`waiguan: ${id} elite has no active default module`);
-      }
       if (JSON.stringify(c.bonds) !== JSON.stringify([...cand.bonds])) err(`waiguan: ${id} bonds disagree with the candidate`);
       // the record is only reachable through the 甄选 slots, so it must never enter a shared pool / choices pool
       if (chess[id]) err(`waiguan: ${id} leaked into data/chess.json`);
@@ -3466,7 +3494,51 @@ function validateAll(f) {
     if (!ov) { err(`waiguan: ${cand.charId} has no tier V overlay`); continue; }
     if (ov.from !== cand.chessIds[6]) err(`waiguan: ${t5id} points at ${ov.from}, expected ${cand.chessIds[6]}`);
     for (const f of WAIGUAN_TIER_FIELDS) if (!(f in ov) && f !== 'upgradeChessId') err(`waiguan: ${t5id} overlay is missing ${f}`);
-    if (ov.status.equipLevel !== 0) err(`waiguan: ${t5id} tier V status must have equipLevel 0, got ${ov.status.equipLevel}`);
+    // a normal overlay is the nine tier fields; an elite overlay may add the module-level fields (shared/waiguan.js)
+    for (const golden of [false, true]) {
+      const o = waiguan.chessT5[cand.chessIds[5].replace(/_a$/, golden ? '_b' : '_a')];
+      for (const k of Object.keys(o || {})) {
+        if (k !== 'from' && !WAIGUAN_TIER_FIELDS.includes(k) && !(golden && WAIGUAN_ELITE_TIER_FIELDS.includes(k))) err(`waiguan: ${o.chessId} overlay carries ${k}`);
+      }
+    }
+  }
+  // 外援 modules (模组): every record at ITS slot's status — the tier V elite slot is equipLevel 1, the tier VI one 3 — and
+  // every elite composing back from statsBase / traitBase / talentsBase like a pool elite (the module-less operators
+  // 凯尔希·思衡托 and 予愿安洁莉娜 carry `{ id: null, active: false }` and no choices); a normal record carries the
+  // inactive stub of its operator's default module, like a pool normal.
+  for (const [id, c] of Object.entries(waiguanChess)) {
+    const tpl = chess[`chess_char_${c.tier}_diy1_${c.isGolden ? 'b' : 'a'}`];
+    if (!tpl || c.status?.equipLevel !== tpl.status?.equipLevel) err(`waiguan: ${id} equipLevel ${c.status?.equipLevel} is not its slot's ${tpl?.status?.equipLevel}`);
+    if (!c.isGolden) {
+      const g = waiguanChess[c.goldenId];
+      const stub = g?.module?.id ? { ...g.module, level: 0, active: false } : null;
+      if (!isDeepStrictEqual(c.module, stub)) err(`waiguan: ${id} normal record must carry the inactive module stub`);
+      if (c.modules || c.statsBase || c.traitBase || c.talentsBase) err(`waiguan: ${id} normal record has module choices`);
+      continue;
+    }
+    if (!c.module || c.module.level !== c.status.equipLevel) err(`waiguan: ${id} module level ${c.module?.level} != equipLevel ${c.status.equipLevel}`);
+    if (!Array.isArray(c.modules) || !c.statsBase || !c.traitBase || !c.talentsBase) { err(`waiguan: ${id} elite without module choices`); continue; }
+    const defs = c.modules.filter((m) => m.isDefault);
+    if (defs.length !== (c.module?.active ? 1 : 0) || (defs[0] && defs[0].uniEquipId !== c.module.id)) err(`waiguan: ${id} default module is not the active one`);
+    if (c.modules.length && !c.module?.active) err(`waiguan: ${id} has module choices but no active module`);
+    for (const m of c.modules) if (m.level !== c.status.equipLevel) err(`waiguan: ${id} module ${m.uniEquipId} level ${m.level} != equipLevel ${c.status.equipLevel}`);
+    const dm = defs[0] ?? null;
+    if (!isDeepStrictEqual(composeStats(c.statsBase, dm?.attr), c.stats)) err(`waiguan: ${id} stats != statsBase + default module attr`);
+    if (!isDeepStrictEqual(dm?.traitOverride ?? c.traitBase, c.trait)) err(`waiguan: ${id} trait != the default module's trait`);
+    if (!isDeepStrictEqual(composeTalents(c.talentsBase, dm?.talentChanges), c.talents)) err(`waiguan: ${id} talents != talentsBase + default module changes`);
+  }
+  for (const cand of waiguan.candidates) {
+    const ids = (tier) => (waiguanChess[cand.chessIds[tier].replace(/_a$/, '_b')]?.modules ?? []).map((m) => m.uniEquipId);
+    if (!isDeepStrictEqual(ids(5), ids(6))) err(`waiguan: ${cand.charId} offers different modules at tier V and tier VI`);
+  }
+  // the overlay reproduces the tier V elite built in full (buildWaiguan `t5Elite`), except `identifier` (the overlay's is
+  // the slot template's, the full build has none) and `shopSortId` (not a tier field: every 甄选 record keeps tier VI's)
+  for (const [id, full] of Object.entries(extra.waiguanT5Elite || {})) {
+    const r = waiguanChess[id];
+    for (const k of new Set([...Object.keys(full), ...Object.keys(r || {})])) {
+      if (k === 'identifier' || k === 'shopSortId') continue;
+      if (!isDeepStrictEqual(full[k], r?.[k])) err(`waiguan: ${id}.${k}: the tier V overlay does not reproduce the tier V elite`);
+    }
   }
   if (Object.keys(waiguan.chess).length !== waiguan.candidates.length * 2) {
     err(`waiguan: expected ${waiguan.candidates.length * 2} tier VI records, got ${Object.keys(waiguan.chess).length}`);
@@ -3546,7 +3618,11 @@ function validateAll(f) {
   }
   for (const t of Object.values(tokens)) {
     if (!t.stats) err(`token ${t.tokenId}: no stats`);
-    for (const [o, v] of Object.entries(t.variants || {})) if (!Array.isArray(v.sources) || !v.sources.length) err(`token ${t.tokenId}@${o}: no sources`);
+    // a summon of a non-default skill only (DESIGN_BC D1) has no default sources; one of its skills then makes it
+    const makes = (l) => Array.isArray(l) && (l.includes('talent') || l.includes('skill'));
+    for (const [o, v] of Object.entries(t.variants || {})) {
+      if (!Array.isArray(v.sources) || (!v.sources.length && !Object.values(v.bySkill || {}).some((b) => makes(b.sources)))) err(`token ${t.tokenId}@${o}: no sources`);
+    }
   }
   for (const e of Object.values(enemies)) {
     const s = e.stats;
@@ -3589,7 +3665,7 @@ async function main() {
   for (const b of Object.values(bands)) b.bondIds = bandBondIds(b, { bonds, pools: choices.pools });
   const config = buildConfig(ctx, waves, stages, bands);
   const files = { config, chess, bonds, garrisons, items, bands, effects, choices, enemies, factions, waves, stages, bosses, tokens, waiguan: { candidates: waiguanRoster, chess: waiguan.chess, chessT5: waiguan.chessT5 } };
-  const errors = validateAll(files);
+  const errors = validateAll(files, { waiguanT5Elite: waiguan.t5Elite });
   let total = 0;
   const sizes = {};
   const texts = {};

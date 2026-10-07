@@ -249,6 +249,7 @@ export async function bundleWorker({ root = ROOT, outfile = path.join(root, 'dis
   const contentImports = new Map([
     [path.join(root, 'server/sim/content/index.js'), [
       ...[1, 2, 3, 4, 5, 6].map(t => `./kits/tier${t}.js`),
+      './kits/waiguan/index.js',
       ...['tokens', 'devices', 'enemies', 'bosses', 'bonds', 'garrisons', 'items', 'bands', 'choices'].map(n => `./${n}.js`),
     ]],
     [path.join(root, 'server/sim/content/bands.js'), ['./bands/battle.js', './bands/meta.js']],

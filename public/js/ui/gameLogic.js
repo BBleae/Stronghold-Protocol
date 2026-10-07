@@ -584,6 +584,14 @@ export function bondMembers(bond, priv, banned = [], getChess = () => null, getI
     const c = getChess(id);
     rows.push({ id, tier: c?.tier ?? 0, name: c?.name ?? id, onBoard: g.on, owned: true, inHand: g.hand, banned: false, granted: true, items: g.items });
   }
+  // the player's own 外援 / 甄选 operators (DESIGN §27): not in bonds.json's member list, yet the server counts each one
+  // for the bonds its record derives (bondsMeta.js pieceBonds) — one row per operator, like a member
+  for (const id of owned) {
+    if (memberSet.has(id) || granted.has(id)) continue;
+    const c = getChess(id);
+    if (!c || !c.isDiy || !Array.isArray(c.bonds) || !c.bonds.includes(bond?.bondId)) continue;
+    rows.push({ id, tier: c.tier ?? 0, name: c.name ?? id, onBoard: onBoard.has(id), owned: true, inHand: inHand.has(id), banned: false, diy: true });
+  }
   return rows.sort((a, b) => (b.onBoard - a.onBoard) || (b.owned - a.owned) || (a.tier - b.tier) || (a.id < b.id ? -1 : 1));
 }
 

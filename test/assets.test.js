@@ -539,6 +539,46 @@ describe('外援 roster asset entries (tools/assets/waiguan-operators.json)', ()
       for (const s of roster[id].skills || []) if (s.icon?.url) check(p.template.skills[s.iconId || s.skillId].alts[0].urls, `${id} ${s.skillId}`);
     }
   });
+
+  test('a roster operator\'s battle voice is planned like a pool operator\'s: the same 14 lines in the 9 roles (voice.mjs)', () => {
+    const lines = [['行动出发', 'BATTLE_START', '019'], ['行动开始', 'BATTLE_FACE_ENEMY', '020'], ['选中干员1', 'BATTLE_SELECT', '021'],
+      ['选中干员2', 'BATTLE_SELECT', '022'], ['部署1', 'BATTLE_PLACE', '023'], ['部署2', 'BATTLE_PLACE', '024'], ['作战中1', 'BATTLE_SKILL_1', '025'],
+      ['作战中2', 'BATTLE_SKILL_2', '026'], ['作战中3', 'BATTLE_SKILL_3', '027'], ['作战中4', 'BATTLE_SKILL_4', '028'], ['完成高难行动', 'FOUR_STAR', '029'],
+      ['3星结束行动', 'THREE_STAR', '030'], ['非3星结束行动', 'TWO_STAR', '031'], ['行动失败', 'LOSE', '032'], ['编入队伍', 'SQUAD', '017']];
+    const words = (key) => Object.fromEntries(lines.map(([title, place, n]) => [`${key}_CN_${n}`,
+      { charId: key, wordKey: key, voiceId: `CN_${n}`, voiceTitle: title, placeType: place, voiceAsset: `${key}/CN_${n}` }]));
+    const dict = (key) => ({ charId: key, dict: { CN_MANDARIN: { wordkey: key, voicePath: null }, JP: { wordkey: key, voicePath: null } } });
+    const index = indexCharWords({ charWords: { ...words('char_9999_x'), ...words('char_002_amiya') },
+      voiceLangDict: { char_9999_x: dict('char_9999_x'), char_002_amiya: dict('char_002_amiya') } });
+    const p = buildPlan({ assets07: { operators: { char_002_amiya: {} } }, ops03: {}, enemies05: {}, maps05: {}, audio: indexAudio({}), modelsData: {},
+      voice: { index, langs: ['cn', 'jp'] }, extraOperators: { char_9999_x: { avatar: { e0e1: { url: 'u', mirror: 'r' } } } } }).template;
+    for (const lang of ['cn', 'jp']) {
+      const pool = p.audio.voice[lang].char_002_amiya;
+      const wg = p.audio.voice[lang].char_9999_x;
+      assert.ok(wg, `${lang}: the 外援 operator has voice`);
+      assert.deepEqual(Object.keys(wg).sort(), Object.keys(VOICE_ROLES).sort(), `${lang}: every role`);
+      assert.deepEqual(Object.keys(wg).sort(), Object.keys(pool).sort(), `${lang}: the pool operator's roles`);
+      assert.equal(Object.values(wg).flat().length, 14, `${lang}: 14 lines`);
+      assert.equal(wg.depart.alts[0].rel, `voice/${lang}/char_9999_x/cn_019.mp3`, '行动出发');
+      assert.equal(wg.win4.alts[0].rel, `voice/${lang}/char_9999_x/cn_029.mp3`, '完成高难行动');
+      assert.deepEqual(wg.combat.map((l) => l.alts[0].rel.slice(-7, -4)), ['025', '026', '027', '028'], '作战中1–4, positional');
+    }
+  });
+
+  test('a roster summon listed in `tokens` gets the skin-variant Spine it names (extraTokens); any other unknown token the default guess', () => {
+    const FX = 'https://raw.githubusercontent.com/fexli/ArknightsResource/main/spine/';
+    const p = buildPlan({ assets07: {}, ops03: {}, enemies05: {}, maps05: {}, audio: indexAudio({}), modelsData: {},
+      extraTokenIds: ['token_10002_kalts_mon3tr', 'token_19999_x_y'],
+      extraTokens: { token_10002_kalts_mon3tr: { battleSpineSkinVariantsOnly: ['token_10002_kalts_mon3tr_boc_6'] } } });
+    assert.equal(p.template.tokens.token_10002_kalts_mon3tr.spineVariant, 'token_10002_kalts_mon3tr_boc_6');
+    assert.deepEqual(p.models.get('token:token_10002_kalts_mon3tr').skel.urls,
+      ['Spine', 'Front'].map((f) => `${FX}token_10002_kalts_mon3tr/token_10002_kalts_mon3tr_boc_6/${f}/token_10002_kalts_mon3tr_boc_6.skel`));
+    assert.equal(p.template.tokens.token_19999_x_y.spineVariant, 'token_19999_x_y', 'not listed: its own id as the variant');
+    // the committed roster file: 25 summons with a variant, each a skin of the token itself
+    const tokens = readJson('tools/assets/waiguan-operators.json').tokens || {};
+    assert.equal(Object.keys(tokens).length, 25);
+    for (const [id, t] of Object.entries(tokens)) assert.ok(t.battleSpineSkinVariantsOnly?.[0]?.startsWith(`${id}_`), id);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -856,16 +896,24 @@ describe('operator voice lines (tools/assets/voice.mjs)', () => {
     assert.throws(() => parseVoiceLangs('fr'), /unknown voice language/);
   });
 
-  test('data/assets.json: every operator of every language has the 9 roles (depart, win4, combat ×4 in order), files on disk', () => {
+  test('data/assets.json: every operator of every language — the 外援 ones too — has the 9 roles (depart, win4, combat ×4 in order), files on disk', () => {
     const v = readJson('data/assets.json').audio?.voice;
     const onDisk = existsSync(join(ROOT, 'public', 'assets', 'voice'));
     if (!v) return; // assets fetched with --voice=none
-    // the 外援 / 甄选 operators (tools/assets/waiguan-operators.json, DESIGN §27) have no battle voice
+    // the 外援 / 甄选 roster (data/waiguan.json, DESIGN §27): its 78 operators outside research 07
+    // (tools/assets/waiguan-operators.json) speak like a pool operator, with the same 9 roles; its other 9 are pool
+    // operators already, the reserve operators 预备干员 (char_6xx), which have no voice in the game
     const waiguan = Object.keys(readJson('tools/assets/waiguan-operators.json').operators || {});
-    assert.ok(waiguan.length > 0);
+    const roster = readJson('data/waiguan.json').candidates.map((c) => c.charId);
+    const reserve = roster.filter((id) => !waiguan.includes(id));
+    assert.equal(waiguan.length, 78);
+    assert.equal(reserve.length, 9);
+    for (const id of reserve) assert.match(id, /^char_6\d\d_/, `${id}: a roster operator outside the 78 is a 预备干员`);
     for (const [lang, per] of Object.entries(v)) {
       assert.ok(['cn', 'jp', 'en', 'kr'].includes(lang), lang);
-      for (const id of waiguan) assert.equal(per[id], undefined, `${lang}.${id}: a 外援 operator has no voice`);
+      // every 外援-only operator has a 中文 and a 日文 dub (charword_table voiceLangDict); en / kr may lack one
+      if (lang === 'cn' || lang === 'jp') for (const id of waiguan) assert.ok(per[id], `${lang}.${id}: a 外援 operator has voice`);
+      for (const id of reserve) assert.equal(per[id], undefined, `${lang}.${id}: a 预备干员 has no voice`);
       for (const [charId, roles] of Object.entries(per)) {
         assert.ok(/^char_/.test(charId), charId);
         assert.deepEqual(Object.keys(roles).sort(), Object.keys(VOICE_ROLES).sort(), `${lang}.${charId} roles`);

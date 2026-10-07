@@ -73,11 +73,14 @@ test(
       [...document.querySelectorAll('.mode-card')].find((b) => b.textContent.includes('独立模拟')).click();
       [...document.querySelectorAll('.diff-card')].find((b) => b.textContent.includes('终极模拟')).click();
       (await import('/js/ui/loadoutSync.js')).setEntries({ chess_char_1_01_a: { skill: 0, module: 'none' } });
+      // the 外援 / 甄选 picks follow the account like the loadout (DESIGN §27)
+      (await import('/js/ui/loadoutSync.js')).setPicks({ diy6a: 'char_003_kalts' });
       (await import('/js/screens/lobby.js')).rememberRoom('ABCD');
       (await import('/js/ui/emotes.js')).rememberTheme('emoticon_originium_slug');
     });
     const expected = {
       loadout: { v: 1, entries: { chess_char_1_01_a: { skill: 0, module: 'none' } } },
+      waiguan: { v: 1, picks: { diy6a: 'char_003_kalts' } },
       'lobby.mode': 'solo',
       'lobby.difficulty': 'ABYSS',
       recentRooms: ['ABCD'],
@@ -101,6 +104,7 @@ test(
         const { loadoutStore } = await import('/js/ui/loadoutSync.js');
         return {
           loadout: { v: 1, entries: loadoutStore.get().entries },
+          waiguan: { v: 1, picks: loadoutStore.get().picks },
           'lobby.mode': loadPref('lobby.mode', 'coop'),
           'lobby.difficulty': loadPref('lobby.difficulty', 'FUNNY'),
           recentRooms: loadPref('recentRooms', []),
@@ -139,6 +143,7 @@ test(
     await ready(b);
     const switched = await read(b);
     assert.deepEqual(switched.loadout, { v: 1, entries: {} });
+    assert.deepEqual(switched.waiguan, { v: 1, picks: {} }, 'another account never sees these picks');
     assert.equal(switched['lobby.mode'], 'coop');
     assert.deepEqual(switched.recentRooms, []);
     await b.goto(base + '__test/login/a');
@@ -177,8 +182,13 @@ test(
       })),
       beforeRestart,
     );
+    // the account's picks reached the match, and the restore kept them
+    await b.waitForFunction(() => __SP__.store.get().match.private?.picks?.diy6a === 'char_003_kalts', { timeout: 10000 });
     await b.evaluate(() => __SP__.net.request('g.infoReady'));
     await b.waitForFunction(() => __SP__.store.get().match.public?.phase === 'BAND_DRAFT');
+    // a pick changed during the strategy draft is still taken (Match.setPicks), and logged for the restore below
+    await b.evaluate(async () => (await import('/js/ui/loadoutSync.js')).setPicks({ diy6a: 'char_003_kalts', diy5a: 'char_180_amgoat' }));
+    await b.waitForFunction(() => __SP__.store.get().match.private?.picks?.diy5a === 'char_180_amgoat', { timeout: 10000 });
     await b.evaluate(() => __SP__.net.request('g.band', { bandId: 'band_sarkazb' }));
     await b.waitForFunction(() => __SP__.store.get().match.public?.phase === 'PREP');
     await b.evaluate(() => {
@@ -194,6 +204,9 @@ test(
     );
     assert.equal(await b.evaluate(() => __SP__.net.playerId), beforeRestart.playerId);
     assert.equal(await b.evaluate(() => __SP__.store.get().room.code), beforeRestart.room);
+    // the restored match (checkpoint + event log) still holds the picks set in INFO_CHECK and BAND_DRAFT
+    await b.waitForFunction(() => !!__SP__.store.get().match.private?.picks, { timeout: 10000 });
+    assert.deepEqual(await b.evaluate(() => __SP__.store.get().match.private.picks), { diy6a: 'char_003_kalts', diy5a: 'char_180_amgoat' });
     await b.evaluate(() => __SP__.net.request('g.leave'));
     assert.deepEqual(errors, []);
   },
