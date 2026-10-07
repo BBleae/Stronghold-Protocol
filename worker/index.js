@@ -2,6 +2,7 @@ import { randomInt } from 'node:crypto';
 import { APP_VERSION, DEFAULT_SEATS, PROTOCOL_VERSION } from '../shared/constants.js';
 import { CODE_ALPHABET } from '../server/lobby.js';
 import { RoomRuntime, validCode } from './room-runtime.js';
+import { CHECKPOINT_EVENT_LIMIT } from '../server/match/checkpoint.js';
 import { LobbyGatewayDurableObject } from './lobby-gateway.js';
 // Adapt the Workers WebSocket surface to the existing Network's small EventEmitter-like contract (flush after the
 // event's commit), and the snapshot KV chunking / liveness rounding / rules-version check both Durable Objects share.
@@ -190,6 +191,10 @@ async function route(request, env) {
 
 // Storage key of the restore-attempt counter (RoomDurableObject.restoreMatch).
 const RESTORE_ATTEMPTS = 'restore-attempts';
+// A match log longer than CHECKPOINT_EVENT_LIMIT never restores (restoreMatch; every retained rules engine has the same
+// limit), so its match would end as interrupted at its next restart; a log passing MATCH_LOG_WARN events warns once,
+// while it runs.
+const MATCH_LOG_WARN = 150_000;
 // A running match's log (its checkpoint in the snapshot says how many events to replay).
 const MATCH_EVENTS_TABLE = 'CREATE TABLE IF NOT EXISTS match_events (match_id TEXT NOT NULL, seq INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(match_id,seq))';
 // Finished matches waiting to be published to their MatchArchive: facts and manifest, and the encoded replay chunks.
@@ -308,14 +313,21 @@ export class RoomDurableObject {
     await this.ctx.storage.put(RESTORE_ATTEMPTS, attempts);
     await this.ctx.storage.sync();
     this.storedAttempts = attempts;
+    // How long the replay took (`ms`), for the operator to see how close long matches come to the 30 s limit of the
+    // wake (blockConcurrencyWhile). The platform's clock stands still while code runs and moves on at I/O, so the end
+    // is read after the replay has yielded to a timer.
+    const started = Date.now();
+    let failure = null;
     try {
       await prepareMatchVersion(checkpoint.rulesVersion);
       this.runtime.restoreMatch({ ...checkpoint, events: this.matchLog(checkpoint) });
     } catch (error) {
-      this.interruptMatch(checkpoint, 'restart', context, error);
-      return;
+      failure = error;
     }
-    logInfo('match_restored', context);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const timed = { ...context, ms: Date.now() - started };
+    if (failure) this.interruptMatch(checkpoint, 'restart', timed, failure);
+    else logInfo('match_restored', timed);
   }
 
   interruptMatch(checkpoint, reason, context, error) {
@@ -353,8 +365,9 @@ export class RoomDurableObject {
     return this.ctx.blockConcurrencyWhile(async () => {
       try {
         this.refreshAutoResponses();
-        // Both pumps share one expensive-work allowance. Deferred work is re-armed after this event's horizon;
-        // normal deadlines still run before handling the input. Commit/flush then returns control to the host.
+        // Both pumps share one expensive-work allowance (RecordedMatch.pump): work it does not cover waits until after
+        // this event's horizon; normal deadlines still run before handling the input. Commit/flush then returns
+        // control to the host.
         const workBudget = { remaining: 1 };
         this.runtime.pump(this.runtime.now(), workBudget);
         const result = await handle();
@@ -419,7 +432,7 @@ export class RoomDurableObject {
       const { events, ...checkpoint } = snapshot.matchCheckpoint;
       const id = `${rt.generation}:${checkpoint.options.matchNo}`;
       const from = this.savedLog?.id === id ? this.savedLog.count : 0;
-      log = { id, count: events.length, rows: events.slice(from).map((event, i) => [from + i, JSON.stringify(event)]) };
+      log = { id, from, count: events.length, rows: events.slice(from).map((event, i) => [from + i, JSON.stringify(event)]) };
       snapshot.matchCheckpoint = { ...checkpoint, eventCount: events.length, eventLogId: id };
     }
     // The log of a match that ended (or could not be restored) goes with its checkpoint.
@@ -456,6 +469,11 @@ export class RoomDurableObject {
     });
     this.savedState = state;
     this.parts = parts;
+    // Once per match: the save that takes its stored log past the mark (a restored log goes on from its stored count).
+    if (log && log.from <= MATCH_LOG_WARN && log.count > MATCH_LOG_WARN) {
+      logWarn('match_log_large', { room: rt.code, log: log.id, rulesVersion: snapshot.matchCheckpoint.rulesVersion,
+        events: log.count, limit: CHECKPOINT_EVENT_LIMIT });
+    }
     this.savedLog = log && { id: log.id, count: log.count };
     this.outboxSize += encoded.length;
     if (clearAttempts) this.storedAttempts = 0;

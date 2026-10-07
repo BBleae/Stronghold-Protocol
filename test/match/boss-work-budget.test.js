@@ -10,7 +10,7 @@ function fixture(ticks = 7, mode = 'coop') {
   FakeBattle.reset();
   return new RecordedMatch({ data: DATA, roomCode: 'BUDGET', seed: 17, mode, difficulty: 'NORMAL',
     seats: Array.from({ length: mode === 'solo' ? 1 : 4 }, (_, seat) => ({ seat, playerId: `p${seat}`, name: `P${seat}`, isBot: false, connected: true })),
-    workSlice: { simulationTicks: ticks }, clientCombat: true, verify: 'off', now: () => 100000,
+    workSlice: ticks == null ? undefined : { simulationTicks: ticks }, clientCombat: true, verify: 'off', now: () => 100000,
     send: () => true, broadcast() {}, onEnd() {} });
 }
 for (const runner of ['pacer', 'fields']) test(`${runner} shares event work across overdue pumps and cancels suspended work`, () => {
@@ -116,9 +116,10 @@ for (const runner of ['pacer', 'fields']) test(`${runner} retains field order ac
     let now = m.sched.now() + 10000;
     m.pump(now, 100, { remaining: 0 });
     for (let i = 0; trace.length < 32 && i < 10; i++) m.pump(++now, 100, { remaining: 1 });
-    assert.deepEqual(trace, runner === 'pacer' ? Array.from({ length: 4 }, () => [0, 0, 1, 1, 2, 2, 3, 3]).flat()
+    // overdue rounds continue within an admission, so the last one may run past the 32 ticks compared here
+    assert.deepEqual(trace.slice(0, 32), runner === 'pacer' ? Array.from({ length: 4 }, () => [0, 0, 1, 1, 2, 2, 3, 3]).flat()
       : Array.from({ length: 8 }, () => [0, 1, 2, 3]).flat());
-    assert.ok(battles.every(b => b.tickCount === 8), 'all overdue virtual rounds retain their ticks and every field progresses');
+    assert.ok(battles.every(b => b.tickCount >= 8), 'all overdue virtual rounds retain their ticks and every field progresses');
   } finally { m.dispose(); }
 });
 
@@ -212,6 +213,38 @@ for (const runner of ['pacer', 'fields']) test(`${runner} pause spanning denied 
   } finally { m.dispose(); }
 });
 
+// A FieldRunner (a solo boss phase that began with the player offline, or SP_COMBAT=server combat) and a HeadlessPacer
+// (a taken-over boss field) park their work chain while paused: no timer, so no logged row per interval — and only
+// Match._resume (runner / pacer resume) starts it again.
+for (const runner of ['pacer', 'fields']) test(`${runner}: a solo pause parks the work chain without a timer row per interval and the resume continues it`, () => {
+  const m = fixture(128, 'solo');
+  const b = new FakeBattle({ kind: 'boss', fieldId: 'park' });
+  m.phase = 'FINAL_ASSAULT';
+  m.fields = [{ battle: b, fieldId: b.fieldId, players: ['p0'], live: true, done: false }];
+  const r = runner === 'pacer' ? m.pacer = new HeadlessPacer(m)
+    : m.runner = new FieldRunner(m, m.fields, { emit: false, onDone() {} });
+  if (runner === 'pacer') r.add({ battle: b, onDone() {} }); else r.start();
+  let now = m.sched.now();
+  // one Room DO event per 33 ms, one admission each
+  const events = (n) => { for (let i = 0; i < n; i++) { now += 33; m.pump(now, 100, { remaining: 1 }); m.sched.t = now; } };
+  try {
+    events(20);
+    const before = b.tickCount;
+    assert.ok(before >= 36, `${before} ticks in 660 ms (2 per pacing round)`);
+    assert.deepEqual(m.setPause(m.order[0], true), { ok: true });
+    const rows = m.recording.events.length;
+    events(30);
+    assert.equal(b.tickCount, before, 'the field clock stands still');
+    assert.ok(m.recording.events.length - rows <= 1, `1 s of pause logged ${m.recording.events.length - rows} timer rows`);
+    assert.equal(m.sched.nextAt(), null, 'no timer while parked');
+    m.setPause(m.order[0], false);
+    events(30);
+    // 30 events of 33 ms after the resume: about 59 ticks at 2 per round, none for the pause
+    assert.ok(Math.abs(b.tickCount - before - 60) <= 2, `${b.tickCount - before} ticks after the resume`);
+    assert.equal(m.errorCount, 0, JSON.stringify(m.errors));
+  } finally { m.dispose(); }
+});
+
 test('a new takeover does not replay the old fields pacing backlog twice', () => {
   const m = fixture(7);
   const pacer = m.pacer = new HeadlessPacer(m);
@@ -278,8 +311,8 @@ test('a pause in a suspended pacing round does not exclude its later fields', ()
     assert.equal(m.errorCount, 0);
   } finally { m.dispose(); }
 });
-for (const runner of ['pacer', 'fields']) test(`${runner} limits a paced work slice to 128 ticks under the default 512 simulation budget`, () => {
-  const m = fixture(512);
+for (const runner of ['pacer', 'fields']) for (const recorded of [null, 512]) test(`${runner} limits a paced work slice to 128 ticks under ${recorded ? 'a recorded 512' : 'the default'} simulation budget`, () => {
+  const m = fixture(recorded);
   const battles = [0, 1].map(i => new FakeBattle({ kind: 'boss', fieldId: `cap${i}` }));
   if (runner === 'pacer') {
     const pacer = m.pacer = new HeadlessPacer(m);
@@ -296,7 +329,8 @@ for (const runner of ['pacer', 'fields']) test(`${runner} limits a paced work sl
   try {
     m.pump(m.sched.now() + 100, 100, { remaining: 1 });
     assert.equal(battles.reduce((sum, b) => sum + b.tickCount, 0), 128);
-    assert.equal(m.workSlice.simulationTicks, 512, 'ordinary headless jobs retain their configured budget');
+    assert.equal(m.workSlice.simulationTicks, recorded ?? 128, recorded ? 'a match recorded with 512 restores with its budget'
+      : 'ordinary headless jobs default to 128-tick slices');
     assert.equal(m.errorCount, 0);
   } finally { m.dispose(); }
 });

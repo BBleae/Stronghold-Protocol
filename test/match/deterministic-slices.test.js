@@ -8,7 +8,7 @@ import { createRehearsal, planLayout, REHEARSAL_VARIANTS, LAYOUT_PARAMS } from '
 import { FakeBattle } from './fakeBattle.js';
 import { makeMatch, checkInvariants } from './harness.js';
 
-test('work admission defers a callback without hiding ordinary timers, and cancellation follows its replacement', () => {
+test('work admission defers a callback without hiding ordinary timers, and cancellation reaches it in the work queue', () => {
   let available = false;
   const h = makeMatch({ workSlice: { prepSteps: 4, simulationTicks: 512 }, deferWork: () => available ? 0 : 10 });
   try {
@@ -21,7 +21,7 @@ test('work admission defers a callback without hiding ordinary timers, and cance
     h.m.cancel(work);
     available = true;
     h.sched.advance(10);
-    assert.deepEqual(calls, ['deadline'], 'cancel reaches the newly scheduled timer');
+    assert.deepEqual(calls, ['deadline'], 'cancel reaches the postponed work');
     h.m.laterWork(0, () => calls.push('next'));
     h.sched.advance(0);
     assert.deepEqual(calls, ['deadline', 'next']);
@@ -34,7 +34,7 @@ test('prep admission can hold AI decisions without holding simulation work and r
   const h = makeMatch({ humans: 2, bots: 1, fake: true,
     workSlice: { prepSteps: 1, simulationTicks: 512 },
     deferWork: (kind, deadline) => {
-      if (kind !== 'prep') return 0;
+      if (!kind.startsWith('prep')) return 0; // 'prep' and an arrangement's 'prepArrange'
       deadlines.push(deadline);
       return allowPrep ? 0 : 25;
     },

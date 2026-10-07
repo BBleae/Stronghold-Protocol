@@ -5,15 +5,18 @@
 // /sim/spec.js createBattleFromSpec and
 //   * steps it at the battle speed (fixed 1/30 s ticks, 2× → 60 ticks per real second; at most
 //     max(8, 4·speed) ticks per animation frame, bounded fast-forward up to CATCHUP_TICKS per frame when it is far
-//     behind: a reconnect, observing a running field, a tab back from the background); preparations and running fields
-//     share a 4 ms foreground soft budget, with a separate 64 ms budget for less frequent hidden-tab pumps,
+//     behind: a reconnect, observing a running field, a tab back from the background); each frame first steps every
+//     running field's real-time share, the rest — that fast-forward, the silent catch-up of a field being prepared —
+//     within a soft budget (runBatch),
 //   * feeds the render engine every frame through the same wire formats the server used to stream
 //     (`snap` = b.snap frame from battle.snapshot(), `ev` = b.ev frame from battle.drainEvents()) and publishes the
 //     field meta (m.field shape) into store.match.field so the game screen enters the battle,
 //   * when authoritative: reports b.progress (~1 Hz; boss fields 4 Hz with the shared-pool damage and the LP meter)
 //     and b.result (compactResult) at the end; applies b.pool (LocalBossPool.sync) and b.end (forceEnd / takeover),
-//   * advances authoritative battles while hidden with a 250 ms interval pump (browsers may throttle it to ~1 Hz or
-//     suspend it). Very slow simulation can still fall behind; a Boss that keeps reporting is not taken over for lag.
+//   * keeps an authoritative battle running while the tab is hidden (a 250 ms interval pump; browsers throttle it to
+//     ~1 Hz, its real-time share of up to CATCHUP_TICKS per pump absorbs that); a pump the browser suspends, or a tick
+//     so slow that no share keeps up, still falls behind — the server deadline / silence takeover covers a normal field,
+//     a boss field that keeps reporting is not taken over for lag.
 // A frame that fast-forwards (catch-up) passes on only the state-bearing events (keepsState: spawns, deaths, deploys,
 // statuses, skills, leaks and the fx that change an enemy's model form — shared/protocol.js fxForm); while the tab is
 // hidden the battle on screen keeps the same events (compacted past HELD_MAX; a backlog still past it makes the view
@@ -56,8 +59,12 @@
 // come, by that flag — it gives the sound only the batch's spawns (screens/game.js onEv: no late 作战中 / 部署 voice).
 //
 // The sim (≈ 0.2–1 ms per tick) runs on the main thread: one battle at a time is stepped for display (plus an
-// authoritative one if it is not the one on screen). Active and preparing battles share a soft wall-time budget
-// per RAF / hidden pump, checked between fixed ticks. Construction and initial view setup remain synchronous.
+// authoritative one if it is not the one on screen, plus the ones being prepared). Each RAF / hidden pump is one batch
+// (runBatch): the running battles' real-time shares and the preparations' convergence floors first, never cut, then the
+// catch-up beyond real time and the rest of the preparation work within a soft wall-time budget (FRAME_WORK_MS and the
+// others below), checked between fixed ticks, authoritative battles first. A frame thus stays within its fields' cap·c
+// (as before the budget) plus the floors and the budget, an authority keeps its clock wherever the device can keep it at
+// all, and a preparation converges. Construction and the initial view setup remain synchronous.
 //
 //   import { battleRunner } from './battle/runner.js'     (browser singleton wired to net.js + store.js; null in Node)
 //   battleRunner.on('snap' | 'ev' | 'field' | 'state' | 'ownDone', fn) → off
@@ -104,9 +111,18 @@ const TICK = 1 / 30;
 export const CATCHUP_TICKS = 240;
 /** Silent catch-up slice (ticks) while a new battle is prepared before it is shown. */
 const PREPARE_SLICE = 600;
-/** Shared soft deadlines; a step is indivisible. Background tabs may only get one pump per second. */
-const FRAME_WORK_MS = 4;
-const HIDDEN_WORK_MS = 64; // room for a throttled 2x clock; slow steps or suspended tabs can still fall behind
+/**
+ * Soft wall-time budgets (ms) of one batch — an animation frame, a hidden-tab pump — for the work past the battles'
+ * shares (runBatch): catch-up beyond real time and preparations. Checked between ticks (a step is indivisible), started
+ * after the shares. FRAME_WORK_MS while a field plays on screen at its pace (also while another one loads behind it);
+ * LOADING_WORK_MS while none does (only the loading view, a finished field, a fast-forward); HIDDEN_WORK_MS per hidden-tab
+ * pump (browsers throttle it to ~1 Hz).
+ */
+export const FRAME_WORK_MS = 4;
+export const LOADING_WORK_MS = 10;
+export const HIDDEN_WORK_MS = 64;
+/** A preparation's floor per batch: this many times what its target grew since its last batch (≤ CATCHUP_TICKS). */
+export const PREPARE_FLOOR = 2;
 const MAX_ENTRIES = 4;
 /**
  * Battles the cache keeps (evict(), besides the current, own, authoritative-unsent and undelivered ones): one round of
@@ -270,7 +286,7 @@ export function createBattleRunner(deps) {
   const entries = new Map();
   // Preparations receive controls immediately and share simulation work with committed entries, without rendering.
   const preparing = new Map();
-  let workAfter = null;       // last battle ID actually stepped; next batch starts with its successor
+  let workAfter = null;       // last battle ID that used a batch's soft budget; the next one starts after it (runBatch)
   let cur = null;              // entry on screen
   let simP = null;
   let startSeq = 0;            // viewing selection; switching it must not cancel own authority
@@ -434,17 +450,20 @@ export function createBattleRunner(deps) {
   const targetTick = (e, t) => Math.max(0, Math.floor((((t - e.t0) / 1000) * e.speed) / TICK + 1e-9));
 
   /**
-   * Step `n` ticks. `sliced` (a catch-up frame, a hidden-tab step): every EV_SLICE ticks the events drained so far go to
-   * `e.slices` as { gt, ev } with that game time, for emitFrame / hold.
+   * Step up to `n` ticks → the ticks stepped. `sliced` (a catch-up frame, a hidden-tab step): every EV_SLICE ticks the
+   * events drained so far go to `e.slices` as { gt, ev } with that game time, for emitFrame / hold. `budget` (the batch's
+   * soft budget { deadline, remaining }; null: a share, never cut) is checked before each tick.
    */
-  function stepEntry(e, n, sliced, budget) {
+  function stepEntry(e, n, sliced, budget = null) {
     const b = e.battle;
     const t = now();
     let k = 0;
     try {
       for (; k < n && !b.finished; k++) {
-        if (budget.remaining <= 0 || now() >= budget.deadline) break;
-        budget.remaining--;
+        if (budget) {
+          if (budget.remaining <= 0 || now() >= budget.deadline) break;
+          budget.remaining--;
+        }
         b.step();
         if (sliced && (k + 1) % EV_SLICE === 0 && k + 1 < n) {
           const ev = b.drainEvents() || [];
@@ -456,10 +475,9 @@ export function createBattleRunner(deps) {
       console.warn('[runner] battle step failed', err);
       try { b.forceEnd('timeout'); } catch { /* ignore */ }
     }
-    const dt = now() - t;
     stats.ticks += k;
-    stats.stepMs += dt;
-    return dt;
+    stats.stepMs += now() - t;
+    return k;
   }
 
   function frameOf(e) {
@@ -604,11 +622,12 @@ export function createBattleRunner(deps) {
    * result request queued while offline would reach the server ahead of the replay log the next session sends again.
    * Retried once on a timeout. `e.delivery`: 'pending' while a request is out, 'delivered' once the server answered
    * (ok, or a refusal — final), 'undelivered' when it could not go out or never got there (LOST_RESULT_CODES): kept for
-   * redeliver() (the next session) and for an authoritative b.start of the finished battle.
+   * redeliver() (the next session) and for an authoritative b.start of the finished battle. A battle the server ended
+   * before it stepped here (`noReplay`, applyEnd) sends its result alone.
    */
   function deliver(e, retries = 1) {
     if (!e.result || e.delivery === 'pending') return;
-    if (!report(e)) {
+    if (!e.noReplay && !report(e)) {
       e.delivery = 'undelivered';
       console.warn('[runner] b.result not sent (offline) — sent on the next session');
       return;
@@ -650,28 +669,15 @@ export function createBattleRunner(deps) {
     schedule();
   }
 
-  /** Advance one entry to its clock (bounded); render it when it is on screen. */
-  function advance(e, t, render, budget) {
-    if (e.battle.finished) { if (!e.done) finished(e); return; }
-    const behind = targetTick(e, t) - (e.battle.tickCount || 0);
-    if (behind <= 0) return;
-    const cap = ticksPerFrameCap(e.speed);
-    const catchingUp = behind > cap * 4;
-    if (catchingUp) stats.catchups++;
-    const n = Math.min(behind, catchingUp ? CATCHUP_TICKS : cap);
-    stepEntry(e, n, catchingUp || !render, budget);
-    if (render) emitFrame(e, catchingUp);
-    else hold(e);
-    noteLeaks(e);
-    progress(e);
-    if (e.battle.finished) finished(e);
-  }
-
   function running(e) { return !e.battle.finished && (e === cur || (e.authoritative && !e.resultSent)); }
 
+  /**
+   * A preparation is shown (committed) once it is within a frame's cap of its clock — or of the clock its last batch
+   * stepped it toward (`caught`): a hidden-tab pump of slow ticks ends further behind than that, as a running battle does.
+   */
   function preparationReady(task) {
     const e = task.entry;
-    return e && (e.battle.finished || targetTick(e, clock()) - e.battle.tickCount <= ticksPerFrameCap(e.speed));
+    return e && (task.caught || e.battle.finished || targetTick(e, clock()) - e.battle.tickCount <= ticksPerFrameCap(e.speed));
   }
 
   function settlePreparation(task) {
@@ -680,35 +686,102 @@ export function createBattleRunner(deps) {
     resolve?.();
   }
 
-  function advancePreparation(task, t, budget) {
-    const e = task.entry;
-    const n = Math.min(PREPARE_SLICE, targetTick(e, t) - e.battle.tickCount);
-    const dt = stepEntry(e, n, false, budget);
-    stats.prepareMs += dt;
-    stats.maxPrepareMs = Math.max(stats.maxPrepareMs, dt);
-    try { e.battle.drainEvents(); } catch { /* the field is first shown after preparation */ }
-    noteLeaks(e);
-    if (e.authoritative) progress(e);
+  /**
+   * A running battle's step in this batch (null: on its clock): `n` ticks toward its clock — ≤ ticksPerFrameCap, or, when
+   * it is more than four frames behind, a fast-forward of ≤ CATCHUP_TICKS per frame / PREPARE_SLICE per hidden-tab pump —
+   * of which `share` the soft budget never cuts, its real-time share: ≤ ticksPerFrameCap per frame (a frame steps a
+   * running field at most cap·c beyond the budget), ≤ CATCHUP_TICKS per hidden-tab pump (as before the budget: at ~1 Hz
+   * an authority keeps its clock up to ~16 ms per tick).
+   */
+  function entryWork(e, t, fg) {
+    const behind = targetTick(e, t) - (e.battle.tickCount || 0);
+    if (behind <= 0) return null;
+    const cap = ticksPerFrameCap(e.speed);
+    const catchingUp = behind > cap * 4;
+    if (catchingUp) stats.catchups++;
+    const n = Math.min(behind, !catchingUp ? cap : fg ? CATCHUP_TICKS : PREPARE_SLICE);
+    return { n, share: Math.min(n, fg ? cap : CATCHUP_TICKS), catchingUp };
   }
 
-  /** One deadline and tick ceiling, including preparations. Rotate after the last task that consumed work. */
-  function runBatch(render) {
+  /**
+   * A preparation's step in this batch (null: nothing to step): ≤ PREPARE_SLICE ticks toward its clock, of which `share`
+   * the soft budget never cuts — its floor, PREPARE_FLOOR times what its target grew since its last batch (≤
+   * CATCHUP_TICKS: it converges whatever the frame rate, the tick cost and the other work), and in a hidden-tab pump for
+   * an authority (a handover / reconnect b.start while hidden) the share a running authority gets there.
+   */
+  function preparationWork(task, t, fg) {
+    const e = task.entry;
+    const target = targetTick(e, t);
+    const growth = Math.max(0, target - task.target);
+    task.target = target;
+    const behind = target - e.battle.tickCount;
+    if (behind <= 0) return null;
+    const floor = Math.min(CATCHUP_TICKS, Math.ceil(PREPARE_FLOOR * growth));
+    const share = Math.min(behind, Math.max(floor, e.authoritative && !fg ? CATCHUP_TICKS : 0));
+    return { n: Math.max(share, Math.min(behind, PREPARE_SLICE)), share };
+  }
+
+  /**
+   * One batch — an animation frame (`fg`) or a hidden-tab pump — over the running battles (on a hidden tab only the
+   * authoritative ones) and the preparations. Each first steps its share (entryWork / preparationWork), whatever the
+   * budget; the rest — catch-up beyond real time, preparation — then shares one soft budget (FRAME_WORK_MS, LOADING_WORK_MS
+   * while no field on screen plays at its pace, HIDDEN_WORK_MS; started after the shares) and PREPARE_SLICE ticks in all:
+   * authoritative battles first (the server waits for them), each class from the battle after the last one that used the
+   * budget. Then each battle renders / holds and reports what it did.
+   */
+  function runBatch(fg) {
     if (pausedAt != null) return;
     const t = clock();
-    const budget = { deadline: now() + (render ? FRAME_WORK_MS : HIDDEN_WORK_MS), remaining: PREPARE_SLICE };
-    const work = [...entries.values()].filter(e => running(e) && (render || e.authoritative)).map(e => ({ e }));
+    let work = [];
+    for (const e of entries.values()) if (running(e) && (fg || e.authoritative)) work.push({ e, task: null });
     for (const task of preparing.values()) if (task.entry && task.resume) work.push({ e: task.entry, task });
-    const start = (work.findIndex(x => x.e.battleId === workAfter) + 1) % (work.length || 1);
-    for (let i = 0; i < work.length; i++) {
+    const from = work.findIndex((w) => w.e.battleId === workAfter) + 1;
+    work = [...work.slice(from), ...work.slice(0, from)];
+    work = [...work.filter((w) => w.e.authoritative), ...work.filter((w) => !w.e.authoritative)];
+    const step = (w, n, budget) => {
+      const at = now();
+      w.ticks += stepEntry(w.e, n, !w.task && (w.plan.catchingUp || !w.shown), budget);
+      w.ms += now() - at;
+    };
+    let shared = 0;
+    let live = false; // a field plays on screen at its pace (else: only the loading view, a finished field, a fast-forward)
+    for (const w of work) {
+      w.plan = w.task ? preparationWork(w.task, t, fg) : entryWork(w.e, t, fg);
+      w.shown = fg && !w.task && w.e === cur;
+      w.ticks = 0;
+      w.ms = 0;
+      if (w.shown) live = !w.plan || !w.plan.catchingUp;
+      if (w.plan) step(w, w.plan.share, null);
+      shared += w.ticks;
+    }
+    const budget = { deadline: now() + (!fg ? HIDDEN_WORK_MS : live ? FRAME_WORK_MS : LOADING_WORK_MS),
+      remaining: Math.max(0, PREPARE_SLICE - shared) };
+    for (const w of work) {
       if (budget.remaining <= 0 || now() >= budget.deadline) break;
-      const { e, task } = work[(start + i) % work.length];
-      // A synchronous event listener can clear the runner or change the selected field during this batch.
-      if (pausedAt != null) break;
-      if (task ? !validPreparation(task) || task.entry !== e || !task.resume : entries.get(e.battleId) !== e || !running(e)) continue;
+      if (!w.plan || w.ticks >= w.plan.n || w.e.battle.finished) continue;
       const before = budget.remaining;
-      if (task) advancePreparation(task, t, budget);
-      else advance(e, t, render && e === cur, budget);
-      if (budget.remaining < before) workAfter = e.battleId;
+      step(w, w.plan.n - w.ticks, budget);
+      if (budget.remaining < before) workAfter = w.e.battleId;
+    }
+    for (const w of work) {
+      const { e, task } = w;
+      // a synchronous listener (of a frame, a report, the state) can clear the runner or switch the field meanwhile
+      if (!w.plan || (task ? !validPreparation(task) || task.entry !== e : entries.get(e.battleId) !== e)) continue;
+      if (task) {
+        stats.prepareMs += w.ms;
+        stats.maxPrepareMs = Math.max(stats.maxPrepareMs, w.ms);
+        try { e.battle.drainEvents(); } catch { /* the field is first shown after preparation */ }
+        noteLeaks(e);
+        // (nothing before its first tick: an end that comes first sends the result alone, applyEnd)
+        if (e.authoritative && e.battle.tickCount) progress(e);
+        if (targetTick(e, t) - e.battle.tickCount <= ticksPerFrameCap(e.speed)) task.caught = true;
+        continue;
+      }
+      if (w.shown && e === cur) emitFrame(e, w.plan.catchingUp);
+      else hold(e);
+      noteLeaks(e);
+      progress(e);
+      if (e.battle.finished) finished(e);
     }
     flushLeaks();
   }
@@ -723,7 +796,7 @@ export function createBattleRunner(deps) {
   }
 
   function pump() {
-    // One background deadline shared by all entries/preparations; display-only entries stop pumping once ready.
+    // hidden tab: no animation frames — the authoritative battles and the preparations (a display replica's ends with it)
     if (!hidden()) return;
     const started = now();
     runBatch(false);
@@ -833,16 +906,22 @@ export function createBattleRunner(deps) {
       // Reconnect / resync of a battle still loading or catching up: update it, never construct a second copy.
       pending.authoritative = !!msg.authoritative;
       pending.seq = startSeq + 1;
-      if (pending.entry) updateStart(pending.entry, msg, true);
-      else pending.controls.push({ kind: 'start', msg });
+      if (pending.entry) {
+        updateStart(pending.entry, msg, true);
+        // a new clock, not growth: no floor for the jump, and caught up only with this one
+        pending.target = targetTick(pending.entry, clock());
+        pending.caught = false;
+      } else pending.controls.push({ kind: 'start', msg });
       selectStart();
       loading = { battleId: msg.battleId, fieldId: msg.fieldId, kind: msg.kind };
       publishState();
       return pending.promise;
     }
     selectStart();
+    // target: the entry's target tick at its last batch (runBatch: the floor follows its growth); caught: that batch
+    // brought it within a frame's cap of it (preparationReady)
     const task = { msg, seq: startSeq, lifecycle, authoritative: !!msg.authoritative, entry: null,
-      controls: [], pool: lastPool, resume: null, promise: null };
+      controls: [], pool: lastPool, resume: null, promise: null, target: 0, caught: false };
     preparing.set(msg.battleId, task);
     loading = { battleId: msg.battleId, fieldId: msg.fieldId, kind: msg.kind };
     publishState();
@@ -890,8 +969,9 @@ export function createBattleRunner(deps) {
         // view from the field meta); the event batches of the current sliced step (stepEntry)
         held: [], stale: false, slices: [],
         // the server's b.end reason (settlement() bossDown: 'cleared' = the boss pool was emptied); whether 'ownDone' went
-        // out, and whether the battle was already over when it was first shown (its `late`)
-        endReason: null, ownDoneSent: false, lateEnd: false,
+        // out, and whether the battle was already over when it was first shown (its `late`); whether its result goes out
+        // without a replay report (ended before it stepped: applyEnd)
+        endReason: null, ownDoneSent: false, lateEnd: false, noReplay: false,
       };
       task.entry = e;
       if (task.pool && battle.sharedBoss) syncPool(e, task.pool);
@@ -901,7 +981,8 @@ export function createBattleRunner(deps) {
         else if (control.kind === 'start') updateStart(e, control.msg, true);
       }
       task.controls.length = 0;
-      // Construction is synchronous, but every catch-up step belongs to the shared RAF / hidden pump budget.
+      task.target = targetTick(e, clock());
+      // Construction is synchronous; the catch-up steps run in the RAF / hidden-pump batches (runBatch).
       while (validPreparation(task) && !preparationReady(task)) {
         await new Promise(resolve => { task.resume = resolve; schedule(); });
       }
@@ -956,6 +1037,12 @@ export function createBattleRunner(deps) {
     // _endFinal); the local battle only knows 'timeout' / 'forced' (settlement() bossDown reads it)
     e.endReason = typeof msg.reason === 'string' ? msg.reason : null;
     if (!e.battle.finished) {
+      // the end reached a battle still preparing that never stepped (it came while the engine loaded): its b.result goes
+      // out alone — a tick-0 replay segment would replace what the server holds with a 'complete' replay of a battle
+      // never played here. The server keeps the trace it already has: an earlier page's segments when this one replaced
+      // its session (a reload, 继续对局 elsewhere — an incomplete replay beside this result), else none (a missing
+      // replay). It still need not wait out the result grace.
+      if (pending && !e.battle.tickCount) e.noReplay = true;
       const reason = msg.reason === 'timeout' ? 'timeout' : 'forced';
       e.inputs.push({ tick: e.battle.tickCount, kind: 'end', reason });
       try { e.battle.forceEnd(reason); } catch { /* ignore */ }

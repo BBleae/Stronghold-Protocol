@@ -87,8 +87,11 @@ export class DeadBattle {
   off() {}
 }
 
-// Fixed-work hosts resume one logical pacing round before starting another. A yielded value represents
-// exactly one field tick; the iterator retains field order across event admissions.
+// Fixed-work hosts run the logical pacing rounds in order. A yielded value represents exactly one field tick;
+// the iterator retains field order across event admissions. Rounds already due (after a takeover catch-up or
+// denied admissions) continue within the same admission up to its tick cap, so a backlog drains at the slice
+// rate instead of one round per event; so does work a HeadlessPacer queued before the next round (its catch-ups
+// and deferred work), which needs no round of its own to be due.
 function schedulePacedWork(owner, ms) {
   owner.pacingDue ??= owner.last + INTERVAL_MS;
   owner.pacingPaused ??= owner.m.pausedMs || 0;
@@ -102,29 +105,51 @@ function schedulePacedWork(owner, ms) {
     owner.pacingDue += pauseDelta;
     owner.last += pauseDelta;
     owner.pacingPaused = paused;
-    if (owner.m.paused) { schedulePacedWork(owner, INTERVAL_MS); return; }
-    const iterator = owner.workIterator ||= owner._pumpSteps();
+    // A solo pause parks the chain: no timer (no log row per interval) and the iterator keeps its place
+    // until Match._resume re-arms it (resumePacedWork).
+    if (owner.m.paused) { owner.workParked = true; return; }
+    let iterator = owner.workIterator ||= owner._pumpSteps();
+    // Every step counts toward the cap, a round's end included, so even empty rounds keep one admission bounded.
     for (let i = 0, cap = Math.min(owner.m.workSlice.simulationTicks, PACED_WORK_TICKS); i < cap; i++) {
       const next = iterator.next();
       // A completion hook can clear this chain without stopping the reusable pacer, and can even
       // add another entry with its own timer. Never continue or re-arm the cancelled iterator.
       if (owner.workIterator !== iterator || owner.stopped || owner.done || owner.m.disposed) return;
-      if (next.done) {
-        owner.workIterator = null;
-        owner.pacingDue += INTERVAL_MS;
-        break;
-      }
+      if (!next.done) continue;
+      owner.workIterator = null;
+      // the steps ran the queued work due before a round that is not due yet (HeadlessPacer), not that round
+      if (next.value !== NOT_DUE) owner.pacingDue += INTERVAL_MS;
+      if (!workDue(owner) || owner.m.paused || (owner.entries && !owner.entries.size)) break;
+      iterator = owner.workIterator = owner._pumpSteps();
     }
     if (owner.entries && !owner.entries.size) return;
     // Admission delay is computation backlog, not a real-host stall: retain each virtual interval.
-    schedulePacedWork(owner, owner.workIterator ? 0 : Math.max(0, owner.pacingDue - owner.m.sched.now()));
+    schedulePacedWork(owner, owner.workIterator || workDue(owner) ? 0 : Math.max(0, owner.pacingDue - owner.m.sched.now()));
   });
+}
+
+/** What a pacer's steps return when they stop before a pacing round that is not due yet (schedulePacedWork). */
+const NOT_DUE = Symbol('round not due');
+
+/** Whether a fixed-work chain has work due now: its next pacing round, or work queued before it (HeadlessPacer). */
+function workDue(owner) {
+  return owner.pacingDue <= owner.m.sched.now() || !!owner._queueDue?.();
+}
+
+/** Match._resume: continue a chain the pause parked, when its next round (or the rest of the current one) is due. */
+function resumePacedWork(owner) {
+  if (!owner.workParked) return;
+  owner.workParked = false;
+  if (owner.stopped || owner.done || owner.m.disposed || (owner.entries && !owner.entries.size)) return;
+  const pauseDelta = Math.max(0, (owner.m.pausedMs || 0) - owner.pacingPaused);
+  schedulePacedWork(owner, owner.workIterator ? 0 : Math.max(0, owner.pacingDue + pauseDelta - owner.m.sched.now()));
 }
 
 function cancelPacedWork(owner) {
   if (owner.workTimer != null) owner.m.cancel(owner.workTimer);
   owner.workTimer = null;
   owner.workIterator = null;
+  owner.workParked = false;
 }
 
 export class FieldRunner {
@@ -173,6 +198,9 @@ export class FieldRunner {
     cancelPacedWork(this);
     if (this.interval) { this.m.sched.clearInterval(this.interval); this.interval = null; }
   }
+
+  /** Match._resume: a fixed-work chain parked by the solo pause continues (other hosts skip paused intervals). */
+  resume() { resumePacedWork(this); }
 
   _runInstant() {
     const cap = Math.ceil(HARD_CAP_SECONDS / TICK);
@@ -429,7 +457,10 @@ export class HeadlessPacer {
     this.m = m;
     /** @type {Set<{ battle: any, onDone: Function, onTick?: Function, done?: boolean }>} */
     this.entries = new Set();
+    // Fixed-work hosts: the takeover catch-ups and the deferred work (defer), each in arrival order (seq across both).
     this.catchups = [];
+    this.late = [];
+    this.seq = 0;
     this.interval = null;
     this.acc = 0;
     this.last = 0;
@@ -440,7 +471,7 @@ export class HeadlessPacer {
     if (this.stopped || !entry || !entry.battle) return entry;
     this.entries.add(entry);
     if (this.m.workSlice) entry.pacingAfter = this.m._clockNow() - this.m.pausedMs;
-    if (!this.interval && !this.workTimer && !this.workIterator) {
+    if (!this.interval && !this.workTimer && !this.workIterator && !this.workParked) {
       this.last = this.m.sched.now();
       this.acc = 0;
       this.pacingDue = this.last + INTERVAL_MS;
@@ -459,10 +490,11 @@ export class HeadlessPacer {
   skipTo(entry, gt, { budgetTicks = Infinity } = {}) {
     const cap = Math.ceil(Math.min(Number(gt) || 0, HARD_CAP_SECONDS) / TICK);
     if (this.m.workSlice) {
-      // Preserve the old virtual takeover order: finish this admission-time target before the next takeover.
-      // Other room inputs can run between slices; the checkpoint log records their order.
+      // Preserve the old virtual takeover order: finish this admission-time target before the next takeover, after
+      // the pacing rounds owed from before it (_pumpSteps). Other room inputs can run between slices; the checkpoint
+      // log records their order.
       entry.pacingAfter = this.m._clockNow() - this.m.pausedMs;
-      this.catchups.push({ entry, cap });
+      this.catchups.push({ entry, cap, at: entry.pacingAfter, seq: ++this.seq });
       return;
     }
     if (Number.isFinite(budgetTicks) && budgetTicks > 0) {
@@ -493,6 +525,40 @@ export class HeadlessPacer {
 
   stop() { this.stopped = true; this._clear(); this.entries.clear(); }
 
+  /** Match._resume: a fixed-work chain parked by the solo pause continues (other hosts skip paused intervals). */
+  resume() { resumePacedWork(this); }
+
+  /**
+   * On a fixed-work host, whether field ticks from before pause-free time `at` (scheduler time less the paused time,
+   * the clock of `pacingAfter`) are still owed: a takeover catch-up is queued, a pacing round due by then has not run
+   * yet (denied admissions), or deferred work still waits for them. An ideal host — one that simulates every due tick
+   * before anything else happens — would have simulated them first (Match._bossInOrder). Always false without
+   * workSlice (those hosts drop the excess of a stall) and without entries.
+   */
+  behind(at) {
+    if (!this.m.workSlice || this.stopped || !this.entries.size) return false;
+    return this.catchups.length > 0 || this.late.length > 0 || this.pacingDue - this.pacingPaused <= at;
+  }
+
+  /**
+   * Run `fn` once the pacer has simulated everything before pause-free time `at` (behind): in arrival order with the
+   * catch-ups, before the first pacing round after `at`. `owner` tags it for dropLate.
+   */
+  defer(at, fn, owner = null) { this.late.push({ at, fn, owner, seq: ++this.seq }); }
+
+  /** The deferred work not run yet (Match runs it once the pacer has no entries left, or the run is decided). */
+  takeLate() { return this.late.splice(0); }
+
+  /** schedulePacedWork: a queued catch-up or deferred work comes before the next pacing round (it is due now). */
+  _queueDue() {
+    const c = this.catchups[0], d = this.late[0];
+    const head = c && (!d || c.seq < d.seq) ? c : d;
+    return !!head && this.entries.size > 0 && head.at < this.pacingDue - this.pacingPaused;
+  }
+
+  /** Forget the deferred work of `owner` (a client field the server takes over: its run credits the same damage). */
+  dropLate(owner) { this.late = this.late.filter((d) => d.owner !== owner); }
+
   _clear() {
     cancelPacedWork(this);
     this.catchups.length = 0;
@@ -503,16 +569,33 @@ export class HeadlessPacer {
 
   *_pumpSteps() {
     if (this.stopped) return;
-    while (this.catchups.length && !this.stopped) {
-      const { entry, cap } = this.catchups[0];
+    // Only fixed-work hosts queue catch-ups and deferred work (skipTo, defer). Each runs, in the order they came, before
+    // the first pacing round after its time (a round due at or before it runs first), so the server-run fields, the
+    // boss clock and the clients' reports meet in the order of their times however late each event runs.
+    for (;;) {
+      const c = this.catchups[0], d = this.late[0];
+      const head = c && (!d || c.seq < d.seq) ? c : d;
+      if (!head || !this.entries.size || head.at >= this.pacingDue - this.pacingPaused) break;
+      if (head === d) {
+        this.late.shift();
+        try { d.fn(); } catch (err) { this.m.reportError('pacer deferred', err); }
+        if (this.stopped) return;
+        continue;
+      }
+      const { entry, cap } = c;
       while (this.entries.has(entry) && !entry.done && !entry.battle.finished && entry.battle.tickCount < cap) {
         this._skip(entry, cap, 1);
+        // The end conditions are judged tick by tick here too (a leak in the catch-up may empty the team LP
+        // before the pool); a finished battle was already judged by its onDone.
+        if (!entry.done && entry.onTick) { try { entry.onTick(entry); } catch (err) { this.m.reportError('pacer onTick', err); } }
+        if (this.stopped) return;
         yield;
         if (this.stopped) return;
       }
-      if (this.catchups[0]?.entry === entry) this.catchups.shift();
+      if (this.catchups[0] === c) this.catchups.shift();
     }
     if (this.stopped || !this.entries.size) return;
+    if (this.m.workSlice && this.pacingDue > this.m.sched.now()) return NOT_DUE;
     const now = this.m.workSlice ? this.pacingDue : this.m.sched.now();
     const dt = Math.max(0, now - this.last);
     this.last = now;

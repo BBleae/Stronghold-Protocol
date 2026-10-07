@@ -9,8 +9,18 @@ export { RULES_VERSION };
 // it would deal that player's shop from another pool.
 const METHODS = new Set(['start', 'handle', 'onDisconnect', 'onReconnect', 'onLeave', 'setLoadout', 'setPicks']);
 const copy = (value) => JSON.parse(JSON.stringify(value));
-// Work units, not wall-clock milliseconds: live execution and recovery must split at identical points.
-const WORK_SLICE = Object.freeze({ prepSteps: 1, prepSimulationTicks: 128, prepIntervalMs: 25, simulationTicks: 512 });
+// Work units, not wall-clock milliseconds: live execution and recovery must split at identical points. A match records
+// the values it started with (options.workSlice), so a restore keeps them when these defaults change. prepBurst: the AI
+// prep slices one event's allowance covers while a connected human waits on the AI seats alone (Match._prepUrgent) —
+// late in an 8-seat match most of them are 128-tick rehearsal slices (p50 ~2 ms, up to ~8 ms at R12 on a desktop);
+// an arrangement (10–20 ms) takes an allowance of its own (deferWork 'prepArrange'). 5 keeps those events within
+// ~30 ms, and the events of a wait few enough that, at ~5 ms of commit per event, the last human's wait is no longer
+// than before the slicing. simulationTicks: a headless normal / 联防 battle slice — 128 like the boss pacer's (a
+// 512-tick 联防 slice took up to ~97 ms late in an 8-bot match).
+const WORK_SLICE = Object.freeze({ prepSteps: 1, prepSimulationTicks: 128, prepIntervalMs: 25, prepBurst: 5, simulationTicks: 128 });
+// The longest match log restoreMatch replays (CHECKPOINT_EVENT_LIMIT); worker/index.js warns while a running match's log
+// nears it.
+export const CHECKPOINT_EVENT_LIMIT = 200000;
 const OPTION_KEYS = [
   'roomCode',
   'mode',
@@ -37,23 +47,35 @@ export class RecordedMatch extends Match {
     const startedAt = options._startAt ?? (options.now || Date.now)();
     const scheduler = new VirtualScheduler({ start: startedAt, instantCombat: false });
     const output = { muted: !!options._restoring };
-    const work = { frame: null, remaining: null, nextPrepAt: 0, prepIntervalMs: 0, prepReserveMs: 0 };
+    const work = { frame: null, remaining: null, burst: 0, nextPrepAt: 0, prepIntervalMs: 0, prepBurst: 1, prepReserveMs: 0 };
     super({
       ...options,
       scheduler,
-      // Each timer records its admission allowance and pump horizon. Once used, expensive work moves past that
-      // horizon, while ordinary due timers (especially phase deadlines) still run before the player's input.
-      deferWork: (kind, deadline) => {
+      // Each timer records its admission allowance and pump horizon. Once used, expensive work waits past that
+      // horizon (Match.laterWork's queue), while ordinary due timers (especially phase deadlines) still run before the
+      // player's input.
+      deferWork: (kind, deadline, urgent = false) => {
         const frame = work.frame;
         if (!frame) return 0;
-        // Pace the whole room's AI work from the recorded event horizon, not an overdue timer's timestamp.
-        // Near the prep deadline remove only the voluntary gap; the fixed slice and event cap still apply.
+        const prep = kind === 'prep' || kind === 'prepArrange';
+        // Pace the whole room's AI work from the recorded event horizon, not an overdue timer's timestamp. A human
+        // waiting on the AI seats alone (urgent) or the final reserve before the prep deadline removes the voluntary
+        // gap; the fixed slice and event cap still apply.
         const now = Math.max(scheduler.now(), frame.until);
-        const pacedPrep = kind === 'prep' && !(deadline > 0 && deadline - now <= work.prepReserveMs);
+        const pacedPrep = prep && !urgent && !(deadline > 0 && deadline - now <= work.prepReserveMs);
         if (pacedPrep && work.nextPrepAt > now) return work.nextPrepAt - scheduler.now();
+        // An urgent prep slice is a share of the event's allowance: up to prepBurst of them, and nothing else, per
+        // event. An arrangement step (prepArrange, 10–20 ms late in a match) is never one of them: it takes a whole
+        // allowance and leaves no share, so it never adds to other slices in one event.
+        const share = prep && urgent && kind !== 'prepArrange';
+        if (share && frame.burst > 0) {
+          frame.burst--;
+          return 0;
+        }
         if (frame.remaining > 0) {
           frame.remaining--;
-          if (kind === 'prep') work.nextPrepAt = now + work.prepIntervalMs;
+          frame.burst = share ? work.prepBurst - 1 : 0;
+          if (prep) work.nextPrepAt = now + work.prepIntervalMs;
           return 0;
         }
         return Math.max(1, frame.until - scheduler.now() + 1);
@@ -70,6 +92,8 @@ export class RecordedMatch extends Match {
     });
     work.prepIntervalMs = this.scaled(Number.isFinite(options.workSlice.prepIntervalMs)
       && options.workSlice.prepIntervalMs >= 0 ? options.workSlice.prepIntervalMs : WORK_SLICE.prepIntervalMs);
+    work.prepBurst = Number.isSafeInteger(options.workSlice.prepBurst) && options.workSlice.prepBurst >= 1
+      ? options.workSlice.prepBurst : WORK_SLICE.prepBurst;
     work.prepReserveMs = this.scaled(5000);
     this.recording = {
       schemaVersion: 1,
@@ -100,7 +124,8 @@ export class RecordedMatch extends Match {
   _apply(event) {
     if (!Number.isFinite(event.at) || event.at < this.sched.now()) throw new Error('CHECKPOINT_EVENT_TIME');
     if (event.work != null && (event.kind !== 'timer' || !Number.isSafeInteger(event.work.remaining)
-      || event.work.remaining < 0 || !Number.isFinite(event.work.until) || event.work.until < event.at))
+      || event.work.remaining < 0 || !Number.isFinite(event.work.until) || event.work.until < event.at
+      || (event.work.burst != null && !(Number.isSafeInteger(event.work.burst) && event.work.burst > 0))))
       throw new Error('CHECKPOINT_WORK');
     const previousWork = this._work.frame;
     this._work.frame = event.work ? { ...event.work } : null;
@@ -132,6 +157,7 @@ export class RecordedMatch extends Match {
       }
     } finally {
       this._work.remaining = this._work.frame?.remaining ?? null;
+      this._work.burst = this._work.frame?.burst ?? 0;
       this._work.frame = previousWork;
       this._recordDepth--;
     }
@@ -215,17 +241,22 @@ export class RecordedMatch extends Match {
     for (const field of this.fields) this._recordField(field, resultOf(field));
     return super._finishFinal(hidden, resultOf);
   }
+  // workBudget: one event's allowance, shared by its pumps — `remaining` admissions, and `burst`, the urgent prep
+  // slices left of the one admission they share (deferWork). Both go into each timer's recorded work frame.
   pump(until = this._wallNow(), limit = 100, workBudget = { remaining: 1 }) {
-    if (!Number.isFinite(until) || !Number.isSafeInteger(workBudget.remaining) || workBudget.remaining < 0)
+    if (!Number.isFinite(until) || !Number.isSafeInteger(workBudget.remaining) || workBudget.remaining < 0
+      || (workBudget.burst != null && !(Number.isSafeInteger(workBudget.burst) && workBudget.burst >= 0)))
       throw new Error('MATCH_WORK_BUDGET');
     let n = 0;
     while (n < limit && !this.disposed) {
       const at = this.sched.nextAt();
       if (at == null || at > until) break;
       const effectiveAt = Math.max(at, this.sched.now());
-      this._apply({ kind: 'timer', at: effectiveAt, id: this.sched._q[0].id,
-        work: { remaining: workBudget.remaining, until: Math.max(until, effectiveAt) } });
+      const work = { remaining: workBudget.remaining, until: Math.max(until, effectiveAt) };
+      if (workBudget.burst > 0) work.burst = workBudget.burst;
+      this._apply({ kind: 'timer', at: effectiveAt, id: this.sched._q[0].id, work });
       workBudget.remaining = this._work.remaining;
+      if (this._work.burst > 0 || workBudget.burst != null) workBudget.burst = this._work.burst;
       n++;
     }
     return n;
@@ -247,7 +278,7 @@ export function exportMatch(match, { referenceEvents = false } = {}) {
 export function restoreMatch(checkpoint, deps) {
   if (checkpoint?.schemaVersion !== 1 || checkpoint.rulesVersion !== RULES_VERSION)
     throw new Error('CHECKPOINT_VERSION');
-  if (!Array.isArray(checkpoint.events) || checkpoint.events.length > 200000) throw new Error('CHECKPOINT_EVENT_LIMIT');
+  if (!Array.isArray(checkpoint.events) || checkpoint.events.length > CHECKPOINT_EVENT_LIMIT) throw new Error('CHECKPOINT_EVENT_LIMIT');
   const match = new RecordedMatch({ ...deps, ...checkpoint.options, _startAt: checkpoint.startedAt, _restoring: true });
   try {
     for (const event of checkpoint.events) match._apply(event);

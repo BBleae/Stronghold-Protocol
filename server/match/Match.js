@@ -125,7 +125,9 @@
 //   opts.headlessSliceMs  wall-clock ms per callback of a server-run normal / 联防 field (client-side combat: bots,
 //                      takeovers; default 8 with a real scheduler, at once with a virtual one)
 //   opts.workSlice    { prepSteps, simulationTicks, prepSimulationTicks? }: fixed generator/tick budgets instead of wall-clock slices
-//   opts.deferWork    optional recorded-host admission callback (kind, deadline): 0 admits one slice, positive ms postpones it
+//   opts.deferWork    optional recorded-host admission callback (kind: 'prep' / 'prepArrange' (an arrangement's slice) /
+//                      'simulation', deadline, urgent): 0 admits one slice, positive ms postpones it (laterWork's work
+//                      queue; urgent: _prepUrgent)
 // Seats may be all bots (tools/matchrun.mjs); the lobby always has ≥ 1 human.
 //
 // Diagnostics: m.errors / m.errorCount (engine), m.dispatcher.errors / .errorsByKey (meta handlers), m.simErrors
@@ -166,7 +168,7 @@ import {
 import { buildBattleSpec, createBattleFromSpec, resultDigest, compactResult as compactForVerify, battleProgress, uniteLeft } from '../sim/spec.js';
 import { CreditPool } from './finalAssault.js';
 import { buildResult } from './results.js';
-import { botPrepBeginSteps, botPrepEndSteps, botPickBand, botPickCard } from './bot.js';
+import { botPrepBeginSteps, botPrepEndSteps, botPickBand, botPickCard, TRANSIENT, HEAVY } from './bot.js';
 
 const BOT_REHEARSAL_DEFAULT = 3;
 /** Wall-clock ms of bot layout rehearsal per scheduler callback (real time; virtual time runs it in one go). */
@@ -882,26 +884,76 @@ export class Match {
       h.cancelled = true;
       this.cancel(h[WORK_TIMER]);
       h[WORK_TIMER] = null;
+      // a queued entry leaves the work queue (its gate moves on to the next entry, or goes)
+      if (this._workQueue && !this._workQueue.running) this._armWorkGate();
       return;
     }
     this.sched.clearTimeout(h);
     this._timers.delete(h);
   }
 
-  /** A work timer may be postponed by the recorded host budget; its cancellation token follows every postponement. */
-  laterWork(ms, fn, kind = 'simulation') {
+  /**
+   * Schedule expensive work: a bot prep step, a headless battle slice, a paced boss round. Without fixed work budgets
+   * (workSlice) it is later(). With a recorded host's admission (deferWork) it joins the room's work queue, which ONE
+   * gate timer wakes at the earliest time an entry may run. The gate tries every due entry in queue order, so a paced
+   * prep entry never blocks a simulation slice behind it: a denied entry keeps its place and waits past the event's
+   * horizon (no timer and no logged event of its own), an admitted one leaves the queue and runs, and the continuation
+   * it schedules joins the back (the bots take turns). `alive` (optional) drops a stale entry once due, without taking
+   * an admission. The returned token cancels the work wherever it waits.
+   */
+  laterWork(ms, fn, kind = 'simulation', alive = null) {
     if (!this.workSlice) return this.later(ms, fn);
     if (this.disposed) return null;
     const token = { [WORK_TIMER]: null, cancelled: false };
-    const run = () => {
-      token[WORK_TIMER] = null;
-      if (token.cancelled) return;
-      const delay = this.deferWork ? this.deferWork(kind, this.deadline) : 0;
-      if (delay > 0) token[WORK_TIMER] = this.later(delay, run);
-      else fn();
-    };
-    token[WORK_TIMER] = this.later(ms, run);
+    if (!this.deferWork) {
+      // no admission to wait for: each slice still runs in a scheduler callback of its own
+      token[WORK_TIMER] = this.later(ms, () => {
+        token[WORK_TIMER] = null;
+        if (!token.cancelled && (!alive || alive())) fn();
+      });
+      return token;
+    }
+    const q = (this._workQueue ??= { entries: [], gate: null, gateAt: Infinity, running: false });
+    q.entries.push({ at: this.sched.now() + (Number.isFinite(ms) && ms > 0 ? ms : 0), kind, fn, alive, token });
+    // the gate that is running reaches an entry its admitted work adds (another bot's turn may come first)
+    if (!q.running) this._armWorkGate();
     return token;
+  }
+
+  /** (Re-)arm the work queue's gate at its earliest entry; cancelled entries leave the queue here. */
+  _armWorkGate() {
+    const q = this._workQueue;
+    q.entries = q.entries.filter((e) => !e.token.cancelled);
+    let at = Infinity;
+    for (const e of q.entries) if (e.at < at) at = e.at;
+    if (q.gate && q.gateAt === at) return;
+    if (q.gate) this.cancel(q.gate);
+    q.gate = null;
+    q.gateAt = at;
+    if (at < Infinity) q.gate = this.later(Math.max(0, at - this.sched.now()), () => this._runWorkGate());
+  }
+
+  /** The work gate: each due entry, in queue order, is dropped (stale), postponed (denied) or run (admitted). */
+  _runWorkGate() {
+    const q = this._workQueue;
+    q.gate = null;
+    q.gateAt = Infinity;
+    q.running = true;
+    try {
+      const now = this.sched.now();
+      for (let i = 0; i < q.entries.length && !this.disposed;) {
+        const e = q.entries[i];
+        if (e.at > now) { i++; continue; }
+        if (e.token.cancelled || (e.alive && !e.alive())) { q.entries.splice(i, 1); continue; }
+        const delay = this.deferWork(e.kind, this.deadline, e.kind.startsWith('prep') && this._prepUrgent());
+        if (delay > 0) { e.at = now + delay; i++; continue; }
+        q.entries.splice(i, 1);
+        try { e.fn(); } catch (err) { this.reportError('work', err); }
+      }
+    } finally {
+      q.running = false;
+    }
+    if (!this.disposed) this._armWorkGate();
   }
 
   scaled(ms) { return Math.max(0, Math.round(ms * this.timerScale)); }
@@ -925,7 +977,8 @@ export class Match {
    * for 准备就绪 (co-op keeps the official 25 s guard), BAND_DRAFT / SP_DRAFT / PREP are untimed, and the fixed
    * presentation steps (BATTLE_CHECK, ROUND_START, SETTLE) run silently (no countdown). The same holds for any match
    * with a single human (loneHuman: a 同盟 room started alone or with AI teammates only — user playtest #4 item 3):
-   * the timers only ever made humans wait on each other; AI seats act at once.
+   * the timers only ever made humans wait on each other. AI seats need no deadline: their prep starts after its
+   * stagger and, once the human is ready, runs without its voluntary pacing gap (_prepUrgent).
    */
   get soloUntimed() { return this.isSolo || this.loneHuman; }
 
@@ -1494,9 +1547,10 @@ export class Match {
    * Solo pause (official PauseUp / ResumeUp; DESIGN §14 "Solo pause"): g.pause { on } freezes the running battle — the
    * field clock (b.start `elapsed`, the boss budgets and overtime), the result deadline / server release timers, the
    * boss clock, the HUD `deadline` / `overtimeAt` (shifted by the pause on resume) and the server-run pacers
-   * (FieldRunner / HeadlessPacer skip their intervals) — and the browser's runner stops its local clock while
-   * `m.public.paused` is true. Solo matches only (co-op battles never pause: WRONG_PHASE) and only while a battle runs;
-   * `{ on: false }` is always accepted. A disconnect / leave, or the battle phase ending, resumes.
+   * (FieldRunner / HeadlessPacer skip their intervals; with workSlice their work chains park until _resume) — and
+   * the browser's runner stops its local clock while `m.public.paused` is true. Solo matches only (co-op battles never
+   * pause: WRONG_PHASE) and only while a battle runs; `{ on: false }` is always accepted. A disconnect / leave, or the
+   * battle phase ending, resumes.
    */
   setPause(ps, on) {
     void ps;
@@ -1536,6 +1590,9 @@ export class Match {
       f.rearmDeadline = false;
       f.rearmRelease = false;
     }
+    // fixed-work pacing chains stopped re-arming while paused (no timer per interval): they continue now
+    this.runner?.resume?.();
+    this.pacer?.resume?.();
     if (this._bossClockOn && !this._bossClock && (this.phase === PHASE.FINAL_ASSAULT || this.phase === PHASE.HIDDEN_CORE)) {
       this._bossClock = this.later(BOSS_CLOCK_MS, () => this._bossClockTick());
     }
@@ -2057,9 +2114,15 @@ export class Match {
    * each, so other rooms' battles and every player's requests keep flowing): economy + the default layout
    * (bot.js botPrepBeginSteps — shop decisions and layout planning, 50–120 ms late in a 4-bot match), the layout
    * rehearsal (whole simulated battles, 0.2–1 s of CPU per bot late in a match), then botPrepEndSteps (the rehearsed
-   * layout, temp, Ready). The step generators run the same actions in the same order as the one-shot routine (same
-   * rng draws, same decisions); unbounded virtual time without workSlice runs each stage at once. The prep ending first
-   * (deadline) or a newer schedule for the seat drops the job (a step never leaves a transient board behind).
+   * layout, temp, Ready). The step generators run one bot's actions in the same order as the one-shot routine; with
+   * several bots their slices interleave, so the shared rng streams and pool may give a bot other draws than bots
+   * playing one after another would. Unbounded virtual time without workSlice runs each stage at once. The prep ending
+   * first (deadline), the seat leaving autoplay or a newer schedule for the seat drops the job between two steps. In
+   * fixed counts that is never at a TRANSIENT yield (bot.js: the board mid-layout — the drive steps through those in the
+   * same callback, and they count as no step), so neither the fight nor a scout ever gets a half-built board; a
+   * wall-clock slice may still stop at one. A fixed-count slice also ends at a HEAVY yield (the step before an
+   * arrangement): the arrangement's slice is queued as 'prepArrange', which takes an event's work allowance of its own
+   * (RecordedMatch deferWork), so it never adds to the other slices an urgent event runs.
    */
   scheduleBotPrep(ps, i = 0) {
     const round = this.round;
@@ -2067,7 +2130,9 @@ export class Match {
     const valid = () => this.phase === PHASE.PREP && this.round === round && ps.alive && !ps.ready && ps.botControlled && ps._botPrepToken === token;
     const fixed = this.workSlice;
     const bounded = !!fixed || Number.isFinite(this.botSliceMs);
-    const later = (ms, fn) => fixed ? this.laterWork(ms, fn, 'prep') : this.later(ms, fn);
+    // a queued step of a dropped job leaves the work queue without taking an admission; `heavy`: the step starts an
+    // arrangement (bot.js HEAVY) and takes an event's work allowance of its own (deferWork 'prepArrange')
+    const later = (ms, fn, heavy = false) => fixed ? this.laterWork(ms, fn, heavy ? 'prepArrange' : 'prep', valid) : this.later(ms, fn);
     const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
     /** Step a generator until done or the slice budget is used; `then(value)` once it is done (null on an error). */
     const drive = (gen, label, then) => {
@@ -2079,15 +2144,15 @@ export class Match {
         else then(value);
       };
       try {
-        do { r = gen.next(); steps++; }
-        while (!r.done && (fixed ? steps < fixed.prepSteps : !(bounded && now() - t0 >= this.botSliceMs)));
+        do { r = gen.next(); if (r.value !== TRANSIENT) steps++; }
+        while (!r.done && (fixed ? r.value === TRANSIENT || (steps < fixed.prepSteps && r.value !== HEAVY) : !(bounded && now() - t0 >= this.botSliceMs)));
       } catch (e) {
         this.reportError(`bot ${ps.playerId}${label}`, e);
         finish(null);
         return;
       }
       if (r.done) { finish(r.value); return; }
-      later(0, () => { if (valid()) drive(gen, label, then); });
+      later(0, () => { if (valid()) drive(gen, label, then); }, r.value === HEAVY);
     };
     const ready = () => {
       if (!ps.ready) {
@@ -2144,6 +2209,23 @@ export class Match {
       this._prepEndQueued = false;
       if (this.phase === PHASE.PREP && this.round === round && allReady()) this.prepDeadline();
     });
+  }
+
+  /**
+   * Whether the AI seats' prep work is urgent (laterWork → deferWork: no voluntary gap, several slices per event): in
+   * PREP a human is connected (alive, or eliminated and watching) and every alive human who still chooses for themself
+   * (connected, not on autoplay) is ready, so the room waits on the bots alone — a human on autoplay waits too. Recorded
+   * state only, so a restore admits the same slices. With no human connected nobody waits: the AI keeps its pace.
+   */
+  _prepUrgent() {
+    if (this.phase !== PHASE.PREP) return false;
+    let waiting = false;
+    for (const p of this.order) {
+      if (p.isBot || !p.connected) continue;
+      if (p.alive && !p.botControlled && !p.ready) return false;
+      waiting = true;
+    }
+    return waiting;
   }
 
   prepDeadline() {
@@ -2829,9 +2911,14 @@ export class Match {
     p.killed = Math.min(p.total, Math.max(p.killed, msg.killed | 0));
     f.lastProgressAt = this.sched.now();
     if (f.kind === 'boss' || f.kind === 'hidden') {
-      this._creditBoss(f, msg.bossDmg, msg.by);
-      this._creditLp(f, msg.leaks, true);
-      this._checkFinalEnd();
+      // credited up to the budgets of the field clock as of now, in time order with the server-run fields (_bossInOrder)
+      const { bossDmg, by, leaks } = msg;
+      const dmgBudget = this._bossDmgBudget(f), lpBudget = this._bossLpBudget(f);
+      this._bossInOrder(() => {
+        this._creditBoss(f, bossDmg, by, dmgBudget);
+        this._creditLp(f, leaks, true, lpBudget);
+        this._checkFinalEnd();
+      }, f);
       this._broadcastPool(false);
       // 4 Hz per field: b.pool carries the exact pool / team LP; m.public (boss HP, LP, progress) follows at ~1 Hz
       this._bossPublic();
@@ -2865,12 +2952,19 @@ export class Match {
       const by = {};
       let sum = 0;
       for (const pid of f.players) { const d = Number(result.perPlayer[pid] && result.perPlayer[pid].bossDamage) || 0; by[pid] = d; sum += d; }
-      if (sum > f.bossAcked) this._creditBoss(f, sum, by);
-      // the client emptied the pool as it saw it (server hp − its unacknowledged damage): what is left on the server is
-      // float dust from summing the fields' reports in another order — the boss is down (pools never hold less than
-      // BOSS_POOL_MIN_HP, finalAssault.js: this only catches a noise-level disagreement at that boundary)
       const pool = this.bossPool;
-      if (result.reason === 'cleared' && this._finalEnding !== 'forced' && pool && pool.hp > 0 && pool.hp < 1 + 1e-6) pool.damage(f.players[0] ?? null, pool.hp);
+      const dmgBudget = this._bossDmgBudget(f);
+      // in time order with the server-run fields like a b.progress (_bossInOrder): a result whose credit waits for the
+      // pacer is judged below on the pool as its client saw it (b.pool) — a 'cleared' one is held until the credit
+      // ends the run
+      this._bossInOrder((late) => {
+        if (sum > f.bossAcked) this._creditBoss(f, sum, by, dmgBudget);
+        // the client emptied the pool as it saw it (server hp − its unacknowledged damage): what is left on the server
+        // is float dust from summing the fields' reports in another order — the boss is down (pools never hold less
+        // than BOSS_POOL_MIN_HP, finalAssault.js: this only catches a noise-level disagreement at that boundary)
+        if (result.reason === 'cleared' && this._finalEnding !== 'forced' && pool && pool.hp > 0 && pool.hp < 1 + 1e-6) pool.damage(f.players[0] ?? null, pool.hp);
+        if (late) this._checkFinalEnd();
+      }, f);
       // a boss field ends only when the shared pool is empty (the client saw it reach 0) or the match forced the end
       // (b.end): any other result — 'forced' / 'timeout' at t = 0, 'cleared' while the pool still holds — would stop
       // the pair's fight (and, with every field done, end the Final Assault as a defeat). The field is handed to the
@@ -3029,16 +3123,17 @@ export class Match {
 
   /**
    * A boss field's shared-pool damage, as reported cumulatively by its client (`by`: per player) — credited up to the
-   * plausibility budget of the field clock; the rest is credited by later reports / the boss clock (`bossReported`).
+   * plausibility budget of the field clock (`budget`: as of the report, when its credit waited: _bossInOrder); the rest
+   * is credited by later reports / the boss clock (`bossReported`).
    */
-  _creditBoss(f, cum, by) {
+  _creditBoss(f, cum, by, budget = this._bossDmgBudget(f)) {
     const pool = this.bossPool;
     const reported = Number(cum);
     // the team LP ran out first: the run failed at that moment (PRTS "…使目标生命值扣除至0，则无视倒计时直接失败"), so
     // damage reported afterwards — in flight, or rounded up in the final b.result — changes nothing (user playtest #6)
     if (!pool || !Number.isFinite(reported) || this._finalEnding === 'forced') return;
     if (!f.bossReported || reported > f.bossReported.cum) f.bossReported = { cum: reported, by: by && typeof by === 'object' ? { ...by } : null };
-    const c = Math.min(reported, this._bossDmgBudget(f));
+    const c = Math.min(reported, budget);
     if (!(c > f.bossAcked)) return;
     const delta = c - f.bossAcked;
     f.bossAcked = c;
@@ -3059,14 +3154,17 @@ export class Match {
     }
   }
 
-  /** A boss field's LP cost (leaks × lpr + leader LP effects): `cumulative` totals from its client, deltas from the server run. */
-  _creditLp(f, amount, cumulative = false) {
+  /**
+   * A boss field's LP cost (leaks × lpr + leader LP effects): `cumulative` totals from its client (`budget`: the field
+   * clock's, as for _creditBoss), deltas from the server run.
+   */
+  _creditLp(f, amount, cumulative = false, budget = null) {
     let n = Number(amount);
     if (!Number.isFinite(n) || n <= 0) return;
     if (cumulative) {
       // a client's cumulative report: credited up to the field clock's plausibility budget (the rest later)
       if (n > f.lpReported) f.lpReported = n;
-      n = Math.min(n, this._bossLpBudget(f));
+      n = Math.min(n, budget ?? this._bossLpBudget(f));
       if (n <= f.lpAcked) return;
       const d = n - f.lpAcked;
       f.lpAcked = n;
@@ -3091,6 +3189,9 @@ export class Match {
       battle.on('lpLoss', (ctx) => this._creditLp(f, ctx && ctx.amount), { priority: -1000, owner: 'match' });
     } catch (e) { this.reportError('boss leak hook', e); }
     if (!this.pacer) this.pacer = new HeadlessPacer(this);
+    // reports of this field still waiting for the pacer (_bossInOrder) are not credited: acked stays where the server
+    // run starts, and that run credits the same damage on its own clock
+    this.pacer.dropLate(f);
     const entry = this.pacer.add({
       battle,
       onDone: () => {
@@ -3133,22 +3234,53 @@ export class Match {
     if (this.phase !== PHASE.FINAL_ASSAULT && this.phase !== PHASE.HIDDEN_CORE) return;
     if (this.paused) return; // re-armed by _resume
     const now = this.sched.now();
-    this._applyOvertime(((now - this._bossStartAt) / 1000) * this.gameSpeed);
+    // the overtime drain and the budget credits at this clock time, in time order with the server-run fields
+    // (_bossInOrder); no drain once the run is decided (the clients' result grace period: hiddenEligible reads the
+    // team LP). The silence handover goes by the wall clock: a client went quiet now.
+    const gt = this._bossOvertimeGt(now);
+    this._bossInOrder(() => { if (!this._finalEnding) this._applyOvertime(gt); });
     for (const f of this.fields) {
       // reports held back by the plausibility budget are credited as the field clock advances
       if (f.cc && !f.done && f.mode === 'client') {
-        if (f.bossReported && f.bossReported.cum > f.bossAcked) this._creditBoss(f, f.bossReported.cum, f.bossReported.by);
-        if (f.lpReported > f.lpAcked) this._creditLp(f, f.lpReported, true);
+        const dmgBudget = this._bossDmgBudget(f), lpBudget = this._bossLpBudget(f);
+        this._bossInOrder(() => {
+          if (f.done || f.mode !== 'client') return;
+          if (f.bossReported && f.bossReported.cum > f.bossAcked) this._creditBoss(f, f.bossReported.cum, f.bossReported.by, dmgBudget);
+          if (f.lpReported > f.lpAcked) this._creditLp(f, f.lpReported, true, lpBudget);
+        }, f);
       }
       if (f.cc && !f.done && f.mode === 'client' && !f.heldResult && now - f.lastProgressAt > BOSS_SILENCE_MS) {
         this.log.info?.(`[match ${this.roomCode}] ${f.fieldId}: no progress from ${f.authority} — handing the field over`);
         this._bossHandover(f, 'silent');
       }
     }
-    this._checkFinalEnd();
+    this._bossInOrder(() => this._checkFinalEnd());
     this._broadcastPool(false);
     if (this.fields.some((f) => f.cc && !f.done)) this._bossClock = this.later(BOSS_CLOCK_MS, () => this._bossClockTick());
     else this._bossClockOn = false;
+  }
+
+  /**
+   * Time-ordered boss-round work at scheduler time now — the boss clock's overtime drain and budget credits, a client's
+   * pool / LP report, the end check after them. On a fixed-work host the pacer may still owe server-run field ticks
+   * from before now (a takeover catch-up, pacing rounds after denied admissions: HeadlessPacer.behind). The work then
+   * waits in the pacer's queue and runs before its first pacing round after this time — `fn(true)` — the order an
+   * ideal host, one that simulates every due tick before the next event, gives it. So whether the pool or the team LP
+   * runs out first depends only on recorded state, not on how long each event takes. Otherwise `fn(false)` runs now,
+   * after anything that still waits. `f`: the client field whose report it credits (HeadlessPacer.dropLate).
+   */
+  _bossInOrder(fn, f = null) {
+    const at = this._clockNow() - this.pausedMs;
+    if (this.pacer?.behind(at)) { this.pacer.defer(at, () => fn(true), f); return; }
+    this._bossRunLate();
+    fn(false);
+  }
+
+  /** Run the boss-round work still waiting in the pacer's queue (it has no entries left, or the run is decided). */
+  _bossRunLate() {
+    for (const d of this.pacer ? this.pacer.takeLate() : []) {
+      try { d.fn(); } catch (e) { this.reportError('boss deferred', e); }
+    }
   }
 
   /** Pool depleted → victory; team LP 0 → defeat: every boss field is ended. */
@@ -3162,6 +3294,8 @@ export class Match {
   _endFinal(reason) {
     if (this._finalEnding) return;
     this._finalEnding = reason;
+    // what still waited for the pacer comes after the decision (no overtime drain, no pool credit after a defeat)
+    this._bossRunLate();
     this._broadcastPool(true);
     for (const f of this.fields) {
       if (!f.cc || f.done) continue;
@@ -3503,6 +3637,12 @@ export class Match {
       this._teamLpLoss(loss);
     }
   }
+
+  /**
+   * Game seconds of the boss clock at scheduler time `at` (client-side combat), for the overtime drain: read when the
+   * boss clock ticks, applied in time order with the server-run fields (_bossInOrder).
+   */
+  _bossOvertimeGt(at) { return ((at - this._bossStartAt) / 1000) * this.gameSpeed; }
 
   _bossTick(runner) {
     this._applyOvertime(runner.time);

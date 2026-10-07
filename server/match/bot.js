@@ -44,11 +44,13 @@
 //      (act2 m01 blowers) the DPS is scaled by the blower ATK bonus of that direction (with / against / across). The last
 //      arrangement of a prep REHEARSES up to m.botRehearsal distinct layout variants with the real Battle (rehearsal
 //      seed, no meta dispatch, board restored exactly) and keeps the one with the fewest leaks. The default plan is
-//      placed first; Match steps the rehearsal in wall-clock-bounded slices (botPrepBegin → job.run → botPrepEnd) so
-//      whole simulated battles never block the server's event loop. The prep routine itself is sliced the same way:
+//      placed first; Match steps the rehearsal in bounded slices (botPrepBegin → job.run / job.runTicks → botPrepEnd)
+//      so whole simulated battles never block the server's event loop. The prep routine itself is sliced the same way:
 //      botPrepBeginSteps / botPrepEndSteps (and planLayoutSteps, arrangeSteps, createRehearsalSteps) are step
-//      generators that yield between whole actions (never with a transient board) — the same actions in the same
-//      order as the one-shot functions (runSteps), hence the same rng draws and decisions.
+//      generators that yield between whole actions — the same actions in the same order as the one-shot functions
+//      (runSteps), hence the same rng draws and decisions for one bot played alone (several bots' slices interleave on
+//      the shared rng streams). A yield while the board is mid-layout yields TRANSIENT, which fixed-step slicing
+//      never stops at.
 //      The summon cards of the placed operators (赫默's 医疗探机, 伺夜's 狼群 …; user playtest #6) are placed after
 //      them on the best remaining tiles — a tactician's 援军 (狼群 / 流形) only on a tile of its owner's attack range
 //      (its tactical point: PlayerState.summonRange, the server's legality; player report #9 after 0.1.0) —, 凯瑟琳's
@@ -96,6 +98,30 @@ export function runSteps(gen) {
   let r;
   do r = gen.next(); while (!r.done);
   return r.value;
+}
+
+/**
+ * What a step generator yields while the board holds a transient layout — arrangeSteps from withdrawing the pieces it
+ * does not deploy until the plan is placed, applyPlanSteps from lifting the summons until they are placed again. It is
+ * no place to stop: Match's fixed-step drive goes on to the next plain yield in the same callback (and does not count
+ * these as steps), so a prep that ends, a seat leaving autoplay or a teammate's scouting never meets a half-built board.
+ */
+export const TRANSIENT = Symbol('transient board');
+
+/**
+ * What a step generator yields at a whole step just before an arrangement or a rehearsed plan (the heavy steps: layout
+ * planning, rehearsal battles built, 10–20 ms late in an 8-seat match). The board is whole there, like at any plain
+ * yield; it tells Match's fixed-step drive that the next slice is heavy, so it runs in a work allowance of its own
+ * instead of after other slices of the same event (RecordedMatch deferWork, 'prepArrange').
+ */
+export const HEAVY = Symbol('arrangement next');
+
+/** A step generator whose every step is TRANSIENT (its value is returned as is). */
+function* transientSteps(gen) {
+  for (let r = gen.next(); ; r = gen.next()) {
+    if (r.done) return r.value;
+    yield TRANSIENT;
+  }
 }
 
 /** Lineup value of each deployed member of the focus bond (up to its top threshold). */
@@ -1308,10 +1334,10 @@ export function botPrepBegin(m, ps) {
 }
 
 /**
- * botPrepBegin as a step generator (the same actions in the same order, hence the same rng draws and decisions): it
- * yields between whole prep actions — never while the board holds a transient layout — so Match.scheduleBotPrep runs
- * it in wall-clock-bounded slices like the rehearsal (50–120 ms of planning in one callback late in a 4-bot match
- * otherwise). Returns the rehearsal job (or null).
+ * botPrepBegin as a step generator (the same actions in the same order, hence the same rng draws and decisions for a
+ * bot played alone): it yields between whole prep actions — TRANSIENT while an arrangement has the board mid-layout,
+ * which a fixed-step slice never stops at — so Match.scheduleBotPrep runs it in bounded slices like the rehearsal
+ * (50–120 ms of planning in one callback late in a 4-bot match otherwise). Returns the rehearsal job (or null).
  */
 export function* botPrepBeginSteps(m, ps) {
   if (!ps.alive || ps.ready) return null;
@@ -1330,11 +1356,11 @@ export function* botPrepBeginSteps(m, ps) {
   takeOffers(m, ps);
   levelUp(m, ps, { spare: true });
   maybeFreeze(m, ps);
-  yield;
+  yield HEAVY;
   // 3. placement, 4. items, placement again (item carriers gain value; rehearsed when the match allows it)
   yield* arrangeSteps(m, ps);
   equipItems(m, ps);
-  yield;
+  yield HEAVY;
   return yield* arrangeSteps(m, ps, { final: true, defer: true });
 }
 
@@ -1346,7 +1372,10 @@ export function botPrepEnd(m, ps, job = null) {
 /** botPrepEnd as a step generator (see botPrepBeginSteps). */
 export function* botPrepEndSteps(m, ps, job = null) {
   if (!ps.alive || ps.ready) return;
-  if (job && job.done && job.best !== job.plans[0]) yield* applyPlanSteps(m, ps, job.chosen, job.best);
+  if (job && job.done && job.best !== job.plans[0]) {
+    yield HEAVY;
+    yield* applyPlanSteps(m, ps, job.chosen, job.best);
+  }
   // 5. temp → hand / sell / destroy; keep one hand slot free for next round's merges
   resolveTemp(m, ps);
   if (freeSlot(ps.hand) < 0) freeHandSlot(m, ps);
@@ -1517,7 +1546,10 @@ export function arrange(m, ps, opts = {}) {
   return runSteps(arrangeSteps(m, ps, opts));
 }
 
-/** arrange as a step generator (yields inside the layout planning, see planLayoutSteps). */
+/**
+ * arrange as a step generator: it yields inside the layout planning (planLayoutSteps) and the placement, every step
+ * TRANSIENT — the pieces it does not deploy are withdrawn first, so the board is short of its lineup until it returns.
+ */
 export function* arrangeSteps(m, ps, { final = false, defer = false } = {}) {
   const ctx = context(m, ps);
   const chosen = chooseLineup(m, ps, ctx).set;
@@ -1529,15 +1561,16 @@ export function* arrangeSteps(m, ps, { final = false, defer = false } = {}) {
     if (idx >= 0) tryDo(() => ps.move(p.uid, { area: 'hand', idx }));
     else tryDo(() => ps.sell(p.uid));
   }
-  yield;
+  // from here until the plan is placed the board is short of its lineup: every step is TRANSIENT
+  yield TRANSIENT;
   const plans = [];
   if (final && m.wave && m.botRehearsal > 0) {
-    for (const v of REHEARSAL_VARIANTS) plans.push(yield* planLayoutSteps(m, ps, chosen, { ...LAYOUT_PARAMS, ...v }));
+    for (const v of REHEARSAL_VARIANTS) plans.push(yield* transientSteps(planLayoutSteps(m, ps, chosen, { ...LAYOUT_PARAMS, ...v })));
   } else {
-    plans.push(yield* planLayoutSteps(m, ps, chosen));
+    plans.push(yield* transientSteps(planLayoutSteps(m, ps, chosen)));
   }
   if (defer && plans.length > 1) {
-    const job = yield* createRehearsalSteps(m, ps, chosen, plans);
+    const job = yield* transientSteps(createRehearsalSteps(m, ps, chosen, plans));
     yield* applyPlanSteps(m, ps, chosen, plans[0]);
     return job;
   }
@@ -1548,7 +1581,8 @@ export function* arrangeSteps(m, ps, { final = false, defer = false } = {}) {
 /**
  * Put the chosen pieces on their planned tiles, fill what is still off the board, then place summons. Placed summons go
  * back to their stacks first: they would sit on the plan's tiles (an operator moved onto one swaps it elsewhere), and a
- * 凯瑟琳 device left beside a tile its operator moved away from would face nothing (QA, playtest #6).
+ * 凯瑟琳 device left beside a tile its operator moved away from would face nothing (QA, playtest #6). From the lift to the
+ * last summon placed every step is TRANSIENT.
  */
 function* applyPlanSteps(m, ps, chosen, target) {
   liftTokens(ps);
@@ -1573,8 +1607,8 @@ function* applyPlanSteps(m, ps, chosen, target) {
   for (let pass = 0; pass < 2; pass++) {
     const off = chosen.filter((p) => { const loc = ps.find(p.uid); return loc && loc.area !== 'board'; });
     if (!off.length || ps.deployCount >= ps.deployCap) break;
-    yield;
-    const again = yield* planLayoutSteps(m, ps, off, LAYOUT_PARAMS, { occupied: new Set([...ps.board.keys(), ...refused]) });
+    yield TRANSIENT;
+    const again = yield* transientSteps(planLayoutSteps(m, ps, off, LAYOUT_PARAMS, { occupied: new Set([...ps.board.keys(), ...refused]) }));
     for (const p of off) {
       const k = again.get(p.uid);
       if (!k || ps.deployCount >= ps.deployCap) continue;
@@ -1583,7 +1617,7 @@ function* applyPlanSteps(m, ps, chosen, target) {
     }
     if (!refused.size) break;
   }
-  yield* placeTokensSteps(m, ps);
+  yield* transientSteps(placeTokensSteps(m, ps));
 }
 
 /** Board summons back to their hand stacks (or a free hand slot). */

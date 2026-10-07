@@ -8,12 +8,12 @@ import { makeBattle } from '../helpers/battleHarness.js';
 const settle = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); };
 
 // Real empty battles keep the lifecycle checks cheap; only loading, RAF and transport are controlled.
-function rig({ loading = false, kind = 'normal' } = {}) {
+function rig({ loading = false, kind = 'normal', accountMode = false } = {}) {
   let now = 1000, seq = 0, release;
   const frames = new Map(), intervals = new Map(), handlers = new Map(), created = [], starts = new Set();
   const gate = loading ? new Promise((resolve) => { release = resolve; }) : Promise.resolve();
   const net = {
-    sent: [],
+    sent: [], accountMode,
     on(type, fn) { handlers.set(type, fn); return () => handlers.delete(type); },
     send(type, msg) { this.sent.push({ t: type, ...msg }); return true; },
     request(type, msg) { this.sent.push({ t: type, ...msg }); return Promise.resolve({ t: 'ok' }); },
@@ -134,6 +134,41 @@ for (const loading of [false, true]) {
     } finally { r.runner.dispose(); }
   });
 }
+
+// Review of the worker scheduling change, item 8: an end that reached a battle still loading its engine went out as a
+// complete tick-0 client replay (source client, complete) of a battle never played here.
+for (const loading of [true, false]) test(`a boss b.end during ${loading ? 'engine loading sends the result alone' : 'preparation still reports the replay up to it'}`, async () => {
+  const r = rig({ loading, kind: 'boss', accountMode: true });
+  try {
+    let ownDone = null;
+    r.runner.on('ownDone', (m) => { ownDone = m; });
+    const pending = r.start(); await settle();
+    if (!loading) await r.frame(16); // a first batch of the catch-up
+    const ticks = r.created[0]?.tickCount ?? 0;
+    assert.equal(ticks > 0, !loading);
+    let lost = loading;
+    if (loading) {
+      // the first try is lost with the socket: the next session sends the result again, still alone
+      r.net.request = function (type, msg) { this.sent.push({ t: type, ...msg }); if (!lost) return Promise.resolve({ t: 'ok' }); lost = false; return Promise.reject(Object.assign(new Error('gone'), { code: 'DISCONNECTED' })); };
+    }
+    r.event('b.end', { battleId: 'own', reason: 'cleared' });
+    await r.finish(); await pending;
+    const e = r.runner._entries.get('own');
+    assert.equal(e.battle.finished, true);
+    assert.equal(e.battle.tickCount, ticks, 'ended where it stood');
+    assert.deepEqual(ownDone, { battleId: 'own', fieldId: 'own', late: true });
+    if (loading) {
+      r.event('welcome', {}); await settle();
+      assert.deepEqual(r.net.sent.map((m) => m.t), ['b.result', 'b.result'], 'no b.progress: the server keeps its own record');
+      assert.equal(r.net.sent[1].result.time, 0);
+    } else {
+      assert.deepEqual(r.net.sent.map((m) => m.t).slice(-2), ['b.progress', 'b.result']);
+      const { replay } = r.net.sent.at(-2);
+      assert.equal(replay.tick, ticks);
+      assert.deepEqual(replay.inputs.at(-1), { tick: ticks, kind: 'end', reason: 'forced' }, 'the replay segment carries the end');
+    }
+  } finally { r.runner.dispose(); }
+});
 
 test('a superseded display preparation never overwrites the newer field', async () => {
   const r = rig({ loading: true });

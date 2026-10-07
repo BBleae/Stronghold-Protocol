@@ -122,7 +122,7 @@ test('a checkpoint in a headless slice continues to the same battle result, time
   try {
     clock.now = match.deadline + 1;
     match.pump(clock.now, 100, { remaining: 0 });
-    // Prep continuations cancelled by the deadline may precede the newly created field jobs.
+    // Prep steps dropped by the deadline leave the work queue without an admission; the field jobs start at once.
     for (let n = 0; n < 12 && !match.fields.some((f) => f.job && f.battle.tickCount > 0); n++) {
       clock.now++;
       match.pump(clock.now, 100, { remaining: 1 });

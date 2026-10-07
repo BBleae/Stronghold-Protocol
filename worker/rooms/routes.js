@@ -2,6 +2,10 @@ import { authenticate, accountOf, directoryOf, json, requireOrigin } from '../ac
 import { AccountError } from '../../shared/account-protocol.js';
 import { clearStaleApplication, giveUpReservation, seatOf } from '../accounts/routes.js';
 import { errorResponse, readJson, accountKey, within, tooMany } from '../http.js';
+import { logWarn, errorFields } from '../log.js';
+// The application states that hold something on the applicant's account: its application record, and once approved
+// its seat (worker/accounts/account.js). An application in any other state holds neither.
+const LIVE = ['pending', 'approved'];
 export async function handleLobbyRoutes(request, env) {
   const url = new URL(request.url);
   if (url.pathname === '/api/rooms' && request.method === 'GET') {
@@ -46,6 +50,16 @@ export async function roomApplications(rt, request, env) {
     queue = rt.applications;
   const account = accountOf(env, accountId);
   const path = new URL(request.url).pathname;
+  // An account call that only tidies up after the room has decided. What it would remove blocks nothing if it stays:
+  // whoever reads it next drops it (clearStaleApplication an application record the room no longer lists as pending
+  // or approved, seatOf a seat the room does not confirm). So a failure is logged, and the room's answer stands.
+  const tidy = async (action, op, call) => {
+    try {
+      await call();
+    } catch (error) {
+      logWarn('application_cleanup_failed', { room: rt.code, action, op, error: errorFields(error) });
+    }
+  };
   try {
     if (path === '/_visibility') {
       if (accountId !== host) throw new AccountError('NOT_HOST', 403);
@@ -71,17 +85,28 @@ export async function roomApplications(rt, request, env) {
       if (room.seats.filter((x) => !x).length <= queue.reservedCount()) throw new AccountError('ROOM_FULL', 409);
       const claimed = await account.claimApplication({ roomId: rt.code, expiresAt: Date.now() + 120000 });
       if (!claimed.ok) throw new AccountError(claimed.error, 409);
+      let item;
       try {
-        const item = queue.apply({ accountId, name: decodeURIComponent(request.headers.get('X-Account-Name') ?? '') });
-        await account.claimApplication({ roomId: rt.code, id: item.id, expiresAt: item.expiresAt });
+        item = queue.apply({ accountId, name: decodeURIComponent(request.headers.get('X-Account-Name') ?? '') });
+        const linked = await account.claimApplication({ roomId: rt.code, id: item.id, expiresAt: item.expiresAt });
+        if (!linked.ok) throw new AccountError(linked.error, 409);
         return json(item, 201);
       } catch (e) {
+        // The room's item ends before the account's record is cleared (a call that can fail too): a pending item
+        // without its record could still be approved after the account applied elsewhere, and the record is what
+        // limits an account to one application at a time.
+        if (item?.status === 'pending') queue.drop(item.id);
         await account.clearApplication(rt.code);
         throw e;
       }
     }
     if (body.action === 'cancel') {
+      const live = queue.list(accountId).some((x) => x.id === body.id && LIVE.includes(x.status));
       const item = queue.cancel(accountId, body.id);
+      // An application that already ended (expired, rejected, dropped, cancelled; room.start ends every one, so this
+      // is all a running match has) has nothing to give back: what it may have left on the account is dropped by its
+      // next reader (as for tidy), so no account is called from inside the room's critical section.
+      if (!live) return json(item);
       await account.releaseSeat({ claimId: item.id });
       await account.clearApplication(rt.code);
       return json(item);
@@ -110,18 +135,19 @@ export async function roomApplications(rt, request, env) {
           inMatch: !!room.match,
           freeSeats: room.seats.filter((x) => !x).length,
         });
-        await applicant.clearApplication(rt.code);
-        return json(approved);
       } catch (e) {
-        // Revoke the local ticket before releasing its account claim. Even if that RPC fails, the failed approval
-        // must not admit a player after their account can take a seat elsewhere.
-        if (approved) queue.drop(item.id);
-        await applicant.releaseSeat({ claimId: item.id });
+        // Nothing was approved (ROOM_FULL…): the application stays pending, for the host to approve again once a seat
+        // is free, and the claim is given back. A claim left behind is not one the room confirms (seatOf releases it).
+        await tidy('approve', 'releaseSeat', () => applicant.releaseSeat({ claimId: item.id }));
         throw e;
       }
+      // The ticket is issued and the account's seat already points here (claimSeat came first), so the account
+      // cannot take a seat elsewhere while the approval holds: what is left to clear is only its application record.
+      await tidy('approve', 'clearApplication', () => applicant.clearApplication(rt.code));
+      return json(approved);
     }
     const rejected = queue.decide(accountId, item.id, 'rejected', { hostId: host, inMatch: !!room.match });
-    await applicant.clearApplication(rt.code);
+    await tidy('reject', 'clearApplication', () => applicant.clearApplication(rt.code));
     return json(rejected);
   } catch (error) {
     // Inside the room's critical section: an error thrown from here would reset the room, so it becomes the answer.

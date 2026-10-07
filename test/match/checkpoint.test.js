@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { RecordedMatch, exportMatch, restoreMatch } from '../../server/match/checkpoint.js';
+import { RecordedMatch, exportMatch, restoreMatch, CHECKPOINT_EVENT_LIMIT } from '../../server/match/checkpoint.js';
 import { DATA } from './harness.js';
 import { decodeReplayFrame } from '../../shared/replay-frames.js';
 import { encodeReplayChunks } from '../../shared/replay-codec.js';
@@ -180,6 +180,11 @@ test('checkpoints reject corrupted input and unknown versions without modifying 
   const divergent = structuredClone(c);
   divergent.events[0].kind = 'unknown';
   assert.throws(() => restoreMatch(divergent, opts()), /EVENT/);
+  // a log past the limit is refused before any replay (its events would not even parse); worker/index.js warns
+  // (match_log_large) while a running match's log is still well short of it
+  assert.equal(CHECKPOINT_EVENT_LIMIT, 200000);
+  const long = { ...c, events: new Array(CHECKPOINT_EVENT_LIMIT + 1).fill(null) };
+  assert.throws(() => restoreMatch(long, opts()), /^Error: CHECKPOINT_EVENT_LIMIT$/);
   m.dispose();
 });
 test('a recorded full cooperative match reconstructs combat and final result', { timeout: 120000 }, () => {
