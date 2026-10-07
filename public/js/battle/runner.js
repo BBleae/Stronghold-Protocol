@@ -5,14 +5,15 @@
 // /sim/spec.js createBattleFromSpec and
 //   * steps it at the battle speed (fixed 1/30 s ticks, 2× → 60 ticks per real second; at most
 //     max(8, 4·speed) ticks per animation frame, bounded fast-forward up to CATCHUP_TICKS per frame when it is far
-//     behind: a reconnect, observing a running field, a tab back from the background),
+//     behind: a reconnect, observing a running field, a tab back from the background); preparations and running fields
+//     share a 4 ms foreground soft budget, with a separate 64 ms budget for less frequent hidden-tab pumps,
 //   * feeds the render engine every frame through the same wire formats the server used to stream
 //     (`snap` = b.snap frame from battle.snapshot(), `ev` = b.ev frame from battle.drainEvents()) and publishes the
 //     field meta (m.field shape) into store.match.field so the game screen enters the battle,
 //   * when authoritative: reports b.progress (~1 Hz; boss fields 4 Hz with the shared-pool damage and the LP meter)
 //     and b.result (compactResult) at the end; applies b.pool (LocalBossPool.sync) and b.end (forceEnd / takeover),
-//   * keeps an authoritative battle running while the tab is hidden (a 250 ms interval pump; browsers throttle it to
-//     ~1 Hz, the bounded fast-forward absorbs that); the server deadline + takeover cover anything worse.
+//   * advances authoritative battles while hidden with a 250 ms interval pump (browsers may throttle it to ~1 Hz or
+//     suspend it). Very slow simulation can still fall behind; a Boss that keeps reporting is not taken over for lag.
 // A frame that fast-forwards (catch-up) passes on only the state-bearing events (keepsState: spawns, deaths, deploys,
 // statuses, skills, leaks and the fx that change an enemy's model form — shared/protocol.js fxForm); while the tab is
 // hidden the battle on screen keeps the same events (compacted past HELD_MAX; a backlog still past it makes the view
@@ -55,7 +56,8 @@
 // come, by that flag — it gives the sound only the batch's spawns (screens/game.js onEv: no late 作战中 / 部署 voice).
 //
 // The sim (≈ 0.2–1 ms per tick) runs on the main thread: one battle at a time is stepped for display (plus an
-// authoritative one if it is not the one on screen). stats() exposes the measured cost.
+// authoritative one if it is not the one on screen). Active and preparing battles share a soft wall-time budget
+// per RAF / hidden pump, checked between fixed ticks. Construction and initial view setup remain synchronous.
 //
 //   import { battleRunner } from './battle/runner.js'     (browser singleton wired to net.js + store.js; null in Node)
 //   battleRunner.on('snap' | 'ev' | 'field' | 'state' | 'ownDone', fn) → off
@@ -75,7 +77,8 @@
 //                           here); bossDown (boss / hidden fields only, else null): the pool was emptied — the battle
 //                           ended 'cleared' here, the server's b.end said 'cleared', or the result's bossHpLeft is 0.
 //                           The settlement voice line (audio.js settlementVoice) is picked from it.
-//   battleRunner.stats()  → { ticks, stepMs, avgTickMs, maxFrameMs, catchups, errors, battles }
+//   battleRunner.stats() → tick/step cost, prepareMs/maxPrepareMs, maxFrameMs/maxPumpMs and workload counters.
+//     Frame/pump maxima include synchronous runner subscribers, not the page's independent render loop.
 //   battleRunner.unitStats(unitId, fieldId?) → the live stats of a unit of the battle on screen (shared/protocol.js
 //                           unitStatsEntry: current HP, effective max HP / ATK / DEF / RES / interval / block / move
 //                           speed next to its base; an ally also its live attack range `range` — unit.liveRangeGrid,
@@ -101,6 +104,9 @@ const TICK = 1 / 30;
 export const CATCHUP_TICKS = 240;
 /** Silent catch-up slice (ticks) while a new battle is prepared before it is shown. */
 const PREPARE_SLICE = 600;
+/** Shared soft deadlines; a step is indivisible. Background tabs may only get one pump per second. */
+const FRAME_WORK_MS = 4;
+const HIDDEN_WORK_MS = 64; // room for a throttled 2x clock; slow steps or suspended tabs can still fall behind
 const MAX_ENTRIES = 4;
 /**
  * Battles the cache keeps (evict(), besides the current, own, authoritative-unsent and undelivered ones): one round of
@@ -262,9 +268,14 @@ export function createBattleRunner(deps) {
 
   /** @type {Map<string, any>} battleId → entry */
   const entries = new Map();
+  // Preparations receive controls immediately and share simulation work with committed entries, without rendering.
+  const preparing = new Map();
+  let workAfter = null;       // last battle ID actually stepped; next batch starts with its successor
   let cur = null;              // entry on screen
   let simP = null;
-  let startSeq = 0;
+  let startSeq = 0;            // viewing selection; switching it must not cancel own authority
+  let lifecycle = 0;          // clear / new round / leaving invalidates every unfinished preparation
+  let disposed = false;
   let loading = null;          // b.start being prepared
   let rafH = null;
   let ivH = null;
@@ -275,7 +286,8 @@ export function createBattleRunner(deps) {
   let leaksDirty = false;
   /** sessions so far ('welcome'): a replay report segment belongs to the session it started in */
   let session = 0;
-  const stats = { ticks: 0, stepMs: 0, maxFrameMs: 0, catchups: 0, errors: 0, battles: 0, frames: 0 };
+  const stats = { ticks: 0, stepMs: 0, prepareMs: 0, maxPrepareMs: 0, maxFrameMs: 0, maxPumpMs: 0,
+    catchups: 0, errors: 0, battles: 0, frames: 0 };
   /** Hidden-tab backlog tuple → the game time it was drained at (emitFrame batches the backlog by it). */
   const heldAt = new WeakMap();
 
@@ -425,12 +437,14 @@ export function createBattleRunner(deps) {
    * Step `n` ticks. `sliced` (a catch-up frame, a hidden-tab step): every EV_SLICE ticks the events drained so far go to
    * `e.slices` as { gt, ev } with that game time, for emitFrame / hold.
    */
-  function stepEntry(e, n, sliced = false) {
+  function stepEntry(e, n, sliced, budget) {
     const b = e.battle;
     const t = now();
     let k = 0;
     try {
       for (; k < n && !b.finished; k++) {
+        if (budget.remaining <= 0 || now() >= budget.deadline) break;
+        budget.remaining--;
         b.step();
         if (sliced && (k + 1) % EV_SLICE === 0 && k + 1 < n) {
           const ev = b.drainEvents() || [];
@@ -629,13 +643,15 @@ export function createBattleRunner(deps) {
       const d = Math.max(0, now() - pausedAt);
       pausedAt = null;
       for (const e of entries.values()) { e.t0 += d; e.lastProgressAt += d; }
+      // Entries constructed while paused used the frozen clock; unloaded engines have no clock to shift yet.
+      for (const task of preparing.values()) if (task.entry) { task.entry.t0 += d; task.entry.lastProgressAt += d; }
     }
     publishState();
     schedule();
   }
 
   /** Advance one entry to its clock (bounded); render it when it is on screen. */
-  function advance(e, t, render) {
+  function advance(e, t, render, budget) {
     if (e.battle.finished) { if (!e.done) finished(e); return; }
     const behind = targetTick(e, t) - (e.battle.tickCount || 0);
     if (behind <= 0) return;
@@ -643,8 +659,7 @@ export function createBattleRunner(deps) {
     const catchingUp = behind > cap * 4;
     if (catchingUp) stats.catchups++;
     const n = Math.min(behind, catchingUp ? CATCHUP_TICKS : cap);
-    const dt = stepEntry(e, n, catchingUp || !render);
-    if (dt > stats.maxFrameMs) stats.maxFrameMs = dt;
+    stepEntry(e, n, catchingUp || !render, budget);
     if (render) emitFrame(e, catchingUp);
     else hold(e);
     noteLeaks(e);
@@ -654,27 +669,77 @@ export function createBattleRunner(deps) {
 
   function running(e) { return !e.battle.finished && (e === cur || (e.authoritative && !e.resultSent)); }
 
+  function preparationReady(task) {
+    const e = task.entry;
+    return e && (e.battle.finished || targetTick(e, clock()) - e.battle.tickCount <= ticksPerFrameCap(e.speed));
+  }
+
+  function settlePreparation(task) {
+    const resolve = task.resume;
+    task.resume = null; // completion, cancellation and repeated b.end all settle this waiter only once
+    resolve?.();
+  }
+
+  function advancePreparation(task, t, budget) {
+    const e = task.entry;
+    const n = Math.min(PREPARE_SLICE, targetTick(e, t) - e.battle.tickCount);
+    const dt = stepEntry(e, n, false, budget);
+    stats.prepareMs += dt;
+    stats.maxPrepareMs = Math.max(stats.maxPrepareMs, dt);
+    try { e.battle.drainEvents(); } catch { /* the field is first shown after preparation */ }
+    noteLeaks(e);
+    if (e.authoritative) progress(e);
+  }
+
+  /** One deadline and tick ceiling, including preparations. Rotate after the last task that consumed work. */
+  function runBatch(render) {
+    if (pausedAt != null) return;
+    const t = clock();
+    const budget = { deadline: now() + (render ? FRAME_WORK_MS : HIDDEN_WORK_MS), remaining: PREPARE_SLICE };
+    const work = [...entries.values()].filter(e => running(e) && (render || e.authoritative)).map(e => ({ e }));
+    for (const task of preparing.values()) if (task.entry && task.resume) work.push({ e: task.entry, task });
+    const start = (work.findIndex(x => x.e.battleId === workAfter) + 1) % (work.length || 1);
+    for (let i = 0; i < work.length; i++) {
+      if (budget.remaining <= 0 || now() >= budget.deadline) break;
+      const { e, task } = work[(start + i) % work.length];
+      // A synchronous event listener can clear the runner or change the selected field during this batch.
+      if (pausedAt != null) break;
+      if (task ? !validPreparation(task) || task.entry !== e || !task.resume : entries.get(e.battleId) !== e || !running(e)) continue;
+      const before = budget.remaining;
+      if (task) advancePreparation(task, t, budget);
+      else advance(e, t, render && e === cur, budget);
+      if (budget.remaining < before) workAfter = e.battleId;
+    }
+    flushLeaks();
+  }
+
   function frame() {
     rafH = null;
     stats.frames++;
-    const t = clock();
-    for (const e of [...entries.values()]) if (running(e)) advance(e, t, e === cur);
-    flushLeaks();
+    const started = now();
+    runBatch(true);
     schedule();
+    stats.maxFrameMs = Math.max(stats.maxFrameMs, now() - started);
   }
 
   function pump() {
-    // hidden tab: no animation frames — keep authoritative battles on their clock (no rendering)
+    // One background deadline shared by all entries/preparations; display-only entries stop pumping once ready.
     if (!hidden()) return;
-    for (const e of [...entries.values()]) if (e.authoritative && running(e)) advance(e, clock(), false);
-    flushLeaks();
+    const started = now();
+    runBatch(false);
+    schedule();
+    stats.maxPumpMs = Math.max(stats.maxPumpMs, now() - started);
   }
 
   function schedule() {
+    // A forced end / already-caught-up preparation can commit even while paused or after the budget was exhausted.
+    for (const task of preparing.values()) if (task.resume && preparationReady(task)) settlePreparation(task);
+    const hasPreparation = [...preparing.values()].some(task => task.entry && task.resume);
     // paused: nothing to step (the view keeps its last frame); resume reschedules
-    const any = pausedAt == null && [...entries.values()].some(running);
+    const any = pausedAt == null && (hasPreparation || [...entries.values()].some(running));
     if (any && rafH == null && !hidden()) rafH = raf(frame);
-    const needPump = pausedAt == null && [...entries.values()].some((e) => e.authoritative && running(e));
+    else if (!any && rafH != null) { caf(rafH); rafH = null; }
+    const needPump = pausedAt == null && (hasPreparation || [...entries.values()].some((e) => e.authoritative && running(e)));
     if (needPump && ivH == null) ivH = setIv(pump, 250);
     else if (!needPump && ivH != null) { clearIv(ivH); ivH = null; }
   }
@@ -715,98 +780,141 @@ export function createBattleRunner(deps) {
     }
   }
 
-  function yieldFrame() { return new Promise((resolve) => { if (hidden()) setTimeout(resolve, 0); else raf(() => resolve()); }); }
+  const validPreparation = (task) => !disposed && task.lifecycle === lifecycle && preparing.get(task.msg.battleId) === task;
+
+  function dropPreparation(task) {
+    if (preparing.get(task.msg.battleId) === task) preparing.delete(task.msg.battleId);
+    settlePreparation(task);
+    task.controls.length = 0;
+    task.entry?.meter.detach?.();
+    task.entry = null;
+  }
+
+  function updateStart(e, msg, pending = false) {
+    const was = e.authoritative;
+    e.authoritative = !!msg.authoritative && !e.resultSent;
+    e.watch = !!msg.watch;
+    if (msg.authoritative && e.resultSent) deliver(e);
+    if (pending) {
+      // Resends share the pending Battle but still carry a newer target clock, even without authority promotion.
+      e.speed = Number(msg.speed) > 0 ? Number(msg.speed) : 2;
+      e.t0 = clock() - ((Number(msg.elapsed) || 0) / e.speed) * 1000;
+    }
+    if (e.authoritative && !was) {
+      const speed = Number(msg.speed) > 0 ? Number(msg.speed) : 2;
+      e.t0 = clock() - ((Number(msg.elapsed) || 0) / speed) * 1000;
+      e.lastProgressAt = -Infinity;
+      e.segment = null;
+      if (e.battle.finished) { e.done = false; finished(e); }
+    }
+  }
+
+  function selectStart() {
+    ++startSeq;
+    // Only the watched replica becomes obsolete. A still-authoritative own field must keep running off screen.
+    for (const task of preparing.values()) if (!task.authoritative && task.seq !== startSeq) dropPreparation(task);
+  }
 
   async function onStart(msg) {
-    if (!msg || typeof msg !== 'object' || !msg.spec || typeof msg.battleId !== 'string') return;
+    if (disposed || !msg || typeof msg !== 'object' || !msg.spec || typeof msg.battleId !== 'string') return;
     const speed = Number(msg.speed) > 0 ? Number(msg.speed) : 2;
     const existing = entries.get(msg.battleId);
     if (existing) {
-      const was = existing.authoritative;
-      existing.authoritative = !!msg.authoritative && !existing.resultSent;
-      existing.watch = !!msg.watch;
-      // the server still waits for this finished battle's result (lost with the socket, or its answer was): again
-      if (msg.authoritative && existing.resultSent) deliver(existing);
-      if (existing.authoritative && !was) {
-        // handover (the partner left): continue from the field's clock and report from now on — the whole replay log
-        // the replica kept, in a new segment
-        existing.t0 = clock() - ((Number(msg.elapsed) || 0) / speed) * 1000;
-        existing.lastProgressAt = -Infinity;
-        existing.segment = null;
-        if (existing.battle.finished) { existing.done = false; finished(existing); }
-      }
-      ++startSeq;
+      updateStart(existing, msg);
+      selectStart();
       loading = null;
       // a resend of what is already on screen (reconnect / resync) only updates the state; switching back shows it
       if (cur !== existing) show(existing);
       else { publishState(); schedule(); }
       return;
     }
-    const seq = ++startSeq;
+    const pending = preparing.get(msg.battleId);
+    if (pending) {
+      // Reconnect / resync of a battle still loading or catching up: update it, never construct a second copy.
+      pending.authoritative = !!msg.authoritative;
+      pending.seq = startSeq + 1;
+      if (pending.entry) updateStart(pending.entry, msg, true);
+      else pending.controls.push({ kind: 'start', msg });
+      selectStart();
+      loading = { battleId: msg.battleId, fieldId: msg.fieldId, kind: msg.kind };
+      publishState();
+      return pending.promise;
+    }
+    selectStart();
+    const task = { msg, seq: startSeq, lifecycle, authoritative: !!msg.authoritative, entry: null,
+      controls: [], pool: lastPool, resume: null, promise: null };
+    preparing.set(msg.battleId, task);
     loading = { battleId: msg.battleId, fieldId: msg.fieldId, kind: msg.kind };
     publishState();
-    let sim;
-    try { sim = await simFor(msg.rulesVersion); } catch (err) {
-      console.warn('[runner] simulation unavailable', err);
-      if (seq === startSeq) { loading = null; publishState(); }
-      return;
-    }
-    if (seq !== startSeq) return; // superseded by a newer b.start
-    let battle;
+    task.promise = prepare(task, speed);
+    return task.promise;
+  }
+
+  async function prepare(task, speed) {
+    const msg = task.msg;
     try {
-      battle = sim.spec.createBattleFromSpec(msg.spec, sim.ds, { logger });
-    } catch (err) {
-      console.warn('[runner] battle construction failed', err);
-      loading = null;
-      publishState();
-      return;
-    }
-    stats.battles++;
-    const e = {
-      battleId: msg.battleId, fieldId: msg.fieldId || msg.spec.fieldId, kind: msg.kind || msg.spec.kind, spec: msg.spec, sim, battle,
-      authoritative: !!msg.authoritative, watch: !!msg.watch, own: !msg.watch, speed,
-      members: (msg.spec.players || []).map((p) => p && p.playerId).filter(Boolean),
-      t0: clock() - ((Number(msg.elapsed) || 0) / speed) * 1000, lastProgressAt: -Infinity, done: false, resultSent: false,
-      result: null, delivery: null,
-      // the replay log (tick inputs: b.pool syncs, the b.end) and its report segment { id, session, seq: the next one,
-      // sent: the inputs it carried } (null: the next report starts one)
-      inputs: [], segment: null,
-      meter: sim.spec.attachLpMeter(battle),
-      // counted leaks so far (normal fields; noteLeaks) and the Battle state they were counted at; 联防 fields: each
-      // leaker's enemies still standing (noteUniteLeft)
-      leaks: 0, leakMark: '', left: null,
-      // live bond layers grown in this battle { [playerId]: { [bondId]: n } } and their total gain (noteLayers)
-      live: null, layerSum: 0,
-      // state-bearing events of the steps run while the tab was hidden (hold(); delivered by the next rendered frame;
-      // heldAt = the game time each was drained at), and whether that backlog overflowed (the next frame re-enters the
-      // view from the field meta); the event batches of the current sliced step (stepEntry)
-      held: [], stale: false, slices: [],
-      // the server's b.end reason (settlement() bossDown: 'cleared' = the boss pool was emptied); whether 'ownDone' went
-      // out, and whether the battle was already over when it was first shown (its `late`)
-      endReason: null, ownDoneSent: false, lateEnd: false,
-    };
-    if (lastPool && battle.sharedBoss) syncPool(e, lastPool);
-    // silent catch-up to the field's clock before it is shown (a reconnect / observing a running field)
-    while (!battle.finished && targetTick(e, clock()) - battle.tickCount > ticksPerFrameCap(speed)) {
-      const n = Math.min(PREPARE_SLICE, targetTick(e, clock()) - battle.tickCount);
-      stepEntry(e, n);
-      try { battle.drainEvents(); } catch { /* ignore */ }
-      noteLeaks(e);
-      if (e.authoritative) progress(e);
-      await yieldFrame();
-      if (seq !== startSeq) {
-        // superseded while preparing: an authoritative battle must still finish (it is kept), a replica is dropped
-        if (e.authoritative) { entries.set(e.battleId, e); evict(); if (e.leaks) leaksDirty = true; schedule(); }
+      let sim;
+      try { sim = await simFor(msg.rulesVersion); } catch (err) {
+        if (!validPreparation(task)) return;
+        console.warn('[runner] simulation unavailable', err);
+        if (task.seq === startSeq) { loading = null; publishState(); }
         return;
       }
-    }
-    entries.set(e.battleId, e);
-    evict();
-    loading = null;
-    noteLeaks(e);
-    show(e);
-    // over before it was ever shown (a reload / resync after its end): finished now, but `late` for 'ownDone'
-    if (battle.finished) { e.lateEnd = true; finished(e); }
+      if (!validPreparation(task)) return;
+      let battle;
+      try {
+        battle = sim.spec.createBattleFromSpec(msg.spec, sim.ds, { logger });
+      } catch (err) {
+        console.warn('[runner] battle construction failed', err);
+        if (task.seq === startSeq) { loading = null; publishState(); }
+        return;
+      }
+      stats.battles++;
+      const e = {
+        battleId: msg.battleId, fieldId: msg.fieldId || msg.spec.fieldId, kind: msg.kind || msg.spec.kind, spec: msg.spec, sim, battle,
+        authoritative: !!msg.authoritative, watch: !!msg.watch, own: !msg.watch, speed,
+        members: (msg.spec.players || []).map((p) => p && p.playerId).filter(Boolean),
+        t0: clock() - ((Number(msg.elapsed) || 0) / speed) * 1000, lastProgressAt: -Infinity, done: false, resultSent: false,
+        result: null, delivery: null,
+        // the replay log (tick inputs: b.pool syncs, the b.end) and its report segment { id, session, seq: the next one,
+        // sent: the inputs it carried } (null: the next report starts one)
+        inputs: [], segment: null,
+        meter: sim.spec.attachLpMeter(battle),
+        // counted leaks so far (normal fields; noteLeaks) and the Battle state they were counted at; 联防 fields: each
+        // leaker's enemies still standing (noteUniteLeft)
+        leaks: 0, leakMark: '', left: null,
+        // live bond layers grown in this battle { [playerId]: { [bondId]: n } } and their total gain (noteLayers)
+        live: null, layerSum: 0,
+        // state-bearing events of the steps run while the tab was hidden (hold(); delivered by the next rendered frame;
+        // heldAt = the game time each was drained at), and whether that backlog overflowed (the next frame re-enters the
+        // view from the field meta); the event batches of the current sliced step (stepEntry)
+        held: [], stale: false, slices: [],
+        // the server's b.end reason (settlement() bossDown: 'cleared' = the boss pool was emptied); whether 'ownDone' went
+        // out, and whether the battle was already over when it was first shown (its `late`)
+        endReason: null, ownDoneSent: false, lateEnd: false,
+      };
+      task.entry = e;
+      if (task.pool && battle.sharedBoss) syncPool(e, task.pool);
+      for (const control of task.controls) {
+        if (control.kind === 'pool' && battle.sharedBoss) syncPool(e, control.msg);
+        else if (control.kind === 'end') applyEnd(e, control.msg, true);
+        else if (control.kind === 'start') updateStart(e, control.msg, true);
+      }
+      task.controls.length = 0;
+      // Construction is synchronous, but every catch-up step belongs to the shared RAF / hidden pump budget.
+      while (validPreparation(task) && !preparationReady(task)) {
+        await new Promise(resolve => { task.resume = resolve; schedule(); });
+      }
+      if (!validPreparation(task)) return;
+      entries.set(e.battleId, e);
+      task.entry = null;
+      evict();
+      noteLeaks(e);
+      if (task.seq === startSeq) { loading = null; show(e); }
+      else schedule();
+      // over before it was ever shown (a reload / resync after its end): finished now, but `late` for 'ownDone'
+      if (battle.finished) { e.lateEnd = true; finished(e); }
+    } finally { dropPreparation(task); }
   }
 
   /** A b.pool into a boss battle's shared pool, logged at this tick while the battle runs (the replay re-applies it). */
@@ -820,12 +928,24 @@ export function createBattleRunner(deps) {
     if (!msg || typeof msg !== 'object') return;
     lastPool = msg;
     for (const e of entries.values()) if (e.battle.sharedBoss) syncPool(e, msg);
+    for (const task of preparing.values()) {
+      if (!task.entry) task.controls.push({ kind: 'pool', msg });
+      else if (task.entry.battle.sharedBoss) syncPool(task.entry, msg);
+    }
     emit('pool', msg);
   }
 
   function onEnd(msg) {
-    const e = msg && entries.get(msg.battleId);
+    if (!msg) return;
+    const task = preparing.get(msg.battleId);
+    if (task && msg.reason === 'takeover') task.authoritative = false;
+    if (task && !task.entry) { task.controls.push({ kind: 'end', msg }); return; }
+    const e = entries.get(msg.battleId) || task?.entry;
     if (!e) return;
+    applyEnd(e, msg, !!task);
+  }
+
+  function applyEnd(e, msg, pending = false) {
     if (msg.reason === 'takeover') {
       e.authoritative = false;
       if (e === cur) publishState();
@@ -841,6 +961,7 @@ export function createBattleRunner(deps) {
       try { e.battle.forceEnd(reason); } catch { /* ignore */ }
     }
     if (e === cur) emitFrame(e, false);
+    if (pending) e.lateEnd = true;
     finished(e);
     flushLeaks();
     schedule();
@@ -848,13 +969,16 @@ export function createBattleRunner(deps) {
 
   /** Drop every battle (a new round's prep, the match ended, the player left). */
   function clear() {
+    ++lifecycle;
     ++startSeq;
     loading = null;
+    for (const task of preparing.values()) dropPreparation(task);
     for (const e of entries.values()) {
       // never drop an unreported authoritative result (the round already moved on: the server has its own)
       if (e.authoritative && !e.resultSent && !e.battle.finished) { try { e.battle.forceEnd('forced'); } catch { /* ignore */ } }
     }
     entries.clear();
+    workAfter = null;
     cur = null;
     lastPool = null;
     if (rafH != null) { caf(rafH); rafH = null; }
@@ -885,14 +1009,16 @@ export function createBattleRunner(deps) {
       if (phase === lastPhase) return;
       lastPhase = phase;
       if (!phase || ['PREP', 'ROUND_START', 'SP_DRAFT', 'RESULT', 'LOBBY', 'INFO_CHECK', 'BAND_DRAFT', 'BATTLE_CHECK'].includes(phase)) {
-        if (entries.size || loading) clear();
+        if (entries.size || preparing.size || loading) clear();
       }
       // warm the simulation up as soon as a match runs (the first b.start then starts at once)
       if (phase && phase !== 'LOBBY' && !simP) ensureSim().catch(() => {});
     }));
   }
   if (doc && typeof doc.addEventListener === 'function') {
-    doc.addEventListener('visibilitychange', () => { if (hidden()) return; flushHidden(); schedule(); });
+    const visible = () => { if (hidden()) return; flushHidden(); schedule(); };
+    doc.addEventListener('visibilitychange', visible);
+    offs.push(() => doc.removeEventListener?.('visibilitychange', visible));
   }
 
   return {
@@ -982,7 +1108,7 @@ export function createBattleRunner(deps) {
     _frame: frame,
     _pump: pump,
     onStart, onPool, onEnd, clear, ensureSim, redeliver, setPaused,
-    dispose() { clear(); for (const off of offs) { try { off?.(); } catch { /* ignore */ } } },
+    dispose() { disposed = true; clear(); for (const off of offs) { try { off?.(); } catch { /* ignore */ } } listeners.clear(); },
   };
 }
 

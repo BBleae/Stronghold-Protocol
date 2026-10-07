@@ -511,8 +511,8 @@ export class RoomRuntime {
     // Applications are for a room that exists: once it is gone, none can be joined.
     if (!this.lobby.getRoom(this.code)) this.applications.invalidate();
   }
-  pump(now = this.now()) {
-    const result = this.lobby.getRoom(this.code)?.match?.pump?.(now) || 0;
+  pump(now = this.now(), workBudget) {
+    const result = this.lobby.getRoom(this.code)?.match?.pump?.(now, 100, workBudget) || 0;
     this.spectators.pump();
     return result;
   }

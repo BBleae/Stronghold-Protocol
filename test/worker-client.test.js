@@ -406,6 +406,38 @@ test('a room the server ended without closing its socket is closed by the client
   assert.equal(h.ws.sockets.length, 1);
 });
 
+test('a closing room cannot deliver its tail into a new route', async () => {
+  const h = setup();
+  const old = await inRoom(h);
+  const delivered = [];
+  for (const type of ['m.public', 'm.result']) h.net.on(type, (msg) => delivered.push(msg));
+  old.recv({ t: 'room.closed', reason: 'ended', result: true });
+  const watching = h.net.enter({ kind: 'spectate', code: 'WXYZ' });
+  await welcome(h);
+  roomState(h.ws.last(), { code: 'WXYZ', spectating: true, inMatch: true });
+  ok(h.ws.last(), 'room.spectate');
+  await watching;
+  const current = { t: 'm.public', phase: 'COMBAT', round: 2 };
+  h.ws.last().recv(current);
+  old.recv({ t: 'm.public', phase: 'RESULT', round: 10 });
+  old.recv({ t: 'm.result', victory: false });
+  assert.deepEqual(delivered, [current]);
+  assert.equal(old.closedWith, 1000, 'a superseded drain releases its old socket');
+  h.net.close();
+});
+
+test('closing the client also closes and disconnects an active room drain', async () => {
+  const h = setup();
+  const old = await inRoom(h);
+  const delivered = [];
+  h.net.on('m.result', (msg) => delivered.push(msg));
+  old.recv({ t: 'room.closed', reason: 'ended', result: true });
+  h.net.close();
+  old.recv({ t: 'm.result', victory: false });
+  assert.deepEqual(delivered, []);
+  assert.equal(old.closedWith, 1000);
+});
+
 test('spectating a room that is gone fails at once (close 4004)', async () => {
   const h = setup();
   const watching = h.net.enter({ kind: 'spectate', code: 'ZZZZ' });

@@ -1087,14 +1087,18 @@ export function* createRehearsalSteps(m, ps, chosen, plans) {
     plans: cands,
     best: cands[0],
     done: false,
-    run(budgetMs = Infinity) {
+    runTicks(maxTicks) {
+      if (!Number.isInteger(maxTicks) || maxTicks < 1) throw new RangeError('maxTicks must be a positive integer');
+      return job.run(Infinity, maxTicks);
+    },
+    run(budgetMs = Infinity, maxTicks = Infinity) {
       const timed = Number.isFinite(budgetMs);
       const t0 = timed ? performance.now() : 0;
       let n = 0;
       while (i < battles.length) {
         // a candidate that ended mid-slice (finished, cap, or beaten at a 64-tick check that skipped the budget test):
         // check the budget before stepping the next one, so a slice never exceeds 4 ticks past its budget
-        if (timed && n > 0 && performance.now() - t0 >= budgetMs) return false;
+        if (n >= maxTicks || (timed && n > 0 && performance.now() - t0 >= budgetMs)) return false;
         const battle = battles[i];
         try {
           let beaten = false;
@@ -1104,6 +1108,7 @@ export function* createRehearsalSteps(m, ps, chosen, plans) {
             n++;
             if ((t & 63) === 0 && bestLeaks < Infinity && countedLeaks(battle, ps.playerId) > bestLeaks) { beaten = true; break; }
             if (timed && (n & 3) === 0 && performance.now() - t0 >= budgetMs) return false;
+            if (n >= maxTicks && t < cap && !battle.finished) return false;
           }
           if (!beaten) {
             if (!battle.finished) battle.forceEnd('timeout');

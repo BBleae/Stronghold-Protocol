@@ -353,9 +353,12 @@ export class RoomDurableObject {
     return this.ctx.blockConcurrencyWhile(async () => {
       try {
         this.refreshAutoResponses();
-        this.runtime.pump();
+        // Both pumps share one expensive-work allowance. Deferred work is re-armed after this event's horizon;
+        // normal deadlines still run before handling the input. Commit/flush then returns control to the host.
+        const workBudget = { remaining: 1 };
+        this.runtime.pump(this.runtime.now(), workBudget);
         const result = await handle();
-        this.runtime.pump();
+        this.runtime.pump(this.runtime.now(), workBudget);
         this.runtime.sweep();
         await this.commit();
         return result;

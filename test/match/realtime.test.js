@@ -63,6 +63,8 @@ async function driveLoop(c, { skipOnce = false, until, stats }) {
   const deadlineAt = Date.now() + 90_000;
   while (!abort && !until() && Date.now() < deadlineAt) {
     await delay(20);
+    // A new phase may arrive during the wait; do not ready the target round after reaching it.
+    if (abort || until()) break;
     const pub = latest(c, 'm.public');
     const priv = latest(c, 'm.private');
     if (!pub) continue;

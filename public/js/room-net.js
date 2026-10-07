@@ -82,6 +82,7 @@ export class RoomNet extends Net {
     this.application = null;
     this._token = null;      // hello token on the route: the last welcome's, or the saved one being resumed
     this._waiting = null;    // { fail } while entering waits for an answer of the room
+    this._draining = null;   // final frames of the last route, valid only until another route opens
     this._applicationTimer = null;
     /** 匹配: the queue this menu waits in ({ difficulty, handling?, done? }), or null */
     this._queue = null;
@@ -159,6 +160,7 @@ export class RoomNet extends Net {
 
   /** Close for good (logout): no reconnects, no application checks. */
   close() {
+    this._stopDrain();
     this._queueStop();
     this._clearTimer('_approveTimer', 'clearTimeout');
     this._clearTimer('_applicationTimer', 'clearTimeout');
@@ -421,6 +423,7 @@ export class RoomNet extends Net {
 
   // Open the socket for `route` and wait for its welcome.
   _open(route, token = null) {
+    this._stopDrain();
     this.route = route;
     this.room = null;
     this._token = token;
@@ -547,16 +550,30 @@ export class RoomNet extends Net {
   // as server/lobby.js does for a removed member and worker/rooms/spectators.js for spectators) before it closes the
   // socket: deliver those, then forget the socket. It is no route any more: its close neither reconnects nor ends a room.
   _drain() {
+    this._stopDrain();
     const ws = this.ws;
     this._teardownSocket();
     if (!ws) return;
-    const timer = this.timers.setTimeout(() => ws.close(1000, 'left room'), DRAIN_MS);
+    const drain = { ws, timer: null };
+    this._draining = drain;
+    drain.timer = this.timers.setTimeout(() => this._stopDrain(), DRAIN_MS);
     ws.onmessage = (ev) => {
+      if (this._draining !== drain) return;
       let msg;
       try { msg = JSON.parse(String(ev?.data)); } catch { return; }
       if (msg?.t === 'm.public' || msg?.t === 'm.result') this._emit(msg.t, msg);
     };
-    ws.onclose = () => this.timers.clearTimeout(timer);
+    ws.onclose = () => { if (this._draining === drain) this._stopDrain(); };
+  }
+
+  _stopDrain() {
+    const drain = this._draining;
+    if (!drain) return;
+    this._draining = null;
+    this.timers.clearTimeout(drain.timer);
+    drain.ws.onmessage = null;
+    drain.ws.onclose = null;
+    if (drain.ws.readyState < 2) { try { drain.ws.close(1000, 'left room'); } catch { /* already closed */ } }
   }
 
   // Close the route's socket if one is still open (a closed one is just forgotten).

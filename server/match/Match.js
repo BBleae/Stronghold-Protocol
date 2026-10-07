@@ -124,6 +124,8 @@
 //                      with a virtual one); the rest runs in later callbacks (scheduleBotPrep)
 //   opts.headlessSliceMs  wall-clock ms per callback of a server-run normal / 联防 field (client-side combat: bots,
 //                      takeovers; default 8 with a real scheduler, at once with a virtual one)
+//   opts.workSlice    { prepSteps, simulationTicks, prepSimulationTicks? }: fixed generator/tick budgets instead of wall-clock slices
+//   opts.deferWork    optional recorded-host admission callback (kind, deadline): 0 admits one slice, positive ms postpones it
 // Seats may be all bots (tools/matchrun.mjs); the lobby always has ≥ 1 human.
 //
 // Diagnostics: m.errors / m.errorCount (engine), m.dispatcher.errors / .errorsByKey (meta handlers), m.simErrors
@@ -169,6 +171,7 @@ import { botPrepBeginSteps, botPrepEndSteps, botPickBand, botPickCard } from './
 const BOT_REHEARSAL_DEFAULT = 3;
 /** Wall-clock ms of bot layout rehearsal per scheduler callback (real time; virtual time runs it in one go). */
 const BOT_SLICE_MS = 8;
+const WORK_TIMER = Symbol('workTimer');
 /**
  * Ticker priority of the remake's match-flow notices (隐秘核心已解锁, 联防阶段, a player out or gone): the official lines
  * (research 06 §9.2) go BOSS_HIT 30 > CHAR_DAMAGE 20 > SHOP_LEVEL 11 > GOLDEN_CHAR 2 > CHAR_GIFT 1; ours sit under the
@@ -389,6 +392,13 @@ export class Match {
     this.botRehearsal = Number.isInteger(opts.botRehearsal) && opts.botRehearsal >= 0 ? Math.min(opts.botRehearsal, 8) : BOT_REHEARSAL_DEFAULT;
     /** wall-clock budget of one rehearsal slice (scheduleBotPrep) */
     this.botSliceMs = Number.isFinite(opts.botSliceMs) && opts.botSliceMs > 0 ? opts.botSliceMs : this.sched.virtual ? Infinity : BOT_SLICE_MS;
+    // Fixed operation counts are opt-in; Node and unrecorded virtual matches retain their existing scheduling.
+    this.workSlice = opts.workSlice && Number.isInteger(opts.workSlice.prepSteps) && opts.workSlice.prepSteps > 0
+      && Number.isInteger(opts.workSlice.simulationTicks) && opts.workSlice.simulationTicks > 0
+      ? { prepSteps: opts.workSlice.prepSteps, simulationTicks: opts.workSlice.simulationTicks,
+        prepSimulationTicks: Number.isInteger(opts.workSlice.prepSimulationTicks) && opts.workSlice.prepSimulationTicks > 0
+          ? opts.workSlice.prepSimulationTicks : opts.workSlice.simulationTicks } : null;
+    this.deferWork = typeof opts.deferWork === 'function' ? opts.deferWork : null;
     this.ds = dataSourceFor(this.data);
     /** client-side combat (DESIGN §14) — see the header */
     this.clientCombat = opts.clientCombat != null ? !!opts.clientCombat : envClientCombat();
@@ -868,8 +878,30 @@ export class Match {
 
   cancel(h) {
     if (!h) return;
+    if (typeof h === 'object' && WORK_TIMER in h) {
+      h.cancelled = true;
+      this.cancel(h[WORK_TIMER]);
+      h[WORK_TIMER] = null;
+      return;
+    }
     this.sched.clearTimeout(h);
     this._timers.delete(h);
+  }
+
+  /** A work timer may be postponed by the recorded host budget; its cancellation token follows every postponement. */
+  laterWork(ms, fn, kind = 'simulation') {
+    if (!this.workSlice) return this.later(ms, fn);
+    if (this.disposed) return null;
+    const token = { [WORK_TIMER]: null, cancelled: false };
+    const run = () => {
+      token[WORK_TIMER] = null;
+      if (token.cancelled) return;
+      const delay = this.deferWork ? this.deferWork(kind, this.deadline) : 0;
+      if (delay > 0) token[WORK_TIMER] = this.later(delay, run);
+      else fn();
+    };
+    token[WORK_TIMER] = this.later(ms, run);
+    return token;
   }
 
   scaled(ms) { return Math.max(0, Math.round(ms * this.timerScale)); }
@@ -2021,33 +2053,41 @@ export class Match {
   }
 
   /**
-   * The bot plays a prep in three stages, every one in slices of ≤ botSliceMs wall-clock ms (one scheduler callback
+   * The bot plays a prep in three stages, in fixed workSlice counts or botSliceMs wall-clock slices (one scheduler callback
    * each, so other rooms' battles and every player's requests keep flowing): economy + the default layout
    * (bot.js botPrepBeginSteps — shop decisions and layout planning, 50–120 ms late in a 4-bot match), the layout
    * rehearsal (whole simulated battles, 0.2–1 s of CPU per bot late in a match), then botPrepEndSteps (the rehearsed
    * layout, temp, Ready). The step generators run the same actions in the same order as the one-shot routine (same
-   * rng draws, same decisions); in virtual time (botSliceMs unbounded) each stage runs at once. The prep ending first
+   * rng draws, same decisions); unbounded virtual time without workSlice runs each stage at once. The prep ending first
    * (deadline) or a newer schedule for the seat drops the job (a step never leaves a transient board behind).
    */
   scheduleBotPrep(ps, i = 0) {
     const round = this.round;
     const token = (ps._botPrepToken = (ps._botPrepToken || 0) + 1);
     const valid = () => this.phase === PHASE.PREP && this.round === round && ps.alive && !ps.ready && ps.botControlled && ps._botPrepToken === token;
-    const bounded = Number.isFinite(this.botSliceMs);
+    const fixed = this.workSlice;
+    const bounded = !!fixed || Number.isFinite(this.botSliceMs);
+    const later = (ms, fn) => fixed ? this.laterWork(ms, fn, 'prep') : this.later(ms, fn);
     const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
     /** Step a generator until done or the slice budget is used; `then(value)` once it is done (null on an error). */
     const drive = (gen, label, then) => {
-      const t0 = now();
+      const t0 = fixed ? 0 : now();
       let r = null;
+      let steps = 0;
+      const finish = (value) => {
+        if (fixed) { if (valid()) later(0, () => { if (valid()) then(value); }); }
+        else then(value);
+      };
       try {
-        do r = gen.next(); while (!r.done && !(bounded && now() - t0 >= this.botSliceMs));
+        do { r = gen.next(); steps++; }
+        while (!r.done && (fixed ? steps < fixed.prepSteps : !(bounded && now() - t0 >= this.botSliceMs)));
       } catch (e) {
         this.reportError(`bot ${ps.playerId}${label}`, e);
-        then(null);
+        finish(null);
         return;
       }
-      if (r.done) { then(r.value); return; }
-      this.later(0, () => { if (valid()) drive(gen, label, then); });
+      if (r.done) { finish(r.value); return; }
+      later(0, () => { if (valid()) drive(gen, label, then); });
     };
     const ready = () => {
       if (!ps.ready) {
@@ -2061,19 +2101,20 @@ export class Match {
       if (!gen) { ready(); return; }
       drive(gen, '', ready);
     };
-    this.later(this.scaled(DELAYS.BOT_ACTION + i * DELAYS.BOT_STAGGER), () => {
+    later(this.scaled(DELAYS.BOT_ACTION + i * DELAYS.BOT_STAGGER), () => {
       if (!valid()) return;
       drive(botPrepBeginSteps(this, ps), '', (job) => {
         if (!job) { end(null); return; }
         const slice = () => {
           if (!valid()) return;
           let done = true;
-          try { done = job.run(this.botSliceMs); } catch (e) { this.reportError(`bot ${ps.playerId} rehearsal`, e); }
-          if (done) { if (bounded) this.later(0, () => { if (valid()) end(job); }); else end(job); }
-          else this.later(0, slice);
+          try { done = fixed ? job.runTicks(fixed.prepSimulationTicks) : job.run(this.botSliceMs); } catch (e) { this.reportError(`bot ${ps.playerId} rehearsal`, e); }
+          if (done) { if (bounded) later(0, () => { if (valid()) end(job); }); else end(job); }
+          else later(0, slice);
         };
         // bounded slices start in a callback of their own (the economy + default layout above already used this one)
-        if (bounded) this.later(0, slice);
+        // Fixed-step drive already scheduled this continuation separately from the economy/layout slice.
+        if (bounded && !fixed) later(0, slice);
         else slice();
       });
     });
@@ -2643,19 +2684,20 @@ export class Match {
       f.endGt = Number(run.battle.time) || 0;
       this._armRelease(f);
     };
-    if (!Number.isFinite(this.headlessSliceMs)) {
+    if (!this.workSlice && !Number.isFinite(this.headlessSliceMs)) {
       job.run(Infinity);
       complete();
     } else {
-      // a real host: wall-clock-bounded slices in callbacks of their own (3 bot fields at combat start would otherwise
+      // Fixed-count or real-host wall-clock slices in callbacks of their own (3 bot fields at combat start would otherwise
       // block the event loop for ~0.2–0.5 s here, seconds on a low-power mini PC)
       const slice = () => {
         f.sliceTimer = null;
         if (f.job !== job || f.done) return;
-        if (job.run(this.headlessSliceMs)) complete();
-        else f.sliceTimer = this.later(0, slice);
+        const done = this.workSlice ? job.runTicks(this.workSlice.simulationTicks) : job.run(this.headlessSliceMs);
+        if (done) complete();
+        else f.sliceTimer = this.laterWork(0, slice);
       };
-      f.sliceTimer = this.later(0, slice);
+      f.sliceTimer = this.laterWork(0, slice);
     }
     this._armProgressTicker();
   }
@@ -3063,7 +3105,7 @@ export class Match {
       onTick: () => this._checkFinalEnd(),
     });
     const gt = this._fieldElapsed(f);
-    // the fast-forward to the field clock is spread over the pacing intervals on a real host (virtual time: at once)
+    // Fixed-work hosts queue the original target in field order; real hosts use bounded pacing catch-up.
     if (gt > 0 && !entry.done) this.pacer.skipTo(entry, gt, { budgetTicks: this.sched.virtual ? Infinity : CATCHUP_TICKS_PER_INTERVAL });
   }
 

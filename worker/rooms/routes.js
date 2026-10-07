@@ -103,8 +103,9 @@ export async function roomApplications(rt, request, env) {
         queue.drop(item.id);
         throw new AccountError('APPLICANT_BUSY', 409);
       }
+      let approved;
       try {
-        const approved = queue.decide(accountId, item.id, 'approved', {
+        approved = queue.decide(accountId, item.id, 'approved', {
           hostId: host,
           inMatch: !!room.match,
           freeSeats: room.seats.filter((x) => !x).length,
@@ -112,6 +113,9 @@ export async function roomApplications(rt, request, env) {
         await applicant.clearApplication(rt.code);
         return json(approved);
       } catch (e) {
+        // Revoke the local ticket before releasing its account claim. Even if that RPC fails, the failed approval
+        // must not admit a player after their account can take a seat elsewhere.
+        if (approved) queue.drop(item.id);
         await applicant.releaseSeat({ claimId: item.id });
         throw e;
       }

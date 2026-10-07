@@ -182,6 +182,7 @@ test('an event reads the match once for its spectators, however many watch', (t)
 
 test("spectators get each public view once, as the players do, and a battle's early end", (t) => {
   const { rt, host } = setup(t);
+  rt.lobby.seedFn = () => 17;
   send(rt, host, 'room.addBot');
   send(rt, host, 'room.start');
   const viewer = connect(rt, 'viewer');
@@ -199,7 +200,8 @@ test("spectators get each public view once, as the players do, and a battle's ea
   const key = ({ serverNow, ...view }) => JSON.stringify(view);
   for (let i = 1; i < pubs.length; i++) assert.notEqual(key(pubs[i]), key(pubs[i - 1]), 'no view twice');
   // a battle is sent once (not again when it is done); its early end reaches the spectators shown it, once
-  for (let i = 0; i < 100 && !match.fields.some((f) => f.cc); i++) {
+  // Cooperative AI prep takes multiple events; wait for the actual current battle, not a fixed old callback count.
+  for (let i = 0; i < 5000 && !match.fields.some((f) => f.cc && !f.done); i++) {
     const at = match.sched.nextAt();
     if (at != null) rt.pump(at);
   }
@@ -207,6 +209,8 @@ test("spectators get each public view once, as the players do, and a battle's ea
   assert.equal(new Set(starts.map((f) => f.battleId)).size, starts.length);
   const battle = starts.at(-1),
     playerId = host.take('welcome').playerId;
+  assert.ok(match.fields.some((f) => f.cc && !f.done && f.battleId === battle?.battleId),
+    'the spectator is watching the current live battle before its early end');
   match.sendTo(playerId, { t: 'b.end', battleId: battle.battleId, fieldId: battle.fieldId, reason: 'takeover' });
   rt.pump();
   assert.equal(viewer.count('b.end'), 0, 'a takeover only stops the former authority');

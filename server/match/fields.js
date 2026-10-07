@@ -34,6 +34,8 @@ import { layerGainRoom } from '../../shared/constants.js';
 import { uniteLeft } from '../sim/spec.js';
 import { GRANTED_CAP_OVERRIDE } from '../sim/content/garrisons/battle.js';
 
+// Paced shared-pool work uses smaller slices than ordinary independent headless jobs.
+const PACED_WORK_TICKS = 128;
 export const MAX_TICKS_PER_INTERVAL = 8;
 export const INTERVAL_MS = 1000 / 30;
 export const GAME_SPEED = 2;
@@ -85,6 +87,46 @@ export class DeadBattle {
   off() {}
 }
 
+// Fixed-work hosts resume one logical pacing round before starting another. A yielded value represents
+// exactly one field tick; the iterator retains field order across event admissions.
+function schedulePacedWork(owner, ms) {
+  owner.pacingDue ??= owner.last + INTERVAL_MS;
+  owner.pacingPaused ??= owner.m.pausedMs || 0;
+  owner.workTimer = owner.m.laterWork(ms, () => {
+    owner.workTimer = null;
+    if (owner.stopped || owner.done || owner.m.disposed) return;
+    // Match._resume transfers the current pause duration into pausedMs. Track their sum so a pause
+    // spanning denied admissions shifts the logical clock exactly once, even after it has resumed.
+    const paused = (owner.m.pausedMs || 0) + (owner.m.paused ? Math.max(0, owner.m.sched.now() - owner.m._pausedAt) : 0);
+    const pauseDelta = Math.max(0, paused - owner.pacingPaused);
+    owner.pacingDue += pauseDelta;
+    owner.last += pauseDelta;
+    owner.pacingPaused = paused;
+    if (owner.m.paused) { schedulePacedWork(owner, INTERVAL_MS); return; }
+    const iterator = owner.workIterator ||= owner._pumpSteps();
+    for (let i = 0, cap = Math.min(owner.m.workSlice.simulationTicks, PACED_WORK_TICKS); i < cap; i++) {
+      const next = iterator.next();
+      // A completion hook can clear this chain without stopping the reusable pacer, and can even
+      // add another entry with its own timer. Never continue or re-arm the cancelled iterator.
+      if (owner.workIterator !== iterator || owner.stopped || owner.done || owner.m.disposed) return;
+      if (next.done) {
+        owner.workIterator = null;
+        owner.pacingDue += INTERVAL_MS;
+        break;
+      }
+    }
+    if (owner.entries && !owner.entries.size) return;
+    // Admission delay is computation backlog, not a real-host stall: retain each virtual interval.
+    schedulePacedWork(owner, owner.workIterator ? 0 : Math.max(0, owner.pacingDue - owner.m.sched.now()));
+  });
+}
+
+function cancelPacedWork(owner) {
+  if (owner.workTimer != null) owner.m.cancel(owner.workTimer);
+  owner.workTimer = null;
+  owner.workIterator = null;
+}
+
 export class FieldRunner {
   /**
    * @param {import('./Match.js').Match} m
@@ -112,6 +154,11 @@ export class FieldRunner {
 
   start() {
     if (this.fields.every((f) => !f.live)) { this._finish(); return; }
+    if (this.m.workSlice) {
+      this.last = this.m.sched.now();
+      schedulePacedWork(this, INTERVAL_MS);
+      return;
+    }
     if (this.m.sched.instant) {
       // one scheduler callback: run everything now (virtual time / tools)
       this.m.later(0, () => this._runInstant());
@@ -123,6 +170,7 @@ export class FieldRunner {
 
   stop() {
     this.stopped = true;
+    cancelPacedWork(this);
     if (this.interval) { this.m.sched.clearInterval(this.interval); this.interval = null; }
   }
 
@@ -136,9 +184,11 @@ export class FieldRunner {
     this._checkDone();
   }
 
-  _pump() {
+  _pump() { for (const _ of this._pumpSteps()) { /* synchronous legacy host */ } }
+
+  *_pumpSteps() {
     if (this.stopped || this.done) return;
-    const now = this.m.sched.now();
+    const now = this.m.workSlice ? this.pacingDue : this.m.sched.now();
     const dt = Math.max(0, now - this.last);
     this.last = now;
     if (this.m.paused) return; // solo pause (Match.setPause): the field clock stands still
@@ -148,16 +198,19 @@ export class FieldRunner {
     let n = Math.floor(this.acc / TICK + 1e-9);
     if (n > cap) { n = cap; this.acc = 0; } else this.acc -= n * TICK;
     for (let i = 0; i < n && !this.done && !this.stopped; i++) {
-      this._tick();
+      yield* this._tickSteps();
       if (this.fields.every((f) => !f.live)) break;
     }
     if (this.time >= HARD_CAP_SECONDS) this._forceAll('timeout');
     this._checkDone();
   }
 
-  _tick() {
+  _tick() { for (const _ of this._tickSteps()) { /* synchronous legacy host */ } }
+
+  *_tickSteps() {
     this.ticks++;
     for (const f of this.fields) {
+      if (this.stopped || this.done) return;
       if (!f.live) continue;
       const b = f.battle;
       try {
@@ -169,6 +222,7 @@ export class FieldRunner {
       }
       if (b.finished) { f.live = false; this.m.markPublic(); }
       if (this.ticks % SNAP_EVERY === 0 || !f.live) this._emit(f);
+      yield;
     }
     if (this.onTick) {
       try { this.onTick(this); } catch (e) { this.m.reportError('field onTick', e); }
@@ -224,6 +278,7 @@ export class FieldRunner {
   _finish() {
     if (this.done) return;
     this.done = true;
+    cancelPacedWork(this);
     if (this.interval) { this.m.sched.clearInterval(this.interval); this.interval = null; }
     this.onDone(this);
   }
@@ -294,7 +349,13 @@ export class HeadlessJob {
     this._out = null;
   }
 
-  run(budgetMs = Infinity, now = perfNow) {
+  /** Deterministic budget for hosts whose clock does not advance during synchronous work. */
+  runTicks(maxTicks) {
+    if (!Number.isInteger(maxTicks) || maxTicks < 1) throw new RangeError('maxTicks must be a positive integer');
+    return this.run(Infinity, perfNow, maxTicks);
+  }
+
+  run(budgetMs = Infinity, now = perfNow, maxTicks = Infinity) {
     if (this.done) return true;
     const timed = Number.isFinite(budgetMs);
     const t0 = timed ? now() : 0;
@@ -307,6 +368,7 @@ export class HeadlessJob {
         k++;
         if (this.n % this.every === 0) this.timeline.push(timelineSample(b));
         if (timed && (k & 15) === 0 && !b.finished && now() - t0 >= budgetMs) return false;
+        if (k >= maxTicks && !b.finished && this.n < this.cap) return false;
       }
       if (!b.finished) b.forceEnd('timeout');
     } catch (e) {
@@ -367,6 +429,7 @@ export class HeadlessPacer {
     this.m = m;
     /** @type {Set<{ battle: any, onDone: Function, onTick?: Function, done?: boolean }>} */
     this.entries = new Set();
+    this.catchups = [];
     this.interval = null;
     this.acc = 0;
     this.last = 0;
@@ -376,10 +439,14 @@ export class HeadlessPacer {
   add(entry) {
     if (this.stopped || !entry || !entry.battle) return entry;
     this.entries.add(entry);
-    if (!this.interval) {
+    if (this.m.workSlice) entry.pacingAfter = this.m._clockNow() - this.m.pausedMs;
+    if (!this.interval && !this.workTimer && !this.workIterator) {
       this.last = this.m.sched.now();
       this.acc = 0;
-      this.interval = this.m.sched.setInterval(() => this.m.guard(() => this._pump()), INTERVAL_MS);
+      this.pacingDue = this.last + INTERVAL_MS;
+      this.pacingPaused = this.m.pausedMs || 0;
+      if (this.m.workSlice) schedulePacedWork(this, INTERVAL_MS);
+      else this.interval = this.m.sched.setInterval(() => this.m.guard(() => this._pump()), INTERVAL_MS);
     }
     return entry;
   }
@@ -391,6 +458,13 @@ export class HeadlessPacer {
    */
   skipTo(entry, gt, { budgetTicks = Infinity } = {}) {
     const cap = Math.ceil(Math.min(Number(gt) || 0, HARD_CAP_SECONDS) / TICK);
+    if (this.m.workSlice) {
+      // Preserve the old virtual takeover order: finish this admission-time target before the next takeover.
+      // Other room inputs can run between slices; the checkpoint log records their order.
+      entry.pacingAfter = this.m._clockNow() - this.m.pausedMs;
+      this.catchups.push({ entry, cap });
+      return;
+    }
     if (Number.isFinite(budgetTicks) && budgetTicks > 0) {
       entry.skipTicks = cap;
       entry.skipBudget = Math.max(1, Math.floor(budgetTicks));
@@ -419,11 +493,27 @@ export class HeadlessPacer {
 
   stop() { this.stopped = true; this._clear(); this.entries.clear(); }
 
-  _clear() { if (this.interval) { this.m.sched.clearInterval(this.interval); this.interval = null; } }
+  _clear() {
+    cancelPacedWork(this);
+    this.catchups.length = 0;
+    if (this.interval) { this.m.sched.clearInterval(this.interval); this.interval = null; }
+  }
 
-  _pump() {
+  _pump() { for (const _ of this._pumpSteps()) { /* synchronous legacy host */ } }
+
+  *_pumpSteps() {
     if (this.stopped) return;
-    const now = this.m.sched.now();
+    while (this.catchups.length && !this.stopped) {
+      const { entry, cap } = this.catchups[0];
+      while (this.entries.has(entry) && !entry.done && !entry.battle.finished && entry.battle.tickCount < cap) {
+        this._skip(entry, cap, 1);
+        yield;
+        if (this.stopped) return;
+      }
+      if (this.catchups[0]?.entry === entry) this.catchups.shift();
+    }
+    if (this.stopped || !this.entries.size) return;
+    const now = this.m.workSlice ? this.pacingDue : this.m.sched.now();
     const dt = Math.max(0, now - this.last);
     this.last = now;
     if (this.m.paused) return; // solo pause (Match.setPause): the field clock stands still
@@ -432,9 +522,13 @@ export class HeadlessPacer {
     const cap = maxTicksPerInterval(speed);
     let n = Math.floor(this.acc / TICK + 1e-9);
     if (n > cap) { n = cap; this.acc = 0; } else this.acc -= n * TICK;
+    const pacingAt = this.m.workSlice ? now - this.pacingPaused : now;
     for (const e of [...this.entries]) {
       if (this.stopped) break;
-      if (e.done) continue;
+      if (e.done || !this.entries.has(e)) continue;
+      // A newly taken-over field already catches up to its admission-time clock; old queued rounds
+      // belong to the fields that were running then and must not simulate that interval twice.
+      if (this.m.workSlice && pacingAt <= e.pacingAfter) continue;
       const b = e.battle;
       if (e.skipTicks != null) {
         // sliced fast-forward (takeover): the field clock keeps running, so the target moves with the pacing
@@ -445,14 +539,17 @@ export class HeadlessPacer {
         if (e.onTick) { try { e.onTick(e); } catch (err) { this.m.reportError('pacer onTick', err); } }
         continue;
       }
-      for (let i = 0; i < n && !b.finished; i++) {
+      for (let i = 0; i < n && !b.finished && !this.stopped && this.entries.has(e); i++) {
         try { b.step(); } catch (err) {
           this.m.reportError('pacer step', err);
           try { b.forceEnd('timeout'); } catch { /* ignore */ }
           break;
         }
         if (b.time >= HARD_CAP_SECONDS) { try { b.forceEnd('timeout'); } catch { /* ignore */ } }
+        yield;
       }
+      if (this.stopped) return;
+      if (!this.entries.has(e)) continue;
       if (e.onTick) { try { e.onTick(e); } catch (err) { this.m.reportError('pacer onTick', err); } }
       if (b.finished) this._finish(e);
     }
