@@ -124,7 +124,8 @@
 //                      with a virtual one); the rest runs in later callbacks (scheduleBotPrep)
 //   opts.headlessSliceMs  wall-clock ms per callback of a server-run normal / 联防 field (client-side combat: bots,
 //                      takeovers; default 8 with a real scheduler, at once with a virtual one)
-//   opts.workSlice    { prepSteps, simulationTicks, prepSimulationTicks? }: fixed generator/tick budgets instead of wall-clock slices
+//   opts.workSlice    { prepSteps, simulationTicks, prepSimulationTicks?, deadlineRehearsalTicks? }: fixed generator/tick
+//                      budgets instead of wall-clock slices (deadlineRehearsalTicks: the prep deadline's, _finishBotPrep)
 //   opts.deferWork    optional recorded-host admission callback (kind: 'prep' / 'prepArrange' (an arrangement's slice) /
 //                      'simulation', deadline, urgent): 0 admits one slice, positive ms postpones it (laterWork's work
 //                      queue; urgent: _prepUrgent)
@@ -173,6 +174,17 @@ import { botPrepBeginSteps, botPrepEndSteps, botPickBand, botPickCard, runSteps,
 const BOT_REHEARSAL_DEFAULT = 3;
 /** Wall-clock ms of bot layout rehearsal per scheduler callback (real time; virtual time runs it in one go). */
 const BOT_SLICE_MS = 8;
+/**
+ * Rehearsal ticks the prep deadline runs for the AI-played seats it finishes, all of them together (fixed work counts:
+ * workSlice.deadlineRehearsalTicks, recorded with the match; checkpoint.js WORK_SLICE). Measured on a desktop late in an
+ * 8-seat match, 1024 ticks are ~10–50 ms of the deadline event (path-dependent; once 65 ms). The rest of that event is
+ * not bounded by it: each seat still in its economy + default layout runs another ~15–40 ms (about half of it the final
+ * arrangement's other REHEARSAL_VARIANTS plans and rehearsal Battles, made even for a seat left with no ticks), then
+ * come the end stages, the fight's start and the commit. So when 3–4 humans switch autoplay on ~1 s before the deadline
+ * (their jobs' start, BOT_ACTION later, falls just before it), the deadline event takes ~70–170 ms — over the ~80 ms
+ * aim whatever this budget (0 still leaves 60–110 ms). docs/CLOUDFLARE.md 房间计算调度 has the measurements.
+ */
+export const DEADLINE_REHEARSAL_TICKS = 1024;
 const WORK_TIMER = Symbol('workTimer');
 /**
  * Ticker priority of the remake's match-flow notices (隐秘核心已解锁, 联防阶段, a player out or gone): the official lines
@@ -399,7 +411,9 @@ export class Match {
       && Number.isInteger(opts.workSlice.simulationTicks) && opts.workSlice.simulationTicks > 0
       ? { prepSteps: opts.workSlice.prepSteps, simulationTicks: opts.workSlice.simulationTicks,
         prepSimulationTicks: Number.isInteger(opts.workSlice.prepSimulationTicks) && opts.workSlice.prepSimulationTicks > 0
-          ? opts.workSlice.prepSimulationTicks : opts.workSlice.simulationTicks } : null;
+          ? opts.workSlice.prepSimulationTicks : opts.workSlice.simulationTicks,
+        deadlineRehearsalTicks: Number.isSafeInteger(opts.workSlice.deadlineRehearsalTicks) && opts.workSlice.deadlineRehearsalTicks >= 0
+          ? opts.workSlice.deadlineRehearsalTicks : DEADLINE_REHEARSAL_TICKS } : null;
     this.deferWork = typeof opts.deferWork === 'function' ? opts.deferWork : null;
     this.ds = dataSourceFor(this.data);
     /** client-side combat (DESIGN §14) — see the header */
@@ -2123,8 +2137,11 @@ export class Match {
    * one. A fixed-count slice also ends at a HEAVY yield (the step before an arrangement): the arrangement's slice is
    * queued as 'prepArrange', which takes an event's work allowance of its own (RecordedMatch deferWork), so it never
    * adds to the other slices an urgent event runs. In fixed counts the prep deadline does not drop a job whose start was
-   * due before it: it runs the rest at once (_finishBotPrep), so how many events the slices got before it (the host's
-   * speed) never decides the seat's board; otherwise the prep ending first drops the job between two steps too.
+   * due before it (_finishBotPrep): it finishes the economy + default layout and the end stage at once, so the seat's
+   * shop decisions complete and its board is whole, but the rest of the rehearsal only gets a share of the deadline's
+   * recorded tick budget (workSlice.deadlineRehearsalTicks, shared by the seats it finishes, in seat order) — a
+   * rehearsal still unfinished then is cut, and the seat takes the best of the candidates it has finished (the default
+   * plan before any). Otherwise the prep ending first drops the job between two steps too.
    */
   scheduleBotPrep(ps, i = 0) {
     const round = this.round;
@@ -2180,11 +2197,14 @@ export class Match {
       drive(gen, '', ready);
     };
     /**
-     * The rest of the job at once, in the order its slices would have run it (the prep deadline: _finishBotPrep). The
-     * generators' steps are the one-shot routine's and the rehearsal runs on its own seed, so the seat ends with the
-     * board and Ready it would have had with every slice admitted in time. Errors are handled as in the slices.
+     * The rest of the job now, in the order its slices would have run it (the prep deadline: _finishBotPrep). The begin
+     * and end stages run to their end; the rehearsal runs at most `budget.ticks` more ticks and takes them from the
+     * budget (shared by the seats the deadline finishes). One still unfinished then is cut (job.cut): botPrepEndSteps
+     * applies the best of the candidates it finished. The generators' steps are the one-shot routine's and the rehearsal
+     * runs on its own seed in fixed ticks, so the board depends only on recorded slices and the recorded budget. Errors
+     * are handled as in the slices (a failed rehearsal leaves the default plan).
      */
-    run.complete = () => {
+    run.complete = (budget) => {
       if (!valid()) return;
       if (run.stage === 'wait') { run.stage = 'begin'; run.gen = botPrepBeginSteps(this, ps); run.done = false; }
       if (run.stage === 'begin') {
@@ -2196,7 +2216,17 @@ export class Match {
         run.gen = null;
       }
       if (run.stage === 'rehearsal') {
-        try { if (!run.rehearsed && !run.job.done) run.job.run(); } catch (e) { this.reportError(`bot ${ps.playerId} rehearsal`, e); }
+        const job = run.job;
+        if (!run.rehearsed && !job.done) {
+          try {
+            if (budget.ticks > 0) {
+              const ticks = job.ticks;
+              job.runTicks(budget.ticks);
+              budget.ticks = Math.max(0, budget.ticks - (job.ticks - ticks));
+            }
+            if (!job.done) job.cut = true;
+          } catch (e) { this.reportError(`bot ${ps.playerId} rehearsal`, e); }
+        }
         run.stage = 'end';
         run.gen = null;
       }
@@ -2279,7 +2309,9 @@ export class Match {
 
   prepDeadline() {
     if (this.phase !== PHASE.PREP) return;
-    for (const ps of this.alivePlayers()) if (!ps.ready) this._finishBotPrep(ps);
+    // the rehearsal ticks this event may run for the AI-played seats it finishes, all of them together
+    const budget = { ticks: this.workSlice ? this.workSlice.deadlineRehearsalTicks : 0 };
+    for (const ps of this.alivePlayers()) if (!ps.ready) this._finishBotPrep(ps, budget);
     for (const ps of this.alivePlayers()) {
       if (ps.ready) continue;
       ps.resolveTemp();
@@ -2292,16 +2324,22 @@ export class Match {
   /**
    * The prep deadline and an AI-played seat whose prep is still running (scheduleBotPrep), on a fixed-work host
    * (workSlice: a recorded room, one per Durable Object): a job that has started, or whose start was due before now but
-   * still waited for the room's work queue, is finished at once — the slices it got so far depend on how fast the host
-   * ran the events before the deadline, an ideal host would have run them all. A job whose start is not due yet is
-   * dropped (the seat keeps its board, as without a bot). Wall-clock slices (botSliceMs, the Node server, whose process
-   * hosts every room) are dropped as before.
+   * still waited for the room's work queue, is finished now, so the seat never fights a half-built board and its
+   * economy decisions complete. The economy + default layout and the end stage (the chosen plan, temp, Ready) run to
+   * their end; the rest of the rehearsal runs on `budget` (prepDeadline: workSlice.deadlineRehearsalTicks, shared by
+   * every seat finished in this event, in seat order), so one event never runs a whole late-match rehearsal for each
+   * seat (0.2–1 s apiece). The economy + default layout are not bounded, though (~15–40 ms per seat late in a match):
+   * three or four seats still in them make the event go over ~80 ms (DEADLINE_REHEARSAL_TICKS). A rehearsal the budget
+   * does not cover is cut: the seat takes the best of the candidates finished so far (default plan before any). How far
+   * the slices got before the deadline depends on the host, but only through recorded admissions, so a restore replays
+   * the same board. A job whose start is not due yet is dropped (the seat keeps its board, as without a bot).
+   * Wall-clock slices (botSliceMs, the Node server, whose process hosts every room) are dropped as before.
    */
-  _finishBotPrep(ps) {
+  _finishBotPrep(ps, budget) {
     const run = ps._botPrep;
     if (!this.workSlice || !run || !run.complete || !run.valid()) return;
     if (run.stage === 'wait' && !(run.startAt < this.sched.now())) return;
-    run.complete();
+    run.complete(budget);
   }
 
   endPrep() {

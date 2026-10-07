@@ -1,4 +1,4 @@
-import { Match } from './Match.js';
+import { Match, DEADLINE_REHEARSAL_TICKS } from './Match.js';
 import { VirtualScheduler } from './scheduler.js';
 import { appendReplayReport, recordServerBattle, recordServerSpec } from './recorder.js';
 
@@ -16,8 +16,11 @@ const copy = (value) => JSON.parse(JSON.stringify(value));
 // an arrangement (10–20 ms) takes an allowance of its own (deferWork 'prepArrange'). 5 keeps those events within
 // ~30 ms, and the events of a wait few enough that, at ~5 ms of commit per event, the last human's wait is no longer
 // than before the slicing. simulationTicks: a headless normal / 联防 battle slice — 128 like the boss pacer's (a
-// 512-tick 联防 slice took up to ~97 ms late in an 8-bot match).
-const WORK_SLICE = Object.freeze({ prepSteps: 1, prepSimulationTicks: 128, prepIntervalMs: 25, prepBurst: 5, simulationTicks: 128 });
+// 512-tick 联防 slice took up to ~97 ms late in an 8-bot match). deadlineRehearsalTicks: the rehearsal ticks the prep
+// deadline runs for the AI-played seats it finishes, all together (Match._finishBotPrep, DEADLINE_REHEARSAL_TICKS); a
+// match recorded without it restores with this default.
+const WORK_SLICE = Object.freeze({ prepSteps: 1, prepSimulationTicks: 128, prepIntervalMs: 25, prepBurst: 5, simulationTicks: 128,
+  deadlineRehearsalTicks: DEADLINE_REHEARSAL_TICKS });
 // The longest match log restoreMatch replays (CHECKPOINT_EVENT_LIMIT); worker/index.js warns while a running match's log
 // nears it.
 export const CHECKPOINT_EVENT_LIMIT = 200000;

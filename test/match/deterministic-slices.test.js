@@ -155,9 +155,25 @@ test('fixed rehearsal ticks span candidates without changing the winning layout 
   } finally { m.dispose(); }
 });
 
+// The rehearsal candidates of a prep differ (FakeBattle script): the first leaks 2, the second 1, the third none, so
+// which plan wins depends on how many of them were rehearsed to the end.
+const REHEARSAL_LEAKS = [2, 1, 0];
+const rehearsalScript = () => {
+  const seen = new Map();
+  return (b) => {
+    if (!String(b.fieldId).startsWith('r:')) return null;
+    const key = `${b.fieldId}:${b.round}`;
+    const i = seen.get(key) ?? 0;
+    seen.set(key, i + 1);
+    return { leaks: { [b.fieldId.slice(2)]: REHEARSAL_LEAKS[i % REHEARSAL_LEAKS.length] } };
+  };
+};
+/** Ticks of one rehearsal candidate: FakeBattle's default 8 s. */
+const CANDIDATE_TICKS = Math.round(8 / TICK);
+
 test('Match dedicated prep ticks preserve decisions and cancel safely when the phase ends', () => {
   const run = (workSlice) => {
-    const h = makeMatch({ mode: 'coop', humans: 1, bots: 1, seed: 12, fake: true, botRehearsal: 3, workSlice }).start();
+    const h = makeMatch({ mode: 'coop', humans: 1, bots: 1, seed: 12, fake: true, botRehearsal: 3, script: rehearsalScript(), workSlice }).start();
     const m = h.m;
     try {
       h.toPrep(3);
@@ -193,37 +209,67 @@ test('Match dedicated prep ticks preserve decisions and cancel safely when the p
   const tiny = { prepSteps: 1, simulationTicks: 512, prepSimulationTicks: 4 };
   const { rng: _rng, ...uncut } = run(tiny);
 
-  // the deadline cuts the prep mid-rehearsal: it finishes the started job at once (the board an uncut prep makes),
-  // and nothing of it runs after PREP
-  const h = makeMatch({ mode: 'coop', humans: 1, bots: 1, seed: 12, fake: true, botRehearsal: 3, workSlice: tiny }).start();
-  try {
-    h.toPrep(3);
-    const bot = h.ps('ai_0');
-    let ticks = 0;
-    const newBattle = h.m.newBattle.bind(h.m);
-    h.m.newBattle = (opts) => {
-      const b = newBattle(opts);
-      if (String(opts.fieldId).startsWith('r:')) { const step = b.step.bind(b); b.step = () => { ticks++; return step(); }; }
-      return b;
-    };
-    h.run(() => ticks > 0);
-    assert.equal(bot.ready, false);
-    const before = ticks;
-    let atDeadline = null;
-    const endPrep = h.m.endPrep.bind(h.m);
-    h.m.endPrep = () => {
-      atDeadline = { board: [...bot.board].map(([k, p]) => [k, p.id, p.dir]), hand: bot.hand.map((p) => p?.id ?? null), funds: bot.funds };
-      return endPrep();
-    };
-    h.m.prepDeadline();
-    assert.ok(ticks > before, 'the deadline ran the rest of the rehearsal');
-    assert.deepEqual(atDeadline, uncut, 'the fight gets the board of the uncut prep');
-    const after = ticks;
-    h.run(() => h.m.phase === PHASE.SETTLE);
-    assert.equal(ticks, after, 'no rehearsal slice runs after PREP');
-    assert.equal(h.m.errorCount, 0);
-    checkInvariants(h.m);
-  } finally { h.m.dispose(); }
+  // The deadline finds the prep mid-rehearsal (after its first 4-tick slice): it finishes the started job — the
+  // rehearsal only within workSlice.deadlineRehearsalTicks — and nothing of it runs after PREP.
+  const cutAt = (deadlineRehearsalTicks) => {
+    const h = makeMatch({ mode: 'coop', humans: 1, bots: 1, seed: 12, fake: true, botRehearsal: 3, script: rehearsalScript(),
+      workSlice: deadlineRehearsalTicks == null ? tiny : { ...tiny, deadlineRehearsalTicks } }).start();
+    try {
+      h.toPrep(3);
+      const bot = h.ps('ai_0');
+      let ticks = 0;
+      const newBattle = h.m.newBattle.bind(h.m);
+      h.m.newBattle = (opts) => {
+        const b = newBattle(opts);
+        if (String(opts.fieldId).startsWith('r:')) { const step = b.step.bind(b); b.step = () => { ticks++; return step(); }; }
+        return b;
+      };
+      h.run(() => ticks > 0);
+      assert.equal(bot.ready, false);
+      const job = bot._botPrep.job;
+      assert.ok(job && !job.done && job.ticks === ticks, 'the deadline comes mid-rehearsal');
+      const before = ticks;
+      let atDeadline = null;
+      const endPrep = h.m.endPrep.bind(h.m);
+      h.m.endPrep = () => {
+        atDeadline = { board: [...bot.board].map(([k, p]) => [k, p.id, p.dir]), hand: bot.hand.map((p) => p?.id ?? null), funds: bot.funds };
+        return endPrep();
+      };
+      h.m.prepDeadline();
+      const budget = h.m.workSlice.deadlineRehearsalTicks;
+      assert.ok(ticks - before <= budget, `the deadline ran ${ticks - before} rehearsal ticks (budget ${budget})`);
+      assert.equal(job.done || job.cut, true, 'the rehearsal is finished or cut');
+      if (job.cut) assert.equal(ticks - before, budget, 'the rehearsal is cut only when the budget runs out');
+      // the seat fights on the plan it chose: every operator of it on its tile
+      assert.ok([...job.best].every(([uid, k]) => bot.board.get(k)?.uid === uid), 'the board is the chosen plan');
+      const after = ticks;
+      h.run(() => h.m.phase === PHASE.SETTLE);
+      assert.equal(ticks, after, 'no rehearsal slice runs after PREP');
+      assert.equal(h.m.errorCount, 0);
+      checkInvariants(h.m);
+      return { atDeadline, ran: ticks - before, before, done: job.done, cut: job.cut, best: job.plans.indexOf(job.best), candidates: job.plans.length };
+    } finally { h.m.dispose(); }
+  };
+  // the default budget covers this rehearsal: the fight gets the board of the uncut prep, the last candidate's plan
+  const whole = cutAt(null);
+  assert.ok(whole.done && whole.ran > 0, 'the deadline ran the rest of the rehearsal');
+  assert.equal(whole.candidates, 3);
+  assert.equal(whole.best, 2, 'the uncut rehearsal picks the candidate without leaks');
+  assert.deepEqual(whole.atDeadline, uncut, 'the fight gets the board of the uncut prep');
+  // none: no candidate finished — the default plan (the board the economy left)
+  const none = cutAt(0);
+  assert.ok(none.cut && none.ran === 0 && none.best === 0);
+  assert.notDeepEqual(none.atDeadline.board, uncut.board, 'the cut prep fights another plan');
+  // the budget runs out in the last candidate: the better of the two finished ones
+  const two = cutAt(2 * CANDIDATE_TICKS + CANDIDATE_TICKS / 2 - whole.before);
+  assert.ok(two.cut && two.ran === 2 * CANDIDATE_TICKS + CANDIDATE_TICKS / 2 - whole.before);
+  assert.equal(two.best, 1, 'the best candidate rehearsed to the end');
+  assert.notDeepEqual(two.atDeadline.board, none.atDeadline.board);
+  assert.notDeepEqual(two.atDeadline.board, uncut.board);
+  // the budget ends exactly with the second candidate: it counts as rehearsed
+  const exact = cutAt(2 * CANDIDATE_TICKS - whole.before);
+  assert.ok(exact.cut && exact.best === 1);
+  assert.deepEqual(exact.atDeadline, two.atDeadline);
 });
 
 test('Match fixed headless slices cover normal and unite fields, leaving no simulation inside combat launch', () => {

@@ -1054,9 +1054,13 @@ function countedLeaks(battle, playerId) {
  * Every candidate's Battle is built right away (each layout is on the board only while its input is taken; the board
  * is restored exactly before this returns), so the job can be stepped later: `job.run(budgetMs)` simulates until the
  * wall-clock budget is used (checked every 4 ticks) and returns true once every candidate is done. A candidate whose
- * counted leaks already exceed the best finished one's stops early (it can no longer win).
+ * counted leaks already exceed the best finished one's stops early (it can no longer win). `job.runTicks(n)` steps at
+ * most n ticks instead (fixed work counts); `job.ticks` counts the ticks simulated so far. `job.best` is the best of the
+ * candidates finished so far (the default plan, plans[0], before any); a job its owner stops short sets `job.cut`, and
+ * botPrepEndSteps then applies that best plan as it would a finished rehearsal's (Match: the prep deadline's tick budget).
  * A whole rehearsal is 0.2–1 s of CPU late in a 4-bot match: Match runs it in bounded slices between other callbacks.
- * @returns {null | { chosen: any[], plans: Array<Map<number, string>>, best: Map<number, string>, done: boolean, run: (budgetMs?: number) => boolean }}
+ * @returns {null | { chosen: any[], plans: Array<Map<number, string>>, best: Map<number, string>, done: boolean,
+ *   cut: boolean, ticks: number, run: (budgetMs?: number) => boolean, runTicks: (maxTicks: number) => boolean }}
  *   null when there is nothing to compare (no wave, < 2 distinct plans, rehearsal off)
  */
 export function createRehearsal(m, ps, chosen, plans) {
@@ -1113,6 +1117,10 @@ export function* createRehearsalSteps(m, ps, chosen, plans) {
     plans: cands,
     best: cands[0],
     done: false,
+    /** set by the job's owner when it stops the rehearsal short: botPrepEndSteps applies `best` as it stands */
+    cut: false,
+    /** rehearsal ticks simulated so far (every candidate's) */
+    ticks: 0,
     runTicks(maxTicks) {
       if (!Number.isInteger(maxTicks) || maxTicks < 1) throw new RangeError('maxTicks must be a positive integer');
       return job.run(Infinity, maxTicks);
@@ -1132,6 +1140,7 @@ export function* createRehearsalSteps(m, ps, chosen, plans) {
             battle.step();
             t++;
             n++;
+            job.ticks++;
             if ((t & 63) === 0 && bestLeaks < Infinity && countedLeaks(battle, ps.playerId) > bestLeaks) { beaten = true; break; }
             if (timed && (n & 3) === 0 && performance.now() - t0 >= budgetMs) return false;
             if (n >= maxTicks && t < cap && !battle.finished) return false;
@@ -1364,7 +1373,11 @@ export function* botPrepBeginSteps(m, ps) {
   return yield* arrangeSteps(m, ps, { final: true, defer: true });
 }
 
-/** Prep routine, end: the rehearsed layout (when it beat the default plan), temp, a free hand slot, Ready. */
+/**
+ * Prep routine, end: the rehearsed layout (when it beat the default plan), temp, a free hand slot, Ready. A rehearsal
+ * stopped short (job.cut: the prep deadline's tick budget ran out, Match._finishBotPrep) gives the best of the
+ * candidates it finished; one that is neither done nor cut (it failed) leaves the default plan.
+ */
 export function botPrepEnd(m, ps, job = null) {
   runSteps(botPrepEndSteps(m, ps, job));
 }
@@ -1372,7 +1385,7 @@ export function botPrepEnd(m, ps, job = null) {
 /** botPrepEnd as a step generator (see botPrepBeginSteps). */
 export function* botPrepEndSteps(m, ps, job = null) {
   if (!ps.alive || ps.ready) return;
-  if (job && job.done && job.best !== job.plans[0]) {
+  if (job && (job.done || job.cut) && job.best !== job.plans[0]) {
     yield HEAVY;
     yield* applyPlanSteps(m, ps, job.chosen, job.best);
   }
