@@ -121,6 +121,12 @@ const PREPARE_SLICE = 600;
 export const FRAME_WORK_MS = 4;
 export const LOADING_WORK_MS = 10;
 export const HIDDEN_WORK_MS = 64;
+/**
+ * A page can stay visible yet get no animation frames (an occluded window or an embedded web view that stops drawing
+ * without setting document.hidden). Once a requested frame is this late, the interval pump runs the authoritative
+ * battles and the preparations as for a hidden tab, so the field keeps reporting instead of waiting for a takeover.
+ */
+export const FRAME_STALL_MS = 1000;
 /** A preparation's floor per batch: this many times what its target grew since its last batch (≤ CATCHUP_TICKS). */
 export const PREPARE_FLOOR = 2;
 const MAX_ENTRIES = 4;
@@ -294,6 +300,7 @@ export function createBattleRunner(deps) {
   let disposed = false;
   let loading = null;          // b.start being prepared
   let rafH = null;
+  let rafAt = 0;               // when the pending frame was requested (FRAME_STALL_MS)
   let ivH = null;
   let lastPool = null;
   /** solo pause: the runner clock's instant when m.public.paused turned true (null while running) */
@@ -796,8 +803,9 @@ export function createBattleRunner(deps) {
   }
 
   function pump() {
-    // hidden tab: no animation frames — the authoritative battles and the preparations (a display replica's ends with it)
-    if (!hidden()) return;
+    // hidden tab: no animation frames — the authoritative battles and the preparations (a display replica's ends with it);
+    // likewise a visible page whose requested frame is FRAME_STALL_MS late
+    if (!hidden() && !(rafH != null && now() - rafAt >= FRAME_STALL_MS)) return;
     const started = now();
     runBatch(false);
     schedule();
@@ -810,7 +818,7 @@ export function createBattleRunner(deps) {
     const hasPreparation = [...preparing.values()].some(task => task.entry && task.resume);
     // paused: nothing to step (the view keeps its last frame); resume reschedules
     const any = pausedAt == null && (hasPreparation || [...entries.values()].some(running));
-    if (any && rafH == null && !hidden()) rafH = raf(frame);
+    if (any && rafH == null && !hidden()) { rafH = raf(frame); rafAt = now(); }
     else if (!any && rafH != null) { caf(rafH); rafH = null; }
     const needPump = pausedAt == null && (hasPreparation || [...entries.values()].some((e) => e.authoritative && running(e)));
     if (needPump && ivH == null) ivH = setIv(pump, 250);

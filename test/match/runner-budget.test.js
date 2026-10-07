@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createBattleRunner, CATCHUP_TICKS, FRAME_WORK_MS, LOADING_WORK_MS, HIDDEN_WORK_MS, PREPARE_FLOOR, ticksPerFrameCap }
+import { createBattleRunner, CATCHUP_TICKS, FRAME_WORK_MS, LOADING_WORK_MS, HIDDEN_WORK_MS, PREPARE_FLOOR, FRAME_STALL_MS, ticksPerFrameCap }
   from '../../public/js/battle/runner.js';
 import { createStore, initialState } from '../../public/js/store.js';
 import * as specMod from '../../server/sim/spec.js';
@@ -346,5 +346,34 @@ test('a preparation converges at 30 fps and 1 ms per tick while the old field ke
     await pending;
     assert.ok(doneAt != null && doneAt - started <= 20000, `shown after ${doneAt == null ? '> 30 s' : `${doneAt - started} ms`}`);
     assert.equal(r.runner.state().battleId, 'new');
+  } finally { r.runner.dispose(); }
+});
+
+// A visible page that gets no animation frames (an occluded window, an embedded web view that stops drawing without
+// setting document.hidden) left the authority to the server's deadline: the interval pump only ran for hidden tabs.
+test('a visible page whose frames stall keeps the authority on its clock through the interval pump', async () => {
+  const cost = 0.5, cap = ticksPerFrameCap(2);
+  const r = rig({ cost });
+  try {
+    const pending = r.start('stall', { speed: 2 });
+    const next = r.vsync(1000 / 60);
+    for (let i = 0; i < 120 && r.runner.state().battleId !== 'stall'; i++) await next();
+    await pending;
+    for (let i = 0; i < 60; i++) await next();
+    assert.ok(r.lag('stall') <= cap, `on its clock while frames run (lag ${r.lag('stall')})`);
+    // frames stop: within FRAME_STALL_MS the pending frame still owns the work, after it the pump takes over
+    const stalledAt = r.time;
+    let pumps = 0;
+    const lags = [];
+    while (r.time - stalledAt < 60000) {
+      await r.pump(Math.max(0, stalledAt + (++pumps) * 250 - r.time));
+      if (r.time - stalledAt >= FRAME_STALL_MS + 250) lags.push(r.lag('stall'));
+    }
+    assert.ok(Math.max(...lags) <= 32, `bounded while frames stall (max lag ${Math.max(...lags)})`);
+    assert.ok(Math.min(...lags) >= 0, 'never ahead of its clock');
+    assert.ok(r.sent.filter(m => m.t === 'b.progress').length > 30, 'the authority keeps reporting');
+    // frames come back: the next one plays on from the pump's progress, without stepping past the clock
+    await r.frame(1000 / 60);
+    assert.ok(r.lag('stall') >= 0 && r.lag('stall') <= cap, `back on its clock (lag ${r.lag('stall')})`);
   } finally { r.runner.dispose(); }
 });
