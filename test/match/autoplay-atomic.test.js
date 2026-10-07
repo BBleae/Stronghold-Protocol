@@ -16,6 +16,8 @@ import { roomEvents } from './roomEvents.js';
 
 const SILENCE = 'chess_char_2_02_a'; // 赫默: her 医疗探机 is a hand summon
 const boardOf = (ps) => JSON.stringify([...ps.board].map(([k, p]) => [k, p.uid, p.dir ?? null]).sort());
+/** What a seat takes into the fight from its prep: the board, the hand, the funds. */
+const seatOf = (ps) => JSON.stringify({ board: boardOf(ps), hand: ps.hand.map((p) => p?.uid ?? null), funds: ps.funds });
 const summonsOn = (ps) => [...ps.board.values()].filter((p) => p.kind === 'token').length;
 
 /**
@@ -87,7 +89,7 @@ function stableBoards(match, options, playerId) {
     const job = walk(botPrepBeginSteps(copy, ps));
     if (job) while (!job.runTicks(128)) { /* the rehearsal restores the board exactly */ }
     walk(botPrepEndSteps(copy, ps, job));
-    return { boards, transient, final: boardOf(ps) };
+    return { boards, transient, final: boardOf(ps), seat: seatOf(ps), rehearsed: !!job };
   } finally { copy.dispose(); }
 }
 
@@ -154,6 +156,17 @@ for (const [seed, from, to] of [[17, 1, 5], [5, 3, 6]]) test(`an autoplay seat n
   } finally { match.dispose(); }
 });
 
+/** The seat as it goes into the fight: read when the prep ends (the deadline has resolved it). */
+function atPrepEnd(match, ps) {
+  const seen = { seat: null, board: null, deploy: null };
+  const endPrep = match.endPrep.bind(match);
+  match.endPrep = () => {
+    seen.seat = seatOf(ps); seen.board = boardOf(ps); seen.deploy = ps.deployCount;
+    return endPrep();
+  };
+  return seen;
+}
+
 test('autoplay switched on just before the prep deadline: the fight gets a whole board, whatever the cut', () => {
   const { match, clock, options, room } = fixture();
   const cuts = [];
@@ -163,20 +176,23 @@ test('autoplay switched on just before the prep deadline: the fight gets a whole
     match.handle('h1', { t: 'g.autoplay', on: false });
     const start = exportMatch(match);
     const deadline = match.deadline;
-    const deployed = match.players.get('h1').deployCount;
+    const h1Before = match.players.get('h1');
+    const deployed = h1Before.deployCount, startBoard = boardOf(h1Before);
     // nothing changes h1's prep until autoplay comes back on: one oracle serves every cut
-    const { boards } = stableBoards(match, options, 'h1');
+    const { boards, final } = stableBoards(match, options, 'h1');
     // the bot starts 900 ms after autoplay (DELAYS.BOT_ACTION); in the last 5 s of a prep its slices come 1 ms apart, so
-    // the cuts that matter fall in the next ~100 ms (6d36edc gave the fight 5/8 of the board at 915 ms here)
+    // the cuts that matter fall in the next ~100 ms (6d36edc gave the fight 5/8 of the board at 915 ms here). A job
+    // whose start was due before the deadline is finished by it (Match._finishBotPrep); a later one never starts.
     for (const x of [1400, 1000, ...Array.from({ length: 20 }, (_, i) => 995 - 5 * i)]) {
       const copy = restoreMatch(start, options);
       try {
         const h1 = copy.players.get('h1');
         const { open } = withdrawals(h1);
+        const fight = atPrepEnd(copy, h1);
         clock.now = deadline - x;
         copy.pump(clock.now, 100, { remaining: 1 });
         copy.handle('h1', { t: 'g.autoplay', on: true });
-        // the board the deadline callback finds (it resolves the temp slots and starts the fight from it)
+        // the board the deadline callback finds
         let cut = boardOf(h1), deploy = h1.deployCount, ready = false, withdrawn = null;
         callbacks(copy, clock, () => copy.phase === PHASE.PREP, () => {
           if (copy.phase !== PHASE.PREP) return;
@@ -185,11 +201,58 @@ test('autoplay switched on just before the prep deadline: the fight gets a whole
         assert.ok(copy.phase !== PHASE.PREP && copy.round === 4, 'the deadline ended the prep');
         assert.equal(withdrawn, null, `cut ${x} ms after autoplay: a withdrawal was still open (${deploy}/${h1.deployCap})`);
         // this prep buys nothing that merges a deployed copy: the lineup only grows
-        assert.ok(deploy >= deployed, `cut ${x} ms after autoplay: ${deploy}/${h1.deployCap} deployed went to the fight (${deployed} before)`);
+        assert.ok(deploy >= deployed, `cut ${x} ms after autoplay: ${deploy}/${h1.deployCap} deployed when the deadline came (${deployed} before)`);
         assert.ok(boards.has(cut), `cut ${x} ms after autoplay: not a board of a whole step (${deploy}/${h1.deployCap})`);
-        cuts.push(ready);
+        assert.ok(fight.deploy >= deployed, `cut ${x} ms after autoplay: ${fight.deploy}/${h1.deployCap} deployed went to the fight`);
+        assert.equal(fight.board, x > 900 ? final : startBoard, `cut ${x} ms after autoplay: the fight gets ${x > 900 ? 'the finished prep' : 'the board before autoplay'}`);
+        if (x > 900) cuts.push(ready);
       } finally { copy.dispose(); }
     }
-    assert.ok(cuts.includes(true) && cuts.includes(false), 'the sweep cuts some preps and lets others finish');
+    assert.ok(cuts.includes(true) && cuts.includes(false), 'the sweep has preps the deadline found finished and preps it finished');
+    assert.equal(match.errorCount, 0);
+  } finally { match.dispose(); }
+});
+
+// Room events that each occupy the host (its CPU and commit): the deadline is a timer and the bot's slices need many
+// events, so before the fix a slower host gave the deadline a job cut mid-way (review 2026-10-08: from R8 on with three
+// late toggles at desktop speed) and the seat fought with its default layout — the fight's board depended on the host.
+test('autoplay switched on 1.5 s before the deadline: the fight gets the same prep at any per-event cost', () => {
+  const { match, clock, options, room } = fixture();
+  try {
+    assert.ok(room.runUntil(() => match.phase === 'PREP' && match.round === 4));
+    match.handle('h1', { t: 'g.autoplay', on: false });
+    const start = exportMatch(match);
+    const deadline = match.deadline;
+    const oracle = stableBoards(match, options, 'h1');
+    assert.ok(oracle.rehearsed, 'the prep rehearses its layout');
+    let unfinished = 0;
+    // allowance 0: a host that admits no work at all — the job's start is still queued when the deadline comes
+    for (const [costMs, allowance] of [[0, 1], [5, 1], [20, 1], [50, 1], [100, 1], [0, 0]]) {
+      const copy = restoreMatch(start, options);
+      try {
+        const h1 = copy.players.get('h1');
+        const fight = atPrepEnd(copy, h1);
+        clock.now = deadline - 1500;
+        copy.pump(clock.now, 100, { remaining: 1 });
+        copy.handle('h1', { t: 'g.autoplay', on: true });
+        let busy = clock.now + costMs, readyBefore = false;
+        for (let n = 0; n < 100000 && copy.phase === PHASE.PREP; n++) {
+          clock.now = Math.max(busy, copy.sched.nextAt());
+          const budget = { remaining: allowance };
+          copy.pump(clock.now, 100, budget);
+          copy.pump(clock.now, 100, budget);
+          if (copy.phase === PHASE.PREP) readyBefore = h1.ready;
+          busy = clock.now + costMs;
+        }
+        assert.equal(copy.round, 4);
+        if (!readyBefore) unfinished++;
+        assert.equal(fight.seat, oracle.seat, `per-event cost ${costMs} ms, allowance ${allowance} (${readyBefore ? 'finished in time' : 'finished by the deadline'})`);
+        assert.equal(copy.errorCount, 0, JSON.stringify(copy.errors));
+        // the log replays the same prep (no wall-clock read decides where the deadline finishes the job)
+        const again = restoreMatch(exportMatch(copy), options);
+        try { assert.equal(seatOf(again.players.get('h1')), seatOf(h1), `per-event cost ${costMs} ms: the restore`); } finally { again.dispose(); }
+      } finally { copy.dispose(); }
+    }
+    assert.ok(unfinished > 0, 'a costly host leaves the job to the deadline');
   } finally { match.dispose(); }
 });

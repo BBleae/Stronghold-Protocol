@@ -542,9 +542,9 @@ export class HeadlessPacer {
 
   /**
    * Run `fn` once the pacer has simulated everything before pause-free time `at` (behind): in arrival order with the
-   * catch-ups, before the first pacing round after `at`. `owner` tags it for dropLate.
+   * catch-ups, before the first pacing round after `at`.
    */
-  defer(at, fn, owner = null) { this.late.push({ at, fn, owner, seq: ++this.seq }); }
+  defer(at, fn) { this.late.push({ at, fn, seq: ++this.seq }); }
 
   /** The deferred work not run yet (Match runs it once the pacer has no entries left, or the run is decided). */
   takeLate() { return this.late.splice(0); }
@@ -555,9 +555,6 @@ export class HeadlessPacer {
     const head = c && (!d || c.seq < d.seq) ? c : d;
     return !!head && this.entries.size > 0 && head.at < this.pacingDue - this.pacingPaused;
   }
-
-  /** Forget the deferred work of `owner` (a client field the server takes over: its run credits the same damage). */
-  dropLate(owner) { this.late = this.late.filter((d) => d.owner !== owner); }
 
   _clear() {
     cancelPacedWork(this);

@@ -373,7 +373,7 @@ async function boot() {
   if (document.documentElement.dataset.spRuntime === 'cloudflare') {
     await loadAccount();
     if (account.enabled) await preferences.start(account.user?.accountId);
-    if (account.application) net.watchApplication({ ...account.application, code: account.application.roomId, status: 'pending' });
+    net.followAccount(account);
     const resources = await import('./resources/index.js');
     await resources.prepareResources();
     resources.installResourceManager();

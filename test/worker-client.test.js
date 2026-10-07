@@ -369,6 +369,30 @@ test('a reload resumes the tab\'s seat with its saved token, only while the acco
   assert.equal(ended.net.status, 'menu');
 });
 
+// main.js boot: /api/me's application and seat go to followAccount before restore(). A record the account kept after its
+// application ended (the applied room started or went private, an APPLICANT_BUSY, an approval whose cleanup failed)
+// must not hold up the seat's resume (review 2026-10-08: APPLICATION_PENDING, and the reload landed in the menu).
+test('a reload of a seated account resumes its seat at once, whatever application record the account still has', async () => {
+  for (const application of [{ roomId: 'WXYZ', id: 'app1' }, { roomId: 'ABCD', id: 'app1' }]) {
+    const h = setup();
+    h.net.followAccount({ application: { ...application, expiresAt: h.timers.now() + 60000 }, activeSeat: { roomId: 'ABCD' } });
+    assert.equal(h.net.application, null, `a seated account follows no application (${application.roomId})`);
+    const restored = h.net.restore(TOKEN, { roomId: 'ABCD' });
+    assert.equal(h.ws.last()?.url, 'wss://game.example/ws?room=ABCD', 'the seat is resumed at once');
+    await welcome(h, { resumed: true });
+    roomState(h.ws.last(), { inMatch: true });
+    await restored;
+    assert.equal(h.net.status, 'online');
+    await h.timers.advance(10000);
+    assert.deepEqual(h.api.calls, [], 'no application check');
+  }
+  // an account without a seat follows its pending application as before
+  const h = setup();
+  h.net.followAccount({ application: { roomId: 'WXYZ', id: 'app1', expiresAt: h.timers.now() + 60000 }, activeSeat: null });
+  assert.deepEqual([h.net.application?.code, h.net.application?.status], ['WXYZ', 'pending']);
+  await assert.rejects(h.net.restore(TOKEN, { roomId: 'ABCD' }), { code: 'APPLICATION_PENDING' });
+});
+
 test('spectating opens a socket without a ticket; the end of the match closes it', async () => {
   const h = setup();
   const watching = h.net.enter({ kind: 'spectate', code: 'WXYZ' });

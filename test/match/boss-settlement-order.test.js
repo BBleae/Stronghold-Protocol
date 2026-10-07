@@ -115,6 +115,65 @@ test('the end order of a takeover catch-up, the clients\' reports and the overti
   }
 });
 
+/**
+ * b0's human leaves `lead` ms into the round (a takeover catch-up of ~10 events of 128 ticks); p1's client empties the
+ * pool with one b.progress at t0+300 (credited up to the plausibility budget of b1's own field clock, `b1Lead` ms in);
+ * the boss clock's overtime point costs the team's last LP 11 s into the round; at t0+`handAt` b1 is handed to the
+ * server (`how`) while the pacer may still owe b0's catch-up — b1's report and the boss clock's budget credits for it
+ * that wait in the pacer's queue must keep their place there (33fdbb8 dropped them: a defeat from 150 ms per event).
+ */
+function handover({ how, lead = 10500, b1Lead = lead, handAt = 600, teamLp = 1, costMs }) {
+  FakeBattle.reset();
+  // the server's runs deal nothing: only b1's client report can empty the pool
+  FakeBattle.script = () => ({ bossDps: 0 });
+  const wall = { now: 1_000_000 };
+  const gtAt = (dt) => ((b1Lead + dt) / 1000) * 2;
+  const pool = 1000 * gtAt(300);
+  const { m, t0 } = bossRound({ wall, teamLp, pool, lead, overtimeAfter: 10 });
+  m.fields[1].startAt = t0 - b1Lead;
+  const inputs = [
+    { at: t0, run: () => m.onDisconnect('p0') },
+    { at: t0 + 300, run: () => m.handle('p1', { t: 'b.progress', battleId: 'order.b1', gt: gtAt(300), total: 0, killed: 0,
+      bossDmg: pool, by: { p1: pool }, leaks: 0 }) },
+    { at: t0 + handAt, run: () => {
+      if (how === 'disconnect') m.onDisconnect('p1');
+      else if (how === 'leave') m.onLeave('p1');
+      // rejected by validateClientResult: demoted, handed to the server
+      else m.handle('p1', { t: 'b.result', battleId: 'order.b1', result: { time: -1, reason: 'bogus', perPlayer: {} } });
+    } },
+  ];
+  try {
+    drive(m, wall, { costMs, inputs });
+    assert.equal(m.errorCount, 0, JSON.stringify(m.errors));
+    const handed = m.fields[1].mode === 'server';
+    return { outcome: JSON.parse(JSON.stringify({ ending: m._finalEnding, teamLp: m.teamLp, overtime: m.overtimeApplied, pool: m.bossPool.hp },
+      (k, v) => (typeof v === 'number' ? +v.toFixed(6) : v))), handed };
+  } finally { m.dispose(); }
+}
+
+test('a client field handed to the server during another field\'s catch-up keeps its waiting reports in time order', () => {
+  const cases = [
+    // the report (t0+300) empties the pool before the overtime point (t0+500) takes the last LP: a clear
+    { label: 'report, then the overtime point', want: { ending: 'cleared', teamLp: 1, overtime: 0, pool: 0 } },
+    // five LP: no flip, but no overtime point may be drained before the pool is empty (hiddenEligible reads the team LP)
+    { label: 'report, then the overtime point (5 LP)', teamLp: 5, want: { ending: 'cleared', teamLp: 5, overtime: 0, pool: 0 } },
+    // b1's field clock is 2 s in: its report is credited up to the budget at t0+300 (92 %), the boss clock's budget
+    // credit at t0+500 empties the pool, the overtime point follows at t0+750 (11 s on the boss clock)
+    { label: 'budget credit on the boss clock, then the overtime point', lead: 10250, b1Lead: 2000, handAt: 800, want: { ending: 'cleared', teamLp: 1, overtime: 0, pool: 0 } },
+  ];
+  for (const how of ['disconnect', 'leave', 'invalid result']) {
+    for (const { label, want, ...c } of cases) {
+      let handed = 0;
+      for (const costMs of [0, 20, 50, 100, 150, 300]) {
+        const r = handover({ ...c, how, costMs });
+        assert.deepEqual(r.outcome, want, `${label}, ${how}: per-event cost ${costMs} ms`);
+        if (r.handed) handed++;
+      }
+      assert.ok(handed > 0, `${label}, ${how}: the handover came before the decision at some cost`);
+    }
+  }
+});
+
 test('a pacing backlog catches up at the slice rate, not one logical round per event', () => {
   FakeBattle.reset();
   const wall = { now: 1_000_000 };
@@ -266,13 +325,14 @@ for (const leave of [['p0', 'p1', 'p2', 'p3'], ['p0', 'p1']]) test(`the boss-rou
         // the staying clients: 400 pool damage per game second each
         if (i % 6 === 0) for (const r of reporters) {
           const gt = ((now - r.startAt) / 1000) * match.gameSpeed;
+          const waiting = match.pacer?.late.length ?? 0;
           match.handle(r.pid, { t: 'b.progress', battleId: r.battleId, gt, total: 0, killed: 0, bossDmg: 400 * gt, by: { [r.pid]: 400 * gt }, leaks: 0 });
+          if (match === m && (match.pacer?.late.length ?? 0) > waiting) reportsQueued++;
         }
         match.pump(now, 100, { remaining: 0 });
       }
       if (m.pacer?.behind(m._clockNow() - m.pausedMs)) lagged++;
       if (m.pacer?.late.length) queued++;
-      if (m.pacer?.late.some((d) => d.owner)) reportsQueued++;
       for (const r of restored) assert.deepEqual(state(r), state(m), `restored copy, event ${i}`);
       if ([0, 1, 2, 4, 8, 16].includes(i)) {
         const r = restoreMatch(exportMatch(m), options);

@@ -163,6 +163,8 @@ export class PlayerState {
     this._legalityStale = false;
     /** Match.scheduleBotPrep: the latest bot prep of this seat (older sliced rehearsals drop out) */
     this._botPrepToken = 0;
+    /** Match.scheduleBotPrep: where that prep stands, for the prep deadline (Match._finishBotPrep); null after PREP */
+    this._botPrep = null;
     this.bonds = computeBonds(this.gd, this);
   }
 

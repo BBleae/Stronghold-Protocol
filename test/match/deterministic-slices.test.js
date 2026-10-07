@@ -190,9 +190,12 @@ test('Match dedicated prep ticks preserve decisions and cancel safely when the p
   assert.deepEqual(run({ prepSteps: 4, simulationTicks: 64 }), original);
   assert.deepEqual(run({ prepSteps: 4, simulationTicks: 512, prepSimulationTicks: 128 }), original);
   assert.deepEqual(run({ prepSteps: 4, simulationTicks: 64, prepSimulationTicks: 0 }), original);
+  const tiny = { prepSteps: 1, simulationTicks: 512, prepSimulationTicks: 4 };
+  const { rng: _rng, ...uncut } = run(tiny);
 
-  const h = makeMatch({ mode: 'coop', humans: 1, bots: 1, seed: 12, fake: true, botRehearsal: 3,
-    workSlice: { prepSteps: 1, simulationTicks: 512, prepSimulationTicks: 4 } }).start();
+  // the deadline cuts the prep mid-rehearsal: it finishes the started job at once (the board an uncut prep makes),
+  // and nothing of it runs after PREP
+  const h = makeMatch({ mode: 'coop', humans: 1, bots: 1, seed: 12, fake: true, botRehearsal: 3, workSlice: tiny }).start();
   try {
     h.toPrep(3);
     const bot = h.ps('ai_0');
@@ -205,12 +208,20 @@ test('Match dedicated prep ticks preserve decisions and cancel safely when the p
     };
     h.run(() => ticks > 0);
     assert.equal(bot.ready, false);
-    const board = JSON.stringify([...bot.board].map(([k, p]) => [k, p.uid, p.dir]));
     const before = ticks;
+    let atDeadline = null;
+    const endPrep = h.m.endPrep.bind(h.m);
+    h.m.endPrep = () => {
+      atDeadline = { board: [...bot.board].map(([k, p]) => [k, p.id, p.dir]), hand: bot.hand.map((p) => p?.id ?? null), funds: bot.funds };
+      return endPrep();
+    };
     h.m.prepDeadline();
+    assert.ok(ticks > before, 'the deadline ran the rest of the rehearsal');
+    assert.deepEqual(atDeadline, uncut, 'the fight gets the board of the uncut prep');
+    const after = ticks;
     h.run(() => h.m.phase === PHASE.SETTLE);
-    assert.equal(ticks, before, 'a pending rehearsal does not run after PREP');
-    assert.equal(JSON.stringify([...bot.board].map(([k, p]) => [k, p.uid, p.dir])), board);
+    assert.equal(ticks, after, 'no rehearsal slice runs after PREP');
+    assert.equal(h.m.errorCount, 0);
     checkInvariants(h.m);
   } finally { h.m.dispose(); }
 });

@@ -310,6 +310,30 @@ test('application faults: no double seat, no orphaned pending item, every step r
     }
   });
 
+  await t.test('re-applying with a lost first-claim answer: the record keeps holding the pending item', async () => {
+    const w = await world();
+    const item = await applied(w);
+    // a retry of the apply (its answer lost, a deep link, a second tab): the first claim reaches the account, its
+    // answer does not — the record no longer names the item, and the room still holds it pending
+    const failed = await w.apply([{ op: 'claimApplication', nth: 1, when: 'after' }]);
+    assert.equal(failed.status, 500);
+    assert.deepEqual(w.calls, ['claimApplication']);
+    assert.equal(w.item().status, 'pending');
+    assert.equal((await w.rpc('getApplication')).id, undefined);
+    // the next apply elsewhere: the record stands for the pending item, so the one-application limit holds
+    await clearStaleApplication(w.env, w.accountId);
+    assert.equal((await w.rpc('getApplication'))?.roomId, 'ABCD', 'the record is kept while its room lists a live item');
+    assert.deepEqual(await w.rpc('claimApplication', { roomId: 'BBBB', expiresAt: Date.now() + 120000 }), { ok: false, error: 'APPLICATION_PENDING' });
+    // once the item ends the record goes with it
+    w.advance(120_001);
+    assert.equal(w.item().status, 'expired');
+    await clearStaleApplication(w.env, w.accountId);
+    assert.equal(await w.rpc('getApplication'), null);
+    // an apply to the same room relinks the item (and an approval admits once)
+    const again = await applied(w);
+    assert.equal((await w.rpc('getApplication')).id, again.id);
+  });
+
   await t.test('the account took a seat between the two claims: the application ends at once', async () => {
     const w = await world();
     const refused = await w.apply([{ op: 'claimApplication', nth: 2, meanwhile: w.seatedMeanwhile }]);
@@ -354,4 +378,71 @@ test('application faults: no double seat, no orphaned pending item, every step r
     assert.deepEqual(await joined.cancel(approved.body.id), { status: 409, body: { error: 'ALREADY_JOINED' } });
     assert.deepEqual(joined.calls, []);
   });
+});
+
+// Two tabs (or devices) of one account apply at once, tab 1 to room A and tab 2 to room B. Tab 2's clearStaleApplication
+// (handleLobbyRoutes) reads the account's record between tab 1's two claims, so it holds a record without an item id;
+// its GET of room A waits for tab 1's apply event (a room's events run one at a time: blockConcurrencyWhile), which by
+// then has linked the record to its pending item. That record must not be cleared as stale: tab 2 is refused, and the
+// account keeps one application (review 2026-10-08: tab 2 got a second one, host A could seat it while it waited on B).
+for (const variant of ['first apply', 're-apply']) test(`two concurrent applies of one account (${variant}): the second is refused while the first is pending`, { timeout: 120000 }, async (t) => {
+  const h = await createAccountHarness(`
+    export {AccountDurableObject as TestObject} from './worker/accounts/account.js';
+    export default {async fetch(req, env) {
+      const {accountId, op, args} = await req.json();
+      return Response.json((await env.TEST.get(env.TEST.idFromName(accountId))[op](...args)) ?? null);
+    }};`);
+  t.after(() => h.dispose());
+  t.mock.method(console, 'warn', () => {});
+  t.mock.method(console, 'error', () => {});
+  const makeRoom = (code, hostId) => {
+    const rt = new RoomRuntime({ now: () => Date.now() });
+    t.after(() => rt.lobby.shutdown());
+    const host = new Socket();
+    rt.connect(host, { accountId: hostId, ticket: rt.reserve(code, hostId), name: 'Host' });
+    rt.message(host, JSON.stringify({ t: 'hello', name: 'Host' }));
+    rt.message(host, JSON.stringify({ t: 'room.create', mode: 'coop', difficulty: 'FUNNY' }));
+    let chain = Promise.resolve();
+    const serial = (fn) => { const p = chain.then(fn); chain = p.catch(() => {}); return p; };
+    return { rt, serial };
+  };
+  const rooms = { ABCD: makeRoom('ABCD', 'hostA'), BBBB: makeRoom('BBBB', 'hostB') };
+  const G = 'guest-race';
+  const rpcOf = (accountId) => async (op, ...args) => (await h.fetch({ accountId, op, args })).json();
+  let beforeLink = null; // runs before tab 1 links its item (the second claim of room A)
+  let onRead = null; // tab 2 has read the record
+  const account = (id) => new Proxy({}, { get: (_, op) => async (...args) => {
+    if (id === G && op === 'claimApplication' && args[0].roomId === 'ABCD' && args[0].id && beforeLink) {
+      const f = beforeLink; beforeLink = null; await f();
+    }
+    const result = await rpcOf(id)(op, ...args);
+    if (id === G && op === 'getApplication' && onRead) { const f = onRead; onRead = null; f(); }
+    return result;
+  } });
+  const env = {
+    ACCOUNTS: { idFromName: (id) => id, get: (id) => account(id) },
+    ROOMS: { idFromName: (code) => code, get: (code) => ({ fetch: (request) => rooms[code].serial(() =>
+      RoomDurableObject.prototype.route.call({ runtime: rooms[code].rt, env }, request)) }) },
+  };
+  const post = (code, who, body) => env.ROOMS.get(code).fetch(new Request('https://room.internal/_applications', {
+    method: 'POST', headers: { 'X-Account-ID': who, 'X-Account-Name': 'Guest', 'Content-Type': 'application/json' },
+    body: JSON.stringify(body) })).then(async (r) => ({ status: r.status, body: await r.json() }));
+  if (variant === 're-apply') assert.equal((await post('ABCD', G, { action: 'apply' })).status, 201);
+  let tab2;
+  beforeLink = async () => {
+    const read = new Promise((resolve) => { onRead = resolve; });
+    // tab 2, as handleLobbyRoutes runs it: clearStaleApplication, then the room's apply
+    tab2 = (async () => { await clearStaleApplication(env, G); return post('BBBB', G, { action: 'apply' }); })();
+    await read;
+  };
+  const tab1 = await post('ABCD', G, { action: 'apply' });
+  const second = await tab2;
+  assert.equal(tab1.status, 201);
+  assert.deepEqual(second, { status: 409, body: { error: 'APPLICATION_PENDING' } });
+  assert.deepEqual(await rpcOf(G)('getApplication').then((x) => x && [x.roomId, x.id]), ['ABCD', tab1.body.id]);
+  assert.deepEqual(rooms.BBBB.rt.applications.list(G), []);
+  // host A's approval seats the account (its only application)
+  const approved = await post('ABCD', 'hostA', { action: 'approve', id: tab1.body.id });
+  assert.equal(approved.status, 200);
+  assert.equal((await rpcOf(G)('getActiveSeat'))?.roomId, 'ABCD');
 });

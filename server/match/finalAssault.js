@@ -131,18 +131,26 @@ export function hiddenEligible(gd, { layerSum, teamLp, players = undefined }) {
  * A boss field the server takes over mid-fight (its client left, DESIGN §14) re-simulates its spec from t = 0. The
  * damage its client already reported (`acked`, cumulative, per player in `ackedBy`) is in the shared pool, so this
  * wrapper credits the real pool only with what the re-simulation deals beyond it. Reads (hp, maxHp) go to the pool.
+ * `acked` may be a function, read at every damage(): the client's reports that still waited for the pacer when the
+ * server took over are credited before the re-simulation's first tick and raise the baseline (Match._bossServerRun).
  */
 export class CreditPool {
   /**
    * @param {SharedBossPool} pool
-   * @param {{ acked?: number, ackedBy?: Record<string, number>, onCredit?: (playerId: string|null, amount: number) => void }} [o]
+   * @param {{ acked?: number | (() => number), ackedBy?: Record<string, number>, onCredit?: (playerId: string|null, amount: number) => void }} [o]
    */
   constructor(pool, { acked = 0, ackedBy = {}, onCredit = null } = {}) {
     this.pool = pool;
-    this.acked = Math.max(0, Number(acked) || 0);
+    this._acked = acked;
     this.ackedBy = { ...ackedBy };
     this.cum = 0;
     this.onCredit = onCredit;
+  }
+
+  /** The client-reported damage this field already put into the pool (cumulative). */
+  get acked() {
+    const a = typeof this._acked === 'function' ? this._acked() : this._acked;
+    return Math.max(0, Number(a) || 0);
   }
 
   get hp() { return this.pool.hp; }

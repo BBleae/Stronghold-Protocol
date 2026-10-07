@@ -25,9 +25,12 @@ export async function clearStaleApplication(env, accountId) {
   }
   if (!response.ok) throw new Error('APPLICATION_UNAVAILABLE');
   const body = await response.json();
-  if (!body.items.some((x) => x.id === pending.id && ['pending', 'approved'].includes(x.status))) {
-    await account.clearApplication(pending.roomId, pending.id);
-  }
+  // A record without an item id is an apply between its two claims (worker/rooms/routes.js), or one whose first claim
+  // was stored but answered with an error: it stands for whatever live application of the account the room lists —
+  // a re-apply's claim drops the link to the pending item, and clearing the record then would leave that item
+  // approvable while the account applies elsewhere.
+  const live = (x) => x.accountId === accountId && (!pending.id || x.id === pending.id) && ['pending', 'approved'].includes(x.status);
+  if (!body.items.some(live)) await account.clearApplication(pending.roomId, pending.id);
 }
 
 // Seats. An account points at the seat it holds (activeSeat: room code, room generation, claim id); the room is the

@@ -170,6 +170,17 @@ export class RoomNet extends Net {
 
   // ---- join applications (no socket until the host approves) ---------------------------------------------------
 
+  /**
+   * Boot: the account's application and seat from /api/me. The application is followed (as pending) only while the
+   * account holds no seat: a seated account's application can never be approved (the room's seat claim refuses it:
+   * APPLICANT_BUSY), and an approval whose record outlived it (its cleanup failed) already holds the seat, which
+   * restore() / 继续对局 resume. Followed anyway, the leftover record would refuse that resume (enter:
+   * APPLICATION_PENDING) until its first check, and the reload would land in the menu.
+   */
+  followAccount({ application = null, activeSeat = null } = {}) {
+    if (application && !activeSeat) this.watchApplication({ ...application, code: application.roomId, status: 'pending' });
+  }
+
   /** Follow a join application ({ code, id, status }, or null): while pending it is checked, and an approval enters. */
   watchApplication(application) {
     this.application = application;
