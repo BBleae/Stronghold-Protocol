@@ -63,6 +63,17 @@ export function phaseMode(phase) {
 }
 
 export const isCombatPhase = (phase) => COMBAT_PHASES.has(phase);
+
+/**
+ * The bond strip's state a phase change sets on a phone (DESIGN §26.1): folded at the start of each 休整期 — the zoomed
+ * prep board puts the back row under the strip. null: leave it as the player set it (every other phase keeps the
+ * player's choice, issue #142; not a phone). The 盟约 / 收起 button still folds and unfolds it by hand.
+ * @param {string} phase · @param {boolean} phone · @returns {boolean|null} true = folded
+ */
+export function bondStripFolded(phase, phone) {
+  if (!phone) return null;
+  return phase === PHASE.PREP ? true : null;
+}
 /**
  * The HUD's "你已被淘汰 · 可继续观战队友" pill of an eliminated player: outside combat only — in combat and in the SETTLE
  * after it the combat HUD (screens/game.js CombatHud, rendered for mode 'settle' too) already says it, and two

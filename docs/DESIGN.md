@@ -2580,6 +2580,7 @@ A player tested on phones: Safari on iPhone, and Chrome and Firefox on Android. 
 **Zoom floor.**
 - With the shop bar shown, `hudBands` adds `minZoom: 1` on touch screens, so `clearHud` never zooms the board out below the official framing.
 - The bench's near edge stays above the bottom band, and the back rows may go under the top HUD.
+- Owner's decision 2026-10-07: on a phone (`device.js isPhone`) the bond strip starts **folded** at the start of each 休整期 (`gameLogic.bondStripFolded`, `screens/game.js` phase effect), so the back row of the zoomed prep board is not under the bond discs; the 盟约 / 收起 button unfolds and folds it by hand, and every other phase keeps the player's choice (issue #142). Tests: `test/ui/gameLogic.test.js`, `test/ui/bond-collapse.e2e.test.js` (640×360 starts folded), `test/ui/playtest2.e2e.test.js` #8.
 - At 780×300 the pieces are about 2× bigger.
 - Folded, the shop-collapsed camera of public issue #5 is bigger already and keeps the whole board in view: no floor there.
 

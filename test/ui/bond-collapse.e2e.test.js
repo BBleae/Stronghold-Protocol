@@ -31,6 +31,14 @@ describe('collapsible bond strip (issue #142)', { skip: !ENABLED && 'set SP_E2E=
         await page.setViewport({ width, height, isMobile: touch, hasTouch: touch });
         await page.goto(`${srv.url}/dev/game-mock.html?shot=1&render=fallback&phase=PREP`, { waitUntil: 'domcontentloaded' });
         await page.waitForSelector('.ff-piece');
+        // a phone's 休整期 starts with the strip folded (DESIGN §26.1, bondStripFolded; isPhone reads the device screen,
+        // which a viewport alone does not emulate): the button unfolds it by hand
+        await page.waitForSelector('.bonds-toggle');
+        const phone = await page.evaluate(() => import('/js/ui/device.js').then((m) => m.isPhone()));
+        if (phone) {
+          assert.equal(await expanded(), 'false', 'a phone prep starts with the bond strip folded');
+          await activate('.bonds-toggle');
+        }
         await page.waitForSelector('.bslot .bond');
         assert.equal(await expanded(), 'true');
         const toggle = await page.$eval('.bonds-toggle', (el) => {

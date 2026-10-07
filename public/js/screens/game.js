@@ -114,7 +114,7 @@ import {
   terrainInfo,
   countdownState, shopBlockReason, stageOverrides, effectiveStage, watchTarget, dropFailureReason,
   previewEnemyKey, prepCamera, prepCameraFor, foldCamera, deployFieldOf, fieldTile, panelSide, panelSlots, bondPopupPlace, chessLoadout, unitLoadout,
-  mergeTarget, modeOffBonds, readyFundsPrompt, ownerBandId, selectVoiceKey, detailSelectVoice,
+  mergeTarget, modeOffBonds, readyFundsPrompt, ownerBandId, selectVoiceKey, detailSelectVoice, bondStripFolded,
 } from '../ui/gameLogic.js';
 import { toast } from '../ui/toasts.js';
 import { BriefingScreen } from './briefing.js';
@@ -128,7 +128,7 @@ import { isClientCombat, observeTarget, teammateProgress, cameraLayers, layerCam
 import { screenStrip, playerBonds, playerLayer, detailBondOwner, toggleBond, popupView } from '../ui/watchBonds.js';
 import { data, localAsset, getChess, getMode } from '../data.js';
 import { audio, unitSoundClass, settlementVoice } from '../audio.js';
-import { useDocClass, useWakeLock, FullscreenButton } from '../ui/device.js';
+import { useDocClass, useWakeLock, FullscreenButton, isPhone } from '../ui/device.js';
 
 const cx = (...p) => p.flat().filter(Boolean).join(' ');
 const HUD_HZ_MS = 200;
@@ -748,6 +748,13 @@ function MatchScreen() {
     if (isCombatPhase(phase)) { setCollapsed(false); setDrag(null); view?.highlightTiles(null, null); setDetail((d) => (d?.kind === 'chess' || d?.kind === 'item' ? null : d)); }
     setSel(null);
     if (phase !== PHASE.PREP) setRewardMin(false);
+    // on a phone the bond strip starts folded in each 休整期 (it covered the back row of the zoomed prep board, DESIGN
+    // §26.1); the 盟约 button folds / unfolds it by hand, and other phases keep that choice
+    const foldBonds = bondStripFolded(phase, isPhone());
+    if (foldBonds != null) {
+      setBondsCollapsed(foldBonds);
+      if (foldBonds) setBondOpen((b) => (b?.from === 'strip' ? null : b));
+    }
     setSpBusy(null);
   }, [phaseKey]);
 

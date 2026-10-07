@@ -12,7 +12,7 @@ import {
   bondMembers, memberHeadCount, bannedPerBond, priceTone, mergeProgress, shopBlockReason, deploySets, indexPieces, placementContext, canPlace,
   boardTargets, dropIntent, normalizeDraft, normalizeSp, groupEnemies, factionTypes, snapHud, bossFrac, attackInterval, fmtNum,
   rangeGridBox, shortcutFor, sanitizeSettings, defaultQuality, DEFAULT_SETTINGS, normalizeResult, cycleField, fieldLabel, homeFieldId,
-  activeBubbles, sortedPlayers, tileKey, prepCapsuleLabel, prepCamera, dropFailureReason, terrainInfo,
+  activeBubbles, sortedPlayers, tileKey, prepCapsuleLabel, prepCamera, dropFailureReason, terrainInfo, bondStripFolded,
   selectVoiceKey, detailSelectVoice, createHudDelay, pickDrawn, drawnChanged, hudChanged, drawnOf, ownFieldGate, snapUnits,
 } from '../../public/js/ui/gameLogic.js';
 import { pairPlayers } from '../../server/match/finalAssault.js';
@@ -1090,4 +1090,13 @@ describe('special terrain tip', () => {
     assert.match(terrainInfo(mire, 0, 0).lines[0], /每 1 秒获得 1 层/);
     assert.match(terrainInfo(mire, 0, 0).lines[2], /最多 10 层/);
   });
+});
+
+test('bondStripFolded: a phone folds the bond strip at the start of each 休整期 (DESIGN §26.1)', () => {
+  assert.equal(bondStripFolded(PHASE.PREP, true), true);
+  assert.equal(bondStripFolded(PHASE.COMBAT, true), null, "the fight keeps the player's choice (issue #142)");
+  assert.equal(bondStripFolded(PHASE.UNITE, true), null);
+  assert.equal(bondStripFolded(PHASE.SETTLE, true), null, "other phases keep the player's choice");
+  assert.equal(bondStripFolded(PHASE.PREP, false), null, 'a desktop / tablet never changes it');
+  assert.equal(bondStripFolded(PHASE.COMBAT, false), null);
 });
