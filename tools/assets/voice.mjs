@@ -8,15 +8,15 @@
 // - Only the battle lines are taken (VOICE_ROLES, by official placeType) — 14 per operator: BATTLE_SELECT 选中干员 ×2,
 //   BATTLE_PLACE 部署 ×2, BATTLE_SKILL_1..4 作战中1–4, BATTLE_FACE_ENEMY 行动开始, BATTLE_START 行动出发, FOUR_STAR
 //   完成高难行动, THREE_STAR / TWO_STAR / LOSE 3星结束行动 / 非3星结束行动 / 行动失败 — about 0.34 MiB (中文) /
-//   0.44 MiB (日文) per operator. The client (public/js/audio.js, DESIGN §21.30) plays upstream #73's moments: 行动出发
+//   0.45 MiB (日文) per operator. The client (public/js/audio.js, DESIGN §21.30) plays upstream #73's moments: 行动出发
 //   for a battle's first deployed operator, 部署 for later in-battle deploys, 行动开始 at each operator's first engage,
 //   作战中N for skill N, 选中干员 on a tap or its detail card, and one settlement line after every own battle
 //   (完成高难行动 for a perfect 绝境 / 终极 battle). Not taken: 编入队伍, 任命队长, 干员报到, 精英化晋升, the home and
 //   base lines.
-// - Every operator a player can field is planned (tools/assets/plan.mjs charIds): the pool's (research 07) and the 外援 /
-//   甄选 roster's (tools/assets/waiguan-operators.json, DESIGN §27) — 198 voiced operators, 120 of the pool's 138 and
-//   all 78 外援-only ones, each with the 14 lines. Operators without voice (the reserve operators 预备干员, also the 9
-//   char_6xx entries of the 外援 roster) have no voiceLangDict entry and get no voice.
+// - Every operator a player can field is voiced (tools/assets/plan.mjs charIds): the pool's (research 07) and the 自选
+//   owned-6★ picks (data/backups.json units) — 191 voiced operators: 120 of the pool's 138 and the 71 picks, each with
+//   the 14 lines. Operators without voice (the 17 reserve operators 预备干员 / 原型干员 char_60x / char_617_sharp2, the
+//   盟约·辅助干员 char_616_pithst) have no voiceLangDict entry and get no voice.
 
 /** Voice languages offered by the client: key → official voiceLangType preference (first present wins) + folder. */
 export const VOICE_LANGS = Object.freeze({
@@ -35,7 +35,7 @@ const LANG_DIRS = Object.freeze({ CN_MANDARIN: 'voice_cn', JP: 'voice', LINKAGE:
  * that place's lines, played at random (select, deploy). An array role of several places is POSITIONAL (POSITIONAL_ROLES):
  * entry k-1 is the first line of the k-th place, in order, so `combat`[k-1] is 作战中k and the client plays 作战中N
  * for skill N (public/js/audio.js voiceUrl with an index, combatSlot). A missing place is left out, which shortens the
- * array (the client then draws at random); all 198 voiced operators (pool and 外援) have the four.
+ * array (the client then draws at random); all 191 voiced operators (pool and 自选 picks) have the four.
  * The key stays `combat` (not renamed to a slot name) on purpose: tools/assets/manifest.mjs droppedEntries treats an
  * array as one leaf, so a renamed key would read as audio.voice.*.*.combat dropped and trip the shrink guard.
  */

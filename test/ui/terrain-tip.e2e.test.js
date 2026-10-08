@@ -8,7 +8,7 @@
 // 红门 opens the card with its mechanism line, a tap on an ordinary floor tile opens nothing (and closes the card that was
 // open), and no scenario logs a console error. The words and the numbers are unit-tested in test/ui/gameLogic.test.js
 // (terrainInfo, against every terrain of the real stages) — this file is about the tap reaching them.
-// On a touch screen (this fork's merge of #185 with the phone support of fork PR #15, DESIGN §26.1) a FINGER explains
+// On a touch screen (this fork's merge of #185 with the phone support of fork PR #15, DESIGN §F2.1) a FINGER explains
 // the tile at its release, only when it stayed a tap: the press alone, a one-finger swipe and a pinch explain nothing —
 // in prep (where the press stays drag-first) and in battle (where a finger picks a unit on release too).
 

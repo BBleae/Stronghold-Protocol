@@ -157,6 +157,9 @@ for (const loading of [true, false]) test(`a boss b.end during ${loading ? 'engi
     assert.equal(e.battle.finished, true);
     assert.equal(e.battle.tickCount, ticks, 'ended where it stood');
     assert.deepEqual(ownDone, { battleId: 'own', fieldId: 'own', late: true });
+    // the first end counts (upstream R21G): a later b.end of the ended battle changes neither its reason nor its reports
+    r.event('b.end', { battleId: 'own', reason: 'forced' });
+    assert.equal(e.endReason, 'cleared', 'settlement() bossDown keeps reading the first end');
     if (loading) {
       r.event('welcome', {}); await settle();
       assert.deepEqual(r.net.sent.map((m) => m.t), ['b.result', 'b.result'], 'no b.progress: the server keeps its own record');

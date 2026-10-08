@@ -1,20 +1,23 @@
 // Observing rules and labels of client-side combat (research 09 §3.1 / §6.3, DESIGN §14 "Spectating") — pure helpers
-// for the game screen, the team panel and the combat HUD (mirror of server/match/Match.js _watchClient):
+// for the game screen, the team panel and the combat HUD (mirror of server/match/match/watch.js _watchClient):
 //   * prep (休整期): tap a teammate → 前往查看 → their board (read-only);
 //   * own normal battle running: no observing ("当前无法查看");
 //   * own battle over: "⌛ 作战结束，等待队友完成作战" + the teammates' progress; tap a teammate → 前往查看 → a local
 //     replica of their battle; 返回战场 goes back;
 //   * 联防 / 最终攻势: the ‹ › pill switches the camera LEFT half / 全景 / RIGHT half of the own field; the other pair's
 //     boss field is never shown to a fighting player;
-//   * eliminated: anything.
+//   * eliminated: anything — each phase reset starts on the player it follows (the server's prep scout / b.start,
+//     followedScout).
 // 联防 with more than 4 alive players (a remake extension, server/match/unite.js): several 联防 fields 'u', 'u2', … (2
 // helpers each, each holding its own leakers' enemies; m.public.unite.fields). A helper plays its own field and cannot
-// look at another one while it runs (Match._watchClient 'own battle running'); a leaker is shown the field holding its
-// enemies — its row leads there, and 返回战场 goes back to it; anyone else starts on the first field and may switch
-// (uniteSwitchFields). With one 联防 field (1–4 alive) nothing of this applies: everything works as before.
+// look at another one while it runs (server/match/match/watch.js _watchClient 'own battle running'); a leaker is shown
+// the field holding its enemies — its row leads there, and 返回战场 goes back to it; anyone else starts on the first
+// field and may switch (uniteSwitchFields). With one 联防 field (1–4 alive) nothing of this applies: everything
+// works as before.
 
 import { PHASE } from '../../../shared/constants.js';
 import { data } from '../data.js';
+import { t } from '../../../shared/i18n.js';
 
 const isObj = (v) => !!v && typeof v === 'object';
 const COMBAT = new Set([PHASE.COMBAT, PHASE.UNITE, PHASE.FINAL_ASSAULT, PHASE.HIDDEN_CORE]);
@@ -60,8 +63,10 @@ export function uniteFieldOf(pub, playerId) {
 }
 
 /**
- * The 联防 field a viewer is shown by default (server/match/Match.js _uniteHomeField): a helper's own field, the field
- * holding a leaker's enemies, else the first one. null outside 联防.
+ * The 联防 field a viewer is shown by default (server/match/match/unitePhase.js _uniteHomeField(ps)): a helper's own
+ * field, the field holding a leaker's enemies, else the first one. null outside 联防. (The server's default also sends an
+ * eliminated human / a spectator seat to the field of the player it follows — watch.js _watchTargetField, 0.2.0 item 56;
+ * this mirror does not know whom a viewer follows.)
  */
 export function uniteHomeField(pub, playerId) {
   return uniteFieldOf(pub, playerId) || uniteFields(pub)[0]?.fieldId || null;
@@ -133,7 +138,7 @@ export function backTarget(pub, myId, home, watching = null) {
 
 /** Display name of a player id ('队友' when unknown). */
 export function nameOf(pub, playerId) {
-  return players(pub).find((p) => p.playerId === playerId)?.name || '队友';
+  return players(pub).find((p) => p.playerId === playerId)?.name || t('队友');
 }
 
 /**
@@ -147,9 +152,9 @@ export function nameOf(pub, playerId) {
  *   last frames are still to be drawn: no looking away before the pill
  */
 export function observeTarget(p, pub, myId, { observing = false, ownDone = false, ownHeld = false } = {}) {
-  if (!isObj(p)) return { reason: '无效的目标' };
+  if (!isObj(p)) return { reason: t('无效的目标') };
   if (p.playerId === myId) return observing ? { back: true } : { reason: null };
-  if (p.alive === false || p.status === 'left') return { reason: '该队友已被淘汰，无法查看' };
+  if (p.alive === false || p.status === 'left') return { reason: t('该队友已被淘汰，无法查看') };
   const phase = pub?.phase;
   const me = players(pub).find((x) => x.playerId === myId) || null;
   const meAlive = me ? me.alive !== false : true;
@@ -158,14 +163,14 @@ export function observeTarget(p, pub, myId, { observing = false, ownDone = false
   // several 联防 fields: a leaker's row leads to the field holding its enemies (one field: it has no field, as before)
   const leakerField = !target && phase === PHASE.UNITE && multiUnite(pub) ? uniteFieldOf(pub, p.playerId) : null;
   if (leakerField) target = fields(pub).find((f) => f.fieldId === leakerField && f.kind === 'unite') || null;
-  if (!target) return { reason: '该队友当前没有战场' };
+  if (!target) return { reason: t('该队友当前没有战场') };
   const own = fieldOf(pub, myId);
   if (!meAlive || !own) return { fieldId: target.fieldId };
-  if (own.fieldId === target.fieldId) return { reason: leakerField ? '该队友漏过的敌人就在你的联防阵地上' : '队友与你在同一战场，使用 ‹ › 切换视角' };
-  if (target.kind === 'boss' || target.kind === 'hidden') return { reason: '无法查看另一组队友的战场' };
-  if (own.kind === 'normal' && (ownHeld || (own.live !== false && !ownDone))) return { reason: '作战中无法查看队友，作战结束后可前往查看' };
-  // several 联防 fields: a helper stays on its own field while it runs (Match._watchClient 'own battle running')
-  if (own.kind === 'unite' && target.kind === 'unite' && own.live !== false) return { reason: '联防作战中无法查看其他联防阵地，作战结束后可前往查看' };
+  if (own.fieldId === target.fieldId) return { reason: leakerField ? t('该队友漏过的敌人就在你的联防阵地上') : t('队友与你在同一战场，使用 ‹ › 切换视角') };
+  if (target.kind === 'boss' || target.kind === 'hidden') return { reason: t('无法查看另一组队友的战场') };
+  if (own.kind === 'normal' && (ownHeld || (own.live !== false && !ownDone))) return { reason: t('作战中无法查看队友，作战结束后可前往查看') };
+  // several 联防 fields: a helper stays on its own field while it runs (watch.js _watchClient 'own battle running')
+  if (own.kind === 'unite' && target.kind === 'unite' && own.live !== false) return { reason: t('联防作战中无法查看其他联防阵地，作战结束后可前往查看') };
   return { fieldId: target.fieldId };
 }
 
@@ -203,6 +208,23 @@ export function resumedWatch(b, { pub = null, myId = '', alive = true, watching 
   return { seen: b.battleId, fieldId: b.fieldId };
 }
 
+/**
+ * The prep board the server pushed to a viewer that follows a player (an eliminated player or a spectator seat:
+ * Match._followScout — the player it last watched, else the first player still in; community report of 2026-10-06,
+ * item 56, the idea of PR #189), to adopt as the watched board like a 前往查看 tap: `field` is such a scout (m.field
+ * `prep`, an `n:<pid>` id other than the own) and the screen watches nothing (`watching` null — a 返回战场 this phase is
+ * not overridden: the caller adopts a board once per phase). Null for a living player: its phase resets keep its own
+ * board.
+ * @param {{ field?: any, watching?: string|null, alive?: boolean, spectator?: boolean, myId?: string }} o
+ * @returns {string|null} the fieldId to watch
+ */
+export function followedScout({ field = null, watching = null, alive = true, spectator = false, myId = '' } = {}) {
+  if (watching || (alive && !spectator) || !isObj(field) || !field.prep) return null;
+  const fid = field.fieldId;
+  if (typeof fid !== 'string' || !fid.startsWith('n:') || fid === `n:${myId}`) return null;
+  return fid;
+}
+
 /** Teammates' progress for the waiting pill: [{ playerId, name, killed, total, done, isBot }]. */
 export function teammateProgress(pub, myId) {
   const out = [];
@@ -213,7 +235,7 @@ export function teammateProgress(pub, myId) {
     const p = players(pub).find((x) => x.playerId === pid);
     const pr = isObj(f.progress) ? f.progress : null;
     out.push({
-      playerId: pid, name: p?.name || '队友', isBot: !!p?.isBot,
+      playerId: pid, name: p?.name || t('队友'), isBot: !!p?.isBot,
       killed: Number.isFinite(pr?.killed) ? pr.killed : null, total: Number.isFinite(pr?.total) ? pr.total : null,
       done: f.live === false || !!pr?.done,
     });
@@ -236,13 +258,13 @@ export function cameraLayers(field, pub, myId) {
   if (!isObj(field) || (field.kind !== 'unite' && field.kind !== 'boss' && field.kind !== 'hidden')) return [];
   const sides = sidesOf(field);
   const at = (side) => Object.keys(sides).find((pid) => sides[pid] === side) || null;
-  const label = (pid) => (!pid ? '无人在家' : pid === myId ? '你自己' : nameOf(pub, pid));
+  const label = (pid) => (!pid ? t('无人在家') : pid === myId ? t('你自己') : nameOf(pub, pid));
   const left = at('L');
   const right = at('R');
   if ((field.kind === 'boss' || field.kind === 'hidden') && (!left || !right)) return [];
   return [
     { key: 'L', label: label(left), self: left === myId, watch: !!left && left !== myId },
-    { key: 'ALL', label: '全景', self: false, watch: false },
+    { key: 'ALL', label: t('全景'), self: false, watch: false },
     { key: 'R', label: label(right), self: right === myId, watch: !!right && right !== myId },
   ];
 }

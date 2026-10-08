@@ -17,6 +17,7 @@ import { html, Icon, PlayerName } from './components.js';
 import { DpCounter } from './hud.js';
 import { GIcon } from './gameComponents.js';
 import { switcherLabel, cycleField, fieldLabel } from './gameLogic.js';
+import { t } from '../../../shared/i18n.js';
 
 const cx = (...p) => p.flat().filter(Boolean).join(' ');
 
@@ -27,11 +28,11 @@ export const progressDense = (n) => Number(n) > 3;
  *  of a 5–8-player room get shorter pills (`chud__progress--dense`), so they keep to two rows over the field. */
 function ProgressList({ list }) {
   if (!Array.isArray(list) || !list.length) return null;
-  return html`<div class=${cx('chud__progress', progressDense(list.length) && 'chud__progress--dense')} role="list" aria-label="队友作战进度">
+  return html`<div class=${cx('chud__progress', progressDense(list.length) && 'chud__progress--dense')} role="list" aria-label=${t('队友作战进度')}>
     ${list.map((p) => html`<span key=${p.playerId} role="listitem" class=${cx('chud__prog', p.done && 'is-done')}>
       <b><${PlayerName} name=${p.name} /></b>
       ${p.done
-        ? html`<span class="chud__prog__ok" aria-label="作战结束">✓</span>`
+        ? html`<span class="chud__prog__ok" aria-label=${t('作战结束')}>✓</span>`
         : html`<span class="num">${p.killed != null && p.total != null ? `${p.killed}/${p.total}` : '•••'}</span>`}
     </span>`)}
   </div>`;
@@ -56,14 +57,14 @@ export function CombatHud({ pub, myId, watching, hud, myDone, onWatch, spectatin
   return html`<div class="chud">
     <${DpCounter} dp=${hud?.dp} />
     <div class="chud__bottom">
-      ${myDone ? html`<div class="chud__msg" role="status"><${Icon} name="hourglass" /><span>作战结束，等待队友完成作战</span></div>` : null}
-      ${spectating ? (spectator ? html`<div class="chud__msg" role="status"><${GIcon} name="eye" /><span>观战中</span></div>`
-        : html`<div class="chud__msg chud__msg--dead" role="status"><${Icon} name="close" /><span>你已被淘汰，正在观战</span></div>`) : null}
+      ${myDone ? html`<div class="chud__msg" role="status"><${Icon} name="hourglass" /><span>${t('作战结束，等待队友完成作战')}</span></div>` : null}
+      ${spectating ? (spectator ? html`<div class="chud__msg" role="status"><${GIcon} name="eye" /><span>${t('观战中')}</span></div>`
+        : html`<div class="chud__msg chud__msg--dead" role="status"><${Icon} name="close" /><span>${t('你已被淘汰，正在观战')}</span></div>`) : null}
       ${fields.length ? html`<div class=${cx('vswitch', !canCycle && 'is-single')}>
-        <button type="button" class="vswitch__arrow" disabled=${!canCycle} aria-label="上一个战场"
+        <button type="button" class="vswitch__arrow" disabled=${!canCycle} aria-label=${t('上一个战场')}
           onClick=${() => { const n = cycleField(fields, watching, -1); if (n && n !== watching) onWatch(n); }}><${Icon} name="chevronLeft" /></button>
         <span class="vswitch__label">${label}</span>
-        <button type="button" class="vswitch__arrow" disabled=${!canCycle} aria-label="下一个战场"
+        <button type="button" class="vswitch__arrow" disabled=${!canCycle} aria-label=${t('下一个战场')}
           onClick=${() => { const n = cycleField(fields, watching, 1); if (n && n !== watching) onWatch(n); }}><${Icon} name="chevronRight" /></button>
       </div>` : null}
     </div>
@@ -81,12 +82,12 @@ export function UniteFieldSwitch({ pub, myId, sw }) {
   const items = list.map((fieldId) => ({ fieldId }));
   const fields = (Array.isArray(pub?.fields) ? pub.fields : []).filter((f) => f && typeof f === 'object');
   const cur = fields.find((f) => f.fieldId === sw.current) || null;
-  const label = cur && list.includes(cur.fieldId) ? fieldLabel(cur, pub, myId) : '联防阵地';
+  const label = cur && list.includes(cur.fieldId) ? fieldLabel(cur, pub, myId) : t('联防阵地');
   const go = (d) => { const n = cycleField(items, sw.current, d); if (n && n !== sw.current) sw.onPick(n); };
   return html`<div class="vswitch chud__fields" data-testid="unite-fields">
-    <button type="button" class="vswitch__arrow" aria-label="上一个联防阵地" onClick=${() => go(-1)}><${Icon} name="chevronLeft" /></button>
+    <button type="button" class="vswitch__arrow" aria-label=${t('上一个联防阵地')} onClick=${() => go(-1)}><${Icon} name="chevronLeft" /></button>
     <span class="vswitch__label">${label}</span>
-    <button type="button" class="vswitch__arrow" aria-label="下一个联防阵地" onClick=${() => go(1)}><${Icon} name="chevronRight" /></button>
+    <button type="button" class="vswitch__arrow" aria-label=${t('下一个联防阵地')} onClick=${() => go(1)}><${Icon} name="chevronRight" /></button>
   </div>`;
 }
 
@@ -104,23 +105,23 @@ function ClientHud({ pub = null, myId = '', hud, myDone, spectating, spectator =
   return html`<div class="chud">
     <${DpCounter} dp=${hud?.dp} />
     <div class="chud__bottom">
-      ${myDone && !observing ? html`<div class="chud__msg chud__wait" role="status"><${Icon} name="hourglass" /><span>作战结束，等待队友完成作战</span></div>
+      ${myDone && !observing ? html`<div class="chud__msg chud__wait" role="status"><${Icon} name="hourglass" /><span>${t('作战结束，等待队友完成作战')}</span></div>
         <${ProgressList} list=${client.progress} />` : null}
-      ${spectating && !observing ? (spectator ? html`<div class="chud__msg" role="status"><${GIcon} name="eye" /><span>观战中，可点击左侧成员头像前往查看</span></div>`
-        : html`<div class="chud__msg chud__msg--dead" role="status"><${Icon} name="close" /><span>你已被淘汰，可点击队友头像前往查看</span></div>`) : null}
+      ${spectating && !observing ? (spectator ? html`<div class="chud__msg" role="status"><${GIcon} name="eye" /><span>${t('观战中，可点击左侧成员头像前往查看')}</span></div>`
+        : html`<div class="chud__msg chud__msg--dead" role="status"><${Icon} name="close" /><span>${t('你已被淘汰，可点击队友头像前往查看')}</span></div>`) : null}
       ${observing && !halves ? html`<div class="vswitch chud__observe is-single" role="status">
         <span class="vswitch__label"><${GIcon} name="eye" /><span>${observing.name}</span></span>
         ${client.onBack ? html`<button type="button" class="btn btn--secondary btn--sm chud__back" onClick=${() => client.onBack()}>
-          <span class="btn__label">返回战场</span></button>` : null}
+          <span class="btn__label">${t('返回战场')}</span></button>` : null}
       </div>` : null}
       ${client.uniteFields ? html`<${UniteFieldSwitch} pub=${pub} myId=${myId} sw=${client.uniteFields} />` : null}
       ${halves ? html`<div class=${cx('vswitch', 'chud__layers', observing && 'is-observing')}>
-        <button type="button" class="vswitch__arrow" disabled=${idx <= 0} aria-label="左侧战场" onClick=${() => step(-1)}><${Icon} name="chevronLeft" /></button>
+        <button type="button" class="vswitch__arrow" disabled=${idx <= 0} aria-label=${t('左侧战场')} onClick=${() => step(-1)}><${Icon} name="chevronLeft" /></button>
         <span class="vswitch__label">
-          ${cur && cur.watch ? html`<${GIcon} name="eye" />` : null}<span>${cur ? cur.label : '全景'}</span></span>
-        <button type="button" class="vswitch__arrow" disabled=${idx >= layers.length - 1} aria-label="右侧战场" onClick=${() => step(1)}><${Icon} name="chevronRight" /></button>
+          ${cur && cur.watch ? html`<${GIcon} name="eye" />` : null}<span>${cur ? cur.label : t('全景')}</span></span>
+        <button type="button" class="vswitch__arrow" disabled=${idx >= layers.length - 1} aria-label=${t('右侧战场')} onClick=${() => step(1)}><${Icon} name="chevronRight" /></button>
         ${observing && client.onBack ? html`<button type="button" class="btn btn--secondary btn--sm chud__back" onClick=${() => client.onBack()}>
-          <span class="btn__label">返回战场</span></button>` : null}
+          <span class="btn__label">${t('返回战场')}</span></button>` : null}
       </div>` : null}
     </div>
   </div>`;

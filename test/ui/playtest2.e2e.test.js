@@ -228,7 +228,7 @@ describe('user playtest #2 — UI fixes (mock harness, headless Chrome)', { skip
     for (const [name, w, h] of [['16x9', 1920, 1080], ['21x9', 2560, 1080], ['720p', 1280, 720], ['phone', 844, 390]]) {
       const { page, problems } = await open('phase=PREP', { w, h });
       if (name === 'phone') {
-        // a phone's 休整期 starts with the bond strip folded (DESIGN §26.1, bondStripFolded — isPhone reads the device
+        // a phone's 休整期 starts with the bond strip folded (DESIGN §F2.1, bondStripFolded — isPhone reads the device
         // screen, which this desktop browser does not emulate): fold it as a phone does
         if (await page.$eval('.bonds-toggle', (el) => el.getAttribute('aria-expanded')) === 'true') await page.click('.bonds-toggle');
         await sleep(200);

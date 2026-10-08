@@ -9,8 +9,11 @@
 // aliases"); the official ones the local client has (tools/local-extract/
 // extract.py ENEMY_SPINES, optional) are added as `spineLocal` from the
 // committed tools/assets/local-enemy-spines.json — never from the disk, so the
-// manifest is the same with or without the extraction. --local-spines rewrites
-// that file from the extracted models (after a game update).
+// manifest is the same with or without the extraction. The token (summon)
+// models no dump carries (extract.py TOKEN_SPINES) likewise, from
+// tools/assets/local-token-spines.json (ASSETS.md "Token models from the local
+// client"). --local-spines rewrites both files from the extracted models (after
+// a game update).
 //
 // Idempotent: existing files with the right size are skipped, so re-running is
 // cheap. Downloads use ~16 parallel connections, 3 retries per direct source,
@@ -25,9 +28,27 @@
 // the entries it would drop and exits 1; --allow-shrink (or --prune) writes the
 // smaller manifest.
 //
+// Beyond research 07's ids the plan covers what data/*.json adds: spawnable
+// enemies / tokens (data/enemies.json, data/tokens.json), the 自选 owned-6★ picks
+// of data/backups.json `units` (art from 07's URL patterns) and their summons
+// (`tokens`), and the module type icons of every module in data/chess.json /
+// data/backups.json (manifest `modules`). A 自选 summon whose web model is a skin
+// only takes that skin (tools/assets/plan.mjs TOKEN_SKIN_SPINES).
+//
+// Operator voice (--voice=LANGS, default cn,jp; tools/assets/voice.mjs): the
+// battle lines of every planned operator from charword_table.json, per client
+// language (audio.voice.<lang>.<charId>.<role>), and the official battle voice
+// rules (audio.voiceRules).
+//
+// --add-only: for a checkout whose public/assets / public/fonts are shared with
+// another one (a git worktree): download only the files missing on disk, never
+// re-download, rewrite or delete an existing file (atlases already on disk are
+// left as they are; fonts are not rebuilt — the manifest keeps its current
+// `fonts`).
+//
 // Usage: node tools/fetch-assets.mjs [--concurrency=16] [--asset-source=direct|mirror] [--force] [--offline] [--voice=cn,jp]
 //                                    [--dry-run] [--refresh-index] [--prune]
-//                                    [--allow-shrink] [--local-spines] [--help]
+//                                    [--allow-shrink] [--add-only] [--local-spines] [--help]
 
 import { readFile, writeFile, mkdir, rename, readdir, unlink } from 'node:fs/promises';
 import { existsSync, realpathSync } from 'node:fs';
@@ -39,7 +60,10 @@ import { normalizeProxyPrefix } from './assets/sources.mjs';
 import { loadIndexes, loadCharWords } from './assets/cache.mjs';
 import { indexAudio } from './assets/audio.mjs';
 import { buildPlan } from './assets/plan.mjs';
-import { processModels, findLocalEnemyModels, localEnemySpineMeta, loadLocalEnemySpines, LOCAL_ENEMY_SPINES_FILE } from './assets/spine.mjs';
+import {
+  processModels, findLocalEnemyModels, findLocalTokenModels, localSpineMeta, loadLocalSpines, LOCAL_ENEMY_SPINES_FILE,
+  LOCAL_TOKEN_SPINES_FILE, LOCAL_ENEMY_SPINE_DIR, LOCAL_TOKEN_SPINE_DIR,
+} from './assets/spine.mjs';
 import { collectLeaves, downloadLeaves, resolveTemplate, totalBytes, contentHash, droppedEntries, MANIFEST_VERSION } from './assets/manifest.mjs';
 import { fontJobs, buildFonts } from './assets/fonts.mjs';
 import { skelParserAvailable } from './assets/skel.mjs';
@@ -51,13 +75,22 @@ const FONTS = join(ROOT, 'public', 'fonts');
 const CACHE = join(ROOT, '.cache');
 const MANIFEST = join(ROOT, 'data', 'assets.json');
 const REPORT = join(CACHE, 'assets-report.json');
-const LOCAL_SPINES = join(ROOT, LOCAL_ENEMY_SPINES_FILE);
 /**
- * 外援 / 甄选 (DIY) roster asset entries (DESIGN §27): the 6★ operators outside the shop pool are not in research 07, so
- * their avatar / portrait / battle Spine / skill-icon URLs live in this committed file (tools/gen-waiguan-operators.mjs:
- * jsDelivr `url` + raw `mirror`, tried raw first like any GitHub file — plan.mjs entryUrls, the same --asset-source rule).
+ * The local-client model overlays (spineLocal): the committed metadata file, where extract.py writes the models (under
+ * public/assets), how to find them, and the file's `about` line.
  */
-const WAIGUAN_OPERATORS_FILE = 'tools/assets/waiguan-operators.json';
+const LOCAL_SPINE_KINDS = {
+  enemy: {
+    file: LOCAL_ENEMY_SPINES_FILE, dir: LOCAL_ENEMY_SPINE_DIR, find: findLocalEnemyModels, what: 'enemy',
+    about: 'Spine metadata of the enemy models only the local client has (tools/local-extract/extract.py ENEMY_SPINES); '
+      + 'data/assets.json enemies[id].spineLocal. Written by node tools/fetch-assets.mjs --local-spines (docs/ASSETS.md "Enemy aliases").',
+  },
+  token: {
+    file: LOCAL_TOKEN_SPINES_FILE, dir: LOCAL_TOKEN_SPINE_DIR, find: findLocalTokenModels, what: 'token',
+    about: 'Spine metadata of the token (summon) models only the local client has (tools/local-extract/extract.py TOKEN_SPINES); '
+      + 'data/assets.json tokens[id].spineLocal. Written by node tools/fetch-assets.mjs --local-spines (docs/ASSETS.md "Token models from the local client").',
+  },
+};
 
 const HELP = `Usage: node tools/fetch-assets.mjs [options]
   --concurrency=N   parallel downloads (default 16)
@@ -65,14 +98,17 @@ const HELP = `Usage: node tools/fetch-assets.mjs [options]
   --force           re-download files even when present
   --offline         no network: post-process what is on disk and rebuild data/assets.json
   --dry-run         print the plan and exit
-  --refresh-index   re-download audio_data.json / models_data.json indexes
+  --refresh-index   re-download the audio_data.json / models_data.json indexes (and charword_table.json for --voice)
   --prune           delete files under public/assets that the manifest no longer references
                     (public/assets/local/** of tools/local-extract is never deleted); implies --allow-shrink
   --allow-shrink    write data/assets.json even when it loses entries the current one has
                     (without it such a run keeps the current manifest, lists the entries and exits 1)
-  --local-spines    rewrite ${LOCAL_ENEMY_SPINES_FILE} from the enemy models extracted
-                    by tools/local-extract/extract.py (public/assets/local/spine/enemy/)
-  --voice=LANGS     operator battle voice: cn,jp (default, ~155 MiB), cn (~68 MiB), jp (~87 MiB), any comma list
+  --add-only        download only files missing on disk; never re-download, rewrite or delete an existing
+                    file, no font rebuild (a worktree sharing public/assets and public/fonts)
+  --local-spines    rewrite ${LOCAL_ENEMY_SPINES_FILE} and ${LOCAL_TOKEN_SPINES_FILE} from the
+                    enemy and token models extracted by tools/local-extract/extract.py
+                    (public/assets/local/spine/enemy/, public/assets/local/spine/token/)
+  --voice=LANGS     operator battle voice: cn,jp (default, ~151 MiB), cn (~66 MiB), jp (~85 MiB), any comma list
                     of cn, jp, en, kr (English / Korean dubs: opt-in), or none
   --voice-lang=L    one dub only (upstream's spelling): the same as --voice=L
   --help            this text
@@ -84,11 +120,11 @@ failures. Only explicitly enabled GitHub downloads use the third-party proxy.`;
 /**
  * Parse CLI flags.
  * @param {string[]} argv
- * @returns {{concurrency:number, force:boolean, offline:boolean, dryRun:boolean, refreshIndex:boolean, prune:boolean, allowShrink:boolean, localSpines:boolean, voice?:string[], help:boolean, source:string}}
+ * @returns {{concurrency:number, force:boolean, offline:boolean, dryRun:boolean, refreshIndex:boolean, prune:boolean, allowShrink:boolean, addOnly:boolean, localSpines:boolean, voice?:string[], help:boolean, source:string}}
  *   `voice` is set only by --voice / --voice-lang (main() falls back to voice.mjs DEFAULT_VOICE_LANGS)
  */
 export function parseArgs(argv) {
-  const o = { concurrency: 16, force: false, offline: false, dryRun: false, refreshIndex: false, prune: false, allowShrink: false, localSpines: false, help: false, source: process.env.SP_ASSET_SOURCE || 'direct' };
+  const o = { concurrency: 16, force: false, offline: false, dryRun: false, refreshIndex: false, prune: false, allowShrink: false, addOnly: false, localSpines: false, help: false, source: process.env.SP_ASSET_SOURCE || 'direct' };
   for (const a of argv) {
     const [k, v] = a.split('=');
     if (k === '--concurrency') o.concurrency = Math.max(1, Math.min(64, parseInt(v, 10) || 16));
@@ -105,16 +141,41 @@ export function parseArgs(argv) {
       o.voice = parseVoiceLangs(v);
     }
     else if (k === '--allow-shrink') o.allowShrink = true;
+    else if (k === '--add-only') o.addOnly = true;
     else if (k === '--local-spines') o.localSpines = true;
     else if (k === '--help' || k === '-h') o.help = true;
     else throw new Error(`unknown option ${a}\n${HELP}`);
   }
+  if (o.addOnly && (o.prune || o.force)) throw new Error(`--add-only never deletes or rewrites files: not with --prune / --force\n${HELP}`);
   if (!o.help) validateSource(o.source);
   return o;
 }
 
 export function resolveProxyPrefix(source, offline = false, value = process.env.SP_GITHUB_PROXY) {
   return offline || source !== 'mirror' ? '' : normalizeProxyPrefix(value);
+}
+
+/**
+ * What data/backups.json and data/chess.json add to the asset plan: `extraOperators` — every unit of backups.json
+ * (`{ name, subProfessionId, nationId, skills: [{ index, skillId, iconId }] }`; buildPlan plans those research 07 lacks,
+ * the 自选 owned-6★ picks), `tokenIds` — the summons of the 自选 picks (backups.json `tokens`), `moduleTypes` — the type
+ * icon of every module a chess or a unit form offers.
+ * @param {any} backups data/backups.json (or null)
+ * @param {any} chess data/chess.json (or null)
+ */
+export function dataExtras(backups, chess) {
+  const extraOperators = {};
+  const moduleTypes = new Set();
+  for (const [id, u] of Object.entries(backups?.units || {})) {
+    const skills = new Map();
+    for (const f of Object.values(u.forms || {})) {
+      for (const sk of f.skills || []) if (!skills.has(sk.index)) skills.set(sk.index, { index: sk.index, skillId: sk.skillId, iconId: sk.iconId || sk.skillId });
+      for (const m of f.modules || []) if (m.typeIcon) moduleTypes.add(m.typeIcon);
+    }
+    extraOperators[id] = { name: u.name, subProfessionId: u.subProfessionId, nationId: u.nationId, skills: [...skills.values()].sort((a, b) => a.index - b.index) };
+  }
+  for (const c of Object.values(chess || {})) for (const m of c?.modules || []) if (m.typeIcon) moduleTypes.add(m.typeIcon);
+  return { extraOperators, tokenIds: Object.keys(backups?.tokens || {}).sort(), moduleTypes: [...moduleTypes].sort() };
 }
 
 /**
@@ -129,6 +190,19 @@ export function resolveProxyPrefix(source, offline = false, value = process.env.
 export function shrinkGuard(prev, next, { allowShrink = false, prune = false } = {}) {
   const dropped = prev ? droppedEntries(prev, next) : [];
   return { dropped, write: dropped.length === 0 || !!allowShrink || !!prune };
+}
+
+/**
+ * Files under public/assets the manifest does not reference (`--prune` deletes them). public/assets/local/** belongs to
+ * tools/local-extract (data/local-assets.json) and is never an orphan: --prune used to delete all of it. Compared without
+ * case: on Windows / macOS a listed path and a file whose name differs only in case are one file (module/WAH-Y.png on
+ * disk serves the listed module/wah-y.png), which --prune must not delete.
+ * @param {string[]} onDisk forward-slash paths relative to public/assets
+ * @param {Iterable<string>} referenced the manifest's files, same form
+ */
+export function orphanFiles(onDisk, referenced) {
+  const listed = new Set([...referenced].map((r) => r.toLowerCase()));
+  return onDisk.filter((r) => !listed.has(r.toLowerCase()) && !r.startsWith('local/'));
 }
 
 const mb = (n) => `${(n / 1048576).toFixed(1)} MB`;
@@ -187,6 +261,7 @@ function countStats(m, bytes, files) {
     items: Object.keys(m.items || {}).length,
     bands: Object.keys(m.bands || {}).length,
     skills: Object.keys(m.skills || {}).length,
+    modules: Object.keys(m.modules || {}).length,
     ui: Object.keys(m.ui || {}).length,
     sfxUnits: Object.keys(m.audio?.sfx?.units || {}).length,
     voice: Object.fromEntries(Object.entries(m.audio?.voice || {}).map(([lang, per]) => [lang, Object.keys(per).length])),
@@ -206,33 +281,32 @@ function requiredMisses(m, charIds) {
 }
 
 /**
- * Metadata of the local-client enemy models (the committed LOCAL_SPINES). With --local-spines it is rewritten from the
- * models extracted under public/assets/local/spine/enemy/ (read only); otherwise extracted models whose metadata differs
- * from the committed one only get a warning — the manifest never depends on what this machine extracted.
+ * Metadata of the local-client models of one kind (LOCAL_SPINE_KINDS: the committed file). With --local-spines it is
+ * rewritten from the models extracted under public/assets/local/spine/<kind>/ (read only); otherwise extracted models
+ * whose metadata differs from the committed one only get a warning — the manifest never depends on what this machine
+ * extracted.
+ * @param {{ localSpines: boolean, dryRun: boolean }} opts
+ * @param {'enemy'|'token'} kind
  */
-async function syncLocalEnemySpines(opts) {
-  const committed = await loadLocalEnemySpines(LOCAL_SPINES);
-  const found = await findLocalEnemyModels(ASSETS);
+async function syncLocalSpines(opts, kind) {
+  const k = LOCAL_SPINE_KINDS[kind];
+  const committed = await loadLocalSpines(join(ROOT, k.file));
+  const found = await k.find(ASSETS);
   if (!Object.keys(found).length) {
-    if (opts.localSpines) log(`[local-spines] no extracted enemy model under public/assets/local/spine/enemy/ — ${LOCAL_ENEMY_SPINES_FILE} kept`);
+    if (opts.localSpines) log(`[local-spines] no extracted ${k.what} model under public/assets/${k.dir} — ${k.file} kept`);
     return committed;
   }
-  const { meta, problems } = await localEnemySpineMeta(ASSETS, found);
+  const { meta, problems } = await localSpineMeta(ASSETS, found);
   for (const p of problems) log(`[local-spines] ${p}`);
   if (opts.localSpines && !opts.dryRun) {
     const models = { ...committed, ...meta };
-    const sorted = Object.fromEntries(Object.keys(models).sort().map((k) => [k, models[k]]));
-    const doc = {
-      about: 'Spine metadata of the enemy models only the local client has (tools/local-extract/extract.py ENEMY_SPINES); '
-        + 'data/assets.json enemies[id].spineLocal. Written by node tools/fetch-assets.mjs --local-spines (docs/ASSETS.md "Enemy aliases").',
-      models: sorted,
-    };
-    await writeJsonAtomic(LOCAL_SPINES, doc, 2);
-    log(`[local-spines] ${Object.keys(meta).length} model(s) → ${LOCAL_ENEMY_SPINES_FILE}`);
+    const sorted = Object.fromEntries(Object.keys(models).sort().map((id) => [id, models[id]]));
+    await writeJsonAtomic(join(ROOT, k.file), { about: k.about, models: sorted }, 2);
+    log(`[local-spines] ${Object.keys(meta).length} ${k.what} model(s) → ${k.file}`);
     return sorted;
   }
   for (const [id, m] of Object.entries(meta)) {
-    if (JSON.stringify(m) !== JSON.stringify(committed[id])) log(`[local-spines] ${id}: the extracted model differs from ${LOCAL_ENEMY_SPINES_FILE} (re-run with --local-spines to update it)`);
+    if (JSON.stringify(m) !== JSON.stringify(committed[id])) log(`[local-spines] ${id}: the extracted model differs from ${k.file} (re-run with --local-spines to update it)`);
   }
   return committed;
 }
@@ -269,25 +343,23 @@ async function main() {
   }
   // The game data built by tools/build-data.mjs (when present) may reference more
   // spawnable enemies/tokens than research lists (e.g. 机变 enemy swaps): cover them too.
-  const [dataEnemies, dataTokens, dataBosses] = await Promise.all(
-    ['data/enemies.json', 'data/tokens.json', 'data/bosses.json'].map((f) => readJson(f).catch(() => null)));
+  const [dataEnemies, dataTokens, dataBosses, dataBackups, dataChess] = await Promise.all(
+    ['data/enemies.json', 'data/tokens.json', 'data/bosses.json', 'data/backups.json', 'data/chess.json'].map((f) => readJson(f).catch(() => null)));
+  const extras = dataExtras(dataBackups, dataChess);
   const extraHandbook = {};
   for (const b of Object.values(dataBosses || {})) if (b?.enemyKey && typeof b.handbookId === 'string') extraHandbook[b.enemyKey] = b.handbookId;
-  const localEnemySpines = await syncLocalEnemySpines(opts);
-  // 外援 / 甄选 (DIY) roster (DESIGN §27): characters data/waiguan.json can field are not in research 07, so their asset
-  // entries come from the committed tools/assets/waiguan-operators.json. Missing / empty ⇒ the pool's own operators only.
-  const waiguanOperators = await readJson(WAIGUAN_OPERATORS_FILE).catch(() => null);
-  const extraOperators = waiguanOperators && typeof waiguanOperators === 'object' && waiguanOperators.operators ? waiguanOperators.operators : {};
-  const extraTokens = waiguanOperators && typeof waiguanOperators === 'object' && waiguanOperators.tokens ? waiguanOperators.tokens : {};
+  const localEnemySpines = await syncLocalSpines(opts, 'enemy');
+  const localTokenSpines = await syncLocalSpines(opts, 'token');
   const plan = buildPlan({
     assets07, ops03, enemies05, maps05, audio, modelsData,
     extraEnemyIds: Object.keys(dataEnemies || {}),
-    extraTokenIds: Object.keys(dataTokens || {}),
+    extraTokenIds: [...Object.keys(dataTokens || {}), ...extras.tokenIds],
     extraHandbook,
     voice,
     localEnemySpines,
-    extraOperators,
-    extraTokens,
+    localTokenSpines,
+    extraOperators: extras.extraOperators,
+    moduleTypes: extras.moduleTypes,
   });
   const leaves = collectLeaves(plan.template);
   log(`[plan] ${leaves.length} files + ${plan.models.size} Spine models ` +
@@ -301,26 +373,32 @@ async function main() {
 
   const dl = new Downloader({
     root: ASSETS, ledgerPath: join(CACHE, 'assets-ledger.json'),
-    concurrency: opts.concurrency, force: opts.force, log, ...network,
+    concurrency: opts.concurrency, force: opts.force, keepExisting: opts.addOnly, log, ...network,
   });
   await dl.loadLedger();
   const downloadErrors = opts.offline ? [] : await downloadLeaves(leaves, dl, ASSETS, 'files');
 
-  // Fonts
+  let current = null;
+  if (existsSync(MANIFEST)) {
+    try { current = JSON.parse(await readFile(MANIFEST, 'utf8')); } catch (e) { log(`[manifest] the current ${relative(ROOT, MANIFEST)} is unreadable (${e.message}): replaced`); }
+  }
+
+  // Fonts (--add-only: not rebuilt — public/fonts may be another checkout's; the manifest keeps its current entry)
   let fontErrors = [];
-  if (!opts.offline) {
+  if (!opts.offline && !opts.addOnly) {
     const fdl = new Downloader({ root: FONTS, ledgerPath: join(CACHE, 'fonts-ledger.json'), concurrency: 4, force: opts.force, log, ...network });
     await fdl.loadLedger();
     await fdl.run(fontJobs(), 'fonts');
     dl.totals.bytesDownloaded += fdl.totals.bytesDownloaded;
     for (const k of ['ok', 'skip', 'miss', 'error']) dl.totals[k] += fdl.totals[k];
   }
-  const fonts = await buildFonts(FONTS, log);
+  const fonts = opts.addOnly ? { files: {}, errors: [] } : await buildFonts(FONTS, log);
   fontErrors = fonts.errors;
 
   // Spine
   const spine = await processModels(plan.models, {
     root: ASSETS, dl, cachePath: join(CACHE, 'spine-info.json'), download: !opts.offline, log,
+    ...(opts.addOnly ? { writable: (rel) => dl.written.has(rel) } : null),
   });
 
   // Manifest
@@ -329,7 +407,8 @@ async function main() {
   tidyManifest(body);
   const fontFaces = {};
   for (const [name, f] of Object.entries(fonts.files)) fontFaces[name] = f;
-  body.fonts = existsSync(join(FONTS, 'fonts.css')) ? { css: '/fonts/fonts.css', faces: fontFaces } : { faces: fontFaces };
+  body.fonts = opts.addOnly && current?.fonts ? current.fonts
+    : existsSync(join(FONTS, 'fonts.css')) ? { css: '/fonts/fonts.css', faces: fontFaces } : { faces: fontFaces };
   const bytes = totalBytes(ASSETS, resolved.files);
   const manifest = {
     version: MANIFEST_VERSION,
@@ -338,16 +417,11 @@ async function main() {
     stats: countStats(body, bytes, resolved.files.size),
     ...body,
   };
-  let current = null;
-  if (existsSync(MANIFEST)) {
-    try { current = JSON.parse(await readFile(MANIFEST, 'utf8')); } catch (e) { log(`[manifest] the current ${relative(ROOT, MANIFEST)} is unreadable (${e.message}): replaced`); }
-  }
   const guard = shrinkGuard(current, manifest, opts);
   if (guard.write) await writeJsonAtomic(MANIFEST, manifest);
 
-  // Orphans: files on disk that the manifest does not reference (e.g. after a mapping change). public/assets/local/**
-  // belongs to tools/local-extract (data/local-assets.json) and is never an orphan: --prune used to delete all of it.
-  const orphans = (await listFiles(ASSETS)).filter((r) => !resolved.files.has(r) && !r.startsWith('local/'));
+  // Orphans: files on disk that the manifest does not reference (e.g. after a mapping change).
+  const orphans = orphanFiles(await listFiles(ASSETS), resolved.files);
   if (opts.prune) for (const r of orphans) { try { await unlink(join(ASSETS, r)); } catch { /* ignore */ } }
 
   const charIds = Object.keys(assets07.operators || {});
@@ -379,6 +453,8 @@ async function main() {
   log(`on disk (manifest)  : ${mb(s.bytes)} in ${s.files} files`);
   log(`chars ${s.chars} (Back model ${s.charsWithBack}) · enemies ${s.enemies} (Spine ${s.enemiesWithSpine}) · tokens ${s.tokens} (Spine ${s.tokensWithSpine}) · Spine models ${s.spineModels}`);
   log(`bonds ${s.bonds} · items ${s.items} · bands ${s.bands} · skill icons ${s.skills} · UI ${s.ui} · units with SFX ${s.sfxUnits}`);
+  const overlays = (o) => Object.values(o || {}).filter((e) => e?.spineLocal).length;
+  log(`local-client models (spineLocal, drawn when extracted): enemies ${overlays(manifest.enemies)} · tokens ${overlays(manifest.tokens)}`);
   if (voice) log(`voice: ${Object.entries(s.voice).map(([l, n]) => `${l} ${n} operators`).join(' · ') || 'none on disk'}`);
   log(`fonts: ${Object.values(fonts.files).map((f) => f.woff2 || f.original).join(', ') || 'none'}`);
   if (resolved.fallbacks.length) { log(`fallbacks used (${resolved.fallbacks.length}):`); for (const f of resolved.fallbacks.slice(0, 20)) log(`  ${f}`); }

@@ -39,7 +39,7 @@ try {
     const src = 'data:image/svg+xml;base64,' + (await readFile(path.join(ICONS, svg))).toString('base64');
     await page.setViewport({ width: size, height: size, deviceScaleFactor: 1 });
     await page.setContent(`<html><body style="margin:0;background:transparent"><img src="${src}" width="${size}" height="${size}" style="display:block"></body></html>`);
-    await page.waitForFunction(() => document.images[0].complete);
+    await page.waitForFunction(() => globalThis.document.images[0].complete);
     await writeFile(path.join(ICONS, png), await page.screenshot({ type: 'png', omitBackground: true }));
     console.log(`public/icons/${png} (${size}×${size}) ← ${svg}`);
   }

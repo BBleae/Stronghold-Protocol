@@ -1,5 +1,5 @@
 // 联防 with more than 4 alive players (remake extension, owner's decision; server/match/unite.js header, docs/META.md §4,
-// DESIGN §24.4): alive ≤ 4 → the official single field 'u' (≤ 2 helpers, every leaker's enemies on it, exactly as the
+// DESIGN §F1.4): alive ≤ 4 → the official single field 'u' (≤ 2 helpers, every leaker's enemies on it, exactly as the
 // rest of the suite pins it); alive > 4 → k = ⌈alive / 4⌉, helpers = the top 2k perfect players by the helper ranking,
 // fields = min(k, leakers, ⌈helpers / 2⌉) with ids 'u', 'u2', …, the helpers 2 per field in ranking order, the leakers spread
 // over the fields balancing their counted leaks (largest first to the least-loaded field), each field a normal 联防 with
@@ -314,14 +314,15 @@ test('client-side combat: both fields on clients report their own results (accep
   h.drive(() => m.phase === PHASE.UNITE);
   assert.deepEqual(uniteGroups(m.unitePlan).map((g) => [g.fieldId, ids(g.helpers), ids(g.leakers)]), [['u', ['p_2', 'p_3'], ['p_1']], ['u2', ['p_4', 'p_5'], ['p_0']]]);
   assert.deepEqual(m.fields.map((f) => [f.fieldId, f.mode, f.authority]), [['u', 'client', 'p_2'], ['u2', 'client', 'p_4']]);
-  // a resync with no field picked: a leaker gets the field holding its enemies, a spectator seat the first field
+  // a resync with no field picked: a leaker gets the field holding its enemies; a spectator seat follows the first
+  // player still in (0.2.0, community report item 56: p_0, a leaker) — the field holding that leaker's enemies
   m.watchers.delete('p_0');
   m.onReconnect('p_0');
   assert.deepEqual([h.lastTo('p_0', 'b.start').fieldId, h.lastTo('p_0', 'b.start').watch], ['u2', true]);
   m.addSpectator('s_1');
-  assert.equal(h.lastTo('s_1', 'b.start').fieldId, 'u');
-  assert.deepEqual(m.handle('s_1', { t: 'g.watch', fieldId: 'u2' }), { ok: true });
   assert.equal(h.lastTo('s_1', 'b.start').fieldId, 'u2');
+  assert.deepEqual(m.handle('s_1', { t: 'g.watch', fieldId: 'u' }), { ok: true });
+  assert.equal(h.lastTo('s_1', 'b.start').fieldId, 'u');
   h.run(() => m.fields.every((f) => f.done));
   assert.deepEqual(m.fields.map((f) => f.resultSource), ['client', 'client']);
   h.drive(() => m.phase === PHASE.SETTLE);

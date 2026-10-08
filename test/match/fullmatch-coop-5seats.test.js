@@ -1,5 +1,5 @@
 // Full co-op match with 5 seats (a remake extension: the official mode stops at 4) — the REAL simulation, client-side
-// combat, 1 human on "AI 托管" + 4 AI teammates, to RESULT with zero errors, and the 5–8-player rules (DESIGN §24) checked
+// combat, 1 human on "AI 托管" + 4 AI teammates, to RESULT with zero errors, and the 5–8-player rules (DESIGN §F1) checked
 // on what the match did (fullmatchLarge.js). An odd count: the last player of the Final Assault fights alone on the _s
 // template. min(MATCH_SEEDS, 6) seeds, so the full suite grows little; split from the 8-seat file so node --test runs
 // the two in parallel.

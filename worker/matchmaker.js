@@ -1,4 +1,4 @@
-// 匹配 (matchmaking queue, DESIGN §28.2) for the room Worker (account mode).
+// 匹配 (matchmaking queue, DESIGN §F4.2) for the room Worker (account mode).
 //
 // The Node server's queue lives in its lobby (server/lobby.js queueTick): every session is connected to that one lobby,
 // and the server seats a formed group itself. In the Worker each room is its own Durable Object and the menu has no

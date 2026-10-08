@@ -4,10 +4,13 @@ import { appendReplayReport, recordServerBattle, recordServerSpec } from './reco
 
 import { RULES_VERSION } from '../../shared/rules-version.js';
 export { RULES_VERSION };
-// Every input that changes the match is logged, so a restore (and a replay) re-applies it: setPicks included — a 甄选
-// pick taken during INFO_CHECK / BAND_DRAFT adds the player's private pool entries (DESIGN §27), and a restore without
-// it would deal that player's shop from another pool.
-const METHODS = new Set(['start', 'handle', 'onDisconnect', 'onReconnect', 'onLeave', 'setLoadout', 'setPicks']);
+// Every input that changes the match is logged, so a restore (and a replay) re-applies it. The inputs a match takes at
+// its start are recorded options (OPTION_KEYS): `seats` carries each human's loadout, its 补位 not-owned list
+// (seats[].notOwned) and its 自选编队 picks (seats[].diy) — fixed for the match (0.2.0, server/match/Match.js header), so
+// a restore deals every player's shop, stand-ins and 自选 stock from the same seats. Later inputs are the methods below
+// (setLoadout: INFO_CHECK only). Spectator seats (opts.spectators / addSpectator) change no match state and are not
+// recorded (the Worker keeps its own spectators, worker/rooms/spectators.js).
+const METHODS = new Set(['start', 'handle', 'onDisconnect', 'onReconnect', 'onLeave', 'setLoadout']);
 const copy = (value) => JSON.parse(JSON.stringify(value));
 // Work units, not wall-clock milliseconds: live execution and recovery must split at identical points. A match records
 // the values it started with (options.workSlice), so a restore keeps them when these defaults change. prepBurst: the AI
@@ -187,9 +190,6 @@ export class RecordedMatch extends Match {
   setLoadout(...args) {
     return this._input('setLoadout', args);
   }
-  setPicks(...args) {
-    return this._input('setPicks', args);
-  }
   _ccField(options) {
     const field = super._ccField(options);
     for (const player of field.spec.players) {
@@ -274,8 +274,6 @@ export function exportMatch(match, { referenceEvents = false } = {}) {
     ...(referenceEvents ? match.recording : copy(match.recording)),
     view: copy(match.publicView()),
     rng: ['Setup', 'Shop', 'Waves', 'Draft', 'Bots', 'Meta'].map((n) => match['rng' + n].state()),
-    // the players' 甄选 picks (private: in no public view) — a restore must reproduce them too
-    picks: copy(match.waiguanPicks || {}),
   };
 }
 export function restoreMatch(checkpoint, deps) {
@@ -288,8 +286,7 @@ export function restoreMatch(checkpoint, deps) {
     const current = exportMatch(match, { referenceEvents: true });
     if (
       JSON.stringify(current.view) !== JSON.stringify(checkpoint.view) ||
-      JSON.stringify(current.rng) !== JSON.stringify(checkpoint.rng) ||
-      JSON.stringify(current.picks) !== JSON.stringify(checkpoint.picks ?? {})
+      JSON.stringify(current.rng) !== JSON.stringify(checkpoint.rng)
     )
       throw new Error('CHECKPOINT_STATE_DIVERGED');
     match._recordOutput.muted = false;

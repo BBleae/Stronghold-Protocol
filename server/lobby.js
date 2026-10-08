@@ -70,6 +70,23 @@
 //     (or outside a room) it simply replaces the stored one; while the room's match runs it is also handed to
 //     match.setLoadout(playerId, loadout), which accepts it only during INFO_CHECK (the 干员调配 entry of the briefing)
 //     and refuses it afterwards (WRONG_PHASE: the match's loadout is locked, the stored one applies to the next match).
+//   * Operator ownership (干员持有, 0.2.0 补位, owner's decision 2026-10-05): room.ownership { notOwned } — the base chess
+//     ids the player marked as not owned — is checked leniently (shared/protocol.js checkNotOwned: anything that is not
+//     a droppable NORMAL chess is dropped, never the whole list; only a malformed list is BAD_MSG) and stored on the
+//     session and the seat like the loadout. The match receives seats[].notOwned when it starts (bots: none — they own
+//     every operator) and keeps it for its whole length: the setting is out of match ("局外设置，下一局生效"), so while
+//     the room's match runs a new list is only stored for the next match (ROOM_STARTED 'stored for the next match',
+//     never handed to the match). A spectator's list stays on its session.
+//   * 自选编队 (0.2.0 DIY, the owner's decisions of 2026-10-05): room.diy { picks } — the player's picks for the four DIY
+//     slots ({ [slotBaseId]: { charId, skillIndex?, uniEquipId? } | null }) — is checked leniently (shared/protocol.js
+//     checkDiyPicks against the game data and the kit registry, server/sim/content/kits/index.js KITTED_CHARS: an
+//     illegal pick — an operator without a kit, another tier's prototype, a prototype off its locked skill, a second slot
+//     of one owned operator, the same operator twice in a tier, an unknown slot / skill / module — is dropped, never the
+//     whole roster; only malformed picks are BAD_MSG) and stored on the session and the seat exactly like the
+//     not-owned list: the match receives seats[].diy when it starts (bots: none — they field no 自选 piece [ASSUMED]),
+//     and a change while it runs is stored for the next match (ROOM_STARTED 'stored for the next match'). Every
+//     `welcome` carries `diyKitted` (welcomeInfo): the operators a DIY slot may field, so the client's picker offers
+//     exactly what the server accepts.
 //   * Spectator seats (community report #26, owner's decision 2026-10-04 — a remake feature, the official room has none):
 //     room.spectate { code } takes one of a co-op room's MAX_SPECTATORS (2) spectator seats, in its lobby or while its
 //     match runs (▸ solo rooms: ROOM_FULL). A spectator is not a player: never in `seats`, never counted for the players
@@ -77,19 +94,19 @@
 //     {empty} for its spectators). It receives room.state (`spectators: [{ playerId, name, connected }]`) and every match
 //     broadcast (m.public, m.ticker, m.emote, b.pool — public data); the match registers it (opts.spectators /
 //     addSpectator) and shows it fields like an eliminated player (b.start watch / m.field), never an m.private. It may
-//     only g.watch (the heavy bucket, like every watcher), g.leave / room.leave, and room.loadout (stored for its session,
-//     never handed to the match); anything else → SPECTATOR (▸ emotes too). Host: room.removeSpectator { playerId } any
+//     only g.watch (the heavy bucket, like every watcher), g.leave / room.leave, and room.loadout / room.ownership /
+//     room.diy (stored for its session, never handed to the match); anything else → SPECTATOR (▸ emotes too). Host: room.removeSpectator { playerId } any
 //     time → room.closed {kicked} to it. A spectator in a LOBBY room may take a free player seat with room.join of the same
 //     code; a player never switches to spectating in place (ALREADY). Disconnect / grace / reconnect / expiry work as for
 //     a player seat (the seat is kept and given back on resume).
 
 import { randomBytes, randomInt } from 'node:crypto';
 import { ERR, MAX_SEATS, DEFAULT_SEATS, MAX_SPECTATORS, ROOM_CODE_LEN, modeIdFor } from '../shared/constants.js';
-import { checkLoadout, checkWaiguanPicks } from '../shared/protocol.js';
-import { waiguanRecords } from '../shared/waiguan.js';
+import { checkLoadout, checkNotOwned, checkDiyPicks } from '../shared/protocol.js';
 import { encode, isDroppable, isErrCode, sendRaw, sendSession } from './net.js';
 import { getData as defaultGetData, lookup } from './data.js';
 import { Match as DefaultMatch } from './match/Match.js';
+import { KITTED_CHARS } from './sim/content/kits/index.js';
 
 /** Room code alphabet: uppercase letters without I and O (and no digits, so no 0/1). */
 export const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
@@ -119,7 +136,7 @@ export const SOLO_RECONNECT_FALLBACK_SEC = 86_400;
  * bot's portrait (public/js/screens/room.js, ui/gameComponents.js PlayerAvatar; test/lobby.test.js checks every one has
  * art). The first three never change (a 4-seat room names its ≤ 3 bots as before).
  */
-export const BOT_NAMES = Object.freeze(['AI·华法琳', 'AI·阿米娅', 'AI·惊蛰', 'AI·杜宾', 'AI·德克萨斯', 'AI·银灰', 'AI·能天使', 'AI·陈']);
+export const BOT_NAMES = Object.freeze(['AI·华法琳', 'AI·阿米娅', 'AI·惊蛰', 'AI·杜宾', 'AI·德克萨斯', 'AI·银灰', 'AI·能天使', 'AI·陈']); // i18n-ignore: player names (docs/I18N.md)
 
 /** A co-op room's seat count from a requested capacity: DEFAULT_SEATS..MAX_SEATS (anything else ⇒ DEFAULT_SEATS). */
 export const coopCapacity = (capacity) => (Number.isInteger(capacity) && capacity >= DEFAULT_SEATS && capacity <= MAX_SEATS ? capacity : DEFAULT_SEATS);
@@ -131,7 +148,8 @@ const noopLog = { info() {}, warn() {}, error() {}, debug() {} };
 /**
  * @typedef {{ seat: number, playerId: string, name: string, isBot: boolean, ready: boolean,
  *             connected: boolean, left: boolean, loadout?: Record<string, { skill: number, module: string|null }> | null,
- *             picks?: Record<string, string> | null }} Seat
+ *             notOwned?: readonly string[] | null, diy?: Readonly<Record<string, DiyLoadout>> | null }} Seat
+ * @typedef {{ charId: string, skillIndex: number, uniEquipId: string|null }} DiyLoadout
  */
 
 /** Deep-frozen copy of a checked loadout (shared by the session, the seat and the match's PlayerState). */
@@ -141,40 +159,11 @@ function freezeLoadout(loadout) {
   return Object.freeze(out);
 }
 
-/** Deep-frozen copy of a checked 甄选 (DIY) selection (`{ slotId: charId }`, DESIGN §27). */
-function freezePicks(picks) {
+/** Deep-frozen copy of checked 自选 picks (shared by the session, the seat and the match's PlayerState). */
+function freezeDiy(picks) {
   const out = {};
-  for (const [slot, charId] of Object.entries(picks || {})) if (typeof charId === 'string' && charId) out[slot] = charId;
+  for (const [id, p] of Object.entries(picks || {})) out[id] = Object.freeze({ charId: p.charId, skillIndex: p.skillIndex, uniEquipId: p.uniEquipId ?? null });
   return Object.freeze(out);
-}
-
-/**
- * The chess records a player's own 甄选 (DIY) picks resolve to, keyed by chessId (both tiers, base and elite forms).
- * `room.loadout` validates against `data/chess.json` — whose four DIY entries are only empty slot templates — plus these,
- * so a 外援 operator's skill and module are checkable BEFORE a match exists (DESIGN §16/§27); a match repeats the same
- * check against its own GameData patch. An operator the player did not pick stays unknown to `checkLoadout`.
- * @param {any} waiguan data/waiguan.json
- * @param {Record<string, string>|null|undefined} picks `{ slotId: charId }`
- * @returns {Record<string, any>} chessId → record (empty without picks)
- */
-function waiguanChessOf(waiguan, picks) {
-  if (!waiguan || !picks) return {};
-  const byChar = new Map();
-  for (const c of Array.isArray(waiguan.candidates) ? waiguan.candidates : []) {
-    if (c && typeof c.charId === 'string' && c.chessIds) byChar.set(c.charId, c.chessIds);
-  }
-  const all = waiguanRecords(waiguan);
-  const out = {};
-  for (const charId of Object.values(picks)) {
-    const ids = byChar.get(charId);
-    if (!ids) continue;
-    for (const tier of [5, 6]) {
-      const base = ids[tier];
-      if (typeof base !== 'string') continue;
-      for (const id of [base, `${base.slice(0, -1)}b`]) if (all[id]) out[id] = all[id];
-    }
-  }
-  return out;
 }
 
 /** One room: its seat slots (co-op: `capacity`, solo: 1), host, difficulty, optional running match. */
@@ -254,13 +243,8 @@ export class Room {
   /** Humans that have not departed, in seat order. @returns {Seat[]} */
   activeHumans() { return this.seats.filter((s) => s && !s.isBot && !s.left); }
 
-  /**
-   * `room.state` frame (DESIGN §8.1) plus `inMatch`. `viewerId` narrows the 外援 / 甄选 picks to the requester: a
-   * selection is a player's own shop pool, so a teammate's is not even named here (DESIGN §27) — the frame is encoded
-   * per viewer (see Lobby.broadcastState).
-   * @param {string | null} [viewerId]
-   */
-  toState(viewerId = null) {
+  /** `room.state` frame (DESIGN §8.1) plus `inMatch`. */
+  toState() {
     return {
       t: 'room.state',
       code: this.code,
@@ -273,15 +257,8 @@ export class Room {
       seats: this.seats.map((s) => (s
         ? { seat: s.seat, playerId: s.playerId, name: s.name, isBot: s.isBot, ready: s.ready, connected: s.connected && !s.left }
         : null)),
-      picks: viewerId ? (this.picksOf(viewerId) || {}) : {},
       spectators: this.spectators.map((s) => ({ playerId: s.playerId, name: s.name, connected: s.connected })),
     };
-  }
-
-  /** @param {string} playerId @returns {Record<string, string> | null} that seat's 甄选 selection, or null */
-  picksOf(playerId) {
-    const seat = this.seatOf(playerId);
-    return seat && !seat.isBot && seat.picks && Object.keys(seat.picks).length ? seat.picks : null;
   }
 }
 
@@ -403,7 +380,8 @@ export class Lobby {
       case 'room.kick': return this.kick(session, msg);
       case 'room.start': return this.start(session);
       case 'room.loadout': return this.loadout(session, msg);
-      case 'room.pick': return this.pick(session, msg);
+      case 'room.ownership': return this.ownership(session, msg);
+      case 'room.diy': return this.diy(session, msg);
       case 'room.spectate': return this.spectate(session, msg);
       case 'room.removeSpectator': return this.removeSpectator(session, msg);
       case 'queue.join': return this.queueJoin(session, msg);
@@ -469,7 +447,7 @@ export class Lobby {
    */
   queueJoin(session, { difficulty }) {
     // A lobby without a queue clock has no queue: the room Worker's (one room per Durable Object), whose players queue
-    // over the account API instead (worker/matchmaker.js, DESIGN §28.2)
+    // over the account API instead (worker/matchmaker.js, DESIGN §F4.2)
     if (!(this.opts.queueTickMs > 0)) return fail(ERR.BAD_MSG, 'matchmaking is not available here');
     const cur = this.roomOf(session);
     if (cur && cur.match) return fail(ERR.ROOM_STARTED, 'leave your running match first');
@@ -888,10 +866,7 @@ export class Lobby {
    */
   loadout(session, { entries }) {
     const data = this.safeData();
-    // The player's own 外援 / 甄选 operators are loadout targets too (DESIGN §27): they are not in data/chess.json, so
-    // they come from this session's picks and from nowhere else.
-    const diy = waiguanChessOf(data?.waiguan, session.picks);
-    const res = checkLoadout(entries, (id) => lookup('chess', id, data) || diy[id] || null);
+    const res = checkLoadout(entries, (id) => lookup('chess', id, data));
     if (!res || res.error) return fail(res && isErrCode(res.error) ? res.error : ERR.BAD_MSG, res && res.detail);
     const loadout = freezeLoadout(res.loadout);
     session.loadout = loadout;
@@ -915,38 +890,50 @@ export class Lobby {
   }
 
   /**
-   * room.pick (DESIGN §27, 外援 / 甄选): check a player's four DIY slots against data/waiguan.json, store the
-   * selection on the session and the seat, and hand it to a running match (which accepts it only while its shop pool can
-   * still be rebuilt — see Match.setPicks). Mirrors `loadout` above; the frame answers the sender with its own state.
+   * room.ownership (0.2.0 补位): keep the droppable chess of the not-owned list, store it on the session and the seat
+   * (see the header). A running match never takes it: it keeps the list its seat had at its start.
    */
-  pick(session, { picks }) {
-    const res = checkWaiguanPicks(picks, this.safeData()?.waiguan);
-    if (!res || res.error) return fail(res && isErrCode(res.error) ? res.error : ERR.BAD_MSG, res && res.detail);
-    const stored = freezePicks(res.picks);
-    session.picks = stored;
+  ownership(session, { notOwned }) {
+    const data = this.safeData();
+    const res = checkNotOwned(notOwned, (id) => lookup('chess', id, data));
+    if (!res || res.error) return fail(ERR.BAD_MSG, res && res.detail);
+    const list = Object.freeze(res.notOwned.slice());
+    session.notOwned = list;
     const room = this.roomOf(session);
     if (!room) return OK;
     const seat = room.seatOf(session.playerId);
-    if (seat) seat.picks = stored;
-    if (room.match && seat && typeof room.match.setPicks === 'function') {
-      let r;
-      try {
-        r = room.match.setPicks(session.playerId, stored);
-      } catch (e) {
-        this.log.error(`[lobby] ${room.code} match.setPicks threw`, e);
-        return fail(ERR.INTERNAL);
-      }
-      if (r && typeof r === 'object' && r.error) {
-        return fail(isErrCode(r.error) ? r.error : ERR.INTERNAL, typeof r.detail === 'string' ? r.detail : undefined);
-      }
-    }
-    const ok = room ? this.sendState(room, session) : OK;
-    return ok && typeof ok === 'object' && ok.error ? ok : OK;
+    if (seat) seat.notOwned = list;
+    if (room.match && seat) return fail(ERR.ROOM_STARTED, 'stored for the next match');
+    return OK;
+  }
+
+  /**
+   * room.diy (0.2.0 自选编队): keep the legal picks (checkDiyPicks against the data and KITTED_CHARS), store them on the
+   * session and the seat (see the header). A running match never takes them: it keeps the picks its seat had at its
+   * start.
+   */
+  diy(session, { picks }) {
+    const res = checkDiyPicks(picks, { data: this.safeData(), kitted: KITTED_CHARS });
+    if (!res || !('ok' in res)) return fail(ERR.BAD_MSG, res && res.detail);
+    const kept = freezeDiy(res.picks);
+    session.diy = kept;
+    const room = this.roomOf(session);
+    if (!room) return OK;
+    const seat = room.seatOf(session.playerId);
+    if (seat) seat.diy = kept;
+    if (room.match && seat) return fail(ERR.ROOM_STARTED, 'stored for the next match');
+    return OK;
+  }
+
+  /** Extra fields of every `welcome` (net.js): the operators a 自选 slot may field (shared/diy.js `kitted`). */
+  welcomeInfo() {
+    return { diyKitted: KITTED_CHARS };
   }
 
   // ---------------------------------------------------------------------------------------------------
   // Match wiring
   // ---------------------------------------------------------------------------------------------------
+
   /** @param {Room} room @param {string | null} [key] per-network limit key of the starter */
   startMatch(room, key = null) {
     const host = room.seatOf(room.hostId);
@@ -955,8 +942,10 @@ export class Lobby {
       seat: s.seat, playerId: s.playerId, name: s.name, isBot: s.isBot, connected: s.connected,
       // DESIGN §16: the human's checked operator loadout (bots fight with the defaults)
       loadout: s.isBot ? null : s.loadout || null,
-      // DESIGN §27: the human's checked 甄选 (DIY) selection — its own private shop pool (bots pick none)
-      picks: s.isBot ? null : s.picks || null,
+      // 0.2.0 补位: the chess the human marked as not owned (bots own every operator)
+      notOwned: s.isBot ? null : s.notOwned || null,
+      // 0.2.0 自选编队: the human's checked DIY picks (bots field no 自选 piece [ASSUMED])
+      diy: s.isBot ? null : s.diy || null,
     }));
     // lastPublic / results: the latest m.public broadcast and the m.result frames (encoded), kept for the replay.
     const ctx = { live: true, ended: false, disposed: false, match: null, lastPublic: null, sharedResult: null, results: new Map() };
@@ -1215,7 +1204,8 @@ export class Lobby {
     return {
       seat: idx, playerId: session.playerId, name: session.name, isBot: false, ready: false, connected: session.connected, left: false,
       loadout: session.loadout || null,
-      picks: session.picks || null,
+      notOwned: session.notOwned || null,
+      diy: session.diy || null,
     };
   }
 
@@ -1355,12 +1345,12 @@ export class Lobby {
 
   broadcastState(room) {
     if (room.disposed) return;
-    // The frame carries the viewer's own 甄选 picks only, so it is encoded (and sent) per member.
-    for (const session of this.memberSessions(room)) sendSession(session, room.toState(session.playerId));
+    const data = encode(room.toState());
+    for (const session of this.memberSessions(room)) sendRaw(session.ws, data);
   }
 
   sendState(room, session) {
-    sendSession(session, room.toState(session.playerId));
+    sendSession(session, room.toState());
   }
 
   /** Match broadcast: encode once, send to every connected member. @returns {string | null} the encoded frame */

@@ -16,7 +16,7 @@
 //             logged in since.
 //
 // Intents of enter(): create {mode, difficulty} · join {code} (a join application, HTTP only: see `application`) ·
-// 匹配 (matchmaking, DESIGN §28.2): queue.join / queue.leave are the account API's queue (POST /api/queue), polled
+// 匹配 (matchmaking, DESIGN §F4.2): queue.join / queue.leave are the account API's queue (POST /api/queue), polled
 // from the menu every QUEUE_POLL_MS; its answers reach the page as the Node server's frames would ('queue.status',
 // 'queue.matched'). A formed group's host enters a room it creates (create) and reports it; a member gets the code and
 // joins it like an invite (main.js: room.join → a join application), which the host's page approves for its own group
@@ -246,7 +246,7 @@ export class RoomNet extends Net {
     return { application: this.application };
   }
 
-  // ---- 匹配 (matchmaking, DESIGN §28.2) ----------------------------------------------------------------------------
+  // ---- 匹配 (matchmaking, DESIGN §F4.2) ----------------------------------------------------------------------------
 
   async _queueJoin(difficulty) {
     if (this.state === 'lost') throw new NetError('LOGIN_REQUIRED');

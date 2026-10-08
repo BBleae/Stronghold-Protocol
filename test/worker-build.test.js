@@ -95,6 +95,37 @@ test('Workers static assets (_headers): each path gets one Cache-Control; resour
   }
 });
 
+test('Workers static build publishes the language packs (index, UI and game texts) and the 自选 kit list on the page', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'sp-packs-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const meta = { type: 'lang', lang: 'en', name: 'English', englishName: 'English', version: '0.2.0', app: '>=0.2.0' };
+  const files = {
+    'public/index.html': '<html lang="zh-CN"><body><script type="module" src="/js/main.js"></script></body></html>',
+    'public/i18n/en.json': JSON.stringify({ _meta: meta, '开始': 'Start' }),
+    'data/config.json': '{}', 'data/backups.json': '{"units":{}}', 'data/i18n/en.json': '{"version":1}',
+    // a folder pack: only the files its manifest names are published
+    'packs/extra/pack.json': JSON.stringify({ ...meta, lang: 'pt', name: 'Português', englishName: 'Portuguese', files: { ui: 'ui.json' } }),
+    'packs/extra/ui.json': JSON.stringify({ '开始': 'Iniciar' }), 'packs/extra/notes.txt': 'not named',
+    'server/sim/content/kits/index.js': "export const KITTED_CHARS = ['char_609_acguad', 'char_112_siege'];",
+  };
+  for (const [name, content] of Object.entries(files)) {
+    await mkdir(path.dirname(path.join(root, name)), { recursive: true });
+    await writeFile(path.join(root, name), content);
+  }
+  const { copyRuntimeAssets } = await import('../tools/build-worker.mjs');
+  const out = path.join(root, 'dist/client');
+  await copyRuntimeAssets({ root, out });
+  // what a Node server answers at /packs/index.json (server/packs.js), as a static file
+  const index = JSON.parse(await readFile(path.join(out, 'packs/index.json'), 'utf8'));
+  const byId = Object.fromEntries(index.packs.map((p) => [p.id, p]));
+  assert.deepEqual(byId.en.files, { ui: '/i18n/en.json', data: '/data/i18n/en.json' });
+  assert.deepEqual(byId.extra.files, { ui: '/packs/extra/ui.json' });
+  for (const url of [byId.en.files.ui, byId.en.files.data, byId.extra.files.ui, '/data/backups.json']) await access(path.join(out, ...url.split('/')));
+  await assert.rejects(access(path.join(out, 'packs/extra/notes.txt')), { code: 'ENOENT' });
+  // the menu's 干员调配 offers the operators a 自选 slot may field before the page meets a room (worker-entry.js)
+  assert.match(await readFile(path.join(out, 'index.html'), 'utf8'), /data-sp-diy-kitted="char_609_acguad,char_112_siege"/);
+});
+
 test('missingAssets lists the files data/assets.json references that are not on disk', async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'sp-missing-'));
   t.after(() => rm(root, { recursive: true, force: true }));

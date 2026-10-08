@@ -273,6 +273,39 @@ test('spectators follow prep and combat without authority, and leave when the ma
   assert.deepEqual(viewer.closed, { code: 4004, reason: 'match ended' }, 'its socket closes: nothing left to watch');
 });
 
+test('a spectator follows the player it chose through the phase changes (upstream 0.2.0 item 56)', (t) => {
+  const { rt, host } = setup(t);
+  rt.lobby.seedFn = () => 17;
+  for (let i = 0; i < 3; i++) send(rt, host, 'room.addBot');
+  send(rt, host, 'room.start');
+  const viewer = connect(rt, 'viewer');
+  send(rt, viewer, 'room.spectate');
+  const match = rt.lobby.getRoom('ABCD').match;
+  send(rt, host, 'g.autoplay', { on: true });
+  const until = (done) => {
+    for (let i = 0; i < 200000 && !done(); i++) {
+      const at = match.sched.nextAt();
+      if (at != null) rt.pump(at);
+    }
+    assert.ok(done(), `R${match.round} ${match.phase}`);
+  };
+  until(() => match.phase === 'PREP');
+  // not the first player still in: the default field would be the host's
+  const chosen = match.order[2].playerId;
+  send(rt, viewer, 'g.watch', { fieldId: `n:${chosen}` });
+  assert.equal(viewer.take('m.field').fieldId, `n:${chosen}`);
+  // 联防 (one field, 'u') replaces the normal fields, then the next prep has no field of that id …
+  until(() => match.phase === 'UNITE');
+  assert.equal(viewer.take('b.start').fieldId, 'u');
+  until(() => match.round === 5 && match.phase === 'PREP');
+  rt.spectators.pump();
+  // … and the spectator is back on the board of the player it chose, then on that player's battle
+  assert.equal(viewer.take('m.field').fieldId, `n:${chosen}`);
+  until(() => match.phase === 'COMBAT');
+  rt.spectators.pump();
+  assert.equal(viewer.take('b.start').fieldId, `n:${chosen}`);
+});
+
 test("spectators get the players' result when the match ends, then their socket closes", (t) => {
   const { rt, host } = setup(t);
   const guest = connect(rt, 'guest');

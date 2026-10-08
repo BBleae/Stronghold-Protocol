@@ -1,4 +1,4 @@
-// 匹配 in the production Worker (DESIGN §28.2), in workerd: two signed-in accounts queue over POST /api/queue, the
+// 匹配 in the production Worker (DESIGN §F4.2), in workerd: two signed-in accounts queue over POST /api/queue, the
 // group's host opens a room the normal way and reports it, the member gets the code and joins through a join
 // application the host approves — the same requests the lobby page makes (public/js/room-net.js).
 import test from 'node:test';

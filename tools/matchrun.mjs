@@ -6,7 +6,7 @@
 //   node tools/matchrun.mjs [--mode solo|coop] [--difficulty FUNNY|NORMAL|HARD|ABYSS|ALL] [--players 1..8] [--seed 1]
 //                           [--seeds N] [--lp N] [--humans N] [--content full|generic|none] [--check] [--errors]
 //                           [--odds] [--json] [--quiet] [--rehearsal N]
-//   --players   co-op seats (default 2; solo is always 1; 5–8 is the remake's large room, DESIGN §24)
+//   --players   co-op seats (default 2; solo is always 1; 5–8 is the remake's large room, DESIGN §F1)
 //   --humans N  the first N seats are human seats on "AI 托管" (exercises the human views / m.private paths)
 //   --seeds N   run N consecutive seeds and print an aggregate (rounds survived, LP by round, outcomes)
 //   --lp N      override every player's starting LP (reach later rounds / the Final Assault while balancing)

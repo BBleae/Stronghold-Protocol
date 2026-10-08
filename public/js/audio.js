@@ -84,6 +84,7 @@
 
 import { PHASE } from '../../shared/constants.js';
 import { mediaUrl } from './media.js';
+import { N_ } from '../../shared/i18n.js';
 
 const MAX_VOICES = 8;
 const UNIT_COOLDOWN_MS = 160;
@@ -140,7 +141,7 @@ const SELECT_SAME_MS = 1000;
 /** Settled battles remembered (settle: one settlement line per battle across re-mounts and replays). */
 const SETTLED_CAP = 64;
 /** Voice languages the settings offer, in order (tools/assets/voice.mjs VOICE_LANGS). */
-export const VOICE_LANGS = Object.freeze([['cn', '中文'], ['jp', '日文'], ['en', '英文'], ['kr', '韩文']]);
+export const VOICE_LANGS = Object.freeze([['cn', N_('中文')], ['jp', N_('日文')], ['en', N_('英文')], ['kr', N_('韩文')]]);
 
 // ---- pure helpers (unit-tested) -----------------------------------------------------------------------
 

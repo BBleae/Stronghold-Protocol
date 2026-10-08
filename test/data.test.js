@@ -16,8 +16,6 @@ import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { waiguanRecords, WAIGUAN_SLOTS, WAIGUAN_TIER_FIELDS, WAIGUAN_ELITE_TIER_FIELDS } from '../shared/waiguan.js';
-import { composeStats, composeTalents } from '../shared/loadoutRecord.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 // DATA_DIR lets the suite validate an alternative build output (e.g. `--out /tmp/x`).
@@ -26,7 +24,7 @@ const CACHE = join(ROOT, '.cache', 'gamedata');
 const HAS_CACHE = ['excel/activity_table.json', 'excel/character_table.json', 'excel/skill_table.json', 'excel/battle_equip_table.json',
   'levels/enemydata/enemy_database.json', 'levels/activities/act1autochess/level_autochess_enemy_data.json']
   .every((rel) => existsSync(join(CACHE, rel)));
-const FILES = ['config', 'chess', 'bonds', 'garrisons', 'items', 'bands', 'effects', 'choices', 'enemies', 'factions', 'waves', 'stages', 'bosses', 'tokens', 'waiguan'];
+const FILES = ['config', 'chess', 'bonds', 'garrisons', 'items', 'bands', 'effects', 'choices', 'enemies', 'factions', 'waves', 'stages', 'bosses', 'tokens', 'backups'];
 
 /** Load one data file (fails with a helpful message when the build has not run). */
 function load(name) {
@@ -35,15 +33,7 @@ function load(name) {
   return JSON.parse(readFileSync(p, 'utf8'));
 }
 const D = Object.fromEntries(FILES.map((f) => [f, load(f)]));
-const { config, chess, bonds, garrisons, items, bands, effects, choices, enemies, factions, waves, stages, bosses, tokens, waiguan } = D;
-
-/**
- * Every chess record a token variant may name: data/chess.json plus the 外援 / 甄选 (DIY) roster of data/waiguan.json
- * (which the server merges into a match's own chess table, DESIGN §27). Built by reconstructing the tier V records
- * from the tier VI ones exactly as the server does.
- */
-const allChess = { ...chess, ...waiguanRecords(waiguan) };
-const waiguanCandidates = waiguan.candidates;
+const { config, chess, bonds, garrisons, items, bands, effects, choices, enemies, factions, waves, stages, bosses, tokens } = D;
 
 const isFiniteNum = (v) => typeof v === 'number' && Number.isFinite(v);
 const isInt = (v) => Number.isInteger(v);
@@ -94,299 +84,6 @@ test('chess: 266 records, 112 visible non-DIY (16/17/19/22/19/19 per tier)', () 
   assert.equal(normalChess.filter((c) => c.isHidden).length, 17);
 });
 
-// ---- 外援 / 甄选 (DIY) roster (data/waiguan.json, DESIGN §27) --------------------------------------
-
-test('waiguan: 87 candidates × 2 tiers, none of them in the shared chess table', () => {
-  assert.ok(waiguanCandidates.length > 50, `expected a broad 6★ roster, got ${waiguanCandidates.length}`);
-  assert.equal(Object.keys(waiguan.chess).length, waiguanCandidates.length * 2, 'two tier VI records per candidate');
-  assert.equal(Object.keys(waiguan.chessT5).length, waiguanCandidates.length * 2, 'two tier V overlays per candidate');
-  // the roster must never leak into data/chess.json: only the four empty DIY slot templates live there
-  for (const id of Object.keys(allChess)) {
-    if (id.includes('_diy_')) assert.ok(!chess[id], `${id} must not be in data/chess.json`);
-  }
-  const seen = new Set();
-  for (const c of waiguanCandidates) {
-    assert.ok(!seen.has(c.charId), `${c.charId}: duplicate candidate`);
-    seen.add(c.charId);
-    assert.equal(c.rarity, 6);
-    assert.ok(c.bonds.length >= 1, `${c.charId}: derivation always yields a bond (协防 fallback)`);
-    for (const b of c.bonds) assert.ok(bonds[b], `${c.charId}: bond ${b}`);
-    for (const tier of [5, 6]) assert.ok(typeof c.chessIds?.[tier] === 'string', `${c.charId}: tier ${tier} record id`);
-  }
-  // the pool's own operators are excluded (the player already has them in the shop)
-  const poolChars = new Set(Object.values(chess).map((c) => c.charId).filter(Boolean));
-  for (const c of waiguanCandidates) assert.ok(!poolChars.has(c.charId), `${c.charId} is a pool operator`);
-});
-
-test('waiguan: the roster covers EVERY 6★ of the built data — no gap, no stray entry', { skip: !HAS_CACHE && 'no .cache/gamedata' }, () => {
-  // A user reported the roster as incomplete ("我在测试时候没有看到维什戴尔"). It was the picker's broken search box
-  // (covered by the browser E2E), but the claim is worth a standing check: against the very official data this build was
-  // made from, the 6★ population must split exactly into "the mode's shop pool" and "the 外援 candidates". This reads
-  // .cache/gamedata (the source `node tools/build-data.mjs` built data/ from), so publishing a newer official version and
-  // rebuilding moves the check with the data instead of pinning a list here.
-  const charTableFile = join(CACHE, 'excel/character_table.json');
-  assert.ok(existsSync(charTableFile), 'the official character table is cached (run tools/build-data.mjs once)');
-  const charTable = JSON.parse(readFileSync(charTableFile, 'utf8'));
-  const six = Object.entries(charTable).filter(([id, c]) => /^char_/.test(id) && c?.rarity === 'TIER_6');
-  assert.ok(six.length > 100, `the official data holds ${six.length} 6★`);
-
-  // the mode's shop pool, from the same research the build reads
-  const pools = JSON.parse(readFileSync(join(ROOT, 'docs/research/03-operators.json'), 'utf8'));
-  const poolIds = new Set(pools.chess.filter((c) => !c.isHidden && c.chessType !== 'DIY' && c.charId).map((c) => c.charId));
-  assert.ok(poolIds.size > 40, `the pool fields ${poolIds.size} operators`);
-  const poolSix = six.filter(([id]) => poolIds.has(id));
-  assert.ok(poolSix.length > 40, `${poolSix.length} of the pool's operators are 6★`);
-
-  const candidateIds = new Set(waiguanCandidates.map((c) => c.charId));
-  // every 6★ is covered by exactly one of the two sets — nothing missing, nothing listed twice
-  const uncovered = six.filter(([id]) => !candidateIds.has(id) && !poolIds.has(id)).map(([id, c]) => `${c.name}(${id})`);
-  assert.deepEqual(uncovered, [], 'every 6★ is either a pool operator or a candidate');
-  for (const id of candidateIds) {
-    assert.equal(charTable[id]?.rarity, 'TIER_6', `${id}: a candidate is a 6★`);
-    assert.ok(!poolIds.has(id), `${id}: a 6★ pool operator must not be a candidate too`);
-  }
-  assert.equal(candidateIds.size, waiguanCandidates.length, 'no duplicate candidate');
-  assert.equal(waiguanCandidates.length, six.length - poolSix.length, 'the candidate count is the 6★ complement of the pool');
-
-  // 维什戴尔, the operator the report named: a 6★ outside the pool, selectable at both tiers
-  const wisdel = waiguanCandidates.find((c) => c.charId === 'char_1035_wisdel');
-  assert.ok(wisdel, '维什戴尔 is a candidate');
-  assert.equal(wisdel.name, '维什戴尔');
-  assert.ok(!poolIds.has(wisdel.charId), 'and is not in the shop pool');
-  for (const tier of [5, 6]) assert.ok(allChess[`chess_char_diy_${tier}_${wisdel.charId}_a`], `维什戴尔 tier ${tier} record`);
-});
-
-test('waiguan: every record is a full 6★ chess of its slot tier, without 特质', () => {
-  for (const [id, c] of Object.entries(allChess)) {
-    if (!id.includes('_diy_')) continue;
-    const tier = id.startsWith('chess_char_diy_5_') ? 5 : 6;
-    assert.equal(c.chessId, id);
-    assert.equal(c.tier, tier, `${id}: tier`);
-    assert.equal(c.isDiy, true);
-    // `visible` marks a REAL, fieldable operator — a picked 甄选 record is one (it is a 干员调配 target: its skills and
-    // module are chosen like any operator's), so hiding it here would make its skill unswitchable. What keeps it out of the
-    // shared shop pool is `isDiy` alone — asserted through the very predicate GameData.visibleChess applies.
-    assert.equal(c.visible, true, `${id}: a picked 甄选 record is a real operator`);
-    assert.equal(c.visible && !c.isGolden && !c.isDiy && !c.isHidden && Number.isInteger(c.tier), false, `${id}: still out of the shop pool`);
-    assert.equal(c.rarity, 6, `${id}: the roster is 6★ only`);
-    assert.equal(c.garrisonIds.length, 0, `${id}: 甄选 chess have no 特质`);
-    assert.ok(c.stats && c.stats.maxHp > 0, `${id}: stats`);
-    assert.ok(c.rangeGrid.length, `${id}: range`);
-    assert.equal(c.skills.filter((s) => s.isDefault).length, 1, `${id}: one default skill`);
-    assert.ok(allChess[c.baseId] && allChess[c.goldenId], `${id}: base / elite pair`);
-    assert.ok(c.charId && c.name, `${id}: operator`);
-    if (c.isGolden) {
-      // An elite carries its own operator's module choices. Two roster operators (凯尔希·思衡托, 予愿安洁莉娜) have no
-      // module in the official data at all: the record then carries the placeholder `module` of a module-less elite
-      // (id null, active false — the same shape the pool uses) and an empty choice list.
-      if ((c.modules || []).length) {
-        assert.ok(c.module?.active, `${id}: an elite with module choices has one active`);
-        assert.equal(c.modules.filter((m) => m.isDefault).length, 1, `${id}: one default module`);
-        const def = c.modules.find((m) => m.isDefault);
-        assert.ok(String(def.uniEquipId).endsWith(c.charId.replace(/^char_\d+_/, '')), `${id}: default module belongs to the operator`);
-      } else {
-        assert.equal(c.module?.active, false, `${id}: no module choices ⇒ nothing active`);
-      }
-    }
-  }
-});
-
-test('waiguan: bond derivation uses mainPower AND subPower — checked against the official pool', { skip: !HAS_CACHE && 'no .cache/gamedata' }, () => {
-  // The faction ids of a 甄选 candidate come from character_table's mainPower AND its subPower ARRAY. Reading only the
-  // top-level nationId / groupId / teamId (a single, often historical faction) gets real operators wrong: 能天使 read as
-  // 炎 instead of 拉特兰, 德克萨斯 as 炎 instead of 叙拉古, and 水月 / 百炼嘉维尔 / 卡涅利安 / 烛煌 / 结城理 with no core
-  // bond at all. The check below uses the 121 pool operators, whose bonds the official mode STATES, as ground truth.
-  const charTable = JSON.parse(readFileSync(join(CACHE, 'excel/character_table.json'), 'utf8'));
-  const coreBonds = Object.values(bonds).filter((b) => b.isCore);
-  assert.equal(coreBonds.length, 8, `${coreBonds.length} core bonds`);
-  const powerOf = (id) => new Set(bonds[id]?.powerIdList || []);
-  /** Every faction SOURCE the game files give an operator (its own fields, mainPower, each subPower entry). */
-  const factionSourcesOf = (ch) => [ch, ch.mainPower, ...(Array.isArray(ch.subPower) ? ch.subPower : ch.subPower ? [ch.subPower] : [])]
-    .filter((s) => s && typeof s === 'object')
-    .map((s) => ['nationId', 'groupId', 'teamId'].map((k) => s[k]).filter(Boolean))
-    .filter((ids) => ids.length);
-  /** The core bonds an operator derives: each source matches on its own and the results are UNIONed. */
-  const coreOf = (ch) => {
-    const out = new Set();
-    for (const ids of factionSourcesOf(ch)) {
-      for (const b of coreBonds) if (b.powerIdList.some((p) => ids.includes(p))) out.add(b.bondId);
-    }
-    return [...out].sort();
-  };
-
-  // ground truth: the pool's own records carry the bonds the official mode assigned
-  const poolRecs = new Map();
-  for (const c of Object.values(chess)) { if (c.charId && !c.isGolden && !poolRecs.has(c.charId)) poolRecs.set(c.charId, c); }
-  let checked = 0;
-  const onlyExtra = [];
-  // The derivation grants EVERY core bond a faction source matches. For 5 企鹅物流 operators the official piece lists a
-  // single bond where the character files match two (they carry 龙门 `lungmen` AND 企鹅物流 `penguin`, and 炎's
-  // `powerIdList` holds `lungmen`,`penguin`; their `subPower` adds 叙拉古 / 拉特兰). `penguin` is a 炎 power by the
-  // mode's own design, so the extra bond is factually right — the official piece is simply the narrower record. They are
-  // listed here instead of loosening the assertion, so a NEW divergence still fails.
-  const KNOWN_EXTRA = new Set(['德克萨斯', '缄默德克萨斯', '能天使', '新约能天使', '莫斯提马']);
-  for (const [charId, rec] of poolRecs) {
-    const official = (rec.bonds || []).filter((b) => bonds[b]?.isCore).sort();
-    if (!official.length) continue;                       // the mode itself gives this one no core bond
-    checked++;
-    const derived = coreOf(charTable[charId] || {});
-    for (const b of official) assert.ok(derived.includes(b), `${rec.name}: official ${b} is derived (got ${derived.join('/') || 'none'})`);
-    // "all matching core bonds" is the official rule, not a single one: 哈洛德 officially carries 维多利亚 AND 谢拉格
-    // (main and subPower each contribute one), 烛煌 维多利亚 AND 炎, 锏 谢拉格 AND 卡西米尔.
-    const extra = derived.filter((b) => !official.includes(b));
-    if (extra.length) {
-      onlyExtra.push(rec.name);
-      assert.ok(KNOWN_EXTRA.has(rec.name), `${rec.name}: unexpected extra core bond ${extra.join('/')} (official ${official.join('/')})`);
-    } else {
-      assert.deepEqual(derived.slice().sort(), official.slice().sort(), `${rec.name}: derived core bonds equal the official set`);
-    }
-  }
-  assert.ok(checked >= 75, `${checked} pool operators have a stated core bond`);
-  assert.deepEqual(onlyExtra.slice().sort(), [...KNOWN_EXTRA].sort(), 'exactly the known 企鹅物流 operators add one bond');
-
-  // every candidate: core bonds iff the data gives a matching faction, else exactly the 协防 fallback
-  for (const c of waiguanCandidates) {
-    const derived = coreOf(charTable[c.charId] || {});
-    const stored = c.bonds.filter((b) => bonds[b]?.isCore);
-    assert.deepEqual([...stored].sort(), [...derived].sort(), `${c.name}: stored core bonds match the derivation`);
-    if (!derived.length) assert.deepEqual(c.bonds, ['emptyShip'], `${c.name}: no matching faction ⇒ 协防干员`);
-  }
-
-  // the report's own example: the P3 collab operator is filed under laterano in the game files
-  const makoto = waiguanCandidates.find((c) => c.name === '结城理');
-  assert.ok(makoto, '结城理 is a candidate');
-  assert.ok(factionSourcesOf(charTable[makoto.charId]).some((ids) => ids.includes('laterano')), 'his subPower carries laterano');
-  assert.deepEqual(makoto.bonds, ['lateranoShip'], 'so he derives 拉特兰, not 协防');
-  // and the ones whose real allegiance sits in subPower
-  for (const [name, bond] of [['能天使', 'lateranoShip'], ['德克萨斯', 'siracusaShip'], ['水月', 'egirShip'], ['百炼嘉维尔', 'sargonShip']]) {
-    const id = Object.keys(charTable).find((k) => charTable[k].name === name);
-    assert.ok(coreOf(charTable[id]).includes(bond), `${name}: derives ${bond}`);
-  }
-});
-
-test('waiguan: the two tiers of one operator are the same operator (tier V = tier VI + the tier fields; an elite + its 模组 level)', () => {
-  for (const c of waiguanCandidates) {
-    for (const suffix of ['_a', '_b']) {
-      const id5 = c.chessIds[5].replace(/_a$/, suffix);
-      const id6 = c.chessIds[6].replace(/_a$/, suffix);
-      const r5 = allChess[id5];
-      const r6 = allChess[id6];
-      assert.ok(r5 && r6, `${c.charId}${suffix}: tier records (${id5} / ${id6})`);
-      assert.equal(r5.tier, 5);
-      assert.equal(r6.tier, 6);
-      // everything but the nine tier fields is the same record — and, on an elite, what its slot's 模组 level decides
-      // (tier V elite equipLevel 1, tier VI 3: the module bonus, the module trait / talent parts, the module choices)
-      const allowed = new Set([...WAIGUAN_TIER_FIELDS, ...(r6.isGolden ? WAIGUAN_ELITE_TIER_FIELDS : [])]);
-      for (const k of new Set([...Object.keys(r5), ...Object.keys(r6)])) {
-        if (allowed.has(k)) continue;
-        assert.deepEqual(r5[k], r6[k], `${id5}.${k} differs from ${id6}`);
-      }
-      // what the module level does not touch stays shared
-      for (const k of ['statsBase', 'traitBase', 'talentsBase', 'skills', 'skill']) assert.deepEqual(r5[k], r6[k], `${id5}.${k} is module-independent`);
-      const tpl = chess[r6.isGolden ? 'chess_char_5_diy1_b' : 'chess_char_5_diy1_a'];
-      const tpl6 = chess[r6.isGolden ? 'chess_char_6_diy1_b' : 'chess_char_6_diy1_a'];
-      assert.equal(r5.status.equipLevel, tpl.status.equipLevel, `${id5}: the tier V slot's 模组 level`);
-      assert.equal(r6.status.equipLevel, tpl6.status.equipLevel, `${id6}: the tier VI slot's 模组 level`);
-      assert.equal(r5.status.skillLevel, tpl.status.skillLevel, `${id5}: the tier V slot's skill level`);
-      assert.equal(r6.status.skillLevel, r6.isGolden ? 7 : 4);
-      assert.deepEqual([r5.status.equipLevel, r6.status.equipLevel], r6.isGolden ? [1, 3] : [0, 0], `${c.charId}${suffix}: 模组 levels`);
-      if (r6.isGolden) {
-        assert.equal(r5.module.level, 1, `${id5}: module level`);
-        assert.equal(r6.module.level, 3, `${id6}: module level`);
-      }
-    }
-  }
-});
-
-test('waiguan: every elite composes back from statsBase / traitBase / talentsBase at its OWN tier\'s 模组 level', () => {
-  let nMods = 0;
-  let nElites = 0;
-  for (const [id, c] of Object.entries(allChess)) {
-    if (!id.includes('_diy_') || !c.isGolden) continue;
-    nElites++;
-    assert.equal(c.module.level, c.status.equipLevel, `${id}: module.level = status.equipLevel`);
-    assert.ok(Array.isArray(c.modules) && c.statsBase && c.traitBase && c.talentsBase, `${id}: module choices`);
-    const defs = c.modules.filter((m) => m.isDefault);
-    assert.equal(defs.length, c.module.active ? 1 : 0, `${id}: default module iff active`);
-    if (defs.length) assert.equal(defs[0].uniEquipId, c.module.id, `${id}: the default is the equipped one`);
-    const dm = defs[0] ?? null;
-    for (const m of c.modules) {
-      nMods++;
-      assert.equal(m.level, c.status.equipLevel, `${id} ${m.uniEquipId}: level`);
-    }
-    // the default loadout = the record's own stats / trait / talents (the pool's rule, test 'chess: golden modules[]')
-    assert.deepEqual(composeStats(c.statsBase, dm?.attr), c.stats, `${id}: statsBase + default attr = stats`);
-    assert.deepEqual(dm?.traitOverride ?? c.traitBase, c.trait, `${id}: trait`);
-    assert.deepEqual(composeTalents(c.talentsBase, dm?.talentChanges), c.talents, `${id}: talents`);
-  }
-  assert.equal(nElites, waiguanCandidates.length * 2);
-  // 144 module choices per tier (85 operators carry 1-3 modules, 2 carry none); the same ids at both tiers
-  assert.equal(nMods, 2 * 144, 'module choices over both tiers');
-  for (const c of waiguanCandidates) {
-    const ids = (tier) => allChess[c.chessIds[tier].replace(/_a$/, '_b')].modules.map((m) => m.uniEquipId);
-    assert.deepEqual(ids(5), ids(6), `${c.charId}: the same module choices at tier V and VI`);
-  }
-  // 阿 (official battle_equip_table uniequip_002_haak / _003_haak): GEE-X level 1 +135 HP / +37 ATK, level 3 +240 / +57;
-  // E2 Lv60 base 1897 / 663. Talent 0's module upgrade (`prob`, the second effect) arrives only at level 2+.
-  const h5 = allChess.chess_char_diy_5_char_225_haak_b, h6 = allChess.chess_char_diy_6_char_225_haak_b;
-  assert.deepEqual(h5.modules.map((m) => [m.typeName, m.level, m.attr]), [['GEE-X', 1, { maxHp: 135, atk: 37 }], ['GEE-Y', 1, { atk: 43, aspd: 3, respawnTime: -15 }]]);
-  assert.deepEqual(h6.modules.map((m) => [m.typeName, m.level, m.attr]), [['GEE-X', 3, { maxHp: 240, atk: 57 }], ['GEE-Y', 3, { atk: 75, aspd: 5, respawnTime: -15 }]]);
-  assert.deepEqual([h5.statsBase.maxHp, h5.statsBase.atk, h5.stats.maxHp, h5.stats.atk, h6.stats.maxHp, h6.stats.atk], [1897, 663, 2032, 700, 2137, 720]);
-  assert.equal(h5.talents[0].bb.prob, undefined, 'tier V: talent 0 not upgraded at module level 1');
-  assert.equal(h6.talents[0].bb.prob, 0.3, 'tier VI: talent 0 upgraded at module level 3');
-  // the module-less operators: the placeholder module, no choices, at both tiers
-  for (const tier of [5, 6]) {
-    const k = allChess[`chess_char_diy_${tier}_char_1052_kalts2_b`];
-    assert.deepEqual(k.modules, [], `凯尔希·思衡托 tier ${tier}: no module`);
-    assert.deepEqual(k.module, { id: null, name: null, type: null, level: tier === 5 ? 1 : 3, active: false });
-    assert.deepEqual(k.stats, k.statsBase);
-  }
-});
-
-test('waiguan: a normal record carries the inactive module stub a pool normal has', () => {
-  for (const [id, c] of Object.entries(allChess)) {
-    if (!id.includes('_diy_') || c.isGolden) continue;
-    const g = allChess[c.goldenId];
-    if (g.module?.id) assert.deepEqual(c.module, { ...g.module, level: 0, active: false }, `${id}: stub`);
-    else assert.equal(c.module, null, `${id}: module-less operator`);
-    for (const k of ['modules', 'statsBase', 'traitBase', 'talentsBase']) assert.equal(c[k], undefined, `${id}: normal chess has no ${k}`);
-  }
-  // the pool's shape, for comparison (data/chess.json: 圣约送葬人 normal)
-  assert.deepEqual(chess.chess_char_5_01_a.module, { id: 'uniequip_002_excu2', name: '待解答', type: 'REA-X', level: 0, active: false });
-});
-
-test('waiguan: token variants exist for both tiers of every summoning candidate; tier V elites summon with 模组 level 1', () => {
-  for (const t of Object.values(tokens)) {
-    for (const owner of Object.keys(t.variants || {})) {
-      if (!owner.includes('_diy_')) continue;
-      assert.ok(allChess[owner], `${t.tokenId}: variant owner ${owner}`);
-      assert.ok(allChess[owner].tokens.includes(t.tokenId), `${t.tokenId}: ${owner} does not list the token`);
-    }
-  }
-  for (const [id, c] of Object.entries(allChess)) {
-    if (!id.includes('_diy_')) continue;
-    for (const tok of c.tokens) assert.ok(tokens[tok]?.variants?.[id], `${id}: no variant of ${tok}`);
-  }
-  // 令 SUM-Y (default) adds summon attributes at every level: level 1 −3 cost only, level 3 also +HP / +ATK
-  const soul = tokens.token_10020_ling_soul1;
-  const v5 = soul.variants.chess_char_diy_5_char_2023_ling_b, v6 = soul.variants.chess_char_diy_6_char_2023_ling_b;
-  assert.deepEqual([v5.stats.maxHp, v5.stats.atk, v5.stats.cost], [2407, 529, 9]);
-  assert.deepEqual([v6.stats.maxHp, v6.stats.atk, v6.stats.cost], [2557, 574, 9]);
-  assert.deepEqual(v5.byModule.none.stats, v6.byModule.none.stats, 'no module: the same summon at both tiers');
-  assert.deepEqual(soul.variants.chess_char_diy_5_char_2023_ling_a, soul.variants.chess_char_diy_6_char_2023_ling_a, 'normal: the same summon at both tiers');
-  // the token's top-level defaults stay the first owner's (tier VI normal)
-  assert.deepEqual(soul.owners.slice(0, 1), ['chess_char_diy_6_char_2023_ling_a']);
-  assert.deepEqual(soul.stats, soul.variants.chess_char_diy_6_char_2023_ling_a.stats);
-});
-
-test('waiguan: slots match the official four (2 at tier V, 2 at tier VI)', () => {
-  assert.deepEqual(WAIGUAN_SLOTS.map((s) => [s.slot, s.tier]), [['diy5a', 5], ['diy5b', 5], ['diy6a', 6], ['diy6b', 6]]);
-  for (const s of WAIGUAN_SLOTS) {
-    const rec = chess[s.chessId];
-    assert.ok(rec && rec.isDiy && !rec.stats, `${s.chessId}: the empty slot template`);
-  }
-});
-
 test('chess: ids, golden pairs and references resolve', () => {
   for (const [id, c] of Object.entries(chess)) {
     assert.equal(c.chessId, id);
@@ -424,9 +121,10 @@ test('chess: every non-DIY chess has stats, range, classification and a resolvab
     assert.ok(c.assets && c.assets.avatar && c.assets.spine, `${c.chessId}: assets`);
     if (c.isGolden) assert.equal(c.module ? c.module.active || c.module.id === null : true, true);
   }
-  // Spot checks against official numbers (隐现 E1 Lv55: HP 1123, ATK 399).
+  // Spot checks against official numbers (隐现 E1 Lv55: HP 1123, ATK 399 + 攻击力+23 at full potential = 422; cost 15 − 3).
   assert.equal(chess.chess_char_1_01_a.stats.maxHp, 1123);
-  assert.equal(chess.chess_char_1_01_a.stats.atk, 399);
+  assert.equal(chess.chess_char_1_01_a.stats.atk, 422);
+  assert.equal(chess.chess_char_1_01_a.stats.cost, 12);
   assert.equal(chess.chess_char_1_01_a.targetPriority, 'fly');
 });
 
@@ -636,7 +334,7 @@ test('bosses, factions, tokens and choices resolve', () => {
 
   for (const t of Object.values(tokens)) {
     assertStatsFinite(t.stats, t.tokenId, ['maxHp', 'atk', 'def', 'res', 'bat', 'aspd']);
-    for (const o of t.owners) assert.ok(allChess[o]?.tokens.includes(t.tokenId), `${t.tokenId}: owner ${o}`);
+    for (const o of t.owners) assert.ok(chess[o]?.tokens.includes(t.tokenId), `${t.tokenId}: owner ${o}`);
   }
   assert.ok(tokens.enemy_9012_acloon, '炎佑 present');
 
@@ -710,25 +408,12 @@ test('chess/tokens: talent tokens resolve and every token variant says where it 
   assert.equal(svash.talents[0].containerTokenKey, 'token_10057_svash2_eagle');
   assert.equal(svash.skill.overrideTokenKey, 'token_10057_svash2_eagle2');
   const allowed = new Set(['talent', 'skill', 'display']);
-  const madeBy = (list) => Array.isArray(list) && (list.includes('talent') || list.includes('skill'));
   for (const t of Object.values(tokens)) {
     for (const [owner, v] of Object.entries(t.variants)) {
-      // a summon only a non-default skill makes (W S2 地雷 …) has no default sources: one of its skills makes it
-      const altOnly = !v.sources?.length && Object.values(v.bySkill || {}).some((b) => madeBy(b.sources));
-      assert.ok(Array.isArray(v.sources) && (v.sources.length || altOnly) && v.sources.every((s) => allowed.has(s)), `${t.tokenId}@${owner}: sources`);
-      assert.ok(allChess[owner]?.tokens.includes(t.tokenId), `${t.tokenId}: owner ${owner}`);
+      assert.ok(Array.isArray(v.sources) && v.sources.length && v.sources.every((s) => allowed.has(s)), `${t.tokenId}@${owner}: sources`);
+      assert.ok(chess[owner]?.tokens.includes(t.tokenId), `${t.tokenId}: owner ${owner}`);
     }
   }
-  // every selectable skill's summon is a token of its chess (DESIGN_BC D1): W S2 地雷, 黑键 S2, 贝洛内 S3, 予愿安洁莉娜 S3
-  const cqbw = waiguanRecords(waiguan).chess_char_diy_6_char_113_cqbw_a;
-  assert.ok(cqbw.tokens.includes('token_10008_cqbw_box'), 'W lists its S2 mine');
-  assert.deepEqual(tokens.token_10008_cqbw_box.variants.chess_char_diy_6_char_113_cqbw_a.sources, []);
-  assert.deepEqual(tokens.token_10008_cqbw_box.variants.chess_char_diy_6_char_113_cqbw_a.bySkill[1].sources, ['skill']);
-  // 部署数量上限 = maxDeployCount + the summon's talent max_deploy_count (令: 1 + 2, SUM-Y 1 + 3); pool summons unchanged
-  assert.equal(tokens.token_10020_ling_soul1.variants.chess_char_diy_6_char_2023_ling_a.stats.deployLimit, 3);
-  assert.equal(tokens.token_10020_ling_soul1.variants.chess_char_diy_6_char_2023_ling_b.stats.deployLimit, 4);
-  assert.equal(tokens.token_10020_ling_soul1.variants.chess_char_diy_6_char_2023_ling_b.byModule.none.stats.deployLimit, 3);
-  assert.equal(tokens.token_10041_cathy_catsld.variants.chess_char_4_11_a.stats.deployLimit, 2, '凯瑟琳 2 devices');
   assert.deepEqual(tokens.token_10057_svash2_eagle1.variants.chess_char_5_14_a.sources, ['display']);
   // 夕's skill "cnt" is a charge count, not a token count.
   assert.equal(tokens.token_10015_dusk_drgn.variants.chess_char_5_12_a.count, null);
@@ -741,19 +426,8 @@ test('chess/tokens: talent tokens resolve and every token variant says where it 
     const made = Object.values(t.variants).some((v) => makes(v.sources) || Object.values(v.bySkill || {}).some((b) => makes(b.sources)));
     assert.equal(t.placeable, t.displayType !== 'HIDDEN' && made, `${t.tokenId} (${t.name}): placeable`);
   }
-  // The pool's own hand summons stay exactly as they were; the 外援 / 甄选 operators bring their own (each is a real
-  // manually deployable summon of its operator — Mon3tr, 幻影, 龙腾.…, the tactician 援军 — so the roster widens this set
-  // on purpose, DESIGN §27). A placeable token is never HIDDEN and never display-only.
-  const placeableNames = Object.values(tokens).filter((t) => t.placeable).map((t) => t.name);
-  for (const n of ['医疗探机', '诅咒娃娃', '斯卡蒂的海嗣', '流形', '狼群', '爬行号·防护单元']) {
-    assert.ok(placeableNames.includes(n), `${n} must stay placeable`);
-  }
-  for (const t of Object.values(tokens)) {
-    if (!t.placeable) continue;
-    assert.notEqual(t.displayType, 'HIDDEN', `${t.tokenId}: a HIDDEN token is never a hand card`);
-    const sources = Object.values(t.variants).flatMap((v) => [v.sources, ...Object.values(v.bySkill || {}).map((b) => b.sources)]);
-    assert.ok(sources.some((s) => makes(s)), `${t.tokenId}: placeable without a talent/skill source`);
-  }
+  assert.deepEqual(Object.values(tokens).filter((t) => t.placeable).map((t) => t.name).sort(),
+    ['医疗探机', '诅咒娃娃', '斯卡蒂的海嗣', '流形', '狼群', '爬行号·防护单元'].sort());
   assert.equal(tokens.enemy_9012_acloon.stats.deployLimit, tokens.enemy_9012_acloon.deployLimit);
 });
 
@@ -787,20 +461,21 @@ test('chess: skills[] = every skill unlocked at the status, at the chess skill l
   // Triggers per skill (PRTS 卫戍协议/帮助 技能策略; tools/build-data.mjs resolveTrigger): the class rows cover every MANUAL
   // skill of the class and no AUTO one; a MANUAL skill with a 技能范围 of its own (not an attack-range change) is SKILL_RANGE.
   const rules = (id) => chess[id].skills.map((s) => s.trigger.rule);
+  const raws = (id) => chess[id].skills.map((s) => s.trigger.rawRule);
   assert.deepEqual(rules('chess_char_1_02_a'), ['TAKE_DAMAGE', 'TAKE_DAMAGE']);         // 角峰 (重装, both MANUAL)
   assert.deepEqual(rules('chess_char_1_10_b'), ['DEFAULT', 'TAKE_DAMAGE']);             // 古米 (S1 自动触发)
-  assert.deepEqual(rules('chess_char_3_08_a'), ['SEARCH', 'SEARCH']);                   // 薄绿 (阵法术师: the default S2 too)
+  assert.deepEqual(rules('chess_char_3_08_a'), ['ACTIVE_RANGE', 'SEARCH']);             // 薄绿 (阵法术师: the default S2 too; S1's x-2: the owner's rule)
+  assert.deepEqual(raws('chess_char_3_08_a'), ['SEARCH', 'SEARCH']);
   assert.deepEqual(rules('chess_char_3_19_a'), ['DEFAULT', 'DEFAULT', 'SP_FULL']);      // 伺夜 (战术家: S1/S2 are AUTO)
   assert.deepEqual(rules('chess_char_6_11_b'), ['MLYSS_WTRMAN', 'MLYSS_WTRMAN', 'MLYSS_WTRMAN']); // 缪尔赛思 (charId row −1)
   assert.deepEqual(rules('chess_char_1_08_a'), ['DEFAULT', 'SKILL_RANGE']);             // 德克萨斯 S2 剑雨: 对周围所有敌人
   assert.deepEqual(chess.chess_char_1_08_a.skills[1].trigger.customRangeGrid, chess.chess_char_1_08_a.skills[1].rangeGrid);
-  assert.deepEqual(rules('chess_char_4_22_a'), ['DEFAULT', 'DEFAULT', 'DEFAULT']);      // 银灰: "攻击范围缩小 / 扩大" = attack range
-  assert.deepEqual(rules('chess_char_3_18_a'), ['DEFAULT', 'SKILL_RANGE', 'DEFAULT']);  // 忍冬: S2 对周围…, S3 攻击距离+1
+  assert.deepEqual(rules('chess_char_4_22_a'), ['DEFAULT', 'DEFAULT', 'ACTIVE_RANGE']); // 银灰: "攻击范围缩小 / 扩大" = attack range
+  assert.deepEqual(rules('chess_char_3_18_a'), ['DEFAULT', 'SKILL_RANGE', 'ACTIVE_RANGE']); // 忍冬: S2 对周围…, S3 攻击距离+1
   // the deliberate deviation from the 重装 row (DESIGN §21.29, the owner's decision; tools/build-data.mjs
   // TRIGGER_DEVIATIONS, per chess): six skills cast with an enemy in range, rawRule keeps the official TAKE_DAMAGE
-  const raws = (id) => chess[id].skills.map((s) => s.trigger.rawRule);
   for (const id of ['chess_char_1_04_a', 'chess_char_1_04_b']) {                       // 深巡: S1 keeps the row, S2 deviates
-    assert.deepEqual(rules(id), ['TAKE_DAMAGE', 'DEFAULT']);
+    assert.deepEqual(rules(id), ['TAKE_DAMAGE', 'ACTIVE_RANGE']);                      // (S2: and the owner's ACTIVE_RANGE on top)
     assert.deepEqual(raws(id), ['TAKE_DAMAGE', 'TAKE_DAMAGE']);
   }
   for (const id of ['chess_char_1_20_a', 'chess_char_1_20_b']) {                       // 雷蛇: S1 AUTO, S2 deviates
@@ -822,6 +497,34 @@ test('chess: skills[] = every skill unlocked at the status, at the chess skill l
     assert.deepEqual(raws(id), ['TAKE_DAMAGE', 'TAKE_DAMAGE', 'CUSTOM_RANGE_SEARCH_ENEMY']);
     assert.deepEqual(chess[id].skills[1].trigger.customRangeGrid, chess[id].skills[1].rangeGrid);
   }
+  // the owner's rule of 2026-10-05 (a deliberate deviation): a MANUAL skill on the basic strategy (DEFAULT by no row or by
+  // a deviation: 深巡 S2) or on the SEARCH row whose running attack range strictly contains the operator's own range is
+  // ACTIVE_RANGE on that range (rawRule keeps the official row)
+  const tiles = (g) => new Set((g || []).map(([r, c]) => `${r},${c}`));
+  const wider = (a, b) => { const A = tiles(a), B = tiles(b); return A.size > B.size && [...B].every((k) => A.has(k)); };
+  const active = Object.values(chess).flatMap((c) => (c.skills || []).filter((s) => s.trigger.rule === 'ACTIVE_RANGE').map((s) => [c, s]));
+  for (const [c, s] of active) {
+    assert.equal(s.skillType, 'MANUAL', `${c.chessId} ${s.skillId}`);
+    const dev = c.baseId === 'chess_char_1_04_a' && s.skillId === 'skchr_udflow_2';
+    assert.equal(s.trigger.rawRule, dev ? 'TAKE_DAMAGE' : s.trigger.rawRule === 'SEARCH' ? 'SEARCH' : 'DEFAULT', `${c.chessId} ${s.skillId}: only the basic strategy / SEARCH`);
+    assert.ok(wider(s.trigger.customRangeGrid, c.rangeGrid), `${c.chessId} ${s.skillId}: its running range strictly contains ${c.rangeId}`);
+    if (s.rangeGrid) assert.deepEqual(s.trigger.customRangeGrid, s.rangeGrid, `${c.chessId} ${s.skillId}: the skill's own grid`);
+  }
+  assert.equal(active.length, 78, '39 skills, normal + elite');
+  assert.equal(new Set(active.map(([c, s]) => `${c.baseId} ${s.skillId}`)).size, 39);
+  // from the SEARCH row (解放者 / 阵法术师 / 安洁莉娜) and 深巡 S2's deviation: the owner's decisions of 2026-10-05
+  const fromSearch = active.filter(([, s]) => s.trigger.rawRule === 'SEARCH').map(([c, s]) => `${c.baseId} ${s.skillId}`);
+  assert.deepEqual([...new Set(fromSearch)].sort(), ['chess_char_3_08_a skchr_mint_1', 'chess_char_4_05_a skchr_beewax_1', 'chess_char_4_24_a skchr_billro_3', 'chess_char_5_19_a skchr_mlynar_2', 'chess_char_5_20_a skchr_aglina_3']);
+  assert.equal(fromSearch.length, 10);
+  // the SEARCH skills whose range does not grow keep the row (薄绿 / 蜜蜡 S2, 卡涅利安 S1 / S2, 玛恩纳 S1, 安洁莉娜 S2, 圣聆初雪 S1)
+  const search = Object.values(chess).flatMap((c) => (c.skills || []).filter((s) => s.trigger.rule === 'SEARCH').map((s) => `${c.baseId} ${s.skillId}`));
+  assert.deepEqual([...new Set(search)].sort(), ['chess_char_3_08_a skchr_mint_2', 'chess_char_4_05_a skchr_beewax_2', 'chess_char_4_24_a skchr_billro_1', 'chess_char_4_24_a skchr_billro_2', 'chess_char_5_19_a skchr_mlynar_1', 'chess_char_5_20_a skchr_aglina_2', 'chess_char_6_02_a skchr_sbell2_1']);
+  const grown = (id, sid) => chess[id].skills.find((s) => s.skillId === sid).trigger;
+  assert.deepEqual(grown('chess_char_5_07_a', 'skchr_surtr_3').customRangeGrid.length, chess.chess_char_5_07_a.rangeGrid.length + 2, '史尔特尔 S3 攻击距离+2: 1-1 grown by 2');
+  assert.equal(grown('chess_char_5_03_a', 'skchr_blaze2_3').rule, 'DEFAULT', '烛煌 S3: 4-11 does not contain her 3-1');
+  assert.deepEqual(grown('chess_char_1_04_a', 'skchr_udflow_2'), { rule: 'ACTIVE_RANGE', rawRule: 'TAKE_DAMAGE', customRangeGrid: [[0, 0], [0, 1], [0, 2], [0, 3]] }, '深巡 S2: its 3-2 over her 2-2, on top of the §21.29 deviation');
+  assert.equal(grown('chess_char_3_08_a', 'skchr_mint_1').rawRule, 'SEARCH', '薄绿 S1: its official 阵法术师 row stays the rawRule');
+  assert.equal(grown('chess_char_5_15_a', 'skchr_thorn2_3').rule, 'DEFAULT', '引星棘刺 S3: 被动效果：攻击范围扩大 is her own range');
   const deviated = Object.values(chess).flatMap((c) => (c.skills || []).filter((s) => s.trigger.rawRule === 'TAKE_DAMAGE' && s.trigger.rule !== 'TAKE_DAMAGE').map((s) => `${c.baseId} ${s.skillId}`));
   assert.equal(deviated.length, 14, 'exactly the six skills of §21.29 and 余 S2, normal + elite');
   assert.deepEqual([...new Set(deviated)].sort(), ['chess_char_1_04_a skchr_udflow_2', 'chess_char_1_20_a skchr_liskam_2', 'chess_char_2_18_a skchr_ashlok_2', 'chess_char_2_18_a skcom_atk_up[3]', 'chess_char_5_08_a skchr_horn_2', 'chess_char_5_08_a skchr_horn_3', 'chess_char_6_03_a skchr_yu_2']);
@@ -875,7 +578,7 @@ test('chess: golden modules[] (+ statsBase/traitBase/talentsBase) compose back t
   const m = chess.chess_char_6_11_b;
   assert.deepEqual(m.modules.map((x) => [x.uniEquipId, x.typeName, x.isDefault]), [['uniequip_002_mlyss', 'TAC-X', true], ['uniequip_003_mlyss', 'TAC-Y', false]]);
   assert.deepEqual(m.modules[1].attr, { maxHp: 170, atk: 28, def: 28 });
-  assert.deepEqual([m.statsBase.maxHp, m.statsBase.atk, m.statsBase.def], [1703, 467, 111]);
+  assert.deepEqual([m.statsBase.maxHp, m.statsBase.atk, m.statsBase.def], [1703, 492, 111]);   // ATK 467 + 攻击力+25 (full potential)
   // module-less goldens: no choices, base = stats
   assert.deepEqual(chess.chess_char_5_14_b.modules, []);
   assert.deepEqual(chess.chess_char_5_14_b.statsBase, chess.chess_char_5_14_b.stats);
@@ -885,7 +588,7 @@ test('tokens: owner loadout variants (bySkill per non-default owner skill, byMod
   const allowed = new Set(['talent', 'skill', 'display']);
   for (const t of Object.values(tokens)) {
     for (const [owner, v] of Object.entries(t.variants || {})) {
-      const o = allChess[owner];
+      const o = chess[owner];
       const alt = o.skills.filter((s) => !s.isDefault).map((s) => String(s.index));
       assert.deepEqual(Object.keys(v.bySkill || {}), alt, `${t.tokenId}@${owner}: bySkill keys`);
       for (const b of Object.values(v.bySkill || {})) {
@@ -962,6 +665,7 @@ test('stages: player-facing names are clean Chinese "战场#NN…" labels (no re
   // Regression: research 05 named act1 m01 '战场#01 (upper half #01)'; the English note reached the
   // briefing BATTLEFIELD row. Names come from research only, so the build must strip such notes.
   for (const s of Object.values(stages)) {
+    if (s.kind === 'unite') continue; // the escaped levels' two maps: the remake's own label, checked in the test below
     assert.match(s.name, /^战场#\d{2}(?:\((?:上半|下半)\))?(?: \S.*)?$/, `${s.id}: name ${JSON.stringify(s.name)}`);
     assert.doesNotMatch(s.name, /[A-Za-z]/, `${s.id}: Latin text in name ${JSON.stringify(s.name)}`);
     assert.equal(s.name, s.name.trim().replace(/\s+/g, ' '), `${s.id}: stray whitespace in name`);
@@ -970,13 +674,45 @@ test('stages: player-facing names are clean Chinese "战场#NN…" labels (no re
   assert.equal(stages.act2autochess_m01.name, '战场#05(下半) 源石流发生装置');
 });
 
+test('stages: the escaped levels\' maps — one per helper count, never a match stage (and since 0.2.1 never the 联防 field)', () => {
+  // act2autochess constData escapedBattleTemplateMapSinglePlayer / MultiPlayer → config.unite.templates { 1, 2 }. 0.2.0
+  // fought the 联防 battle on these maps (GitHub #41); 联防 plays on the round's battlefield again (the owner's decision of
+  // 2026-10-07, test/match/feedback5-unite-map.test.js) and the records stay as the official level data
+  assert.deepEqual(config.unite.templates, { 1: 'act1autochess_escaped_single', 2: 'act1autochess_escaped_multi' });
+  for (const [n, id] of Object.entries(config.unite.templates)) {
+    const s = stages[id];
+    assert.ok(s, id);
+    assert.equal(s.kind, 'unite');
+    assert.equal(s.helpers, Number(n));
+    assert.equal(s.active, false);
+    assert.equal(s.weight, 0);
+    assert.deepEqual(s.modes, []);
+    assert.ok(!Object.values(config.modes).some((m) => m.stages.includes(id)), `${id} in no mode's stage list`);
+    assert.equal(s.name, `联防阵地（${n}名玩家）`);
+    assert.deepEqual(s.devices, [], 'no crates, platforms or other devices');
+    assert.deepEqual(s.special, {}, 'no water, mire, smog or infection');
+    // the official level map (level_act1autochess_escaped_*.json): two road halves joined at col 10
+    assert.deepEqual(s.rows.slice(9, 13), ['##ErrrrrrrSrrrrrrrS##', '###rrrrrrr#rrrrrrr###', '###rrrrrrr#rrrrrrr###', '###rrrrrrrSrrrrrrrS##']);
+    for (let r = 9; r <= 12; r++) for (const c of [19, 20]) assert.equal(s.tiles[s.rows[r][c]].groundPassable, false, `${id} (${r},${c}) is no ground`);
+    assert.ok(s.groundPaths['9,10->9,2'] && s.groundPaths['9,18->9,2'], 'walkable from both gates');
+  }
+  // the two maps are tile for tile the same: they differ in their routes (data/waves.json — 1 helper enters at col 10,
+  // 2 helpers at col 18 through the checkpoint (9,10)), which the 联防 field follows on the round's stage (its gates
+  // (9,10) / (12,10) and (9,18) / (12,18))
+  assert.deepEqual(stages.act1autochess_escaped_single.rows, stages.act1autochess_escaped_multi.rows);
+  assert.deepEqual(waves.act1autochess_escaped_single.routes.map((r) => r.start), [[9, 10], [9, 10], [12, 10], [9, 10], [9, 10], [9, 10], [9, 10], [9, 10]]);
+  assert.deepEqual(waves.act1autochess_escaped_multi.routes.map((r) => r.start), [[9, 18], [9, 18], [12, 18], [9, 18], [9, 18], [9, 18], [9, 18], [9, 18]]);
+  assert.deepEqual(waves.act1autochess_escaped_multi.routes[3].checkpoints, [[9, 10]]);
+});
+
 test('official spot checks (hard-coded values from the zh_CN client data)', () => {
+  // at full potential (the owner's decision of 2026-10-07): the client's numbers plus each operator's potential steps
   const st = (id) => { const s = chess[id].stats; return [s.maxHp, s.atk, s.def, s.res, s.blockCnt, s.cost]; };
-  assert.deepEqual(st('chess_char_6_11_b'), [1893, 492, 141, 0, 1, 15]);      // 缪尔赛思 精锐 (E2 60 + module Lv3)
-  assert.deepEqual(st('chess_char_6_17_b'), [3593, 1108, 279, 0, 1, 19]);     // 耀骑士临光 精锐
-  assert.deepEqual(st('chess_char_3_08_a'), [1594, 629, 170, 15, 1, 25]);     // 薄绿 (E2 1)
-  assert.deepEqual(st('chess_char_2_11_a'), [1816, 547, 254, 0, 2, 15]);      // 风丸 (E1 60)
-  assert.deepEqual(st('chess_char_4_07_b'), [2383, 604, 359, 0, 1, 13]);      // 风笛 精锐
+  assert.deepEqual(st('chess_char_6_11_b'), [1893, 517, 141, 0, 1, 13]);      // 缪尔赛思 精锐 (E2 60 + module Lv3): 492 + 25 ATK, 15 − 2 cost
+  assert.deepEqual(st('chess_char_6_17_b'), [3593, 1143, 279, 0, 1, 17]);     // 耀骑士临光 精锐: 1108 + 35, 19 − 2
+  assert.deepEqual(st('chess_char_3_08_a'), [1594, 629, 170, 15, 1, 22]);     // 薄绿 (E2 1): 25 − 3
+  assert.deepEqual(st('chess_char_2_11_a'), [1816, 574, 254, 0, 2, 13]);      // 风丸 (E1 60): 547 + 27, 15 − 2
+  assert.deepEqual(st('chess_char_4_07_b'), [2383, 629, 359, 0, 1, 11]);      // 风笛 精锐: 604 + 25, 13 − 2
   assert.equal(chess.chess_char_6_11_b.module.level, 3);
   assert.deepEqual([chess.chess_char_4_07_b.skill.skillId, chess.chess_char_4_07_b.skill.level, chess.chess_char_4_07_b.skill.spCost], ['skchr_bpipe_2', 7, 5]);
   const es = (k) => { const s = enemies[k].stats; return [s.maxHp, s.atk, s.def, s.res]; };
@@ -1007,8 +743,11 @@ test('independent re-derivation of every chess and enemy stat from the raw offic
     const k0 = P.attributesKeyFrames[0], k1 = P.attributesKeyFrames[P.attributesKeyFrames.length - 1];
     const t = (cd.status.charLevel - k0.level) / (k1.level - k0.level || 1);
     const f = (key) => k0.data[key] + (k1.data[key] - k0.data[key]) * t;
-    const exp = { maxHp: f('maxHp'), atk: f('atk'), def: f('def'), res: f('magicResistance'), aspd: f('attackSpeed'), blockCnt: f('blockCnt'), cost: f('cost') };
-    const map = { max_hp: 'maxHp', atk: 'atk', def: 'def', magic_resistance: 'res', attack_speed: 'aspd', block_cnt: 'blockCnt', cost: 'cost' };
+    const exp = { maxHp: f('maxHp'), atk: f('atk'), def: f('def'), res: f('magicResistance'), aspd: f('attackSpeed'), blockCnt: f('blockCnt'), cost: f('cost'), respawnTime: f('respawnTime') };
+    const map = { max_hp: 'maxHp', atk: 'atk', def: 'def', magic_resistance: 'res', attack_speed: 'aspd', block_cnt: 'blockCnt', cost: 'cost', respawn_time: 'respawnTime' };
+    // full potential (the owner's decision of 2026-10-07): every potentialRanks attribute step (all ADDITION)
+    const POT = { MAX_HP: 'maxHp', ATK: 'atk', DEF: 'def', MAGIC_RESISTANCE: 'res', ATTACK_SPEED: 'aspd', COST: 'cost', RESPAWN_TIME: 'respawnTime' };
+    for (const r of CT[shop.charId].potentialRanks || []) for (const m of r.buff?.attributes?.attributeModifiers || []) exp[POT[m.attributeType]] += m.value;
     if (cd.status.equipLevel > 0 && shop.defaultUniEquipId) {
       const mp = BE[shop.defaultUniEquipId]?.phases.find((p) => p.equipLevel === cd.status.equipLevel);
       for (const b of mp?.attributeBlackboard || []) if (map[b.key]) exp[map[b.key]] += b.value;
@@ -1080,44 +819,6 @@ test('independent re-derivation of every chess and enemy stat from the raw offic
     assert.equal(e.stats.atk, 400, `${k}: spawned with the season ATK`);
     assert.notEqual(e.attrPower, e.stats.maxHp + 5 * e.stats.atk + 3 * e.stats.def + 3 * e.stats.res, `${k}: power from the database ATK`);
   }
-});
-
-test('independent re-derivation of every 外援 record\'s stats and modules at its slot\'s official 模组 level', { skip: !HAS_CACHE && 'no .cache/gamedata' }, () => {
-  // Catches a slot level silently copied from the other tier again (the tier V elites once carried tier VI's level 3).
-  const act = raw('excel/activity_table.json').activity.AUTOCHESS_SEASON.act2autochess;
-  const CT = raw('excel/character_table.json'), BE = raw('excel/battle_equip_table.json'), UE = raw('excel/uniequip_table.json');
-  const PH = { PHASE_0: 0, PHASE_1: 1, PHASE_2: 2 };
-  const map = { max_hp: 'maxHp', atk: 'atk', def: 'def', magic_resistance: 'res', attack_speed: 'aspd', block_cnt: 'blockCnt', cost: 'cost',
-    respawn_time: 'respawnTime', base_attack_time: 'bat', max_deploy_count: 'deployLimit', max_deck_stack_cnt: 'deckStack' };
-  let n = 0;
-  for (const [id, c] of Object.entries(allChess)) {
-    if (!id.includes('_diy_')) continue;
-    const slot = act.charChessDataDict[`chess_char_${c.tier}_diy1_${c.isGolden ? 'b' : 'a'}`].status;
-    assert.equal(c.status.equipLevel, slot.equipLevel, `${id}: the official slot's equipLevel`);
-    const advanced = (UE.charEquip[c.charId] || []).filter((u) => UE.equipDict[u]?.type !== 'INITIAL');
-    const def = advanced[0] ?? null;
-    assert.equal(c.module?.id ?? null, def, `${id}: default module = the operator's first ADVANCED uniequip`);
-    const P = CT[c.charId].phases[PH[slot.evolvePhase]];
-    const k0 = P.attributesKeyFrames[0], k1 = P.attributesKeyFrames[P.attributesKeyFrames.length - 1];
-    const t = (slot.charLevel - k0.level) / (k1.level - k0.level || 1);
-    const f = (key) => k0.data[key] + (k1.data[key] - k0.data[key]) * t;
-    const exp = { maxHp: f('maxHp'), atk: f('atk'), def: f('def'), res: f('magicResistance'), aspd: f('attackSpeed'), blockCnt: f('blockCnt'), cost: f('cost') };
-    const attrAt = (u) => {
-      const out = {};
-      for (const b of BE[u]?.phases.find((p) => p.equipLevel === slot.equipLevel)?.attributeBlackboard || []) out[map[b.key] ?? b.key] = (out[map[b.key] ?? b.key] || 0) + b.value;
-      return out;
-    };
-    if (slot.equipLevel > 0 && def) for (const [k, v] of Object.entries(attrAt(def))) if (k in exp) exp[k] += v;
-    for (const [key, v] of Object.entries(exp)) assert.ok(Math.abs(v - c.stats[key]) <= 0.5 + 1e-9, `${id}: ${key} ${c.stats[key]} vs official ${v}`);
-    if (c.isGolden) {
-      assert.deepEqual(c.modules.map((m) => m.uniEquipId), advanced, `${id}: every ADVANCED module is a choice`);
-      for (const m of c.modules) {
-        for (const [k, v] of Object.entries(attrAt(m.uniEquipId))) assert.ok(Math.abs(m.attr[k] - v) < 1e-6, `${id} ${m.uniEquipId}: attr ${k} ${m.attr[k]} vs official ${v}`);
-      }
-    }
-    n++;
-  }
-  assert.equal(n, waiguanCandidates.length * 4);
 });
 
 test('offline rebuild reproduces data/ byte-for-byte (data/ is not stale)', { skip: (!HAS_CACHE && 'no .cache/gamedata') || (process.env.DATA_DIR && 'DATA_DIR set') }, (t) => {

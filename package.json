@@ -1,6 +1,6 @@
 {
   "name": "stronghold-protocol-alliance",
-  "version": "0.1.4",
+  "version": "0.2.1",
   "private": true,
   "description": "明日方舟「卫戍协议：盟约」非官方同人联机网页复刻（1–8 人合作，官方 1–4 人、5–8 人为本作扩展；Node.js 服务器 + 浏览器客户端）",
   "license": "GPL-3.0-or-later",
@@ -44,7 +44,12 @@
     "resources:manifest": "node tools/resource-pack.mjs --manifest-only",
     "resources:pack": "node tools/resource-pack.mjs",
     "resources:zip": "node tools/vendor.mjs && node tools/fetch-assets.mjs && node tools/resource-pack.mjs --out=.",
-    "android:assets": "node tools/build-android.mjs"
+    "android:assets": "node tools/build-android.mjs",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit --checkJs -p jsconfig.json",
+    "check:imports": "node tools/check-imports.mjs",
+    "package": "node tools/package.mjs",
+    "package:lite": "node tools/package.mjs --lite"
   },
   "engines": {
     "node": ">=22"
@@ -60,10 +65,14 @@
     "ws": "^8.22.0"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@pixi-spine/runtime-3.8": "^4.0.6",
     "esbuild": "0.28.2",
+    "eslint": "^10.12.0",
+    "globals": "^17.13.0",
     "miniflare": "^5.20261001.0-alpha",
     "puppeteer-core": "^25.12.0",
+    "typescript": "^5.9.2",
     "wrangler": "^4.147.0"
   }
 }

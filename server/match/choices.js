@@ -67,7 +67,7 @@
 
 import { weightedPick } from './waves.js';
 
-export const FAMILY_NAMES = { bounty: '悬赏决策', supply: '道具补给', shop: '机密商店', tactic: '战术决策' };
+export const FAMILY_NAMES = { bounty: '悬赏决策', supply: '道具补给', shop: '机密商店', tactic: '战术决策' }; // i18n-ignore: = choices.json families (the client shows the localized record)
 
 /**
  * Battles a multi-round bounty card lasts (data `rounds` 99, official text "之后 / 后续的<@ba.vdown>每场</>作战":
@@ -86,7 +86,7 @@ export function bountyBattles(c) {
   const r = Number(c && c.rounds);
   return Math.max(1, Math.min(99, Number.isInteger(r) ? r : 1));
 }
-const N_ZH = ['', '一', '两', '三', '四', '五'];
+const N_ZH = ['', '一', '两', '三', '四', '五']; // i18n-ignore: rewrites the official Chinese bounty text
 /**
  * A bounty text as the card lasts: a multi-round card's "之后的 / 后续每场作战" (rich `<@ba.vdown>每场</>` or plain) reads
  * "接下来<@ba.vup>两场作战</>" like the official two-battle cards while MULTI_ROUND_BOUNTY_BATTLES is set; any other
@@ -95,7 +95,7 @@ const N_ZH = ['', '一', '两', '三', '四', '五'];
 export function bountyText(text, c) {
   if (typeof text !== 'string' || !text || !isMultiRoundBounty(c) || !Number.isInteger(MULTI_ROUND_BOUNTY_BATTLES)) return text;
   const n = MULTI_ROUND_BOUNTY_BATTLES;
-  const battles = `${N_ZH[n] || n}场作战`;
+  const battles = `${N_ZH[n] || n}场作战`; // i18n-ignore
   return text
     .replace(/(?:之后的|后续的?)<@ba\.vdown>每场<\/>作战/g, `接下来<@ba.vup>${battles}</>`)
     .replace(/(?:之后的|后续的?)每场作战/g, `接下来${battles}`);
@@ -120,15 +120,16 @@ export function bountyDraftKind(round) {
 
 /**
  * The number of 机变 cards of `round` with `players` alive at the draft start: the round's schedule `cards` (co-op 6,
- * solo 3; else choices.format), and in a co-op room with more than 4 alive (gamedata.js largeRoom, remake extension)
- * max(that, alive + largeRoom.spCardsPlus) — 5 → 7 … 8 → 10. 1–4 alive (or `players` omitted) ⇒ the official count.
+ * solo 3, at most 6; else choices.format), and in a co-op room with more than 4 alive (gamedata.js largeRoom, remake
+ * extension) max(that, alive + largeRoom.spCardsPlus) — 5 → 7 … 8 → 10. 1–4 alive (or `players` omitted) ⇒ the
+ * official count.
  * @param {import('./gamedata.js').GameData} gd
  * @param {number} round
  * @param {number} [players]
  */
 export function spDraftCardCount(gd, round, players) {
   const sch = scheduleFor(gd, round);
-  const base = Number.isInteger(sch.cards) && sch.cards > 0 ? sch.cards : formatCount(gd);
+  const base = Number.isInteger(sch.cards) && sch.cards > 0 ? Math.min(sch.cards, 6) : formatCount(gd);
   if (!gd.isLargeRoom || !gd.isLargeRoom(players)) return base;
   return Math.max(base, Math.floor(Number(players)) + gd.largeRoom.spCardsPlus);
 }
@@ -505,10 +506,13 @@ function applyDefault(m, ps, card) {
         handled = true;
         break;
       case 'single_special_choice_gain_bond_chess': {
+        // the player's 自选 stock joins the draw, its bonds read through the player's view (player/diy.js diyStockEntries)
+        const pgd = ps.gd || gd;
+        const hasBond = (cid) => { const c = pgd.chess(cid); return !!(c && Array.isArray(c.bonds) && c.bonds.includes(bs.bond)); };
         for (let i = 0; i < count; i++) {
-          // this player's pool (the shared chess plus its own 甄选 picks, DESIGN §27)
-          const id = m.pool.roll(m.rngMeta, { maxTier: Math.max(1, ps.shop.level), playerId: ps.playerId, filter: (cid) => { const c = gd.chess(cid); return !!(c && Array.isArray(c.bonds) && c.bonds.includes(bs.bond)); } })
-            || m.pool.roll(m.rngMeta, { maxTier: 6, playerId: ps.playerId, filter: (cid) => { const c = gd.chess(cid); return !!(c && Array.isArray(c.bonds) && c.bonds.includes(bs.bond)); } });
+          const extra = typeof ps.diyStockEntries === 'function' ? ps.diyStockEntries() : null;
+          const id = m.pool.roll(m.rngMeta, { maxTier: Math.max(1, ps.shop.level), filter: hasBond, extra })
+            || m.pool.roll(m.rngMeta, { maxTier: 6, filter: hasBond, extra });
           if (id) ps.acquireChess(id, { source: 'choice' });
         }
         handled = true;

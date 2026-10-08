@@ -5,12 +5,13 @@
 //   - a skill with an idle clip of its own (折桠 S2: Skill_2_Idle beside the Skill_2_Loop jump attack; 史尔特尔 S3;
 //     耀骑士临光 S3, no begin clip: in its idle at once, a Skill_3 swing per attack) stands in that idle, plays its
 //     loop only on attacks and its End clip only when the skill ends;
-//   - any other skill (宴 S2: Skill_Loop without a strike frame; 星熊 S2: Skill_Begin strikes, Skill holds the
+//   - any other skill (宴 S1: Skill_Loop without a strike frame; 星熊 S2: Skill_Begin strikes, Skill holds the
 //     shield; 初雪 S2: a striking Skill_Loop; 蕾缪安 S2, whose loop is its idle clip) holds its stance while its
 //     attacks go on, SPELL_GAP attack intervals after the last one plays its End clip and the plain Idle while the
 //     skill runs on (a skill whose loop is its idle: that loop again, as 0.1.3 does), goes straight back into the
 //     stance on the next attack (no begin clip), and plays End at the skill's real end only when it is not back in
-//     the Idle already.
+//     the Idle already;
+//   - a skill whose clip is the attack (宴 S2 since 0.2.0, anims `via: 'attack'`): no skill clip at all.
 
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -115,8 +116,8 @@ test('史尔特尔 S3 and 耀骑士临光 S3 (no begin clip), idle clips of thei
   assert.equal(N.strikes.length, na.length, 'no strike at nothing');
 });
 
-test('宴 S2, no idle clip of its own: Skill_End and Idle after a spell of attacks, the next attack straight into Skill_Loop', () => {
-  const a = actor('char_337_utage', 1);
+test('宴 S1, no idle clip of its own: Skill_End and Idle after a spell of attacks, the next attack straight into Skill_Loop', () => {
+  const a = actor('char_337_utage', 0);
   assert.deepEqual(skillRoles(a), ['Skill_Start', 'Skill_Loop', 'Skill_End', null]);
   const iv = 1.2, attacks = [2, 3.2, 4.4, 10, 11.2];
   let resting = null;
@@ -151,13 +152,13 @@ test('星熊 S2, a stance skill (Skill_Begin strikes, Skill holds the shield): t
   assert.deepEqual(sets.filter((x) => x.t >= 16 - 1e-9), [], 'no second End at the real end');
 });
 
-test('the real end plays End while the stance holds: mid-spell (星熊), or no attack during the skill (宴)', () => {
+test('the real end plays End while the stance holds: mid-spell (星熊), or no attack during the skill (宴 S1)', () => {
   const h = actor('char_136_hsguma', 1);
   const mid = drive(h, [2, 3.2], { iv: 1.2, until: 6, at: [[0.5, on], [3.6, off]] });
   assert.deepEqual(names(mid.shown).slice(-3), ['Skill', 'Skill_End', 'Idle']);
   near(timesOf(mid.sets, 'Skill_End')[0], 3.6, FRAME, 'End when the skill ends');
   // an attack just before the skill, none during it: no spell of the skill to end — the stance until the skill ends
-  const u = actor('char_337_utage', 1);
+  const u = actor('char_337_utage', 0);
   const none = drive(u, [0.3], { iv: 1.2, until: 8, at: [[0.5, on], [5, off]] });
   assert.deepEqual(names(none.shown).slice(-4), ['Skill_Start', 'Skill_Loop', 'Skill_End', 'Idle']);
   near(timesOf(none.sets, 'Skill_End')[0], 5, FRAME, 'End when the skill ends');
@@ -184,4 +185,14 @@ test('蕾缪安 S2, whose loop is its idle clip: Skill_2_End after a spell, then
   assert.deepEqual(names(shown), ['Idle', 'Skill_2_Begin', 'Skill_2_Idle', 'Skill_2_End', 'Skill_2_Idle', 'Skill_2_End', 'Idle']);
   near(timesOf(shown, 'Skill_2_End')[0], 4 + SPELL_GAP, 2 * FRAME, 'End after the spell');
   near(timesOf(shown, 'Skill_2_End')[1], 9, 2 * FRAME, 'End again when the skill ends: it stood in its loop');
+});
+
+test("宴 S2 plays no skill clip (0.2.0: her skill clip is the attack, anims `via: 'attack'`): attacks swing Attack", () => {
+  // tools/assets/spine.mjs PREFAB_SPINE_ROLES, DESIGN §25.22.9; her S1 分神 keeps Skill_Start / Loop / End (above)
+  const a = actor('char_337_utage', 1);
+  assert.equal(a.roles.skill.via, 'attack');
+  const attacks = [2, 3.2, 4.4];
+  const { shown, sets } = drive(a, attacks, { iv: 1.2, until: 8, at: [[0.5, on], [7, off]] });
+  assert.deepEqual(sets.filter((x) => /^Skill/.test(x.clip)), [], 'no skill clip');
+  assert.deepEqual([...new Set(names(shown))], ['Idle', 'Attack'], 'Idle, an Attack swing per attack');
 });

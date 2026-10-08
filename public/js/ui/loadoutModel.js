@@ -10,7 +10,7 @@
 // (shared/protocol.js loadoutOptions / checkLoadout), so a sanitised loadout is always accepted.
 
 import { loadoutOptions, checkLoadout, resolveLoadout, MODULE_NONE, LOADOUT_LIMITS } from '../../../shared/protocol.js';
-import { isWaiguanRecord, waiguanRecords } from '../../../shared/waiguan.js';
+import { t, N_ } from '../../../shared/i18n.js';
 
 export { MODULE_NONE };
 
@@ -19,14 +19,14 @@ export const LOADOUT_PREF = 'loadout';
 export const LOADOUT_VERSION = 1;
 
 export const PROF_ORDER = ['PIONEER', 'WARRIOR', 'TANK', 'SNIPER', 'CASTER', 'MEDIC', 'SUPPORT', 'SPECIAL'];
-export const PROF_NAME = Object.freeze({ PIONEER: '先锋', WARRIOR: '近卫', TANK: '重装', SNIPER: '狙击', CASTER: '术师', MEDIC: '医疗', SUPPORT: '辅助', SPECIAL: '特种' });
-export const SP_TYPE = Object.freeze({ INCREASE_WITH_TIME: '自动回复', INCREASE_WHEN_ATTACK: '攻击回复', INCREASE_WHEN_TAKEN_DAMAGE: '受击回复', ON_DEPLOY: '被动', 8: '被动' });
+export const PROF_NAME = Object.freeze({ PIONEER: N_('先锋'), WARRIOR: N_('近卫'), TANK: N_('重装'), SNIPER: N_('狙击'), CASTER: N_('术师'), MEDIC: N_('医疗'), SUPPORT: N_('辅助'), SPECIAL: N_('特种') });
+export const SP_TYPE = Object.freeze({ INCREASE_WITH_TIME: N_('自动回复'), INCREASE_WHEN_ATTACK: N_('攻击回复'), INCREASE_WHEN_TAKEN_DAMAGE: N_('受击回复'), ON_DEPLOY: N_('被动'), 8: N_('被动') });
 /** Module attribute keys (ModuleRecord.attr / battle_equip attributeBlackboard) → label + unit. */
 export const ATTR_LABEL = Object.freeze({
-  maxHp: ['生命上限', ''], max_hp: ['生命上限', ''], atk: ['攻击力', ''], def: ['防御力', ''], res: ['法术抗性', ''],
-  magic_resistance: ['法术抗性', ''], aspd: ['攻击速度', ''], attack_speed: ['攻击速度', ''], cost: ['部署费用', ''],
-  blockCnt: ['阻挡数', ''], block_cnt: ['阻挡数', ''], respawnTime: ['再部署时间', '秒'], respawn_time: ['再部署时间', '秒'],
-  baseAttackTime: ['攻击间隔', '秒'], base_attack_time: ['攻击间隔', '秒'], moveSpeed: ['移动速度', ''], hpRecoveryPerSec: ['每秒回复', ''],
+  maxHp: [N_('生命上限'), ''], max_hp: [N_('生命上限'), ''], atk: [N_('攻击力'), ''], def: [N_('防御力'), ''], res: [N_('法术抗性'), ''],
+  magic_resistance: [N_('法术抗性'), ''], aspd: [N_('攻击速度'), ''], attack_speed: [N_('攻击速度'), ''], cost: [N_('部署费用'), ''],
+  blockCnt: [N_('阻挡数'), ''], block_cnt: [N_('阻挡数'), ''], respawnTime: [N_('再部署时间'), N_('秒')], respawn_time: [N_('再部署时间'), N_('秒')],
+  baseAttackTime: [N_('攻击间隔'), N_('秒')], base_attack_time: [N_('攻击间隔'), N_('秒')], moveSpeed: [N_('移动速度'), ''], hpRecoveryPerSec: [N_('每秒回复'), ''],
 });
 
 const isObj = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -58,54 +58,6 @@ export function parseStored(raw) {
 
 /** Serialised form for localStorage. */
 export const toStored = (entries) => ({ v: LOADOUT_VERSION, entries: entries || {} });
-
-// ---- 外援 / 甄选 (DIY) picks (DESIGN §27, shared/waiguan.js) -------------------------------------------------
-
-/**
- * localStorage key of the 甄选 selection. It is stored like the loadout (per browser) and sent with C2S
- * `room.pick { picks }`; the slot ids are fixed by shared/waiguan.js, so a stored pick stays valid across builds and the
- * server is the one that refuses a candidate the current data no longer lists.
- */
-export const PICKS_PREF = 'waiguan';
-export const PICKS_VERSION = 1;
-
-/** Slot ids of the four 甄选 slots, in screen order. */
-export const PICK_SLOTS = Object.freeze(['diy5a', 'diy5b', 'diy6a', 'diy6b']);
-
-/** Structurally valid `{ [slotId]: charId }` (unknown keys, junk values and `__proto__` are dropped). */
-export function parseStoredPicks(raw) {
-  const src = isObj(raw) && isObj(raw.picks) ? raw.picks : isObj(raw) && raw.v == null ? raw : null;
-  const out = {};
-  if (!src) return out;
-  for (const slot of PICK_SLOTS) {
-    const id = src[slot];
-    if (typeof id === 'string' && /^[A-Za-z0-9_\-.:]{1,64}$/.test(id) && !UNSAFE_IDS.has(id)) out[slot] = id;
-  }
-  return out;
-}
-
-/** Serialised form of the 甄选 selection for localStorage. */
-export const picksToStored = (picks) => {
-  const clean = parseStoredPicks(picks || {});
-  return { v: PICKS_VERSION, picks: clean };
-};
-
-/**
- * The 甄选 selection normalised against data/waiguan.json: keeps a pick whose charId the roster still lists under that
- * slot's tier, drops the rest (a build with a different roster never sends the server a pick it would refuse).
- * @param {Record<string, string>} picks
- * @param {any} waiguan data/waiguan.json
- * @returns {Record<string, string>}
- */
-export function sanitizePicks(picks, waiguan) {
-  const clean = parseStoredPicks(picks || {});
-  const candidates = Array.isArray(waiguan?.candidates) ? waiguan.candidates : null;
-  if (!candidates) return clean;
-  const known = new Set(candidates.map((c) => c && c.charId).filter(Boolean));
-  const out = {};
-  for (const [slot, charId] of Object.entries(clean)) if (known.has(charId)) out[slot] = charId;
-  return out;
-}
 
 // ---- export / import ----------------------------------------------------------------------------------------------
 
@@ -151,19 +103,19 @@ export function serializeExport(entries, opts) {
 export function parseImport(input) {
   let raw = input;
   if (typeof raw === 'string') {
-    if (raw.length > LOADOUT_IMPORT_MAX_BYTES) return { ok: false, error: '内容过长，无法导入' };
+    if (raw.length > LOADOUT_IMPORT_MAX_BYTES) return { ok: false, error: t('内容过长，无法导入') };
     const text = raw.trim();
-    if (!text) return { ok: false, error: '没有可导入的内容' };
-    try { raw = JSON.parse(text); } catch { return { ok: false, error: '无法识别的内容' }; }
+    if (!text) return { ok: false, error: t('没有可导入的内容') };
+    try { raw = JSON.parse(text); } catch { return { ok: false, error: t('无法识别的内容') }; }
   }
-  if (!isObj(raw)) return { ok: false, error: '无法识别的格式' };
+  if (!isObj(raw)) return { ok: false, error: t('无法识别的格式') };
   const v = isInt(raw.v) ? raw.v : null;
   // a newer envelope may reshuffle fields — refuse instead of silently reading it as something else
-  if (v != null && v > LOADOUT_VERSION) return { ok: false, error: `这份调配来自更新的版本（v${v}），请先更新游戏` };
+  if (v != null && v > LOADOUT_VERSION) return { ok: false, error: t('这份调配来自更新的版本（v{v}），请先更新游戏', { v }) };
   const kind = typeof raw.kind === 'string' ? raw.kind : null;
-  if (kind && kind !== LOADOUT_EXPORT_KIND) return { ok: false, error: '这不是干员调配的数据' };
+  if (kind && kind !== LOADOUT_EXPORT_KIND) return { ok: false, error: t('这不是干员调配的数据') };
   const entries = parseStored(raw);
-  if (!Object.keys(entries).length) return { ok: false, error: '里面没有有效的调配条目' };
+  if (!Object.keys(entries).length) return { ok: false, error: t('里面没有有效的调配条目') };
   return { ok: true, entries };
 }
 
@@ -313,14 +265,8 @@ export function selectedModule(loadout, chess, getChess) {
  * Visible normal chess (the loadout slots), in shop order: tier, then shopSortId.
  * @param {any[]} list data.list('chess')
  */
-/**
- * Whether a chess record is a loadout slot — what the server's checkLoadout accepts: a normal chess that is fieldable,
- * plus a 外援 / 甄选 (DIY) operator the player picked (its record carries combat data and offers skills and a module,
- * DESIGN §27). The four EMPTY slot templates of data/chess.json are `isDiy` without `stats`, so they stay out, and the
- * caller's `getChess` only knows the records it was given (the screen merges the player's own picks into the lookup).
- */
-export const isLoadoutSlot = (c) => !!c && !c.isGolden && !c.isHidden && (!c.baseId || c.baseId === c.chessId)
-  && (isWaiguanRecord(c) || (c.visible !== false && !c.isDiy));
+/** Whether a chess record is a loadout slot (a visible normal chess — what the server's checkLoadout accepts). */
+export const isLoadoutSlot = (c) => !!c && !c.isGolden && c.visible !== false && !c.isHidden && !c.isDiy && (!c.baseId || c.baseId === c.chessId);
 
 export function rosterOf(list) {
   return (Array.isArray(list) ? list : [])
@@ -347,7 +293,7 @@ export function filterRoster(roster, f = {}, entries = {}, getChess = () => null
       if (!effectiveChoice(entries, c, golden).changed) return false;
     }
     if (q) {
-      const hay = [c.name, c.appellation, c.subProfessionName, PROF_NAME[c.profession], ...(c.bonds || []).map((b) => getBond(b)?.name)]
+      const hay = [c.name, c.appellation, c.subProfessionName, t(PROF_NAME[c.profession]), ...(c.bonds || []).map((b) => getBond(b)?.name)]
         .filter(Boolean).join(' ').toLowerCase();
       if (!hay.includes(q)) return false;
     }
@@ -366,47 +312,6 @@ export function changedCount(entries, getChess) {
   return n;
 }
 
-/**
- * The chess records of a player's 甄选 (DIY) picks, keyed by chessId (both tiers, base and elite forms). The loadout
- * screen and the sync both merge these into their chess lookup, so a 外援 operator is a loadout slot exactly like a shop
- * operator — which is also what the server does with the same picks (server/lobby.js waiguanChessOf).
- * @param {any} waiguan data/waiguan.json (null while it is not loaded: the result is then empty)
- * @param {Record<string, string>|null|undefined} picks `{ slotId: charId }` (loadoutStore.picks)
- * @returns {Record<string, any>} chessId → record
- */
-export function waiguanPickChess(waiguan, picks) {
-  const slots = picks && typeof picks === 'object' ? Object.values(picks).filter((c) => typeof c === 'string' && c) : [];
-  if (!waiguan || !slots.length) return {};
-  const byChar = new Map();
-  for (const c of Array.isArray(waiguan.candidates) ? waiguan.candidates : []) {
-    if (c && typeof c.charId === 'string' && c.chessIds) byChar.set(c.charId, c.chessIds);
-  }
-  const all = waiguanRecords(waiguan);
-  const out = {};
-  for (const charId of slots) {
-    const ids = byChar.get(charId);
-    if (!ids) continue;
-    for (const tier of [5, 6]) {
-      const base = ids[tier];
-      if (typeof base !== 'string') continue;
-      for (const id of [base, `${base.slice(0, -1)}b`]) if (all[id]) out[id] = all[id];
-    }
-  }
-  return out;
-}
-
-/**
- * A chess lookup (`data.lookup('chess', …)`) widened by the player's own 甄选 records.
- * @param {(id: string) => any} getChess the base lookup
- * @param {Record<string, any>} diy waiguanPickChess(...)
- * @returns {(id: string) => any}
- */
-export const withWaiguan = (getChess, diy) => {
-  const extra = diy && typeof diy === 'object' ? diy : null;
-  if (!extra || !Object.keys(extra).length) return getChess;
-  return (id) => getChess(id) || extra[id] || null;
-};
-
 // ---- display helpers -----------------------------------------------------------------------------------------------------
 
 /** "S2" style label of a skill index. */
@@ -421,6 +326,29 @@ export function moduleBadge(rec, id = null) {
 }
 
 /**
+ * The two lines of a trait record (data `trait` / `traitBase`, ModuleRecord `traitOverride`, DATA.md §2): `base` = the
+ * 特性 the unit fights with — the class trait, or the module's own wording where the module rewrites it (official
+ * `overrideDescripton`) — and `added` = the module's extra line (official `additionalDescription`), or null. The extra
+ * line comes after the class trait, never instead of it: PRTS flags it 「特性追加」 on every such module, and the sim keeps
+ * the class trait with the module equipped (community report of 2026-10-06, item 16.2: until 0.2.0 the 干员调配 module
+ * card, its 局内数值 and the detail card showed the extra line alone on 114 of the 164 modules the screen offers).
+ * @param {any} trait
+ * @returns {{ base: string, added: string|null }}
+ */
+export function traitLines(trait) {
+  if (!isObj(trait)) return { base: '', added: null };
+  const base = String(trait.descRaw || trait.desc || '');
+  const added = trait.moduleDescRaw || trait.moduleDesc || null;
+  return { base, added: added ? String(added) : null };
+}
+
+/** The whole 特性 text of a trait record: its base line, then the module's extra line (`\n` between; RichText breaks it). */
+export function fullTraitText(trait) {
+  const { base, added } = traitLines(trait);
+  return base && added ? `${base}\n${added}` : base || added || '';
+}
+
+/**
  * Module stat bonus as display rows (non-zero entries only).
  * @param {Record<string, number> | null | undefined} attr
  * @returns {Array<{ key: string, label: string, text: string, positive: boolean }>}
@@ -432,7 +360,7 @@ export function attrRows(attr) {
     if (typeof v !== 'number' || !Number.isFinite(v) || v === 0) continue;
     const [label, unit] = ATTR_LABEL[k] || [k, ''];
     const n = Math.abs(v) < 10 && !Number.isInteger(v) ? Number(v.toFixed(2)) : Math.round(v);
-    out.push({ key: k, label, text: `${v > 0 ? '+' : ''}${n}${unit}`, positive: k === 'cost' || k === 'respawnTime' || k === 'respawn_time' || k === 'baseAttackTime' || k === 'base_attack_time' ? v < 0 : v > 0 });
+    out.push({ key: k, label: t(label), text: `${v > 0 ? '+' : ''}${n}${t(unit)}`, positive: k === 'cost' || k === 'respawnTime' || k === 'respawn_time' || k === 'baseAttackTime' || k === 'base_attack_time' ? v < 0 : v > 0 });
   }
   return out;
 }
@@ -446,10 +374,10 @@ export function skillTags(rec) {
   const passive = rec.skillType === 'PASSIVE' || rec.spType === 'ON_DEPLOY' || rec.spType === 8;
   const spKind = passive ? 'passive' : rec.spType === 'INCREASE_WHEN_ATTACK' ? 'atk' : rec.spType === 'INCREASE_WHEN_TAKEN_DAMAGE' ? 'def' : 'time';
   let duration = null;
-  if (rec.durationType === 'AMMO') duration = '弹药';
-  else if (Number(rec.duration) > 0) duration = `${Number(rec.duration)}秒`;
+  if (rec.durationType === 'AMMO') duration = t('弹药');
+  else if (Number(rec.duration) > 0) duration = t('{n}秒', { n: Number(rec.duration) });
   return {
-    sp: SP_TYPE[rec.spType] || (passive ? '被动' : '技力'),
+    sp: t(SP_TYPE[rec.spType]) || (passive ? t('被动') : t('技力')),
     spKind,
     init: passive ? null : Number.isFinite(rec.initSp) ? rec.initSp : 0,
     cost: passive ? null : Number.isFinite(rec.spCost) ? rec.spCost : 0,

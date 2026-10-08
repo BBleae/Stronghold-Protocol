@@ -68,14 +68,10 @@ describe('the manifest (data/assets.json)', () => {
     const backs = Object.entries(M.chars).filter(([, c]) => c.spine?.back);
     const withFall = backs.filter(([, c]) => dieClipDur(c.spine.back) > 0).map(([id]) => id).sort();
     assert.ok(backs.length >= 130, `${backs.length} Back skeletons`);
-    // 4 was the pool's count when this test was written (issue #25); the 外援 / 甄选 roster adds operators of its own and
-    // some of them DO carry a Back fall clip, so pinning the exact list would fail on data the mode legitimately fields.
-    // What the fix actually promises is kept below: the four reviewed cases still fall, and a Back clip stays the
-    // exception rather than the rule.
-    for (const id of ['char_388_mint', 'char_4064_mlynar', 'char_440_pinecn', 'char_602_cdfend']) {
-      assert.ok(withFall.includes(id), `${id} Back still has a Die clip`);
-    }
-    assert.ok(withFall.length * 4 < backs.length, `Back fall clips stay rare (${withFall.length}/${backs.length})`);
+    // char_4182_oblvns: a model of the fork's retired 外援 / 甄选 roster (DESIGN §F3; 0.2.0 excludes it from 自选, data/
+    // backups.json diy.excluded) that the manifest may keep for recorded matches — not part of 0.2.0's roster
+    const retired = new Set(['char_4182_oblvns']);
+    assert.deepEqual(withFall.filter((id) => !retired.has(id)), ['char_322_lmlee', 'char_388_mint', 'char_4064_mlynar', 'char_440_pinecn', 'char_602_cdfend'], '老鲤 (a 自选 pick, 0.2.0) too');
     for (const [id, c] of Object.entries(M.chars)) assert.ok(dieClipDur(c.spine.front) > 0, `${id} Front has a Die clip`);
     assert.equal(dieClipDur(back(CAPER)), 0);
     assert.equal(dieClipDur(front(CAPER)), front(CAPER).animations.Die);

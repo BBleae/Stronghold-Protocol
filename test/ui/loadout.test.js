@@ -14,9 +14,8 @@ import {
   parseStored, toStored, chessOptions, effectiveChoice, setChoice, resetChoice, sanitizeEntries, rosterOf, filterRoster,
   changedCount, moduleBadge, attrRows, skillTags, skillLabel, selectedSkill, selectedModule, recordsOf,
   exportPayload, serializeExport, parseImport, LOADOUT_EXPORT_KIND, LOADOUT_VERSION, LOADOUT_IMPORT_MAX_BYTES,
-  parseStoredPicks, picksToStored, sanitizePicks, PICK_SLOTS,
 } from '../../public/js/ui/loadoutModel.js';
-import { installLoadoutSync, SYNC_DEBOUNCE_MS, RETRY_MS, applyLoadoutEntries, setEntries, setPicks, loadoutStore } from '../../public/js/ui/loadoutSync.js';
+import { installLoadoutSync, SYNC_DEBOUNCE_MS, RETRY_MS, applyLoadoutEntries, setEntries, loadoutStore } from '../../public/js/ui/loadoutSync.js';
 import { createStore } from '../../public/js/store.js';
 import { shouldAutoClose } from '../../public/js/screens/loadout.js';
 
@@ -254,119 +253,7 @@ function fakeTimers() {
     },
   };
 }
-/**
- * A store for one sync test. `installLoadoutSync` uses its own `target = loadoutStore` default, so the tests always pass
- * their store EXPLICITLY (the `target` option) — each test then owns its `entries` / `picks` and cannot leak into another.
- */
-const syncStore = (entries = {}, picks = {}) => createStore({ entries, picks, open: false, from: null, sel: null, filters: {}, sync: 'idle' });
-
-// ---- 外援 / 甄选 (DIY) picks (DESIGN §27) -------------------------------------------------------------------------
-
-const WAIGUAN = JSON.parse(readFileSync(path.join(ROOT, 'data/waiguan.json'), 'utf8'));
-const PICK_A = WAIGUAN.candidates[0];
-const PICK_B = WAIGUAN.candidates[1];
-const pick = (cand, slot = 'diy5a') => ({ [slot]: cand.charId });
-/** The `room.pick` frames of a fake net (the sync also sends room.loadout — `{}` when nothing was adjusted). */
-const picksSent = (net) => net.sent.filter((m) => m.t === 'room.pick');
-
-test('picks: parseStoredPicks keeps the four slots only; picksToStored round trip; sanitizePicks drops an unknown candidate', () => {
-  assert.deepEqual(parseStoredPicks(null), {});
-  assert.deepEqual(parseStoredPicks({ picks: { diy5a: PICK_A.charId, diy5b: '', diy9z: 'x', diy6a: 42 } }), { diy5a: PICK_A.charId });
-  assert.deepEqual(parseStoredPicks({ diy5a: PICK_A.charId }), { diy5a: PICK_A.charId }, 'bare map (older build)');
-  // `__proto__` must never travel through a parsed map
-  assert.deepEqual(parseStoredPicks(JSON.parse('{"diy5a":"__proto__"}')), {});
-  const stored = picksToStored({ diy5a: PICK_A.charId, 'bad slot': 'x' });
-  assert.deepEqual(Object.keys(stored).sort(), ['picks', 'v']);
-  assert.deepEqual(parseStoredPicks(JSON.parse(JSON.stringify(stored))), { diy5a: PICK_A.charId });
-  // a candidate this build's roster no longer lists is dropped, a known one survives
-  assert.deepEqual(sanitizePicks(pick(PICK_A), WAIGUAN), pick(PICK_A));
-  assert.deepEqual(sanitizePicks({ diy5a: 'char_999_ghost' }, WAIGUAN), {});
-  assert.deepEqual(sanitizePicks(pick(PICK_A), null), pick(PICK_A), 'no roster loaded ⇒ structure only');
-});
-
-test('picks: an empty selection sends nothing (no waiguan.json download in the lobby)', async () => {
-  const net = fakeNet();
-  const T = fakeTimers();
-  const target = syncStore({}, {});
-  let loaded = 0;
-  const s = installLoadoutSync({ net, timers: T, target, getChessReady: async () => CHESS, lookupChess: get,
-    loadWaiguan: async () => { loaded++; return WAIGUAN; }, getWaiguan: () => WAIGUAN });
-  net.emit('welcome', {});
-  await T.advance(100);
-  assert.deepEqual(picksSent(net), [], 'nothing to send: no picks were made');
-  assert.equal(loaded, 0, 'waiguan.json is not fetched for an untouched selection');
-  s.dispose();
-});
-
-test('picks: the selection is sent as room.pick, sanitised, debounced, and refused codes are handled', async () => {
-  const net = fakeNet();
-  const T = fakeTimers();
-  const target = syncStore({}, pick(PICK_A, 'diy5a'));
-  const s = installLoadoutSync({ net, timers: T, target, getChessReady: async () => CHESS, lookupChess: get,
-    loadWaiguan: async () => WAIGUAN, getWaiguan: () => WAIGUAN });
-  net.emit('welcome', {});
-  await T.advance(100);
-  assert.deepEqual(picksSent(net), [{ t: 'room.pick', picks: pick(PICK_A, 'diy5a') }]);
-  // an edit is debounced, and the same content is not resent
-  target.set({ picks: pick(PICK_A, 'diy5a') });   // new object, same content
-  await T.advance(SYNC_DEBOUNCE_MS + 10);
-  assert.equal(picksSent(net).length, 1, 'unchanged content is not resent');
-  target.set({ picks: { ...pick(PICK_A, 'diy5a'), diy6a: PICK_B.charId } });
-  await T.advance(SYNC_DEBOUNCE_MS - 10);
-  assert.equal(picksSent(net).length, 1, 'debounced');
-  await T.advance(20);
-  assert.deepEqual(picksSent(net)[1], { t: 'room.pick', picks: { diy5a: PICK_A.charId, diy6a: PICK_B.charId } });
-  // a candidate the roster does not list is dropped before sending, never the whole selection
-  target.set({ picks: { diy5a: PICK_A.charId, diy5b: 'char_999_ghost' } });
-  await T.advance(SYNC_DEBOUNCE_MS + 10);
-  assert.deepEqual(picksSent(net)[2], { t: 'room.pick', picks: { diy5a: PICK_A.charId } });
-  // the match locked its pool: stored for the next match, not an error
-  net.replies.push({ error: 'WRONG_PHASE' });
-  target.set({ picks: pick(PICK_B, 'diy6b') });
-  await T.advance(SYNC_DEBOUNCE_MS + 10);
-  assert.equal(picksSent(net).length, 4);
-  // a new session resends (the server keeps the selection on the session/seat)
-  net.emit('welcome', {});
-  await T.advance(100);
-  assert.equal(picksSent(net).length, 5);
-  s.dispose();
-});
-
-test('picks: clearing a sent selection sends an empty frame once (the server must not keep the old picks)', async () => {
-  const net = fakeNet();
-  const T = fakeTimers();
-  const target = syncStore({}, pick(PICK_A));
-  const s = installLoadoutSync({ net, timers: T, target, getChessReady: async () => CHESS, lookupChess: get,
-    loadWaiguan: async () => WAIGUAN, getWaiguan: () => WAIGUAN });
-  net.emit('welcome', {});
-  await T.advance(100);
-  assert.equal(picksSent(net).length, 1);
-  target.set({ picks: {} });                       // the player clears every slot
-  await T.advance(SYNC_DEBOUNCE_MS + 10);
-  assert.deepEqual(picksSent(net)[1], { t: 'room.pick', picks: {} }, 'the server is told to forget the old selection');
-  // and an empty selection is not resent afterwards
-  target.set({ picks: {} });
-  await T.advance(SYNC_DEBOUNCE_MS + 10);
-  assert.equal(picksSent(net).length, 2);
-  s.dispose();
-});
-
-test('picks: net.status offline, or a missing roster, never sends a wrong selection', async () => {  const net = fakeNet();
-  const T = fakeTimers();
-  const target = syncStore({}, pick(PICK_A));
-  const s = installLoadoutSync({ net, timers: T, target, getChessReady: async () => CHESS, lookupChess: get,
-    loadWaiguan: async () => null, getWaiguan: () => null });
-  net.status = 'reconnecting';
-  net.emit('welcome', {});
-  await T.advance(100);
-  assert.deepEqual(picksSent(net), [], 'offline: nothing sent');
-  net.status = 'online';
-  net.emit('welcome', {});
-  await T.advance(100);
-  // the roster did not load: sanitizePicks keeps the structure (the server re-checks and refuses what it does not know)
-  assert.deepEqual(picksSent(net), [{ t: 'room.pick', picks: pick(PICK_A) }]);
-  s.dispose();
-});
+const syncStore = (entries = {}) => createStore({ entries, open: false, from: null, sel: null, filters: {}, sync: 'idle' });
 
 test('sync: welcome sends the sanitised loadout; edits are debounced; identical content is not resent', async () => {
   const net = fakeNet();

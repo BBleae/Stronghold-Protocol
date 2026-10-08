@@ -754,6 +754,39 @@ describe('operator voice', () => {
     assert.equal(settlementVoice(undefined), null);
   });
 
+  test('结算 speaker of a 0.2.0 piece (upstream af466c6c on this engine): the operator the own piece shows', async () => {
+    // unitsEnd names the chess; the game screen maps it through ownShown (screens/game.js shownCharId): a filled 自选 slot is
+    // its pick's operator, a chess fielded as its 补位 stand-in is the stand-in (its own voice, like its battle lines,
+    // which audio.js keys by UnitInfo spine) — a stand-in without lines (a 预备干员) stays silent and another operator of
+    // the battle says it, never the operator it replaces
+    const chess = JSON.parse(readFileSync(path.join(ROOT, 'data', 'chess.json'), 'utf8'));
+    const backups = JSON.parse(readFileSync(path.join(ROOT, 'data', 'backups.json'), 'utf8'));
+    const { ownStandIn, ownDiyRecord } = await import('../../public/js/ui/gameLogic.js');
+    const SILVER = 'chess_char_4_22_a';   // 银灰 → stand-in Sharp
+    const SLOT = 'chess_char_5_diy1_a';   // a 5阶 自选 slot
+    const PLAIN = 'chess_char_1_01_a';
+    const priv = { standIns: [SILVER], diy: { [SLOT]: { charId: 'char_112_siege', skillIndex: 2, uniEquipId: 'uniequip_002_siege' } },
+      loadout: {}, board: [], hand: [], temp: [] };
+    const shownCharId = (id) => {
+      const c0 = Object.hasOwn(chess, id) ? chess[id] : null;
+      const c = ownDiyRecord(c0, priv, { chess, backups }) || c0;
+      return (ownStandIn(c, priv, backups) || c)?.charId ?? null;
+    };
+    assert.equal(shownCharId(SILVER), 'char_609_acguad', 'a 补位 piece: its stand-in, not 银灰');
+    assert.equal(shownCharId(SLOT), 'char_112_siege', 'a filled 自选 slot: its operator');
+    assert.equal(shownCharId(PLAIN), chess[PLAIN].charId);
+    const st = { perfect: true, leaked: 0, killed: 3, total: 3, unitsEnd: [{ defId: SILVER, alive: true }, { defId: SLOT, alive: true }] };
+    assert.deepEqual(settlementVoice(st, { charOf: shownCharId, random: () => 0 }), { charId: 'char_609_acguad', role: 'win3' });
+    const canSpeak = (c) => c !== 'char_609_acguad';
+    assert.deepEqual(settlementVoice(st, { charOf: shownCharId, canSpeak, random: () => 0 }), { charId: 'char_112_siege', role: 'win3' });
+    assert.equal(settlementVoice({ ...st, unitsEnd: [{ defId: SILVER, alive: true }] }, { charOf: shownCharId, canSpeak }), null,
+      'a voiceless stand-in alone: no line (银灰 does not speak for it)');
+    // the game screen hands that mapping to every settlement line: the drawn end, a field switch and 'ownDone'
+    const game = readFileSync(path.join(ROOT, 'public/js/screens/game.js'), 'utf8');
+    assert.match(game, /const shownCharId = \(id\) => ownShown\(id\)\?\.charId \?\? null;/);
+    assert.equal((game.match(/sayResult\([^)]*shownCharId\)/g) || []).length, 3);
+  });
+
   // ---- one client, on a virtual clock -----------------------------------------------------------------------
 
   // the battle field as game.js tracks it on entering: own operators (skillIndex: the equipped skill, 0-based), a
@@ -1608,7 +1641,7 @@ describe('漏怪 sound', () => {
   });
 
   // fork: the alarm belongs to the field on screen, and the screen can change field mid-burst — the ‹ 联防阵地 N › switch
-  // of a 5–8 player 联防 (DESIGN §24.4), a spectator or an eliminated player picking another field. A switch is a new
+  // of a 5–8 player 联防 (DESIGN §F1.4), a spectator or an eliminated player picking another field. A switch is a new
   // unit map (setFieldUnits), never a second alarm on top of the one still ringing.
   test('a field switch mid-burst keeps the one-alarm gap (several 联防 fields, a spectator switching)', async () => {
     const { a, fw, urls, settle, restore } = await rig();

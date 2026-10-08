@@ -2,6 +2,7 @@
 // (title, lobby, room; never in a match). The resource manager installs its opener at boot (Cloudflare mode, in a browser
 // that can keep local resources); without one there is no button.
 import { html, Button } from './components.js';
+import { t } from '../../../shared/i18n.js';
 
 let open = null;
 
@@ -14,5 +15,5 @@ export function installResourceOpener(opener) {
 export function ResourceButton({ class: cls, size = 'sm', variant = 'ghost' }) {
   if (!open) return null;
   return html`<${Button} id="resource-manager-open" class=${cls} size=${size} variant=${variant} icon="archive"
-    onClick=${open} title="下载、导入、导出或清理本地游戏资源">资源管理<//>`;
+    onClick=${open} title=${t('下载、导入、导出或清理本地游戏资源')}>${t('资源管理')}<//>`;
 }

@@ -31,7 +31,7 @@ describe('collapsible bond strip (issue #142)', { skip: !ENABLED && 'set SP_E2E=
         await page.setViewport({ width, height, isMobile: touch, hasTouch: touch });
         await page.goto(`${srv.url}/dev/game-mock.html?shot=1&render=fallback&phase=PREP`, { waitUntil: 'domcontentloaded' });
         await page.waitForSelector('.ff-piece');
-        // a phone's 休整期 starts with the strip folded (DESIGN §26.1, bondStripFolded; isPhone reads the device screen,
+        // a phone's 休整期 starts with the strip folded (DESIGN §F2.1, bondStripFolded; isPhone reads the device screen,
         // which a viewport alone does not emulate): the button unfolds it by hand
         await page.waitForSelector('.bonds-toggle');
         const phone = await page.evaluate(() => import('/js/ui/device.js').then((m) => m.isPhone()));
@@ -86,6 +86,11 @@ describe('collapsible bond strip (issue #142)', { skip: !ENABLED && 'set SP_E2E=
         await activate('.team__row:not(.is-self) .team__btn');
         if (await page.$('.team__ob')) await activate('.team__ob');
         await page.waitForSelector('.gm__watching');
+        // .gm__watching shows at the tap; the mock answers the row's g.watch 40–100 ms later (game-mock.js mockRequest)
+        // with the teammate's read-only board. Wait for that answer: a phase change before it lets the mock apply the
+        // scouting request to the battle (like a server-run server; the default client-side combat refuses it), and the
+        // strip then rightly shows that teammate's bonds — none in the mock — instead of mine.
+        await page.waitForFunction(() => globalThis.__MOCK__.store.get().match.field?.prep === true);
         assert.equal(await expanded(), 'false', 'watching a teammate preserves the collapse choice');
         await activate('.bonds-toggle');
         await page.waitForSelector('.bstrip__owner', { visible: true });
@@ -97,6 +102,7 @@ describe('collapsible bond strip (issue #142)', { skip: !ENABLED && 'set SP_E2E=
         await activate('.bonds-toggle');
         await page.waitForSelector('.bslot .bond', { visible: true });
         assert.equal(await expanded(), 'true');
+        assert.equal(await page.$eval('.bstrip', (el) => el.getAttribute('data-owner')), null, 'my own battle shows my own bonds again');
         await page.screenshot({ path: `${OUT}/bonds-expanded-${width}.png` });
         assert.deepEqual(errors, []);
       } finally { await page.close(); }

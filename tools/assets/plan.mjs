@@ -6,12 +6,15 @@
 //        that ends up on disk wins (later alts are fallbacks: other URLs for the
 //        same file, or other sounds of the same bank);
 //   { model: '<key>' }  a Spine model (skel + atlas + page PNGs) from plan.models;
-//   literal(value)  a value emitted as it is (no files: enemies[id].spineLocal).
+//   literal(value)  a value emitted as it is (no files: enemies[id] / tokens[id].spineLocal).
 // Inputs are the research JSONs (docs/research/03, 05, 07), the official
 // audio_data.json and Ark-Models' models_data.json.
 //
 // Scope (research 07 §1, DESIGN §0): all 138 pool charIds (incl. backup
-// operators), the 20 pool tokens, every enemy that can appear in an
+// operators), the 自选 owned-6★ picks of data/backups.json (`extraOperators`:
+// research 07 does not list them — their URLs follow its patterns) and their
+// summons, the module type icons of every module the data offers
+// (`moduleTypes`), the 20 pool tokens, every enemy that can appear in an
 // act2autochess match (07 enemy list ∪ act1autochess wave/boss levels used by
 // act2 modes ∪ bosses ∪ their summons ∪ enemy units spawned by operator kits),
 // the 23 bonds, 59 shop items, 40 bands,
@@ -43,6 +46,40 @@ import { EMOTE_CATALOG } from '../../shared/constants.js';
 export const ENEMY_SPINE_ALIAS = Object.freeze({
   enemy_1305_mhslim: 'enemy_1007_slime',
   enemy_1305_mhslim_2: 'enemy_1007_slime',
+});
+
+/**
+ * Summons no web dump carries under their own id — the 自选 picks' (data/backups.json `tokens`) — whose model
+ * fexli/ArknightsResource has as a SKIN variant only: token id → the variant folder (found by the fork's asset probe for
+ * its retired 外援 roster, commits 504e4703 / 0f153b66). The plan takes that skin as the token's web `spine` instead of
+ * guessing its own id; the official model of the local client (`spineLocal`, tools/assets/local-token-spines.json) is
+ * still drawn over it when extracted, and the avatar when neither is there.
+ */
+export const TOKEN_SKIN_SPINES = Object.freeze({
+  token_10002_kalts_mon3tr: 'token_10002_kalts_mon3tr_boc_6',
+  token_10003_cgbird_bird: 'token_10003_cgbird_bird_sightseer_1',
+  token_10005_mgllan_drone1: 'token_10005_mgllan_drone1_kitchen_1',
+  token_10005_mgllan_drone2: 'token_10005_mgllan_drone2_kitchen_1',
+  token_10005_mgllan_drone3: 'token_10005_mgllan_drone3_kitchen_1',
+  token_10007_phatom_twin: 'token_10007_phatom_twin_ghost_1',
+  token_10009_weedy_cannon: 'token_10009_weedy_cannon_sightseer_1',
+  token_10020_ling_soul1: 'token_10020_ling_soul1_ncg_1',
+  token_10020_ling_soul2: 'token_10020_ling_soul2_ncg_1',
+  token_10020_ling_soul3: 'token_10020_ling_soul3_ncg_1',
+  token_10025_doroth_recttp: 'token_10025_doroth_recttp_witch_4',
+  token_10026_bgsnow_subbow: 'token_10026_bgsnow_subbow_wild_7',
+  token_10027_ironmn_pile1: 'token_10027_ironmn_pile1_ambienceSynesthesia_5',
+  token_10027_ironmn_pile2: 'token_10027_ironmn_pile2_ambienceSynesthesia_5',
+  token_10027_ironmn_pile3: 'token_10027_ironmn_pile3_ambienceSynesthesia_5',
+  token_10029_slent2_protrb: 'token_10029_slent2_protrb_epoque_32',
+  token_10032_jesca2_jckshd: 'token_10032_jesca2_jckshd_cfa_1',
+  token_10034_ray_sndbst: 'token_10034_ray_sndbst_shining_2',
+  token_10035_wisdel_wward: 'token_10035_wisdel_wward_game_9',
+  token_10043_necras_skeltn: 'token_10043_necras_skeltn_ambienceSynesthesia_7',
+  token_10050_monstr_prosts: 'token_10050_monstr_prosts_boc_11',
+  token_10051_radian_tower1: 'token_10051_radian_tower1_game_8',
+  token_10052_radian_tower2: 'token_10052_radian_tower2_game_8',
+  token_10053_radian_tower3: 'token_10053_radian_tower3_game_8',
 });
 
 /** Loading illustrations referenced by act2autochess modeDataDict (non-training). */
@@ -123,22 +160,6 @@ function alt(rel, urls, bytes) {
   return a;
 }
 
-/**
- * The candidate URLs of one research-shaped file entry: `url` | `{ url, mirror?, bytes? }` | an array of candidate URLs
- * (for a Spine record: candidate folders, the same order for its three files). A research 07 entry names
- * raw.githubusercontent.com only: the Downloader adds the jsDelivr fallback, and the opt-in gh-proxy in front of it
- * (--asset-source=mirror, tools/assets/network.mjs). A 外援 entry of tools/assets/waiguan-operators.json names jsDelivr
- * as `url` and the same file on raw.githubusercontent.com as `mirror`; `mirror` goes first, so every file of the
- * roster — avatar, portrait, battle Spine (and its atlas pages, spine.mjs) and skill icons — follows the same source
- * order as a pool operator (docs/DEPLOY.md 国内镜像下载) and `url` stays an explicit fallback.
- * @param {any} x
- * @returns {string[]}
- */
-export function entryUrls(x) {
-  const list = Array.isArray(x) ? x : typeof x === 'string' ? [x] : [].concat(x?.mirror ?? [], x?.url ?? []);
-  return [...new Set(list.filter((u) => typeof u === 'string' && u))];
-}
-
 /** A leaf with the given alternatives (null alternatives are dropped). */
 function leaf(...alts) {
   const list = alts.flat().filter((a) => a && a.urls && a.urls.length);
@@ -189,6 +210,32 @@ function walkKeys(node, add) {
     if (typeof node.key === 'string') add(node.key);
     for (const v of Object.values(node)) walkKeys(v, add);
   }
+}
+
+/**
+ * A research-07-shaped operator record of a character research 07 does not list (the 自选 owned-6★ picks): every URL
+ * from the patterns of 07-assets.json `meta.patterns` — avatar / portrait (E0–E1 and E2), the default-skin battle Spine
+ * Front / Back, the skill icons, the sub-profession icon. No expected byte counts (the downloader validates the files);
+ * a file the mirrors lack is a miss the client falls back from (the E2 art to the E0–E1 one, a missing Back to Front).
+ * @param {string} id charId
+ * @param {{ subProfessionId?: string|null, nationId?: string|null, skills?: Array<{ index: number, skillId: string, iconId?: string|null }> }} x
+ */
+export function patternOperator(id, x = {}) {
+  const sp = (side) => {
+    const b = `${RAW.fexli}spine/${id}/${id}/${side}/${id}`;
+    return { skel: `${b}.skel`, atlas: `${b}.atlas`, png: `${b}.png` };
+  };
+  return {
+    name: x.name ?? null, subProfessionId: x.subProfessionId ?? null, nationId: x.nationId ?? null, chess: [],
+    avatar: { e0e1: { url: `${RAW.yuanyan}avatar/${id}.png` }, e2: { url: `${RAW.yuanyan}avatar/${id}_2.png` } },
+    portrait: { e0e1: { url: `${RAW.yuanyan}portrait/${id}_1.png` }, e2: { url: `${RAW.yuanyan}portrait/${id}_2.png` } },
+    skills: (x.skills || []).map((s) => ({
+      index: s.index, skillId: s.skillId, iconId: s.iconId || s.skillId,
+      icon: { url: `${RAW.yuanyan}skill/skill_icon_${encodeURIComponent(s.iconId || s.skillId)}.png` },
+    })),
+    battleSpine: { front: sp('Front'), back: sp('Back'), note: null },
+    subProfessionIcon: x.subProfessionId ? joinUrl(RAW.aa2, `arts/ui/subprofessionicon/sub_${x.subProfessionId}_icon.png`) : null,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -278,15 +325,21 @@ export function collectEnemyIds({ assets07, enemies05, maps05, ops03 }) {
  * @param {Record<string, import('./spine.mjs').LocalSpineMeta>} [p.localEnemySpines] metadata of the enemy models the
  *   local client has (the committed tools/assets/local-enemy-spines.json, never the disk): each planned enemy listed
  *   gets `spineLocal` = { group: 'spine/enemy/<id>', ...meta } beside its web `spine`
- * @param {Record<string, any>} [p.extraOperators] operator asset entries (07-assets.json shape) for characters research
- *   07 does not list — the 外援 / 甄选 (DIY) roster (tools/assets/waiguan-operators.json, DESIGN §27). Each file is
- *   tried at its raw.githubusercontent.com `mirror` first, then at its jsDelivr `url` (entryUrls). Their battle voice is
- *   planned like a pool operator's (`voice`, the same 14 lines).
- * @param {Record<string, any>} [p.extraTokens] the 外援 roster's summons (tools/assets/waiguan-operators.json `tokens`):
- *   token id → `{ battleSpineSkinVariantsOnly: [variant] }`, the skin-variant Spine a token unknown to research 07 uses
+ * @param {Record<string, import('./spine.mjs').LocalSpineMeta>} [p.localTokenSpines] the same for the token (summon)
+ *   models (tools/assets/local-token-spines.json): each planned token listed gets `spineLocal` = { group:
+ *   'spine/token/<id>', ...meta } beside its web `spine`, if any (most have none: the client drew the avatar)
+ * @param {Record<string, any>} [p.extraOperators] charId → { subProfessionId, nationId, skills: [{ index, skillId, iconId }] }
+ *   of characters research 07 does not list (the 自选 owned-6★ picks, data/backups.json `units`): planned like the pool
+ *   operators from patternOperator
+ * @param {string[]} [p.moduleTypes] module type icon ids (`typeIcon`, e.g. 'sol-x') → manifest `modules[typeIcon]`, the
+ *   official type icon (arts/ui/uniequiptype) the 干员调配 / 自选 module tiles draw when the local-client art lacks it
+ * @param {Record<string, string>} [p.tokenSkinSpines] token id → the skin variant whose web Spine a token unknown to
+ *   research 07 uses (default TOKEN_SKIN_SPINES)
  * @returns {{ template: any, models: Map<string, any>, notes: string[] }}
  */
-export function buildPlan({ assets07, ops03, enemies05, maps05, audio, modelsData, extraEnemyIds = [], extraTokenIds = [], extraHandbook = {}, localEnemySpines = {}, voice = null, extraOperators = {}, extraTokens = {} }) {
+export function buildPlan({ assets07, ops03, enemies05, maps05, audio, modelsData, voice = null,
+  extraEnemyIds = [], extraTokenIds = [], extraHandbook = {}, localEnemySpines = {}, localTokenSpines = {}, extraOperators = {},
+  moduleTypes = [], tokenSkinSpines = TOKEN_SKIN_SPINES }) {
   const notes = [];
   /** @type {Map<string, any>} */
   const models = new Map();
@@ -295,9 +348,8 @@ export function buildPlan({ assets07, ops03, enemies05, maps05, audio, modelsDat
   // --- Spine model helpers -------------------------------------------------
   const addModel = (key, def) => { if (!models.has(key)) models.set(key, { key, ...def }); return { model: key }; };
   const fexliModel = (key, kind, dir, rec, skillIndices) => {
-    // rec: 07 { skel:{url,bytes}|url|url[], atlas, png } — arrays are candidate folders (same order for all three); a
-    // 外援 entry's { url, mirror } adds its raw.githubusercontent.com copy (entryUrls), which baseUrl then names
-    const us = entryUrls;
+    // rec: 07 { skel:{url,bytes}|url|url[], atlas, png } — arrays are candidate folders (same order for all three)
+    const us = (x) => (Array.isArray(x) ? x : [typeof x === 'string' ? x : x?.url]).filter((v) => typeof v === 'string' && v);
     const b = (x) => (x && typeof x === 'object' && !Array.isArray(x) ? x.bytes : undefined);
     if (!us(rec?.skel).length || !us(rec?.atlas).length || !us(rec?.png).length) return null;
     const stem = skelStem(us(rec.skel)[0]);
@@ -316,29 +368,22 @@ export function buildPlan({ assets07, ops03, enemies05, maps05, audio, modelsDat
   const skills = {};
   const skillsById = {};
   const unitsSfx = {};
-  // 外援 / 甄选 (DIY) roster (DESIGN §27): the characters data/waiguan.json can field are not in research 07, so their
-  // entries come from the committed tools/assets/waiguan-operators.json. They are merged here and processed by the SAME
-  // loop below (avatar / portrait / battle Spine / skill icons / unit SFX), so an operator of the roster is planned
-  // exactly like a pool operator.
-  const operatorsById = { ...(assets07?.operators || {}), ...extraOperators };
-  // every operator a player can field — the pool's (research 07) and the 外援 roster: their battle voice is planned below
-  const charIds = Object.keys(operatorsById).sort();
-  for (const id of Object.keys(operatorsById).sort()) {
-    const o = operatorsById[id];
-    // Alternatives: a research 07 entry names raw.githubusercontent.com (the Downloader adds its jsDelivr mirror, and
-    // the opt-in gh-proxy in front); a waiguan-operators.json entry also names its jsDelivr copy, tried after the raw
-    // `mirror` (entryUrls). A network that cannot open raw.githubusercontent.com at all (the machine the roster was
-    // generated on) falls through to jsDelivr; tools/fetch-assets-retry.mjs tries the jsDelivr hosts first there.
-    const urlsOf = entryUrls;
+  const known = assets07?.operators || {};
+  const extraOps = {};
+  for (const [id, x] of Object.entries(extraOperators || {})) if (/^char_\d+_[a-z0-9]+$/i.test(id) && !known[id]) extraOps[id] = patternOperator(id, x);
+  const operators = { ...known, ...extraOps };
+  const charIds = Object.keys(operators).sort();
+  for (const id of charIds) {
+    const o = operators[id];
     // DESIGN §16 operator loadouts: any skill of the character can be equipped — the icons, skill SFX and Spine skill
     // clips of every skill index (the pool's primary index first, as before)
     const idx0 = skillIdx.get(id) || [0];
     const idx = [...idx0, ...(o.skills || []).map((k) => k.index).filter((i) => Number.isInteger(i) && i >= 0 && !idx0.includes(i)).sort((a, b) => a - b)];
     const c = {};
-    c.avatar = leaf(alt(`char/avatar/${id}.png`, urlsOf(o.avatar?.e0e1), o.avatar?.e0e1?.bytes));
-    if (o.avatar?.e2?.url) c.avatarE2 = leaf(alt(`char/avatar/${id}_2.png`, urlsOf(o.avatar.e2), o.avatar.e2.bytes));
-    c.portrait = leaf(alt(`char/portrait/${id}_1.png`, urlsOf(o.portrait?.e0e1), o.portrait?.e0e1?.bytes));
-    if (o.portrait?.e2?.url) c.portraitE2 = leaf(alt(`char/portrait/${id}_2.png`, urlsOf(o.portrait.e2), o.portrait.e2.bytes));
+    c.avatar = leaf(alt(`char/avatar/${id}.png`, o.avatar?.e0e1?.url, o.avatar?.e0e1?.bytes));
+    if (o.avatar?.e2?.url) c.avatarE2 = leaf(alt(`char/avatar/${id}_2.png`, o.avatar.e2.url, o.avatar.e2.bytes));
+    c.portrait = leaf(alt(`char/portrait/${id}_1.png`, o.portrait?.e0e1?.url, o.portrait?.e0e1?.bytes));
+    if (o.portrait?.e2?.url) c.portraitE2 = leaf(alt(`char/portrait/${id}_2.png`, o.portrait.e2.url, o.portrait.e2.bytes));
     c.spine = {};
     const front = fexliModel(`op:${id}:front`, 'op', `spine/op/${id}/front/`, o.battleSpine?.front, idx);
     if (front) c.spine.front = front; else notes.push(`${id}: no Front battle Spine in research data`);
@@ -356,7 +401,7 @@ export function buildPlan({ assets07, ops03, enemies05, maps05, audio, modelsDat
       const s = (o.skills || []).find((k) => k.index === i);
       if (!s) { notes.push(`${id}: skill index ${i} missing in research data`); continue; }
       const iconId = s.iconId || s.skillId;
-      if (s.icon?.url && !skills[iconId]) skills[iconId] = leaf(alt(`skill/${safeName(iconId)}.png`, entryUrls(s.icon), s.icon.bytes));
+      if (s.icon?.url && !skills[iconId]) skills[iconId] = leaf(alt(`skill/${safeName(iconId)}.png`, s.icon.url, s.icon.bytes));
       if (s.skillId) skillsById[s.skillId] = iconId;
       const ss = audio.skillBanks.get(s.skillId)?.get('ON_SKILL_START');
       if (ss?.length) skillSfx[String(i)] = soundLeaf(ss);
@@ -374,15 +419,13 @@ export function buildPlan({ assets07, ops03, enemies05, maps05, audio, modelsDat
   const tokenIds = new Set(Object.keys(assets07?.tokens || {}));
   for (const id of extraTokenIds) if (typeof id === 'string' && /^token_\d+_[a-z0-9_]+$/i.test(id)) tokenIds.add(id);
   for (const id of [...tokenIds].sort()) {
-    // Tokens unknown to research 07: the 外援 roster's summons name their Spine (tools/assets/waiguan-operators.json
-    // `tokens`: the upstream repository has only skin variants of them), any other gets the default avatar/Spine
-    // locations (misses are tolerated).
-    const t = assets07?.tokens?.[id] ?? (extraTokens?.[id] ? {
-      avatar: { url: `${RAW.yuanyan}avatar/${id}.png` }, battleSpineDefault: null, ...extraTokens[id],
-    } : null) ?? {
+    // Tokens unknown to research 07: default avatar/Spine locations (misses are tolerated); a summon whose web model is
+    // a skin only (TOKEN_SKIN_SPINES) takes that skin.
+    const skin = tokenSkinSpines && Object.hasOwn(tokenSkinSpines, id) && typeof tokenSkinSpines[id] === 'string' ? tokenSkinSpines[id] : null;
+    const t = assets07?.tokens?.[id] ?? {
       avatar: { url: `${RAW.yuanyan}avatar/${id}.png` },
       battleSpineDefault: null,
-      battleSpineSkinVariantsOnly: [id],
+      battleSpineSkinVariantsOnly: [skin || id],
     };
     const usedBy = ops03?.tokensUsedByPool?.[id]?.usedByChess || [];
     const ownerChess = usedBy.map((cid) => chessById.get(cid)).find(Boolean);
@@ -401,6 +444,12 @@ export function buildPlan({ assets07, ops03, enemies05, maps05, audio, modelsDat
       if (model) entry.spineVariant = v;
     }
     entry.spine = model;
+    // the official model from the local client, drawn instead of the avatar (or of `spine`) when extracted (optional)
+    const loc = localTokenSpines && Object.hasOwn(localTokenSpines, id) ? localTokenSpines[id] : null;
+    if (loc && typeof loc === 'object') {
+      entry.spineLocal = literal({ group: `spine/token/${id}`, ...loc });
+      notes.push(`${id}: official Spine from the local client when extracted (spineLocal)`);
+    }
     tokens[id] = entry;
     const { roles: u, mix } = unitSounds(audio, pickUnitSfx(audio.unitBanks.get(id)));
     if (mix) u.mix = mix;
@@ -499,7 +548,7 @@ export function buildPlan({ assets07, ops03, enemies05, maps05, audio, modelsDat
   for (const p of [...PROFESSIONS, 'token']) {
     prof.battlecard[p] = leaf(alt(`prof/battlecard_${p}.png`, joinUrl(RAW.aa2, `arts/ui/[uc]battlecommon/ui_battle_new/battlecard/icon_profession_${p}.png`)));
   }
-  for (const o of Object.values(assets07?.operators || {})) {
+  for (const o of Object.values(operators)) {
     const sub = o.subProfessionId;
     if (typeof sub === 'string' && sub && !prof.sub[sub] && o.subProfessionIcon) prof.sub[sub] = leaf(alt(`prof/sub/${safeName(sub)}.png`, o.subProfessionIcon));
   }
@@ -514,7 +563,7 @@ export function buildPlan({ assets07, ops03, enemies05, maps05, audio, modelsDat
   for (const [group, entries] of Object.entries(assets07?.autochessUi || {})) {
     for (const [key, url] of Object.entries(entries || {})) addUi(group, key, url);
   }
-  const nations = new Set(Object.values(assets07?.operators || {}).map((o) => o.nationId).filter(Boolean));
+  const nations = new Set(Object.values(operators).map((o) => o.nationId).filter(Boolean));
   const logos = new Set(['logo_rhodes', ...[...nations].map((n) => `logo_${n}`)]);
   for (const b of Object.values(assets07?.bonds || {})) if (b.fallbackCampLogo) logos.add(urlBase(b.fallbackCampLogo).replace(/\.png$/i, ''));
   for (const [src, group] of Object.entries(ARTS_GROUPS)) {
@@ -576,7 +625,22 @@ export function buildPlan({ assets07, ops03, enemies05, maps05, audio, modelsDat
   const sfxBattle = {};
   for (const [name, spec] of Object.entries(BATTLE_SFX)) { const l = soundLeaf(resolveSpec(spec, audio.bank)); if (l) sfxBattle[name] = l; else notes.push(`battle SFX ${name}: no sound`); }
 
-  // operator voice: public/assets/voice/<lang>/<word key>/cn_NNN.mp3 (the upstream folder name dropped — voice_cn/ or voice/)
+  // --- module type icons ----------------------------------------------------
+  const modules = {};
+  for (const t of [...new Set(moduleTypes || [])].filter((x) => typeof x === 'string' && /^[a-z0-9-]+$/i.test(x)).sort()) {
+    // the client's file name, else its lower-case form (the type id of a few modules is mixed case: WAH-Y → wah-y.png).
+    // One lower-case file per type: the official data spells one DEC X module 'dec-X' (uniequip_003_aglina) and the
+    // others 'dec-x'; two paths that differ only in case are one file on Windows / macOS (and in a release zip built or
+    // extracted there), so a case-sensitive server would miss one of them.
+    modules[t] = leaf(alt(`module/${safeName(t).toLowerCase()}.png`, [...new Set([t, t.toLowerCase()])].map((n) => joinUrl(RAW.aa2, `arts/ui/uniequiptype/${n}.png`))));
+  }
+
+  // --- 干员战斗语音 (excel/charword_table.json → audio.voice, voice.mjs) -----------------------------------
+  // public/assets/voice/<lang>/<word key>/cn_NNN.mp3 (the upstream folder name dropped — voice_cn/ or voice/), for every
+  // operator planned above (`charIds`: the 138 pool charIds and the 自选 picks) and every client language asked for; the
+  // battle roles of voice.mjs VOICE_ROLES only (the 14 lines a battle plays: DESIGN §21.30 — the fork's voice engine,
+  // public/js/audio.js). A role with several lines stays an array. Operators without official voice keep no entry at all:
+  // the 17 预备干员 / 原型干员 (char_60x_c*, char_617_sharp2) and the mode's own 盟约·辅助干员 (char_616_pithst).
   const voiceByLang = {};
   for (const lang of voice?.langs || []) {
     const per = {};
@@ -590,7 +654,7 @@ export function buildPlan({ assets07, ops03, enemies05, maps05, audio, modelsDat
   }
 
   const template = {
-    chars, enemies, tokens, bonds, items, bands, skills, skillsById, ui, prof,
+    chars, enemies, tokens, bonds, items, bands, skills, skillsById, modules, ui, prof,
     audio: { bgm, bossBgm: Object.fromEntries(Object.entries(bossBgm).sort(([a], [b]) => a.localeCompare(b, 'en', { numeric: true }))), sfx: { ui: sfxUi, battle: sfxBattle, units: unitsSfx } },
   };
   if (Object.keys(voiceByLang).length) {

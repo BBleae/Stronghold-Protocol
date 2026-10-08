@@ -1,3 +1,4 @@
+/* global __automaticReconnects */ // a page global read inside page.evaluate / waitForFunction
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
@@ -69,18 +70,23 @@ test(
       return page;
     };
     const a = await open();
+    // the menu's 自选 picker has its operators before the page meets a room (worker-entry.js, data-sp-diy-kitted)
+    assert.ok((await a.evaluate(async () => (await import('/js/ui/loadoutSync.js')).loadoutStore.get().diyKitted))?.includes('char_003_kalts'));
     await a.evaluate(async () => {
       [...document.querySelectorAll('.mode-card')].find((b) => b.textContent.includes('独立模拟')).click();
       [...document.querySelectorAll('.diff-card')].find((b) => b.textContent.includes('终极模拟')).click();
       (await import('/js/ui/loadoutSync.js')).setEntries({ chess_char_1_01_a: { skill: 0, module: 'none' } });
-      // the 外援 / 甄选 picks follow the account like the loadout (DESIGN §27)
-      (await import('/js/ui/loadoutSync.js')).setPicks({ diy6a: 'char_003_kalts' });
+      // the 自选编队 picks and the 干员持有 list follow the account like the loadout (preferenceSchema.js)
+      // (an owned 6★ pick names its skill: a pick without one is dropped by the room — shared/diy.js validateDiyPicks)
+      (await import('/js/ui/loadoutSync.js')).setDiyPicks({ chess_char_6_diy1_a: { charId: 'char_003_kalts', skillIndex: 2 } });
+      (await import('/js/ui/loadoutSync.js')).setNotOwned(['chess_char_3_05_a']);
       (await import('/js/screens/lobby.js')).rememberRoom('ABCD');
       (await import('/js/ui/emotes.js')).rememberTheme('emoticon_originium_slug');
     });
     const expected = {
       loadout: { v: 1, entries: { chess_char_1_01_a: { skill: 0, module: 'none' } } },
-      waiguan: { v: 1, picks: { diy6a: 'char_003_kalts' } },
+      diy: { v: 1, picks: { chess_char_6_diy1_a: { charId: 'char_003_kalts', skillIndex: 2 } } },
+      ownership: { v: 1, notOwned: ['chess_char_3_05_a'] },
       'lobby.mode': 'solo',
       'lobby.difficulty': 'ABYSS',
       recentRooms: ['ABCD'],
@@ -104,7 +110,8 @@ test(
         const { loadoutStore } = await import('/js/ui/loadoutSync.js');
         return {
           loadout: { v: 1, entries: loadoutStore.get().entries },
-          waiguan: { v: 1, picks: loadoutStore.get().picks },
+          diy: { v: 1, picks: loadoutStore.get().diy },
+          ownership: { v: 1, notOwned: loadoutStore.get().notOwned },
           'lobby.mode': loadPref('lobby.mode', 'coop'),
           'lobby.difficulty': loadPref('lobby.difficulty', 'FUNNY'),
           recentRooms: loadPref('recentRooms', []),
@@ -143,17 +150,22 @@ test(
     await ready(b);
     const switched = await read(b);
     assert.deepEqual(switched.loadout, { v: 1, entries: {} });
-    assert.deepEqual(switched.waiguan, { v: 1, picks: {} }, 'another account never sees these picks');
+    assert.deepEqual(switched.diy, { v: 1, picks: {} }, 'another account never sees these picks');
+    assert.deepEqual(switched.ownership, { v: 1, notOwned: [] }, 'nor this list');
     assert.equal(switched['lobby.mode'], 'coop');
     assert.deepEqual(switched.recentRooms, []);
     await b.goto(base + '__test/login/a');
     await ready(b);
     assert.deepEqual(await read(b), { ...expected, 'lobby.difficulty': 'HARD' });
     // Deployment recovery must work in the already-open browser, without 继续对局 or reload().
-    await b.evaluate(async () => {
-      await __SP__.net.request('room.create', { mode: 'solo', difficulty: 'FUNNY' });
-      await __SP__.net.request('room.start');
-    });
+    // A room Worker's page meets the room at room.create (its welcome): the 自选编队 and 干员持有 go out just after it
+    // (loadoutSync.js), and a match takes them at its start — a player's click on 开始模拟 comes later, so wait for them.
+    await b.evaluate(() => __SP__.net.request('room.create', { mode: 'solo', difficulty: 'FUNNY' }));
+    await b.waitForFunction(async () => {
+      const s = (await import('/js/ui/loadoutSync.js')).loadoutStore.get();
+      return s.diySync === 'synced' && s.ownSync === 'synced';
+    }, { timeout: 10000 });
+    await b.evaluate(() => __SP__.net.request('room.start'));
     await b.waitForFunction(() => __SP__.store.get().match.public?.phase === 'INFO_CHECK');
     const beforeRestart = await b.evaluate(() => ({
       playerId: __SP__.net.playerId,
@@ -182,13 +194,17 @@ test(
       })),
       beforeRestart,
     );
-    // the account's picks reached the match, and the restore kept them
-    await b.waitForFunction(() => __SP__.store.get().match.private?.picks?.diy6a === 'char_003_kalts', { timeout: 10000 });
+    // the account's 自选编队 and 干员持有 reached the match (the seat's at its start), and the restore kept them
+    const own = () => __SP__.store.get().match.private?.diy?.chess_char_6_diy1_a?.charId === 'char_003_kalts'
+      && (__SP__.store.get().match.private?.standIns || []).includes('chess_char_3_05_a');
+    await b.waitForFunction(own, { timeout: 10000 });
+    const ownBefore = await b.evaluate(() => ({ diy: __SP__.store.get().match.private.diy, standIns: __SP__.store.get().match.private.standIns }));
     await b.evaluate(() => __SP__.net.request('g.infoReady'));
     await b.waitForFunction(() => __SP__.store.get().match.public?.phase === 'BAND_DRAFT');
-    // a pick changed during the strategy draft is still taken (Match.setPicks), and logged for the restore below
-    await b.evaluate(async () => (await import('/js/ui/loadoutSync.js')).setPicks({ diy6a: 'char_003_kalts', diy5a: 'char_180_amgoat' }));
-    await b.waitForFunction(() => __SP__.store.get().match.private?.picks?.diy5a === 'char_180_amgoat', { timeout: 10000 });
+    // an edit during the match is the next match's (both are out-of-match settings): this one keeps what it took
+    await b.evaluate(async () => (await import('/js/ui/loadoutSync.js')).setDiyPicks({}));
+    await b.waitForFunction(async () => (await import('/js/ui/loadoutSync.js')).loadoutStore.get().diySync === 'locked', { timeout: 10000 });
+    assert.deepEqual(await b.evaluate(() => __SP__.store.get().match.private.diy), ownBefore.diy, 'the running match keeps its picks');
     await b.evaluate(() => __SP__.net.request('g.band', { bandId: 'band_sarkazb' }));
     await b.waitForFunction(() => __SP__.store.get().match.public?.phase === 'PREP');
     await b.evaluate(() => {
@@ -204,9 +220,9 @@ test(
     );
     assert.equal(await b.evaluate(() => __SP__.net.playerId), beforeRestart.playerId);
     assert.equal(await b.evaluate(() => __SP__.store.get().room.code), beforeRestart.room);
-    // the restored match (checkpoint + event log) still holds the picks set in INFO_CHECK and BAND_DRAFT
-    await b.waitForFunction(() => !!__SP__.store.get().match.private?.picks, { timeout: 10000 });
-    assert.deepEqual(await b.evaluate(() => __SP__.store.get().match.private.picks), { diy6a: 'char_003_kalts', diy5a: 'char_180_amgoat' });
+    // the restored match (checkpoint + event log) still holds the 自选编队 and 干员持有 it started with
+    await b.waitForFunction(() => !!__SP__.store.get().match.private?.diy, { timeout: 10000 });
+    assert.deepEqual(await b.evaluate(() => ({ diy: __SP__.store.get().match.private.diy, standIns: __SP__.store.get().match.private.standIns })), ownBefore);
     await b.evaluate(() => __SP__.net.request('g.leave'));
     assert.deepEqual(errors, []);
   },

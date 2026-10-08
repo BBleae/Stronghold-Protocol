@@ -83,8 +83,8 @@ test('downloader uses proxy, validates payload, falls back, and skips existing f
   assert.equal(calls.length, 2);
 });
 
-// A 外援 roster entry (tools/assets/waiguan-operators.json, plan.mjs entryUrls) lists raw and its jsDelivr copy as two
-// candidates: the jsDelivr copy is also the raw URL's own fallback, and is tried once, not twice.
+// A job may list a raw URL and its jsDelivr copy as two candidates (the asset entries of the fork's retired 外援 roster
+// did): the jsDelivr copy is also the raw URL's own fallback, and is tried once, not twice.
 test('a job listing raw and its jsDelivr copy tries each source once, after the proxy in mirror mode', async (t) => {
   for (const [source, expected] of [['direct', [RAW, CDN]], ['mirror', [PROXY, RAW, CDN]]]) {
     const dir = await fixture(t);
@@ -391,7 +391,7 @@ test('setup and asset CLI document and validate source options before doing work
   }
 });
 
-// tools/fetch-assets-retry.mjs (the 外援 PR's download-only helper) takes the same source choice as fetch-assets: the
+// tools/fetch-assets-retry.mjs (the fork's download-only helper, Slapq #17) takes the same source choice as fetch-assets: the
 // option or SP_ASSET_SOURCE, checked before any work, and the gh-proxy copies go through the shared MirrorPolicy.
 test('fetch-assets-retry takes --asset-source / SP_ASSET_SOURCE like fetch-assets and checks it before doing work', () => {
   const script = 'tools/fetch-assets-retry.mjs';

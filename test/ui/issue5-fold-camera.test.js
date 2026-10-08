@@ -173,7 +173,7 @@ describe('the folded board grows and every bench / temp tile stays clear of the 
         const foldCam = presetCamera(kind, { width: w, height: h }, { ...opts, shop: false, hud: foldHud });
         const tag = `${kind}${opts.side} ${w}×${h}`;
         const midRow = rows.back - 2;
-        // (on a touch screen the shop camera itself is no longer zoomed out below the official framing — DESIGN §26.1 — so
+        // (on a touch screen the shop camera itself is no longer zoomed out below the official framing — DESIGN §F2.1 — so
         // folding grows the board by less there, but it still grows)
         assert.ok(tileAt(foldCam, midRow) > tileAt(openCam, midRow) * (coarse ? 1.05 : 1.15), `${tag}: grows (${tileAt(openCam, midRow).toFixed(1)} → ${tileAt(foldCam, midRow).toFixed(1)})`);
         const e = extents(foldCam, rows);

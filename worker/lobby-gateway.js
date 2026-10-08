@@ -64,7 +64,7 @@ class GatewayLobby extends Lobby {
     super.clearResync(playerId);
     this.resyncDue.delete(playerId);
   }
-  // 匹配 (DESIGN §28): the base Lobby re-examines its queue on a setInterval clock while somebody
+  // 匹配 (DESIGN §F4): the base Lobby re-examines its queue on a setInterval clock while somebody
   // waits. Here a tick is a deadline like the grace and resync expiries, so a group forms inside
   // an event and its frames are committed and released with it (an interval's output would wait
   // in the sockets' buffers for the next client message, and its rooms for the next save).

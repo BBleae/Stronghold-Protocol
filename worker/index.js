@@ -118,7 +118,7 @@ async function route(request, env) {
   if (accountResponse) return accountResponse;
   const lobbyResponse = await handleLobbyRoutes(request, env);
   if (lobbyResponse) return lobbyResponse;
-  // 匹配 (DESIGN §28.2): the queue's Durable Object, polled by the lobby page
+  // 匹配 (DESIGN §F4.2): the queue's Durable Object, polled by the lobby page
   const queueResponse = await handleQueueRoutes(request, env);
   if (queueResponse) return queueResponse;
   const historyResponse=await handleHistoryRoutes(request,env);

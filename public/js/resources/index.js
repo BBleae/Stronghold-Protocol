@@ -11,6 +11,7 @@ import { exportResourceZip, importResourceZip } from './zip.js';
 import { ResourceDialog } from './view.js';
 import { installResourceOpener } from '../ui/resourceButton.js';
 import { appBundled } from '../appShell.js';
+import { t } from '../../../shared/i18n.js';
 
 // The player's choice: 'install' (keep every resource file locally) or 'ondemand'. Unset until the first visit's
 // dialog closes; a returning player's boot never waits for the resource layer. Releases whose site hosted no resource
@@ -78,10 +79,10 @@ async function checkStatus(store) {
 }
 
 function readableError(error) {
-  if (error.name === 'AbortError') return '已暂停。已完成的文件会保留，可继续下载或重新导入。';
-  if (error.name === 'QuotaExceededError') return '浏览器存储空间不足。请释放设备空间后重试，或选择按需加载。';
-  const reason = error.name === 'TypeError' ? `网络连接失败（${error.message}）` : error.message;
-  return `未完成：${reason}。已完成的文件会保留，可重试或按需加载。`;
+  if (error.name === 'AbortError') return t('已暂停。已完成的文件会保留，可继续下载或重新导入。');
+  if (error.name === 'QuotaExceededError') return t('浏览器存储空间不足。请释放设备空间后重试，或选择按需加载。');
+  const reason = error.name === 'TypeError' ? t('网络连接失败（{message}）', { message: error.message }) : error.message;
+  return t('未完成：{reason}。已完成的文件会保留，可重试或按需加载。', { reason });
 }
 
 /**
@@ -110,8 +111,8 @@ async function checkInstallation() {
   const store = await loadStore();
   const status = await exclusive(() => checkStatus(store));
   if (preference() === 'install' && !status.complete) {
-    const missing = `${status.total - status.count} 个文件（${mib(status.totalBytes - status.bytes)}）`;
-    toast(`本地资源缺少 ${missing}，可在「资源管理」继续下载。`, 'info', { ttl: 8000 });
+    const missing = t('{n} 个文件（{size}）', { n: status.total - status.count, size: mib(status.totalBytes - status.bytes) });
+    toast(t('本地资源缺少 {missing}，可在「资源管理」继续下载。', { missing }), 'info', { ttl: 8000 });
   }
 }
 
@@ -132,7 +133,7 @@ async function openStore() {
     return await loadStore();
   } catch (error) {
     console.error('[resources] resource cache unavailable', error);
-    toast(`本地资源缓存不可用：${error.message}。游戏资源将按需加载。`, 'warn', { ttl: 6000 });
+    toast(t('本地资源缓存不可用：{message}。游戏资源将按需加载。', { message: error.message }), 'warn', { ttl: 6000 });
     return null;
   }
 }
@@ -177,7 +178,7 @@ function showManager(store, firstTime = false) {
       if (closed) return;
       render(html`<${ResourceDialog} state=${state} firstTime=${firstTime} totalBytes=${store.manifest.totalBytes}
         onClose=${close} onDownload=${download} onImport=${importZip} onExport=${exportZip} onClear=${clear}
-        onCancel=${() => { controller?.abort(); update({ message: '正在暂停…' }); }} />`, host);
+        onCancel=${() => { controller?.abort(); update({ message: t('正在暂停…') }); }} />`, host);
     }
 
     /** Run `task` holding the resource lock; the dialog shows when it waits for another operation. */
@@ -202,7 +203,7 @@ function showManager(store, firstTime = false) {
 
     async function run(phase, action, done) {
       if (operation || closing) return;
-      update({ busy: true, phase, message: '正在准备，请稍候…', error: false });
+      update({ busy: true, phase, message: t('正在准备，请稍候…'), error: false });
       operation = (async () => {
         try {
           const result = await locked(async signal => {
@@ -233,18 +234,18 @@ function showManager(store, firstTime = false) {
       if (state.status?.complete) return;
       preference('install');
       return run('download', signal => store.download({ signal, onProgress: status => update({ status }) }),
-        () => '全部资源已保存，可进入游戏。');
+        () => t('全部资源已保存，可进入游戏。'));
     }
 
     function importZip(file) {
       preference('install');
       const action = signal => importResourceZip(file, store, { signal, onProgress: status => update({ status }) });
       return run('import', action, ({ complete, imported, skipped, total, count }) => {
-        if (complete) return '全部资源已保存，可进入游戏。';
-        const rest = `点「在线下载」补齐剩下的 ${total - count} 个`;
+        if (complete) return t('全部资源已保存，可进入游戏。');
+        const rest = t('点「在线下载」补齐剩下的 {n} 个', { n: total - count });
         return skipped
-          ? `已导入 ${imported} 个文件；${skipped} 个与本站版本不一致已跳过，${rest}。`
-          : `已导入 ${imported} 个文件，${rest}。`;
+          ? t('已导入 {imported} 个文件；{skipped} 个与本站版本不一致已跳过，{rest}。', { imported, skipped, rest })
+          : t('已导入 {imported} 个文件，{rest}。', { imported, rest });
       });
     }
 
@@ -267,12 +268,12 @@ function showManager(store, firstTime = false) {
         const { name, blob } = await exportResourceZip(store, { signal, writable, onProgress: status => update({ status }) });
         if (blob) saveBlob(blob, name);
         return name;
-      }, name => `已导出 ${name}（${mib(store.manifest.totalBytes)}），发给朋友后在「资源管理」点「导入本地 ZIP」即可。`);
+      }, name => t('已导出 {name}（{size}），发给朋友后在「资源管理」点「导入本地 ZIP」即可。', { name, size: mib(store.manifest.totalBytes) }));
     }
 
     function clear() {
       preference('ondemand');
-      return run('clear', () => store.clear(), () => '本地资源已清理。');
+      return run('clear', () => store.clear(), () => t('本地资源已清理。'));
     }
 
     async function close() {

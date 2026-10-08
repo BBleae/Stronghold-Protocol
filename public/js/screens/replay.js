@@ -5,6 +5,7 @@ import { accountRequest } from '../account.js';
 import { verifyReplayChunks, createReplayRunner } from '../battle/replay-runner.js';
 import { useFieldView } from '../ui/fieldHost.js';
 import { useGameData } from '../ui/gameComponents.js';
+import { t, N_ } from '../../../shared/i18n.js';
 
 /**
  * A replay battle button's label: `第 N 回合 · names`. A round with several 联防 fields (5–8 players, a remake extension:
@@ -18,7 +19,7 @@ export function replayBattleLabel(b, battles, nameOf) {
   const names = (b?.players || []).map(nameOf).join(' / ');
   const unite = b?.kind === 'unite' && (battles || []).filter((x) => x?.round === b.round && x?.kind === 'unite').length > 1;
   const no = !unite ? 0 : b.fieldId === 'u' ? 1 : Number(/^u(\d+)$/.exec(String(b.fieldId))?.[1]) || 0;
-  return `第 ${b?.round} 回合 · ${no ? `联防 ${no} · ` : ''}${names}`;
+  return no ? t('第 {round} 回合 · 联防 {no} · {names}', { round: b?.round, no, names }) : t('第 {round} 回合 · {names}', { round: b?.round, names });
 }
 
 export function ReplayScreen() {
@@ -40,13 +41,13 @@ export function ReplayScreen() {
         accountRequest('/api/matches/' + matchId + '/replay/' + index),
       );
       if (replay.rulesVersion !== manifest.rulesVersion || !/^[a-f0-9]{20}$/.test(manifest.rulesVersion))
-        throw new Error('缺少本局对应的回放版本');
+        throw new Error(N_('缺少本局对应的回放版本'));
       const engine = await import('/replay-engines/' + manifest.rulesVersion + '/engine.js');
-      if (engine.rulesVersion !== manifest.rulesVersion) throw new Error('回放版本不匹配');
+      if (engine.rulesVersion !== manifest.rulesVersion) throw new Error(N_('回放版本不匹配'));
       await engine.ready();
       if (!dead) setLoaded({ facts, replay, engine });
     })().catch((e) => {
-      if (!dead) setError(e.message === 'REPLAY_INCOMPLETE' ? '回放数据不完整，无法播放' : e.message);
+      if (!dead) setError(e.message === 'REPLAY_INCOMPLETE' ? N_('回放数据不完整，无法播放') : e.message);
     });
     return () => {
       dead = true;
@@ -89,8 +90,8 @@ export function ReplayScreen() {
     runner.select(battle);
   }, [runner, battle, view]);
   return html`<div class="screen replay-screen">
-    <header class="topbar"><div class="topbar__left"><${Button} variant="ghost" icon="chevronLeft" onClick=${() => store.patch('ui', { accountPage: 'history' })}>返回记录<//></div>
-      <div class="topbar__center"><${MicroLabel} tone="mint">SIMULATION REPLAY<//><h1 class="topbar__title">对局回放</h1></div></header>
+    <header class="topbar"><div class="topbar__left"><${Button} variant="ghost" icon="chevronLeft" onClick=${() => store.patch('ui', { accountPage: 'history' })}>${t('返回记录')}<//></div>
+      <div class="topbar__center"><${MicroLabel} tone="mint">SIMULATION REPLAY<//><h1 class="topbar__title">${t('对局回放')}</h1></div></header>
     <main class="account-body"><div class="replay-toolbar">
       ${loaded?.replay.battles.map(
         (b, i) => html`<${Button} size="sm" key=${i} variant=${selected === i ? 'primary' : 'ghost'} onClick=${() => {
@@ -99,8 +100,8 @@ export function ReplayScreen() {
         }}>
         ${replayBattleLabel(b, loaded.replay.battles, (id) => loaded.facts.result.players?.find((p) => p.playerId === id)?.name || id)}<//>`,
       )}
-    </div>${error ? html`<${Panel}><p role="alert">${error}</p><//>` : !loaded ? html`<${Spinner}/>` : !loaded.replay.battles.length ? html`<p class="t-lo">本局没有进入战斗阶段</p>` : null}
-    ${battle && !battle.complete ? html`<p class="t-lo" role="status">此战场录制不完整，无法播放。结算结果仍保存在对局记录中。</p>` : null}
+    </div>${error ? html`<${Panel}><p role="alert">${t(error)}</p><//>` : !loaded ? html`<${Spinner}/>` : !loaded.replay.battles.length ? html`<p class="t-lo">${t('本局没有进入战斗阶段')}</p>` : null}
+    ${battle && !battle.complete ? html`<p class="t-lo" role="status">${t('此战场录制不完整，无法播放。结算结果仍保存在对局记录中。')}</p>` : null}
     <div ref=${host} class="replay-field" style=${battle?.complete ? '' : 'visibility:hidden'}></div>
     <${ReplayControls} runner=${runner} battle=${battle} view=${view}/></main></div>`;
 }
@@ -130,9 +131,9 @@ function ReplayControls({ runner, battle, view }) {
     view?.raw?.setLocalFeed?.({ on: true, speed });
   };
   return html`<div class="replay-toolbar">
-    <${Button} disabled=${!playable} onClick=${playPause}>${playable && clock.playing ? '暂停' : '播放'}<//>
-    <${Button} variant="ghost" disabled=${!playable} onClick=${restart}>从头播放<//>
+    <${Button} disabled=${!playable} onClick=${playPause}>${playable && clock.playing ? t('暂停') : t('播放')}<//>
+    <${Button} variant="ghost" disabled=${!playable} onClick=${restart}>${t('从头播放')}<//>
     ${[0.5, 1, 2, 4].map((speed) => html`<${Button} size="sm" variant=${clock?.speed === speed ? 'primary' : 'ghost'} onClick=${() => setSpeed(speed)}>${speed}×<//>`)}
-    ${playable ? html`<span class="num">${clock.seconds} / ${clock.duration} 秒</span>` : null}
+    ${playable ? html`<span class="num">${t('{seconds} / {duration} 秒', { seconds: clock.seconds, duration: clock.duration })}</span>` : null}
   </div>`;
 }

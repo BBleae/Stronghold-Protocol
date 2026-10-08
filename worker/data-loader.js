@@ -17,13 +17,14 @@ import stages from '../data/stages.json';
 import bosses from '../data/bosses.json';
 import tokens from '../data/tokens.json';
 import tuning from '../data/tuning.json';
-// 外援 / 甄选 (DIY, DESIGN §27): a room checks its players' picks and loadouts against it, and a match (and its
-// recovery and replay engines) builds the picked operators' records from it
-import waiguan from '../data/waiguan.json';
+// 补位 stand-ins and 自选编队 (0.2.0, DATA.md §18): a room checks its players' 自选 picks against it (shared/diy.js), and a
+// match, its recovery and replay engines build stand-in, 自选 and 自选-summon records from it (simdata getStandIn / getDiy /
+// getToken, server/match/player/diy.js) — without it they would quietly fall back to the replaced chess's own records
+import backups from '../data/backups.json';
 
 export const ROOT = '';
 export const DATA_DIR = '/data';
 export function readDataDirectory() {
   return { config, chess, bonds, garrisons, items, bands, effects, choices, enemies, factions,
-    waves, stages, bosses, tokens, assets: null, tuning, waiguan };
+    waves, stages, bosses, tokens, assets: null, tuning, backups };
 }

@@ -10,18 +10,15 @@ import { ROOT, PROTOCOL_TIMEOUT_MS, waitForFunctionLong } from './client.mjs';
 
 const timeoutError = (ms) => Object.assign(new Error(`Waiting failed: ${ms}ms exceeded`), { name: 'TimeoutError' });
 
-/**
- * A page whose predicate turns true after `trueAfter` ms — or from its `trueOnCall`-th waitForFunction on; each
- * waitForFunction slice behaves like puppeteer's.
- */
-function fakePage(trueAfter, { trueOnCall = Infinity } = {}) {
+/** A page whose predicate turns true after `trueAfter` ms; each waitForFunction slice behaves like puppeteer's. */
+function fakePage(trueAfter) {
   const t0 = Date.now();
   const calls = [];
   return {
     calls,
     waitForFunction(fn, opts, ...args) {
       calls.push({ fn, opts, args });
-      const left = calls.length >= trueOnCall ? 0 : t0 + trueAfter - Date.now();
+      const left = t0 + trueAfter - Date.now();
       return new Promise((resolve, reject) => {
         if (left <= opts.timeout) setTimeout(() => resolve({ handle: 'ok', args }), Math.max(0, left));
         else setTimeout(() => reject(timeoutError(opts.timeout)), opts.timeout);
@@ -30,14 +27,34 @@ function fakePage(trueAfter, { trueOnCall = Infinity } = {}) {
   };
 }
 
+/**
+ * A page whose predicate holds from its `holdsOn`-th waitForFunction call on; each earlier slice times out after its own
+ * timeout, like puppeteer's. Counted in calls, not in wall time: on a loaded machine late timers merge time-based slices
+ * (fakePage(95) with 30 ms slices returned in 3 calls instead of 4 in the 0.2.0 candidate's full pass).
+ */
+function slicedPage(holdsOn) {
+  const calls = [];
+  return {
+    calls,
+    waitForFunction(fn, opts, ...args) {
+      calls.push({ fn, opts, args });
+      const holds = calls.length >= holdsOn;
+      return new Promise((resolve, reject) => {
+        if (holds) setTimeout(() => resolve({ handle: 'ok', args }), 0);
+        else setTimeout(() => reject(timeoutError(opts.timeout)), opts.timeout);
+      });
+    },
+  };
+}
+
 test('a wait longer than one slice keeps polling the same predicate until it holds', async () => {
-  // the predicate holds from the 4th slice on, counted in slices rather than in ms: a Windows timer overshoots (a 30 ms
-  // slice takes 31–47 ms), so "true after 95 ms" was reached in the 3rd slice about every other run
-  const page = fakePage(Infinity, { trueOnCall: 4 });
+  const page = slicedPage(4);
   const fn = () => true;
-  const got = await waitForFunctionLong(page, fn, { timeout: 1000, polling: 200, slice: 30 }, 'a', 2);
+  const t0 = Date.now();
+  const got = await waitForFunctionLong(page, fn, { timeout: 60_000, polling: 200, slice: 30 }, 'a', 2);
   assert.deepEqual(got, { handle: 'ok', args: ['a', 2] });
-  assert.equal(page.calls.length, 4, `sliced (${page.calls.length} calls)`);
+  assert.equal(page.calls.length, 4, 'three slices ran out, the fourth held, nothing polled after it');
+  assert.ok(Date.now() - t0 >= 85, `the three slices waited their 30 ms each (${Date.now() - t0} ms)`);
   for (const c of page.calls) {
     assert.equal(c.fn, fn);
     assert.deepEqual(c.args, ['a', 2]);

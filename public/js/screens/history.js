@@ -6,19 +6,20 @@ import { DIFFICULTY_NAMES } from '../../../shared/constants.js';
 import { fmtNum, normalizeResult } from '../ui/gameLogic.js';
 import { useGameData } from '../ui/gameComponents.js';
 import { PlayerCard } from './result.js';
+import { t, N_ } from '../../../shared/i18n.js';
 const LABELS = {
-  dmgDealt: '造成伤害',
-  healing: '治疗量',
-  kills: '击倒敌人',
-  leaks: '未击倒',
-  bossDamage: '领袖伤害',
-  perfectRounds: '完美作战',
-  gold: '消耗资金',
-  refreshes: '刷新次数',
-  merges: '晋升次数',
-  lpLost: '损失生命',
-  buys: '招募次数',
-  sells: '出售次数',
+  dmgDealt: N_('造成伤害'),
+  healing: N_('治疗量'),
+  kills: N_('击倒敌人'),
+  leaks: N_('未击倒'),
+  bossDamage: N_('领袖伤害'),
+  perfectRounds: N_('完美作战'),
+  gold: N_('消耗资金'),
+  refreshes: N_('刷新次数'),
+  merges: N_('晋升次数'),
+  lpLost: N_('损失生命'),
+  buys: N_('招募次数'),
+  sells: N_('出售次数'),
 };
 export function HistoryScreen({ statistics = false }) {
   const gd = useGameData();
@@ -69,56 +70,56 @@ export function HistoryScreen({ statistics = false }) {
     }
   };
   return html`<div class="screen account-screen">
-    <header class="topbar"><div class="topbar__left"><${Button} variant="ghost" icon="chevronLeft" onClick=${() => (detail ? setDetail(null) : store.patch('ui', { accountPage: null }))}>返回<//></div>
-      <div class="topbar__center"><${MicroLabel} tone="mint">${statistics ? 'PERSONAL RECORD' : 'SIMULATION ARCHIVE'}<//><h1 class="topbar__title">${statistics ? '个人统计' : '对局记录'}</h1></div>
-      <div class="topbar__right"><${Button} variant="ghost" icon="refresh" onClick=${() => setRevision((x) => x + 1)}>刷新<//></div></header>
+    <header class="topbar"><div class="topbar__left"><${Button} variant="ghost" icon="chevronLeft" onClick=${() => (detail ? setDetail(null) : store.patch('ui', { accountPage: null }))}>${t('返回')}<//></div>
+      <div class="topbar__center"><${MicroLabel} tone="mint">${statistics ? 'PERSONAL RECORD' : 'SIMULATION ARCHIVE'}<//><h1 class="topbar__title">${statistics ? t('个人统计') : t('对局记录')}</h1></div>
+      <div class="topbar__right"><${Button} variant="ghost" icon="refresh" onClick=${() => setRevision((x) => x + 1)}>${t('刷新')}<//></div></header>
     <main class="account-body screen__scroll">
       <div class="account-filters">
         ${[
-          ['', '全部模式'],
-          ['solo', '独立模拟'],
-          ['coop', '同盟模拟'],
+          ['', t('全部模式')],
+          ['solo', t('独立模拟')],
+          ['coop', t('同盟模拟')],
         ].map(
           ([v, n]) =>
             html`<${Button} key=${v} size="sm" variant=${mode === v ? 'primary' : 'secondary'} onClick=${() => setMode(v)}>${n}<//>`,
         )}
-        ${[['', '全部难度'], ...Object.entries(DIFFICULTY_NAMES)].map(([v, n]) => html`<${Button} key=${v} size="sm" variant=${difficulty === v ? 'primary' : 'ghost'} onClick=${() => setDifficulty(v)}>${n}<//>`)}
+        ${[['', N_('全部难度')], ...Object.entries(DIFFICULTY_NAMES)].map(([v, n]) => html`<${Button} key=${v} size="sm" variant=${difficulty === v ? 'primary' : 'ghost'} onClick=${() => setDifficulty(v)}>${t(n)}<//>`)}
       </div>
-      ${error ? html`<${Panel}><p role="alert">${error}</p><//>` : null}
+      ${error ? html`<${Panel}><p role="alert">${t(error)}</p><//>` : null}
       ${!data && !error ? html`<${Spinner} />` : null}
       ${
         detail
-          ? html`<${Panel}><div class="account-row"><h2>${detail.result.victory ? '模拟成功' : '模拟结束'}</h2><${DifficultyTag} difficulty=${detail.difficulty}/>
-        <${Button} icon="play" disabled=${!detail.manifest?.chunks?.length} onClick=${() => store.patch('ui', { accountPage: 'replay', replayMatchId: detail.matchId })}>观看回放<//></div>
+          ? html`<${Panel}><div class="account-row"><h2>${detail.result.victory ? t('模拟成功') : t('模拟结束')}</h2><${DifficultyTag} difficulty=${detail.difficulty}/>
+        <${Button} icon="play" disabled=${!detail.manifest?.chunks?.length} onClick=${() => store.patch('ui', { accountPage: 'replay', replayMatchId: detail.matchId })}>${t('观看回放')}<//></div>
         <div class="history-players">${normalizeResult(detail.result).players.map((p) => html`<${PlayerCard} key=${p.playerId} p=${p} myId=${null} titles=${gd.config?.titles || []} best=${{}} solo=${detail.mode === 'solo'}/>`)}</div><//>`
           : statistics && data
             ? html`<${Panel}><div class="account-stats">
           ${[
-            ['总场次', data.total],
-            ['完成场次', data.completed],
-            ['胜率', data.winRate == null ? '—' : (data.winRate * 100).toFixed(1) + '%'],
-            ['最高到达回合', data.highestRound],
-            ['隐秘核心通关', data.hiddenCleared],
-            ['提前离开', data.left],
-            ['对局中断', data.interrupted],
-            ...Object.entries(data.totals).map(([k, v]) => [LABELS[k] || k, fmtNum(v)]),
+            [t('总场次'), data.total],
+            [t('完成场次'), data.completed],
+            [t('胜率'), data.winRate == null ? '—' : (data.winRate * 100).toFixed(1) + '%'],
+            [t('最高到达回合'), data.highestRound],
+            [t('隐秘核心通关'), data.hiddenCleared],
+            [t('提前离开'), data.left],
+            [t('对局中断'), data.interrupted],
+            ...Object.entries(data.totals).map(([k, v]) => [LABELS[k] ? t(LABELS[k]) : k, fmtNum(v)]),
           ].map(
             ([label, value]) =>
               html`<div class="rstat" key=${label}><span>${label}</span><b class="num">${value}</b></div>`,
           )}
-        </div><p class="t-lo">胜率仅计算已完成的胜负对局；提前离开与中断单独统计。</p><h2>常用干员</h2>
-        ${data.operators.length ? data.operators.slice(0, 20).map((op) => html`<div class="account-row" key=${op.id}><span>${gd.chess(op.id)?.name || op.id}</span><b class="num">${op.matches} 场</b></div>`) : html`<p class="t-lo">完成对局后显示出场记录</p>`}<//>`
+        </div><p class="t-lo">${t('胜率仅计算已完成的胜负对局；提前离开与中断单独统计。')}</p><h2>${t('常用干员')}</h2>
+        ${data.operators.length ? data.operators.slice(0, 20).map((op) => html`<div class="account-row" key=${op.id}><span>${gd.chess(op.id)?.name || op.id}</span><b class="num">${t('{matches} 场', { matches: op.matches })}</b></div>`) : html`<p class="t-lo">${t('完成对局后显示出场记录')}</p>`}<//>`
             : data
               ? html`<div class="history-list">${
                   data.items.length
                     ? data.items.map(
                         (item) => html`<${Panel} key=${item.matchId}><div class="account-row">
-          <div><b>${item.status === 'left' ? '提前离开' : item.status === 'interrupted' ? '对局中断' : item.victory ? '模拟成功' : '模拟失败'}</b><div class="t-lo">${new Date(item.endedAt).toLocaleString()} · ${item.mode === 'solo' ? '独立' : '同盟'} · 第 ${item.round} 回合</div></div>
-          <${DifficultyTag} difficulty=${item.difficulty}/><${Button} size="sm" variant="secondary" loading=${busy} onClick=${() => open(item.matchId)}>查看详情<//></div><//>`,
+          <div><b>${item.status === 'left' ? t('提前离开') : item.status === 'interrupted' ? t('对局中断') : item.victory ? t('模拟成功') : t('模拟失败')}</b><div class="t-lo">${new Date(item.endedAt).toLocaleString()} · ${item.mode === 'solo' ? t('独立') : t('同盟')} · ${t('第 {round} 回合', { round: item.round })}</div></div>
+          <${DifficultyTag} difficulty=${item.difficulty}/><${Button} size="sm" variant="secondary" loading=${busy} onClick=${() => open(item.matchId)}>${t('查看详情')}<//></div><//>`,
                       )
-                    : html`<${Panel}><p class="t-lo">暂无对局记录。完成一次模拟后，记录会保存在这里。</p><//>`
+                    : html`<${Panel}><p class="t-lo">${t('暂无对局记录。完成一次模拟后，记录会保存在这里。')}</p><//>`
                 }
-          ${data.nextCursor ? html`<${Button} loading=${busy} onClick=${more}>加载更多<//>` : null}</div>`
+          ${data.nextCursor ? html`<${Button} loading=${busy} onClick=${more}>${t('加载更多')}<//>` : null}</div>`
               : null
       }
     </main></div>`;

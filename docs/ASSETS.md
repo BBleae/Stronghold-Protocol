@@ -21,11 +21,12 @@ npm run assets       # = node tools/vendor.mjs && node tools/fetch-assets.mjs
 | `--offline` | No network. Re-runs post-processing (atlas fixes, skeleton parsing, WOFF2) on what is already on disk, then rebuilds `data/assets.json`. |
 | `--dry-run` | Print the plan (file and model counts, alias notes) and exit. |
 | `--refresh-index` | Re-download the upstream indexes: `audio_data.json`, `models_data.json` and (with voice) `charword_table.json`. |
-| `--voice=LANGS` | Operator battle voice: `cn,jp` (default: 中文 and 日文, ~155 MiB), `cn` (~68 MiB), `jp` (~87 MiB), any comma list of `cn`, `jp`, `en`, `kr` (the English / Korean dubs are opt-in), or `none`. See [Operator voice](#operator-voice). |
+| `--voice=LANGS` | Operator battle voice: `cn,jp` (default: 中文 and 日文, ~151 MiB), `cn` (~66 MiB), `jp` (~85 MiB), any comma list of `cn`, `jp`, `en`, `kr` (the English / Korean dubs are opt-in), or `none`. See [Operator voice](#operator-voice). |
 | `--voice-lang=L` | One dub only — upstream's spelling of `--voice=L` (`cn`, `jp`, `en` or `kr`). |
 | `--prune` | Delete files under `public/assets/` that the manifest no longer references, for example after a mapping change. Without this flag they are only listed in the report. `public/assets/local/` (written by `tools/local-extract`) is never pruned. Implies `--allow-shrink`. |
 | `--allow-shrink` | Write `data/assets.json` even when it loses entries the current one has (see "The manifest never shrinks by accident" below). |
-| `--local-spines` | Rewrite `tools/assets/local-enemy-spines.json` (the metadata of the enemy models only the local client has, see "Enemy aliases") from the models `tools/local-extract/extract.py` extracted to `public/assets/local/spine/enemy/`. Run it after a game update changed them; without it the committed file is used and a differing extraction only gets a warning. |
+| `--add-only` | For a checkout whose `public/assets/` and `public/fonts/` are shared with another one (a git worktree with symlinked asset folders): download only the files missing on disk and never re-download, rewrite or delete an existing file — atlases already on disk are left as they are, the fonts are not rebuilt (the manifest keeps its current `fonts`). Not with `--prune` / `--force`. |
+| `--local-spines` | Rewrite `tools/assets/local-enemy-spines.json` and `tools/assets/local-token-spines.json` (the metadata of the enemy and token models only the local client has, see "Enemy aliases" and "Token models from the local client") from the models `tools/local-extract/extract.py` extracted to `public/assets/local/spine/enemy/` and `public/assets/local/spine/token/`. Run it after a game update changed them; without it the committed files are used and a differing extraction only gets a warning. |
 
 **The manifest never shrinks by accident.** An entry whose files are missing on this machine is left out of a rebuilt
 manifest, so a run where some downloads failed (or whose upstream audio / model index lost them) would drop entries that
@@ -54,11 +55,14 @@ How downloads are fetched:
 - A manifest entry with fallbacks (for example an enemy icon that falls back to its base enemy's icon) only moves on to the next alternative after a **definitive 404**. When the primary fails transiently (network error, 5xx or an invalid payload after all retries), no fallback is fetched. The path is listed under `downloadErrors` in the report, and the next run retries the primary.
 - A skeleton that fails to parse is deleted and removed from the ledger, so the next online run downloads it again.
 
-The first run downloads about **560 MiB in about 10,700 files** (`data/assets.json` `stats`). Of that: the operator
-voice, both languages, ~155 MiB in 5,544 files (the 78 外援 operators' lines are 63 MiB in 2,184 of them); the 55 emote
-and 玩法说明 files, 21.3 MiB; the art of the 78 外援 / 甄选 operators of DESIGN §27, 126 MiB in 1,082 files; and the
-battle Spine of 25 of their summons, 2.7 MiB in 75 files. Without voice, emotes and 外援 it was 242 MiB in about
-3,700 files, 134 s on a ~3 MB/s link. A re-run takes about 1 s.
+The first run downloads the whole manifest; `data/assets.json` `stats` gives its size. Measured after the 0.2.1 merge
+(2026-10-08): 550.5 MiB (577,278,949 bytes) in 10,715 files, of them the operator voice 150.8 MiB in 5,348 files (191
+operators × 14 lines in each language: 中文 65.6 MiB, 日文 85.2 MiB) — without the 日文 voice about 465 MiB. Measured
+before the merge (2026-10-07, with the retired 外援 roster of DESIGN §F3): about 560 MiB in about 10,700 files — the
+operator voice in both languages ~155 MiB in 5,544 files (the 外援 operators' 63 MiB in 2,184 of them, gone with them), the 55 emote and 玩法说明
+files 21.3 MiB, the 外援 art 126 MiB in 1,082 files and 25 of their summons' Spine 2.7 MiB (gone too); without voice,
+emotes and 外援 242 MiB in about 3,700 files, 134 s on a ~3 MB/s link. Upstream 0.2.0 added the art and 中文 voice of
+the 71 自选 picks (DESIGN §25.12: its manifest 7,972 files / 485 MB, with one voice language). A re-run takes about 1 s.
 
 Outputs:
 - `data/assets.json`: the manifest (committed).
@@ -81,7 +85,8 @@ The research JSONs in `docs/research/` (03, 05, 07) define **which** ids are nee
 |---|---|---|
 | Operator avatars, 180×180. Base, plus E2 when it exists. | yuanyan3060/ArknightsGameResource `avatar/` | `char/avatar/{charId}.png`, `char/avatar/{charId}_2.png` |
 | Operator half-body portraits, 180×360 | yuanyan `portrait/` | `char/portrait/{charId}_1.png`, `_2.png` |
-| Default-skill icons, including backup operators' skills | yuanyan `skill/` | `skill/{iconId sanitized}.png` |
+| Skill icons: every skill index of every planned operator (DESIGN §16 loadouts, 自选 picks) | yuanyan `skill/` | `skill/{iconId sanitized}.png` |
+| Module type icons: the `typeIcon` of every module of `data/chess.json` and `data/backups.json` (the 干员调配 / 自选 module tiles when the local-client art lacks them) | AA2 `cn` `arts/ui/uniequiptype/{typeIcon}.png` (else its lower-case name: `WAH-Y` → `wah-y.png`) | `module/{typeIcon in lower case}.png` — one file per type: the official data spells one DEC X module `dec-X` and the others `dec-x`, and paths that differ only in case are one file on Windows / macOS and in a release zip |
 | Enemy icons | yuanyan `enemy/`. Fallbacks: the handbook id, then the base id. | `enemy/icon/{enemyId}.png` |
 | Token avatars | yuanyan `avatar/` | `token/avatar/{tokenId}.png` |
 | Bond icons (the real autochess glyphs) | ArknightsAssets2 `cn` `ui/autochess/[uc]autochesscommon/arts/bondicon/`. Fallback: the camp logo. | `bond/{bondId}.png` |
@@ -94,6 +99,7 @@ The research JSONs in `docs/research/` (03, 05, 07) define **which** ids are nee
 | Token Spine | fexli: the default model, or else the first skin variant (`spine/{tokenId}/{variant}/Spine/`) | `spine/token/{tokenId}/{stem}.*` |
 | Enemy Spine (PC build, premultiplied alpha) | isHarryh/Ark-Models `models_enemies/{key}/`, file names from `models_data.json` | `spine/enemy/{enemyId}/{stem}.*` |
 | Enemy Spine that no dump carries (灼热源石虫 / 炽焰源石虫) | the local client only (`tools/local-extract/extract.py ENEMY_SPINES`, optional); never downloaded and never required: an overlay of the web alias (`enemies[id].spineLocal`) | `local/spine/enemy/{enemyId}/{stem}.*` (listed in `data/local-assets.json`) |
+| Token Spine that no dump carries (39 summons: most 自选 summons, 凯瑟琳's 爬行号·防护单元, 凛御银灰's 风雪之眼) | the local client only (`tools/local-extract/extract.py TOKEN_SPINES`, optional); never downloaded and never required: an overlay (`tokens[id].spineLocal`; without it the avatar diamond) | `local/spine/token/{tokenId}/{stem}.*` (listed in `data/local-assets.json`) |
 | BGM | AA2 `voice` branch `audio/sound_beta_2/music/**` (大厅/休整期 `act1autochess`, 开战 `act13side/m_bat_kazimierz2_{1,2}` — 骑士之日 / 无畏者; the 开战 track follows the round: `_2` 无畏者 rounds 1–7, `_1` 骑士之日 from round 8) | `audio/bgm/{file}.mp3` |
 | SFX (UI, battle, per unit) | AA2 `voice` `audio/sound_beta_2/**`, mapped from `audio_data.json` banks | `audio/sfx/{same sub-path}.mp3` |
 | Operator battle voice (中文, 日文; 英文 / 韩文 on request; see below) | AA2 `voice` `audio/sound_beta_2/voice_cn/**` and `voice/**` (`voice_en/**`, `voice_kr/**`), lines from `charword_table.json` | `voice/{cn,jp,en,kr}/{wordKey}/cn_{NNN}.mp3` |
@@ -103,8 +109,8 @@ The `stem` of a Spine model is the upstream file name. Two examples: `char_107_l
 
 ### Id scope
 
-- **Operators:** all 138 pool charIds from `activity_table` (`charShopChessDatas[*].charId ∪ backupCharId`), including hidden chess and backup operators — **plus the 外援 / 甄选 (DIY) roster charIds** (DESIGN §27): 87 candidates, 9 of them pool operators already; the other 78 are not in research 07 and their entries come from the committed `tools/assets/waiguan-operators.json` (see below). 216 operators in all.
-- **Tokens:** the 20 pool tokens, plus every token key of `data/tokens.json` (built by `tools/build-data.mjs`, when present) — the 39 summons of the 外援 roster: their avatar from the default location (36 found); fexli/ArknightsResource has no default battle Spine of them, only skins, and 25 get the skin variant `tools/assets/waiguan-operators.json` `tokens` names (`buildPlan({ extraTokens })`, see below), so 38 of the 59 tokens have a model.
+- **Operators:** all 138 pool charIds from `activity_table` (`charShopChessDatas[*].charId ∪ backupCharId`), including hidden chess and backup operators; plus every unit of `data/backups.json` research 07 does not list — the 71 自选 owned-6★ picks (`diy.ownedPool`, DATA.md §18; the collab operators are not in the data, and 焰狐龙梓兰's entries left the manifest when she left the pool in 0.2.0) — planned from 07's URL patterns (`tools/assets/plan.mjs patternOperator`, `tools/fetch-assets.mjs dataExtras`): avatar and portrait (E0–E1 and E2), the default-skin battle Spine Front / Back, the icon and skill sound of each skill, the sub-profession icon. 209 operators in all (206 with a Back model).
+- **Tokens:** the 20 pool tokens, and the 38 summons of the 自选 picks (`data/backups.json tokens`) as extra tokens (below): their avatars; no dump carries the battle Spine of the 自选 summons (upstream has at most skin variants, which the default locations miss), so the web manifest has no model for them — 35 of them, and 4 pool summons, have the official model as an optional local-client overlay ("Token models from the local client"); 3 have no model in the game at all.
 - **Enemies:** 253 ids planned, 252 in the manifest (心烛 has no assets). The set is the union of:
   - the 07 enemy list;
   - every enemy in the `act1autochess_*` wave, boss and 联防 levels that act2 modes use (from `05-maps.json`; the tutorial is excluded);
@@ -115,7 +121,7 @@ The `stem` of a Spine model is the upstream file name. Two examples: `char_107_l
   - enemy units spawned by operator kits (research 03 skills/talents). For example, 隐德来希's default S3 summons 心烛 `enemy_5601_entlec` through the talent key `take_extra_enemy_key`. 心烛 has no icon and no Spine in any dump, so it has no manifest entry: it is reported as a miss, and the client must draw a glyph.
 - **Extra tokens:** any `token_*` key of `data/tokens.json` that research does not list gets the default avatar and Spine locations.
   - The non-token summons in that file (`enemy_9012_acloon` 炎佑, `char_605_cmedic`, `char_613_acmedc`) are found under `enemies` and `chars`.
-- **Skill icons:** the default skill of every chess (`defaultSkillIndex`), plus each backup operator's `skillIndex`. That makes 144 icons.
+- **Skill icons:** every skill index of every planned operator (the default one first; DESIGN §16 loadouts, the 自选 picks' three skills): 522 icons.
 - **UI:**
   - every group from `07-assets.json → autochessUi`: rarity, elite and chess-level sprites, the shop panel and cards, HUD, bond board, equip slot, round dialog, band choose, settlement, prepare backdrop;
   - `arts` (rarity stars, elite icons, the camp logos of pool nations, the loading illustrations used by the act2 modes, battle common sprites, act2 entry backdrops and season logo, item rarity frames);
@@ -123,8 +129,8 @@ The `stem` of a Spine model is the upstream file name. Two examples: `char_107_l
 
 ## Operator voice
 
-`tools/assets/voice.mjs` takes the **battle lines** of every operator a player can field — the pool's and the 外援 /
-甄选 roster's (DESIGN §27) — from the official `excel/charword_table.json`
+`tools/assets/voice.mjs` takes the **battle lines** of every operator a player can field — the pool's and the 自选编队
+picks' (DESIGN §25.4) — from the official `excel/charword_table.json`
 (Kengxxiao/ArknightsGameData, cached under `.cache/gamedata/excel/`), picked by the official `placeType` — the moment the
 game plays a line — and downloads them from the ArknightsAssets2 `voice` branch. The client plays them at upstream #73's
 moments (PR #73, @Convey123), ported onto this fork's voice engine (DESIGN §21.30):
@@ -204,64 +210,31 @@ moments (PR #73, @Convey123), ported onto this fork's voice engine (DESIGN §21.
 - A voice file that fails to load plays nothing (logged once) and starts no cooldown; it is fetched again by a request
   10 s or more after the failure (BGM and sound effects alike), never on every use meanwhile.
 - Voice has its own channel (设置 → 角色语音, 语音语言 中文 / 日文 / 关闭, plus 英文 / 韩文 when the site has them).
-  Summons, enemies and the reserve operators (预备干员, no voice in the game — the 9 of the 外援 roster among them)
-  say nothing. The 78 外援 / 甄选-only operators (DESIGN §27) speak like pool operators, with the same lines and rules.
+  Summons, enemies and the reserve operators (预备干员, no voice in the game) say nothing. A 补位 piece speaks with its
+  stand-in's voice and a 自选 slot with its operator's, and the settlement speaker is the record the own piece shows
+  (upstream 0.2.0, DESIGN §25.9, on this engine).
 - Lines outside a battle (编入队伍, 任命队长, 干员报到, 精英化晋升, home and base lines) are not downloaded.
 - Languages: `cn` = `CN_MANDARIN` (folder `voice_cn/`), `jp` = `JP` (`voice/`); a linkage operator with only its own
-  `LINKAGE` voice uses it in both. 198 operators have voice (120 of the 138 pool operators and all 78 外援-only
-  ones): 14 lines each (2,772 files per language), ~0.34 MiB per operator in 中文 (~68 MiB in all) and ~0.44 MiB in
-  日文 (~87 MiB). On request (`--voice=…,en,kr`, from upstream #73): `en` = `EN` (`voice_en/`), `kr` = `KR`
+  `LINKAGE` voice uses it in both. 120 of the 138 pool operators have voice, and the 71 自选 picks (DESIGN §25.12):
+  14 lines each, ~0.34 MiB per operator in 中文 and ~0.45 MiB in 日文. On request (`--voice=…,en,kr`, from upstream #73): `en` = `EN` (`voice_en/`), `kr` = `KR`
   (`voice_kr/`), the same file names; an operator without that dub has no line in it, a linkage operator keeps its own.
 - `combat` keeps its key although it is positional now: `tools/assets/manifest.mjs droppedEntries` takes an array as
   one entry, so a renamed key would read as every operator's `combat` dropped and trip the shrink guard. Adding
   `depart` and `win4` only grew the manifest (+240 files per language: +8.4 MB 中文, +10.9 MB 日文).
-- The 外援 operators' voice came with Slapq's PR #19 (`0f153b6`), planned with the earlier 12 lines. On the 14-line
-  roles each of the 78 has all 9 roles as well (their `charword_table.json` has every line): 1,092 files per language,
-  27.5 MiB 中文 and 35.6 MiB 日文, of which `depart` and `win4` are 156 files per language.
+- From 2026-10-07 to 2026-10-08 the plan also held the 78 外援-only operators of the retired DESIGN §F3 (Slapq's PR #19,
+  `0f153b6`): 1,092 files per language, 27.5 MiB 中文 and 35.6 MiB 日文. They left the plan with 外援.
 
-### 外援 / 甄选 operator entries (`tools/assets/waiguan-operators.json`)
+### A flaky mirror: `tools/fetch-assets-retry.mjs`
 
-Of the 87 6★ operators that `data/waiguan.json` can field (the 甄选 / DIY roster, DESIGN §27), 78 are **not** in
-`docs/research/07-assets.json`, which only covers the mode's shop pool. Their avatar, portrait, battle Spine (Front and
-Back) and skill-icon entries live in the committed `tools/assets/waiguan-operators.json`, in the same shape as a research
-07 operator entry, and `tools/fetch-assets.mjs` merges them into the plan (`buildPlan({ extraOperators })`).
-
-- **URL order.** A research entry names `raw.githubusercontent.com`; `fetch-assets.mjs` adds the jsDelivr mirror
-  as a fallback when the raw URL fails. The roster entries are written the other way round — the entry's `url` is the
-  **jsDelivr mirror** and `mirror` holds the raw URL — because the machine the roster was generated on cannot open
-  `raw.githubusercontent.com` at all. Both files are equivalent, so either order produces the same bytes. The plan
-  (`tools/assets/plan.mjs entryUrls`) lists `mirror` first for every file of an entry — avatar, portrait, battle Spine
-  (and so the atlas pages) and skill icons — so a roster download follows the same order as a pool operator: the prefix
-  proxy when `--asset-source=mirror` is chosen, then raw, then jsDelivr. On a network that cannot open raw at all, the
-  raw attempts fail and jsDelivr answers; `fetch-assets-retry.mjs` (below) tries the jsDelivr hosts first.
-- **Summons (`tokens`).** fexli/ArknightsResource has no default battle Spine of the roster's summons, only skin
-  variants (`spine/<tokenId>/<variant>/{Spine|Front}/`). The file's `tokens` names the variant each of 25 summons uses
-  (the first by name with a `Spine` or `Front` folder, read off a listing of that repository); `fetch-assets.mjs` passes
-  it as `buildPlan({ extraTokens })`, and the plan fetches that model like a research 07 token's skin variant. The
-  generator keeps `tokens` from the committed file. A summon not listed gets the default guess (its own id as the
-  variant), which finds nothing for these: 14 of the 39 have no model (the client falls back to the avatar; 3 have
-  none either).
-- **Voice.** The roster's operators are planned for voice like the pool's (`charIds` of `plan.mjs`, see
-  [Operator voice](#operator-voice)); the entries carry no voice field, `charword_table.json` names the lines.
-- **Size notes.** Avatar and portrait entries carry the byte counts measured from the mirror (a download that returns a
-  different size is flagged). Spine files carry none: jsDelivr refuses to list these repositories ("Package size exceeded
-  the configured limit of 50 MB"), so there is no authoritative size to record, and the downloader only compares sizes
-  when a file has one.
-- **Regenerating.** `node tools/probe-waiguan-assets.mjs` re-measures the mirror (174 HEADs: avatar + portrait of every
-  candidate, plus an optional `--spine-sample N` model-size sample) into `.cache/waiguan-assets-probe.json`, and
-  `node tools/gen-waiguan-operators.mjs` rebuilds `tools/assets/waiguan-operators.json` from it. Both are run by hand, not
-  by CI, and the generated file is committed like `tools/assets/local-enemy-spines.json`. The generator **skips the 9
-  candidates research 07 already lists** — `plan.mjs` merges `extraOperators` OVER the research entries, so a thinner entry
-  would silently drop the E2 art and skill SFX those entries carry.
-- **Flaky mirror.** The mirror drops large responses (operator Spine pages are 0.4–0.9 MB) now and then, and its host
-  names fail TLS in rotation on some networks (`cdn.jsdelivr.net`, `fastly.jsdelivr.net`, `gcore.jsdelivr.net` and
-  `jsdelivr.b-cdn.net` all serve the same path; measured here: `fastly` failed 100% of the time while the others answered).
-  When `fetch-assets.mjs` leaves files missing it refuses to write a smaller `data/assets.json`;
-  `node tools/fetch-assets-retry.mjs` then downloads **only the files that are missing on disk**, over several rounds with
-  growing timeouts and rotating host names (4 at a time). Run it until it reports none, then run `fetch-assets.mjs` again
-  to write the manifest. It takes the same source choice (`--asset-source=mirror` or `SP_ASSET_SOURCE`, `SP_GITHUB_PROXY`):
-  the proxy copy of a GitHub URL is tried first, once, behind the same circuit breaker, and every download is
-  format-checked like `fetch-assets.mjs` does.
+The jsDelivr mirror drops large responses (operator Spine pages are 0.4–0.9 MB) now and then, and its host
+names fail TLS in rotation on some networks (`cdn.jsdelivr.net`, `fastly.jsdelivr.net`, `gcore.jsdelivr.net` and
+`jsdelivr.b-cdn.net` all serve the same path; measured here: `fastly` failed 100% of the time while the others answered).
+When `fetch-assets.mjs` leaves files missing it refuses to write a smaller `data/assets.json`;
+`node tools/fetch-assets-retry.mjs` then downloads **only the files that are missing on disk**, over several rounds with
+growing timeouts and rotating host names (4 at a time). Run it until it reports none, then run `fetch-assets.mjs` again
+to write the manifest. It takes the same source choice (`--asset-source=mirror` or `SP_ASSET_SOURCE`, `SP_GITHUB_PROXY`):
+the proxy copy of a GitHub URL is tried first, once, behind the same circuit breaker, and every download is
+format-checked like `fetch-assets.mjs` does.
 
 ## Post-processing
 
@@ -274,6 +247,10 @@ Back) and skill-icon entries live in the committed `tools/assets/waiguan-operato
   - The parse extracts animation names and durations, event names, `OnAttack` times per animation, and bounds.
   - Attachment paths are checked against the atlas regions.
   - Then the animation-role resolver runs. See `tools/assets/anim-roles.mjs` and research 07 §5.4.
+  - A web enemy model whose clip names mislead the resolver gets the roles of its official battle prefab
+    (`tools/assets/spine.mjs PREFAB_SPINE_ROLES`, read from the local client's `battle/enm_pfb_*.ab`: the prefab's anim
+    key → clip table and the clip its Spine starts on): 普通囚犯 / 老练囚犯 start on their grey `*3` set (【禁锢】), not
+    the unnumbered red one (【解放】) the names point to.
 - **Fonts:** OTF/TTF files are converted to WOFF2 by a built-in encoder (`tools/assets/woff2.mjs`: Brotli with null transforms).
   - Its output was verified lossless against Google's reference `woff2` decoder.
   - `fonts.css` lists WOFF2 first and falls back to the original file.
@@ -289,18 +266,22 @@ All paths are URL paths relative to the site root, for example `/assets/char/ava
   hash: 'a1b2c3d4e5f6',             // content hash (cache busting)
   generator: 'tools/fetch-assets.mjs',
   stats: { files, bytes, chars, charsWithBack, enemies, enemiesWithSpine, tokens, tokensWithSpine,
-           spineModels, bonds, items, bands, skills, ui, sfxUnits, voice?: { [lang]: operators } },
+           spineModels, bonds, items, bands, skills, modules, ui, sfxUnits, voice?: { [lang]: operators } },
   chars:   { [charId]: { avatar, avatarE2?, portrait, portraitE2?, spine: { front: Spine, back?: Spine } } },
   enemies: { [enemyId]: { icon, spine?: Spine, spineAliasOf?: enemyId,
                           spineLocal?: { group, skel, atlas, textures, …Spine } } },
                           // spineLocal: an optional local-client model; file names in a data/local-assets.json group,
                           // not URLs, and always emitted (independent of the disk) — "Enemy aliases" below
-  tokens:  { [tokenId]: { owner: charId|null, avatar?, spine?: Spine, spineVariant?: string } },
+  tokens:  { [tokenId]: { owner: charId|null, avatar?, spine?: Spine, spineVariant?: string,
+                          spineLocal?: { group, skel, atlas, textures, …Spine } } },
+                          // spineLocal: as for enemies — "Token models from the local client" below
   bonds:   { [bondId]: url },       // white glyphs; tint in CSS/canvas
   items:   { [trapId]: url },
   bands:   { [bandId]: url },
   skills:  { [iconId]: url },       // iconId = skill_table iconId ?? skillId
   skillsById: { [skillId]: iconId },
+  modules: { [typeIcon]: url },     // module type icon (uniequip typeIcon, e.g. 'sol-x'): public/js/screens/loadout.js
+                                    // moduleIconOf after the local-client art
   ui:      { ['group/key']: url },  // e.g. 'hudPanel/icon_hp', 'shopCard/frame_lv1', 'loading/loading_ac_core';
                                     // 'emoticon/basic/pic_happy_battle', 'guide/autochess_home_1': the data/local-assets.json
                                     // group + name of the same picture (the client takes the local one first)
@@ -341,7 +322,10 @@ All paths are URL paths relative to the site root, for example `/assets/char/ava
   // units' attack / hit (tools/assets/audio.mjs pickUnitSfx): operators get normal-mode banks only — the plain
   // `attack` / `combat` ability first, never a bank holding a skill-mode file (`_d` / `_h` / `_s`; the normal attack's end
   // in `_n`) — with their own projectile banks (ON_PROJECTILE_BORN / _HIT.projectile_chr_<name>) as fallbacks
-  // (DESIGN §18.4: 纯烬艾雅法拉's S3 impact used to be her `hit`); enemies and tokens take the first attack-like bank
+  // (DESIGN §18.4: 纯烬艾雅法拉's S3 impact used to be her `hit`); an operator with such a plain bank (its default mode is
+  // the unsuffixed ability) never takes a numbered variant `attack.N` — a skill mode's, whatever its file name (银灰's S3
+  // swing p_atk_silver_n, community report of 2026-10-06); one that numbers its default mode (`attack.0` …) keeps the
+  // numbered order; enemies and tokens take the first attack-like bank
   fonts: { css: '/fonts/fonts.css', faces: { [name]: { family, weight, woff2?, original } } }
 }
 ```
@@ -362,7 +346,7 @@ All paths are URL paths relative to the site root, for example `/assets/char/ava
 
 The enemies' attack clip lengths are also a data input: `tools/build-data.mjs` copies each enemy model's
 `anims.attack.loop` length and first `hits` time into data/enemies.json `attackAnim` (the sim stands an unblocked
-ranged enemy for that clip, GitHub #58; docs/DATA.md §9) — rebuild the data after a manifest change that touches them.
+ranged enemy for that clip, GitHub #58, and strikes every enemy attack at that frame, 0.2.0; docs/DATA.md §9) — rebuild the data after a manifest change that touches them.
 
 ### The `Roles` object
 
@@ -374,11 +358,13 @@ Roles = {
   attack: Clip,            // play begin once, loop per attack, end when stopping; `via:'idle'` ⇒ add a flash
   attackDown: Clip|null,   // _Down variants (target below the unit)
   skill: SkillClip|null,   // for the chess's default skill (primary index)
-  skills?: { [index]: SkillClip },   // when the char is used with several default skills (backups)
+  skills?: { [index]: SkillClip },   // when the char is used with several default skills (backups); an enemy: every
+                           //   numbered skill clip (Skill_01..04 of 盐风主教昆图斯 — the slot a sim `cast` event names, PR #275)
   die: string|null,        // null ⇒ a Back model gives way to the Front model's Die (DESIGN §22.1); any other
                            //   skeleton holds its idle's first frame while it fades out
   move: Clip|null,         // enemies: Move_Begin|Move_Start + Move_Loop|Move + Move_End → Run_*
-  stun: Clip|null          // null ⇒ freeze the track (timeScale 0)
+  run?: Clip,              // the model's own Run cycle (Run_Begin/Loop/End): an enemy faster than moveSpeed 1 moves on it
+  stun: Clip|null          // Stun | Stun_1 | Dizzy_Loop (+ *_Begin / *_End); null ⇒ freeze the track (timeScale 0)
 }
 ```
 
@@ -398,9 +384,9 @@ The resolver's full precedence list is in the header of `tools/assets/anim-roles
 
 The manifest roles describe a unit's first form. Units whose skeleton holds another form's clip set get it from
 `public/js/render/units.js FORMS` (keyed by Spine id, switched by the `form` of the sim's 'phase' / 'ember' / 'revive'
-/ 'telegraph' / 'stone' / 'substitute' / 'swap' / 'dollEnd' fx — `shared/protocol.js fxForm`; no client stage drops these fx: the runner keeps them through
+/ 'telegraph' / 'stone' / 'liberate' / 'substitute' / 'swap' / 'dollEnd' fx — `shared/protocol.js fxForm`; no client stage drops these fx: the runner keeps them through
 catch-up frames and hidden tabs (`keepsState`), the game screen's pre-entry buffer (`keepEarly`) and the render engine's
-event queue (`render/interp.js isCosmeticEvent`) too — or, for a view built mid-battle, UnitInfo `form`, which `render/app.js renderInfo` passes to the view; a
+event queue (`render/interp.js isCosmeticEvent`) too — or, for a view built mid-battle, UnitInfo `form`, which `render/app/info.js renderInfo` passes to the view; a
 `change` clip plays once first, an `end` clip is timed from the fx's `dur` to finish as that state ends, keeping the
 current form's death clip until the next form's fx). A blocked or revealed 隐匿 enemy is drawn solid: the sim sends the
 stealth bit only while its 隐匿 is on:
@@ -411,6 +397,10 @@ stealth bit only while its 隐匿 is on:
 - the leaders' 重生: 锏 (`Revive1`, `Revive2` held, `Revive3`, then `B_*`), 扎罗 (`A_revive_1` / `_2` / `_3`, then `B_*`),
   “复仇者” (`Revive_Begin` / `_Loop` / `_End`), 杰斯顿 (`C1_Die`, then `C2_*`);
 - 守墓石像 (the statue on `Sleep` [ASSUMED by name], then the flyer's `*_2`).
+- the 孤岛风云 prisoners, as their official prefabs' modes: confined on the manifest's grey set, `warning` (mode R, the
+  warning before the last confined attack) on the blinking orange set, `liberty` (【解放】) on the red set — 普通囚犯 /
+  老练囚犯 `Idle3` → `Idle2` → `Idle`, 强壮囚犯 `Idle` → `Idle2` → `Idle3`, 拳师囚犯 / 重犯 / 传奇重犯 `*_grey` → `*_orange` →
+  `*_red` (Move / Attack / Die alike; no change clip).
 - the 傀儡师 operators' <替身> (form `doll` of the sim's 'substitute' / 'swap' / 'dollEnd' fx, DESIGN §22.11; the `*_B`
   clips draw the 替身's own slots and hide the 本体's): 归溟幽灵鲨 `Start_B` (it fades in), `Idle_B`, `Die_B` over its last
   second (it breaks apart and fades), `Die_B_2` when it is knocked out (it collapses), and the 本体 back on `Start_2` (a
@@ -426,11 +416,12 @@ is not known) keep their manifest clips.
 Other renderer rules from research 07 §5.4–5.5:
 - **Choosing the model:** Front when the unit faces right or down; Front mirrored when facing left; Back when facing up — while it stands: a dead or knocked-out operator falls and lies with the Front model unless its Back skeleton has a Die clip of its own (131 of the 135 have none; DESIGN §22.1, GitHub issue #25).
 - **Attacks (as the original, `render/spine.js`):** the battle is drawn 1 game s behind the sim (`render/app.js` LOOK_AHEAD, 0.5 s real at the live 2×), so every attack is known before it is shown: a swing starts only for a real attack (no swing at nothing), from its first frame, timed so that its strike frame (`hits`, the OnAttack event) lands on the attack; a swing belongs to the attack it was wound up for (the attack's event time is its identity), so a fast attacker's next attack gets a swing of its own. An attack that arrives without look-ahead (a late batch) shows its strike frame at once — the one remaining fallback. A one-shot clip (`Attack`, a lone skill clip such as `Skill_2`) plays once per attack at its natural speed — sped up when the attack interval is shorter, stretched at most ×1.25 (`ATTACK_STRETCH` 0.8) when longer — an enemy's (`clipPerAttack`, GitHub #58) never stretched: the sim stands it for exactly that clip, and a one-off cast (暴鸰's bomb drop, `PROJ[kind].once`) plays at its own speed, outside the rhythm — then the unit returns to its resting state of that moment (an enemy blocked while it wound up idles, a unit whose blocker died walks on). A begin / loop / end set (德克萨斯 Attack_Start → Attack_Loop → Attack_End, authored as one continuous motion) plays its begin clip when the unit engages, cycles the loop once per attack at the constant speed clip / interval and, when no attack follows where its next strike falls (none, or one after a stun or a pause), ends at the end of the cycle with the end clip; that attack engages it anew. The interval is the unit's attack rhythm (`render/units.js` nextInterval): a pause longer than 1.5 intervals is no interval (two similar long gaps in a row are a slower rhythm). A loop whose strike frame is at the start of its cycle keeps the strike at the wrap for the attack just shown; a one-shot swing is never restarted before its strike frame. Blends are given in real seconds (`MIX`) and never start before the strike frame. A clip is never fast-forwarded or re-phased, and a model never moves off its tile to attack (only the placeholder diamond lunges).
-- **Lasting effects (`render/fxsustain.js` SUSTAINED, from `render/fx.js` simFx):** the sim emits most lasting effects once; each becomes one record keyed by kind and unit, held until its own end signal — the caster's skill ends (`skill` off, or its snapshot SKILL flag drops), every status the unit gained and still has when the fx goes off (`status` events, `fx.status`; a kind that names its status — expose `ab:exposed`, wanted `lemuen:wanted`, reveal `reveal`, taunt, shields, 魔王's mote … — binds to that one only, is revived from the unit's current statuses when the sim re-announces it (expose), and is made from the status alone when a status is handed over after a hidden span), the event's `duration` / `dur` runs out, or the unit dies / the view clears. What else fell into the same batch of events never decides a lifetime (a render frame holds 1 tick of a local battle, 3+ of a server one, a whole catch-up after a hidden tab: the same match shows the same auras in all of them); only a status that THIS record was bound to ending in this batch marks a use (a block consumed) and nothing lasts; an fx in the middle of a skill is a one-off unless its kind is `mid`; `cap` limits a match-long passive. Looks: 余's S3 fire wall (`wall`: one held line on the tile edge in front of him, no one-shot tile column besides it while it is held; the sim's wall for the burn and the bullet block is the LOGIC line on his tile centre, a rules matter — the drawn line is visual and the two are deliberately not unified), the fields `tide` / `healField` / `coldWind` / `snow` around their caster (`field`; 灵知's cold wind no longer tints the whole screen, the Kjerag gust still does), unit states (`aura`: ground ring, glow, shield bubble, orbiting sprites, a mark over the head, rising particles — 银灰 真银斩, 星熊 / 凯瑟琳 overclock, 刺玫's taunt, 焰影苇草's fireballs, shields, items …), links (`link`: 溯光星源's chained targets, 远牙 S2 to the allies whose blocked enemies she reaches, 迷迭香's talent pair), channelled beams with a `dur` (死亡之眼, 自然涌动; the same pair without a `dur` — `deathEyeEnd` — ends it), boss 盲信之誓's `from` / `to` line held while its ticks come, 荒芜拉普兰德 / 耶拉 drones (`drone` samples carry `i`, `to`, `v`; no summon pillar per sample), 魔王's orbiting motes (`motes` at deploy, `mote` hides slot `k` for `cd`), 伊内丝's 影哨 until `sentryRecall`, 圣聆初雪's snowy tiles (`snowTiles` [r, c, layers], sent when they change), 歌蕾蒂娅 / 异客 winds (`vortex`) and enemy auras sent as a telegraph with `kind` chimera / invisShield / regenShield. Hand-over: lasting state is event-driven, so the state-bearing events of a span the view did not render (a hidden tab's backlog, a catch-up frame: `battle/runner.js` keepsState / hold — statuses, skill ENDS, spawns, deaths, leaks, enemy form fx, 影哨 placed / recalled) reach it before its next snapshot, each batch with its own game time; `handOver` marks a status that is on as late (the view makes the lasting look the status names) and a 影哨 event as late (its record, no stale summon pillar), and a skill START is not handed over (the snapshot's SKILL flag turns a running skill on) — so no aura, status icon or sentry outlives what the sim ended meanwhile. A field entered mid-battle also takes the lasting fx starts of the early buffer (`isLastingFxEvent`, stamped with the snapshot's game time, never dropped by the render clock as stale cosmetic events). A lasting effect that began before the viewer looked (a wall, a link, drones) is not replayed: that shows less than the truth, never something false (a status-bound look comes back from the handed-over status, expose also at the sim's next refresh), and no effect state travels in the protocol or `m.field`.
+- **Lasting effects (`render/fxsustain.js` SUSTAINED, from `render/fx/simfx.js` simFx):** the sim emits most lasting effects once; each becomes one record keyed by kind and unit, held until its own end signal — the caster's skill ends (`skill` off, or its snapshot SKILL flag drops), every status the unit gained and still has when the fx goes off (`status` events, `fx.status`; a kind that names its status — expose `ab:exposed`, wanted `lemuen:wanted`, reveal `reveal`, taunt, shields, 魔王's mote … — binds to that one only, is revived from the unit's current statuses when the sim re-announces it (expose), and is made from the status alone when a status is handed over after a hidden span), the event's `duration` / `dur` runs out, or the unit dies / the view clears. What else fell into the same batch of events never decides a lifetime (a render frame holds 1 tick of a local battle, 3+ of a server one, a whole catch-up after a hidden tab: the same match shows the same auras in all of them); only a status that THIS record was bound to ending in this batch marks a use (a block consumed) and nothing lasts; an fx in the middle of a skill is a one-off unless its kind is `mid`; `cap` limits a match-long passive. Looks: 余's S3 fire wall (`wall`: one held line on the tile edge in front of him, no one-shot tile column besides it while it is held; the sim's wall for the burn and the bullet block is the LOGIC line on his tile centre, a rules matter — the drawn line is visual and the two are deliberately not unified), the fields `tide` / `healField` / `coldWind` / `snow` around their caster (`field`; 灵知's cold wind no longer tints the whole screen, the Kjerag gust still does), unit states (`aura`: ground ring, glow, shield bubble, orbiting sprites, a mark over the head, rising particles — 银灰 真银斩, 星熊 / 凯瑟琳 overclock, 刺玫's taunt, 焰影苇草's fireballs, shields, items …), links (`link`: 溯光星源's chained targets, 远牙 S2 to the allies whose blocked enemies she reaches, 迷迭香's talent pair), channelled beams with a `dur` (死亡之眼, 自然涌动; the same pair without a `dur` — `deathEyeEnd` — ends it), boss 盲信之誓's `from` / `to` line held while its ticks come, 荒芜拉普兰德 / 耶拉 drones (`drone` samples carry `i`, `to`, `v`; no summon pillar per sample), 魔王's orbiting motes (`motes` at deploy, `mote` hides slot `k` for `cd`), 伊内丝's 影哨 until `sentryRecall`, 圣聆初雪's snowy tiles (`snowTiles` [r, c, layers], sent when they change), 歌蕾蒂娅 / 异客 winds (`vortex`) and enemy auras sent as a telegraph with `kind` chimera / invisShield / regenShield. Hand-over: lasting state is event-driven, so the state-bearing events of a span the view did not render (a hidden tab's backlog, a catch-up frame: `battle/runner.js` keepsState / hold — statuses, skill ENDS, spawns, deaths, leaks, enemy form fx, 影哨 placed / recalled) reach it before its next snapshot, each batch with its own game time; `handOver` marks a status that is on as late (the view makes the lasting look the status names) and a 影哨 event as late (its record, no stale summon pillar), and a skill START is not handed over (the snapshot's SKILL flag turns a running skill on) — so no aura, status icon or sentry outlives what the sim ended meanwhile. A field entered mid-battle also takes the lasting fx starts of the early buffer (`isLastingFxEvent`, stamped with the snapshot's game time, never dropped by the render clock as stale cosmetic events). A lasting effect that began before the viewer looked (a wall, a link, drones) is not replayed: that shows less than the truth, never something false (a status-bound look comes back from the handed-over status, expose also at the sim's next refresh), and no effect state travels in the protocol or `m.field`.
 - **Shapes and timing:** a skill area is sent as its tiles (`server/sim/content/fxtiles.js`: `tiles: [[r, c]…]` of the range / grid) and flashes those tiles (莱恩哈特, 缄默德克萨斯, 泥岩, 焰尾, 灵知 / 圣聆初雪 frostNova; 莫斯提马 S2's zone lights her range for its duration); `rockfall` with a `dur` (boss 崩坍) warns first and lands `dur` later; `column` lights the whole column; telegraph `tiles: 'plus'` is a cross; 异客's chain lightning jumps from the previous victim (`from`); 乌尔比安's anchor flies from `fromX, fromY`; hpShare joins `to` / `ids`; the boss shell launch is `helmShell` (`shell` stays 卡涅利安's S1 bubble).
 - **Down clips:** a target below the operator (more below than beside) takes `Attack_Down` and the `Skill_Down_*` clips.
 - **Skills:** the begin clip always plays out (attacks wait), an instant skill still plays its skill clip once, and the end clip plays out — except when the skill ends while the unit plays its deploy clip (乌尔比安's 【返回】 is a 【移动】 redeploy, DESIGN §23.32): the deploy clip plays out, then the plain idle. During a skill an attack swings the skill clip that has the strike frame: its loop, or — a stance skill whose begin clip has the strike frame and whose loop has none (星熊, 泡泡, 白面鸮, 莫斯提马 S1, …) — its begin clip; a skill clip without a strike frame (德克萨斯' `Skill`, a sustained skill animation) is a held pose, never replayed per attack. Between attacks (`render/spine.js`): a skill with an idle clip of its own (anims `skill.idle`, not its loop: 折桠 S2's `Skill_2_Idle`, 史尔特尔 S3's `Skill_3_Idle`; community report #23) stands in that idle and plays its end clip only when the skill ends (`_ownIdle`). Any other skill (no `skill.idle`, or one that is its loop: 星熊, 宴, 塞雷娅, 送葬人, 蕾缪安 S2, …) holds its stance — its loop — after the begin clip and while its attacks go on; `SPELL_GAP` (1.4) attack intervals after the skill's last attack the spell is over (`_spellOver`): the end clip, then the plain idle while the skill runs on (`_rest`; the next attack's swing may cut that end clip; a skill whose loop is its idle — 蕾缪安 S2 / S3, 缇缇 S2, 信仰搅拌机 S3 — rests in that loop instead, `_loopIsIdle`, and so plays its end clip again at the real end), and the next attack goes straight back into the stance, without the begin clip. At the skill's real end the end clip plays unless the unit is already back in the plain idle (owner's decision 2026-10-05, merging 0.1.3: these skills end a spell of attacks as 0.1.3 does; DESIGN §23.13).
-- **Model size:** every skeleton is drawn at one `UNIT.modelScale` (render/style.js, 320 skeleton units per tile), which stands for the official standard. The official client also scales each enemy model in its battle prefab: the Graphic / FaceSwitcher / Spine transforms multiply to 0.27 for most enemies and for the operators' battle skins, but not for all of them. For example, 威龙 is 0.16, 妖怪 0.20 and 青铜镜 0.6. The skeletons themselves carry no such scale, because every enemy SkeletonDataAsset uses 0.01. So an enemy is drawn × data/enemies.json `modelScale` (its prefab's product ÷ 0.27, see docs/DATA.md; user playtest #6: 威龙 used to be drawn 1.35× a 妖怪 instead of 1.08×), and its HP bar sits on that model: at its setup-pose bounds' height × the same factors, or, for a skeleton without bounds, at the chibi headroom × `modelScale` (bosses 2.2 tiles). `tools/local-extract/enemy_scales.py` reads the products from a local client, and `tools/build-data.mjs MODEL_SCALES` keeps them.
+- **Model size:** every skeleton is drawn at one `UNIT.modelScale` (render/style.js, 320 skeleton units per tile), which stands for the official standard. The official client also scales each enemy model in its battle prefab: the Graphic / FaceSwitcher / Spine transforms multiply to 0.27 for most enemies and for the operators' battle skins, but not for all of them. For example, 威龙 is 0.16, 妖怪 0.20 and 青铜镜 0.6. The skeletons themselves carry no such scale, because every enemy SkeletonDataAsset uses 0.01. So an enemy is drawn × data/enemies.json `modelScale` (its prefab's product ÷ 0.27, see docs/DATA.md; user playtest #6: 威龙 used to be drawn 1.35× a 妖怪 instead of 1.08×), and its HP bar sits on that model: at its setup-pose bounds' height × the same factors, or, for a skeleton without bounds, at the chibi headroom × `modelScale` (bosses 2.2 tiles). `tools/local-extract/enemy_scales.py` reads the products from a local client, and `tools/build-data.mjs MODEL_SCALES` keeps them. Two prefab quirks on top (PR #211 by @xcdoge; the owner's decision of 2026-10-06; docs/research/12 §3.1): the two 帝国炮火先兆者 are stretched vertically (`modelScaleY` 1.263: their Graphic scale is (0.19, 0.24, 0.24)) and 木制瑞印 is mirrored (`mirrorX`: a negative Graphic X scale) — `tools/local-extract/enemy_model_offsets.py` reads them, `tools/build-data.mjs MODEL_STRETCH_Y` / `MIRRORED_PREFABS` keep them.
+- **Flying units** hover `FLY_HOVER` = 1.3 tiles up (render/units.js; the client's single fly offset 0.35 in its character space, whose unit is the standard prefab scale 0.27 — docs/research/12) — an enemy flyer above the road whatever tile it crosses (a high-ground or forbidden block under it is no step, GitHub #277), an operator or summon above its tile: the body, its HP bar, damage numbers and hits ride the lift, the shadow stays on the ground tile (the block top under an enemy flyer crossing one), on the 2D and the 3D board alike (one camera drives both).
 - **Enemy aliases:** `enemies[id].spineAliasOf` means the model belongs to another enemy. Two cases:
   - `_2` variants whose official prefab is the base one (鸭爵, 高普尼克, 流泪小子, 圆仔, 假想敌：胄, 假想敌：铳): the base model, as in the game.
   - an enemy whose own model no dump carries: 灼热源石虫 / 炽焰源石虫 (`enemy_1305_mhslim` / `_2`) use the plain 源石虫 on
@@ -463,13 +454,37 @@ Other renderer rules from research 07 §5.4–5.5:
     round. A 2026-10-03 audit of every enemy of `data/enemies.json` (249) against the client's battle prefabs (the
     skeleton each prefab's Spine renderer draws) found no other enemy drawn with another enemy's model; 伊利昂的木驮兽
     (`enemy_10159_mntrjn`) starts on its `Full` skin (five passengers) in the game and is drawn with the `default` one.
+- **Token models from the local client** (0.2.0): no dump carries the battle Spine of most 自选 summons (fetch-assets:
+  "missing skel"), nor of 凯瑟琳's 爬行号·防护单元 and 凛御银灰's 风雪之眼, so they were drawn as the avatar diamond. The
+  local client has them in its battle token packs (`pkgrps/btl_pfb_tokens_*.ab`, the Windows build carries all of them;
+  the iOS build lacks `btl_pfb_tokens_0` and has ASTC pages), the same overlay as the enemies above:
+  - `tools/local-extract/extract.py TOKEN_SPINES` (39 ids; `--only spine/token`) reads each token's battle prefab
+    (`dyn/battle/prefabs/[uc]tokens/<id>.prefab`), takes the skeleton of its Front renderer — a directional token has
+    Front / Back (/ Down) renderers, each with its own skeleton of the same name; the web tokens use Front too — and
+    writes it to `public/assets/local/spine/token/{tokenId}/` like an enemy model (skeleton, sized `pma: true` atlas,
+    premultiplied pages: the older tokens' `[alpha]` texture merged in, the newer RGBA pages kept with their own alpha).
+  - `tokens[id].spineLocal` = `{ group: 'spine/token/{tokenId}', skel, atlas, textures, pma, anims, … }` from the
+    committed `tools/assets/local-token-spines.json` (`fetch-assets --local-spines`), never from the disk;
+    `assets.js spineEntry` draws the model when `data/local-assets.json` lists every file of it, else (or when it fails
+    to load) the avatar diamond as before. The models are drawn like the web tokens: one `UNIT.modelScale`, no
+    per-prefab factor (the official prefabs scale most tokens by the standard 0.27; W's 此面向敌 0.4, 令's “清平” 0.25 and
+    “弦惊” 0.3, 傀影's 镜中虚影 0.26, 风雪之眼 and 淬羽赫默's 夜灯 0.25 — like the web tokens' 医疗探机 / 诅咒娃娃 0.4 and
+    香槟炸弹 0.25).
+  - Clip names the resolver cannot read are mapped in `tools/assets/spine.mjs LOCAL_SPINE_ROLES`: 电弧's 戴乌
+    (`C_Skill1_*`, beside a 0 s `C_Default` pose), 酒神's 本能的召唤 (`Loop` / `End`) and 白铁's 多功能平台 (`End` as it
+    goes) [ASSUMED: by the clip names], and 凯尔希·思衡托's 战术锚点, whose Start / Idle / Die clips hide its only
+    attachment: it stays on its `Default` pose (a white anchor mark) [ASSUMED].
+  - Not extracted: the tokens whose prefab draws nothing (an `EmptyAnimator` instead of a Spine renderer; no avatar in
+    either install's asset index either): 乌尔比安's 从不混淆的方向, 圣聆初雪's 保护目标（冻结状态）, 酒神's 迷狂牢笼, 贝洛内's
+    牵绊 and 予愿安洁莉娜's “一会儿见！” — the last three keep the token fallback picture (`tokenAvatarUrl`: no avatar, no
+    owner in the manifest → the 召唤物 battle-card icon).
 
 ### Other fallbacks
 
-- **Emotes and 玩法说明 pages** (`public/js/data.js artUrls / nextArtUrl`, `ui/guide.js guideStage`): the local-client picture (`data/local-assets.json`) first, then the mirror copy (`ui['emoticon/…']`, `ui['guide/…']`), each tried in turn when one fails to load; when none is left — none listed, or every copy failed (for example data/assets.json lists the downloaded pages but the files are not on disk yet: a `git pull` and restart without setup) — the neutral emote glyph, and for a page the official tips text (`config.tips`). The rest of the local-client art (the 3D board, the official HUD sprites, module type icons, the two enemy models above) is not downloaded: the client looks it up in `data/local-assets.json` only (most of the HUD sprites are on the mirror too, DESIGN §22.5); docs/DEPLOY.md §6 lists what falls back without it.
+- **Emotes and 玩法说明 pages** (`public/js/data.js artUrls / nextArtUrl`, `ui/guide.js guideStage`): the local-client picture (`data/local-assets.json`) first, then the mirror copy (`ui['emoticon/…']`, `ui['guide/…']`), each tried in turn when one fails to load; when none is left — none listed, or every copy failed (for example data/assets.json lists the downloaded pages but the files are not on disk yet: a `git pull` and restart without setup) — the neutral emote glyph, and for a page the official tips text (`config.tips`). The rest of the local-client art (the 3D board, the official HUD sprites, module type icons, the two enemy models and the 39 token models above) is not downloaded: the client looks it up in `data/local-assets.json` only (most of the HUD sprites are on the mirror too, DESIGN §22.5); docs/DEPLOY.md §6 lists what falls back without it.
 - **Tokens:**
   - Without an avatar, use `chars[owner].avatar` with a 召唤物 badge, or `prof.battlecard.token` — except 圣聆初雪's 保护目标（冻结状态） (PRTS 无头像; the frozen gate), drawn as a procedural ice diamond (`render/units.js ICE_TOKENS`).
-  - Without a Spine, draw the avatar sprite with a bob tween.
+  - Without a Spine (and without its local-client model, "Token models from the local client"), draw the avatar sprite with a bob tween.
   - `spineVariant` names the skin-variant model that stands in for the missing default model.
 - **Enemies without a spine** (for example `enemy_9016_acstmr`): draw `icon` in a diamond. Enemies with no manifest entry at all (`enemy_5601_entlec` 心烛): draw a procedural glyph.
 - **Battle effects** (projectiles per kind, hit sparks and slashes, skill bursts and auras, 蕾缪安's lock reticles and shells, 回环射手 boomerangs — DESIGN §17.3) are procedural: the FX atlas is drawn at run time (`public/js/render/textures.js`), so they need no downloaded or local art. The local client does have battle effect art — `battle/[pack]common.ab` holds per-weapon projectile sprites (`projectile_arrow(_new)`, `projectile_crossbow(_new)`, `projectile_yuki`, `img_fx_light_01/02`, `trail_11`), and the per-character `battle/prefabs/effects/*.ab` are particle systems whose textures live in other bundles — but none of it is extracted: the sim's `arrow` also covers gun snipers, and friends joining a game may not have the local art.
@@ -496,7 +511,9 @@ When `public/assets` exists, the same file also checks the generated output:
 - Every manifest path exists on disk.
 - Every pool operator has an avatar, a portrait and a Front model.
 - Every atlas has `size:` lines, plus `pma: true` for enemies.
-- Every Spine model loads the way the client loads it. That means pixi-spine's atlas reader with real page sizes, where a region outside its page throws, then `SkeletonBinary` with `AtlasAttachmentLoader`, where a missing region throws. Every resolved role is then posed.
+- Every Spine model loads the way the client loads it — the local-client enemy and token models too, when `data/local-assets.json` lists them. That means pixi-spine's atlas reader with real page sizes, where a region outside its page throws, then `SkeletonBinary` with `AtlasAttachmentLoader`, where a missing region throws. Every resolved role is then posed.
+
+`test/feedback1d-models.test.js` (enemies) and `test/local-token-models.test.js` (tokens) check the local-client overlays: the plan, the committed metadata, the manifest without `/assets/local/` URLs, the client's choice of model; `test/local-extract.test.js` the extractor's job table and helpers.
 
 The 2026-09-27 verification pass also checked:
 - **PNG:** all 2,211 PNGs pass a full CRC and inflate check.

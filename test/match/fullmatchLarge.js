@@ -1,13 +1,14 @@
 // test/match/fullmatchLarge.js — shared by the 5–8-seat soak suites (fullmatch-coop-5seats.test.js,
 // fullmatch-coop-8seats.test.js): one whole co-op match with the REAL simulation and client-side combat
 // (fullmatchRun.js runFull: zero errors, invariants at every phase change, no rejected client result), then the remake's
-// 5–8-player rules (DESIGN §24, docs/PLAYING.md §11, docs/META.md) checked on what the match did:
+// 5–8-player rules (DESIGN §F1, docs/PLAYING.md §12, docs/META.md) checked on what the match did:
 //   * shared pool: copies per chess = ceil(base × max(1, n / 4)), n = the seats at the start (humans + AI);
 //   * strategy draft: one turn per seat; a timed draft of more than 4 seats gives 20 s a turn (30 s otherwise);
 //   * 机变: max(6, alive + 2) cards for the alive pickers (7–10 cards for 5–8 players);
 //   * 联防: alive ≤ 4 → one field 'u' with ≤ 2 helpers; alive > 4 → up to k = ceil(alive / 4) fields 'u', 'u2', …,
 //     1–2 helpers each, every leaker on exactly one field, `unite.fields` published only with more than one field;
-//   * 最终攻势 / 隐秘核心: seat pairs b1…b⌈alive / 2⌉, the shared pool = bloodPoint × max(1, alive / 4);
+//   * 最终攻势 / 隐秘核心: seat pairs b1…b⌈alive / 2⌉, the shared pool = bloodPoint × alive (0.2.0's per-player pool,
+//     DESIGN §25.13.4: the 4 players' share × alive / 4 above 4 alive);
 //   * result: a row per seat; with more than 4 players everyone who spent funds (挥金如土's stat) holds a title —
 //     the second pass lets a title repeat.
 // The views are read through Match.prototype.flush (wrapped for this test process only): the first flush of each
@@ -18,7 +19,6 @@ import assert from 'node:assert/strict';
 import { PHASE } from '../../shared/constants.js';
 import { Match } from '../../server/match/Match.js';
 import { SEEDS, runFull } from './fullmatchRun.js';
-import { WAIGUAN_POOL_COPIES } from '../../shared/waiguan.js';
 
 // 5–8-seat matches take about twice as long as 4-seat ones: a bounded number of seeds keeps the full suite's length
 export const LARGE_SEEDS = Math.max(1, Math.min(SEEDS, 6));
@@ -133,8 +133,9 @@ export function runLarge({ difficulty, humans, bots, seed }) {
       const bossId = v.phase === PHASE.HIDDEN_CORE ? m.hiddenBossId : m.bossId;
       const bp = m.gd.boss(bossId)?.bloodPoint?.[m.gd.difficulty];
       if (Number.isFinite(bp)) {
-        const want = Math.round(bp * Math.max(1, alive.length / 4));
-        check(Math.abs(v.bossHp.max - want) <= 1, 'leader pool = bloodPoint × max(1, alive / 4)', `${at}: ${v.bossHp.max}, want ${bp} × max(1, ${alive.length}/4) = ${want}`);
+        const tune = typeof m.gd.bossHpMul === 'function' ? m.gd.bossHpMul(bossId) : 1;
+        const want = Math.round(bp * alive.length * tune);
+        check(Math.abs(v.bossHp.max - want) <= 1, 'leader pool = bloodPoint × alive', `${at}: ${v.bossHp.max}, want ${bp} × ${alive.length} × ${tune} = ${want}`);
       }
     }
   };
@@ -151,12 +152,7 @@ export function runLarge({ difficulty, humans, bots, seed }) {
   // shared pool, sized at the start for the n seats (1–4: the official copies)
   const f = Math.max(1, n / 4);
   let entries = 0;
-  for (const [id, e] of m.pool.entries) {
-    // a 外援 (DIY) entry is its owner's own: fixed copies, never scaled by the seats (DESIGN §27)
-    if (e.owner != null) {
-      check(e.cap === WAIGUAN_POOL_COPIES[e.tier], '外援 copies are fixed', `${id}: ${e.cap}, want ${WAIGUAN_POOL_COPIES[e.tier]}`);
-      continue;
-    }
+  for (const [id] of m.pool.entries) {
     const base = baseCopies(m.gd, id);
     if (!Number.isInteger(base) || base <= 0) continue;
     entries++;

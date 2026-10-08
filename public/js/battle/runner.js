@@ -27,6 +27,13 @@
 // time (`gt`): the render engine then knows how late a form fx is and skips a change clip that has already ended.
 // Display replicas (a teammate's field after the own battle, 联防 observers, the partner of a boss pair) run the same
 // spec fast-forwarded to the server's clock (`elapsed`) and never report.
+// A b.start is registered as a preparation the moment it arrives — before the sim module (or its rules version's engine)
+// has loaded, while the Battle is built and caught up silently in the frame / pump batches (runBatch) — so what comes
+// for that battle meanwhile is applied to it in order (upstream R21G, PR #266; the fork's preparations: `controls` until
+// the Battle exists): a b.end takeover stops its reports; a forced / timeout b.end (the first end counts) ends it as soon
+// as the Battle exists, without catching up; a second b.start of it updates its flags and clock (never a second Battle);
+// b.pool and the solo pause reach it. A b.start of another field supersedes it: an authority, or a battle the server
+// already ended, is still built and kept, a display replica is dropped. The next prep's clear() drops it.
 // A b.result goes out right behind its battle's final b.progress, on the same session. One that could not go out
 // (offline) or was lost with the socket (the request failed DISCONNECTED / OFFLINE, or timed out twice) is kept and
 // sent again on the next session ('welcome') or when a b.start still names this finished battle authoritative (the
@@ -94,12 +101,12 @@
 //                           0.1.0). Read-only: it takes the stats the sim computed last (`unit._s`) and the range grid it
 //                           keeps, and never makes the unit recompute them, so looking never changes the battle's floats.
 //   battleRunner.unitIdOf(uid, ownerId, fieldId?) → the id of an own board piece's unit in that battle | null
-//   battleRunner.ownerOps(ownerId, fieldId?) → [{ kind: 'op', ownerId, defId, items? }] that player's operators in the
-//                           battle on screen with their equipment (a teammate's bond popup: the members in play, DESIGN
-//                           §20.15, 变形同构体 wearers included) | []
+//   battleRunner.ownerOps(ownerId, fieldId?) → [{ kind: 'op', ownerId, defId, items?, standInFor? }] that player's
+//                           operators in the battle on screen with their equipment (a teammate's bond popup: the members in
+//                           play, DESIGN §20.15, 变形同构体 wearers included; a 补位 stand-in names the replaced charId) | []
 //
 // createBattleRunner(deps) builds an instance with injectable net / store / clock / frame scheduler / sim loader
-// (test/match/runner.test.js drives it under Node).
+// (test/match/runner.test.js, runner-pending.test.js, runner-lifecycle.test.js and runner-budget.test.js drive it under Node).
 
 import { net as appNet } from '../net.js';
 import { store as appStore } from '../store.js';
@@ -181,11 +188,10 @@ export function compactHeld(list) {
   return list.filter((x, i) => (x[0] === 'status' ? last.get(`s:${x[1]}:${x[2]}`) === i : x[0] === 'skill' ? last.get(`k:${x[1]}`) === i : true));
 }
 /**
- * Data files the simulation reads (DataSource + content/support gameData()). `waiguan` = the 外援 / 甄选 records
- * (DESIGN §27): the DataSource resolves them like any chess, so a bought 外援 fights in the browser's battle exactly as
- * in the server's.
+ * Data files the simulation reads (DataSource + content/support gameData()). `backups` = data/backups.json (0.2.0 补位
+ * stand-ins and 自选编队 operators): a stand-in / a 自选 slot fights in the browser's battle exactly as in the server's.
  */
-export const SIM_DATA_FILES = Object.freeze(['chess', 'enemies', 'tokens', 'stages', 'waves', 'bonds', 'items', 'garrisons', 'bands', 'effects', 'waiguan']);
+export const SIM_DATA_FILES = Object.freeze(['chess', 'enemies', 'tokens', 'stages', 'waves', 'bonds', 'items', 'garrisons', 'bands', 'effects', 'backups']);
 
 /** Request failures after which a b.result counts as never delivered (re-sent on the next session / b.start). */
 export const LOST_RESULT_CODES = Object.freeze(['DISCONNECTED', 'OFFLINE', 'TIMEOUT']);
@@ -892,8 +898,9 @@ export function createBattleRunner(deps) {
 
   function selectStart() {
     ++startSeq;
-    // Only the watched replica becomes obsolete. A still-authoritative own field must keep running off screen.
-    for (const task of preparing.values()) if (!task.authoritative && task.seq !== startSeq) dropPreparation(task);
+    // Only the watched replica becomes obsolete. A still-authoritative own field must keep running off screen, and a
+    // battle the server already ended is still built and kept (switching back shows its end; upstream R21G).
+    for (const task of preparing.values()) if (!task.authoritative && !task.ended && task.seq !== startSeq) dropPreparation(task);
   }
 
   async function onStart(msg) {
@@ -927,8 +934,8 @@ export function createBattleRunner(deps) {
     }
     selectStart();
     // target: the entry's target tick at its last batch (runBatch: the floor follows its growth); caught: that batch
-    // brought it within a frame's cap of it (preparationReady)
-    const task = { msg, seq: startSeq, lifecycle, authoritative: !!msg.authoritative, entry: null,
+    // brought it within a frame's cap of it (preparationReady); ended: a forced / timeout b.end came for it (selectStart)
+    const task = { msg, seq: startSeq, lifecycle, authoritative: !!msg.authoritative, ended: false, entry: null,
       controls: [], pool: lastPool, resume: null, promise: null, target: 0, caught: false };
     preparing.set(msg.battleId, task);
     loading = { battleId: msg.battleId, fieldId: msg.fieldId, kind: msg.kind };
@@ -999,10 +1006,14 @@ export function createBattleRunner(deps) {
       task.entry = null;
       evict();
       noteLeaks(e);
+      // its leak count / bond layers join the published state (upstream R21G: counted while it was prepared, they were
+      // published only with its next change when it is not the field shown)
+      leaksDirty = true;
       if (task.seq === startSeq) { loading = null; show(e); }
       else schedule();
       // over before it was ever shown (a reload / resync after its end): finished now, but `late` for 'ownDone'
       if (battle.finished) { e.lateEnd = true; finished(e); }
+      flushLeaks();
     } finally { dropPreparation(task); }
   }
 
@@ -1028,6 +1039,7 @@ export function createBattleRunner(deps) {
     if (!msg) return;
     const task = preparing.get(msg.battleId);
     if (task && msg.reason === 'takeover') task.authoritative = false;
+    else if (task) task.ended = true;
     if (task && !task.entry) { task.controls.push({ kind: 'end', msg }); return; }
     const e = entries.get(msg.battleId) || task?.entry;
     if (!e) return;
@@ -1042,8 +1054,9 @@ export function createBattleRunner(deps) {
       return;
     }
     // as the server sent it (a boss field: 'cleared' = the pool was emptied, 'forced' = the team LP ran out — Match
-    // _endFinal); the local battle only knows 'timeout' / 'forced' (settlement() bossDown reads it)
-    e.endReason = typeof msg.reason === 'string' ? msg.reason : null;
+    // _endFinal); the local battle only knows 'timeout' / 'forced' (settlement() bossDown reads it). The first end counts
+    // (upstream R21G: a later b.end of the ended battle changes nothing)
+    if (e.endReason == null) e.endReason = typeof msg.reason === 'string' ? msg.reason : null;
     if (!e.battle.finished) {
       // the end reached a battle still preparing that never stepped (it came while the engine loaded): its b.result goes
       // out alone — a tick-0 replay segment would replace what the server holds with a 'complete' replay of a battle
@@ -1165,7 +1178,11 @@ export function createBattleRunner(deps) {
       if (!e || typeof ownerId !== 'string' || !ownerId || (fieldId != null && e.fieldId !== fieldId)) return [];
       const list = Array.isArray(e.battle.allyUnits) ? e.battle.allyUnits : [];
       return list.filter((u) => u && u.kind === 'op' && u.ownerId === ownerId && typeof u.defId === 'string')
-        .map((u) => (Array.isArray(u.items) && u.items.length ? { kind: 'op', ownerId, defId: u.defId, items: [...u.items] } : { kind: 'op', ownerId, defId: u.defId }));
+        .map((u) => {
+          const o = Array.isArray(u.items) && u.items.length ? { kind: 'op', ownerId, defId: u.defId, items: [...u.items] } : { kind: 'op', ownerId, defId: u.defId };
+          const si = u.def && typeof u.def.standInFor === 'string' ? u.def.standInFor : null;
+          return si ? { ...o, standInFor: si } : o;
+        });
     },
     /**
      * How `playerId`'s part of the finished own battle `battleId` went (see the header) — the settlement voice line is

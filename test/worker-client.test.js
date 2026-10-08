@@ -664,7 +664,7 @@ test('idle heartbeats allow platform auto-response without corrupting the game c
   assert.ok(sock.last('ping').c > first.c, 'in a match pings reach the room with a timestamp');
 });
 
-// ---- 匹配 (matchmaking) over the account API (DESIGN §28.2) ----------------------------------------------------------
+// ---- 匹配 (matchmaking) over the account API (DESIGN §F4.2) ----------------------------------------------------------
 
 const queueEvents = (h) => {
   const seen = [];

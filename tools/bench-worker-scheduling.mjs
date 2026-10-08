@@ -723,6 +723,7 @@ export {
     }
   }
 } finally {
+  // eslint-disable-next-line no-unsafe-finally -- never delete anything but this run's own temporary directory
   if (path.dirname(path.resolve(dir)) !== tempRoot || !path.basename(dir).startsWith("sp-scheduling-bench-")) throw new Error("Unexpected temporary directory");
   await fs.rm(dir, { recursive: true, force: true });
 }

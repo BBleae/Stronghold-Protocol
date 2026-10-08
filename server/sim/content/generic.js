@@ -28,20 +28,25 @@
 //   "附带…凋亡/灼燃/神经损伤" + ep_damage_ratio ⇒ element damage on hit (× damage dealt when the text says "伤害N%的…损伤",
 //   else × ATK); "屏障" + shield_max_hp_ratio / hp_ratio ⇒ self shield at start decaying over its duration (砾, 新约能天使);
 //   "立即流失N%当前生命" + hp_ratio ⇒ self HP loss at start (宴, 风丸); hp_ratio + "恢复/回复…生命" ⇒ self heal at start.
-// Passive skills with stat mods + bb.duration + "N秒内" use a deployment duration; other passives apply stat mods and the self/counter effects
-//   above — their scales describe procs (bombs, sword rain, counters) that need a hand-authored kit.
+// Passive skills with stat mods + bb.duration + "N秒内" use a deployment duration (宴), and so do the ON_DEPLOY passives that
+//   say "部署后…" with the skill's own duration and none in their blackboard (一击即退, duration 10 — PRTS 技能 持续 10):
+//   kind 'duration', activateOnDeploy (#109); other passives apply stat mods and the self/counter effects above — their
+//   scales describe procs (bombs, sword rain, counters) that need a hand-authored kit.
+// "立即获得N点部署费用" + cost ⇒ +cost DP for the player at the start (冲锋号令); an AUTO skill that does nothing else
+//   fires as soon as its SP is full (as 德克萨斯's kit casts the same skill: kits/ops/chess_char_1_08-texas.js).
+// genericTalents(def): the talents a generic kit can apply exactly — an unconditional stat line ("攻击力+8%",
+//   "攻击速度+9") — used for 补位 stand-ins without a kit of their own (content/index.js); a pool chess always has a kit.
 // force→onHit displacement with the official 力度 − 重量 rules (Battle.push / pullToFront): a pull "至面前" when the text says
 //   拖拽 or for hookmasters, else a push — along the unit's direction when the text says 往攻击方向 (the 推击手 wording, PRTS
 //   推与拉 方向力) / 朝部署方向 / 向前 / 身前方向 or for 推击手 (directional), otherwise away from the unit (radial); a skill of
 //   constants.js PUSH_EFFECT_SKILLS (见行者 S1) pushes by PRTS 推与拉's 特效 column. These keywords are only a fallback:
 //   the hand-written kits follow the client's buff templates (knockback[dir] = directional, knockback[relative] = radial),
-//   and the text can mislead — 琳琅诗怀雅 S3's "向前推开" is knockback[relative] (kits/tier3.js). No pool skill pushes
+//   and the text can mislead — 琳琅诗怀雅 S3's "向前推开" is knockback[relative] (kits/ops/chess_char_3_04-swire2.js). No pool skill pushes
 //   through this path with 向前 / 往攻击方向; the only generic push is 见行者 S1, a 推击手.
 
 import { normalizeSkill } from '../simdata.js';
 import { sortEnemyTargets } from '../targeting.js';
 import { PUSH_EFFECT_SKILLS } from '../constants.js';
-import { genericTalentSpecs } from './genericTalents.js';
 
 const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : (typeof v === 'string' && v !== '' && Number.isFinite(+v) ? +v : undefined));
 
@@ -103,82 +108,13 @@ function enemiesInRange(battle, unit, n) {
   return n > 0 && list.length > n ? list.slice(0, n) : list;
 }
 
-/** Summon subjects of a skill text (DESIGN_BC R6). */
-const SUMMON_RE = '(?:召唤物|无人机|装置|机动盾牌|Mon3tr|虚影|“?打字机”?|结构性原理|中继器|重构体|沙地兽)';
-/** Stat keys a summon link may carry (atk, def, attack_speed, max_hp). */
-const LINK_KEYS = Object.freeze([['atk', 'atkPct', 'atkFlat'], ['def', 'defPct', 'defFlat'], ['max_hp', 'hpPct', 'hpFlat'], ['attack_speed', 'aspd', 'aspd']]);
-
-/**
- * Owner → summon stat links of a skill text (DESIGN_BC R6): "自身和召唤物攻击力+35%" / "麦哲伦和她的无人机攻击速度+80" (both get
- * the skill's stats) or "Mon3tr的攻击力+35%" / "机动盾牌防御力+100%" (only the summon: its `attack@` / `…token[x].y` keys, which
- * then are NOT the operator's). Returns { both, summonOnly, summonMods } — summonMods null when the text names none.
- */
-export function summonLink(desc, bb) {
-  const both = new RegExp(`(?:自身|[^，。；：]{1,8}?)(?:和|与|及)(?:她的|他的|其)?${SUMMON_RE}(?:的)?(?:攻击力|防御力|攻击速度|生命上限|最大生命)`).test(desc);
-  const named = new RegExp(`${SUMMON_RE}(?:的)?(?:攻击力|防御力|攻击速度|生命上限|最大生命)`).test(desc);
-  const out = {};
-  const put = (k, v) => {
-    const row = LINK_KEYS.find(([x]) => x === k);
-    if (!row || !Number.isFinite(v) || v === 0) return;
-    const key = k === 'attack_speed' ? row[1] : Math.abs(v) > 5 ? row[2] : row[1];
-    out[key] = (out[key] ?? 0) + v;
-  };
-  let summonOnly = false;
-  if (named) {
-    for (const [k, v] of Object.entries(bb || {})) {
-      const n = num(v);
-      let m = k.match(/^attack@(atk|def|max_hp|attack_speed)$/);
-      if (!m) m = k.match(/token\[(atk|def|max_hp|attack_speed)\]\.\1$/) ?? k.match(/token\[[^\]]*\]\.(atk|def|max_hp|attack_speed)$/);
-      if (m && n !== undefined) { put(m[1], n); if (!both || k.includes('token[')) summonOnly = true; }
-    }
-  }
-  if (both) for (const [k] of LINK_KEYS) { const n = num(bb?.[k]); if (n !== undefined && !(('attack@' + k) in (bb || {}))) put(k, n); }
-  return { both, summonOnly, summonMods: Object.keys(out).length ? out : null };
-}
-
 /** Build a SkillSpec from a normalised skill def and its blackboard. `def` (optional) = normalised unit def. */
-/**
- * "被动效果：陷阱/棋子/无人机/沙地兽/召唤物/装置…" (艾拉, 多萝西, 望 …): the passive half describes what the SUMMON does when it
- * triggers — the generic summoner's trap kit reads those numbers from the owner's skill itself (genericSummons.js
- * trapText) — and the active half ("主动效果/主动开启/自动开启：…") is the operator's. Only the blackboard values the active
- * half names apply to the operator: a value written there, or a stat the active half names without a number ("攻击间隔缩短").
- * Without this, 望 S2's 棋子 480% became her own attack scale and 多萝西's trap 370% her next attack. Returns the
- * operator's blackboard, or null when the skill has no such passive half.
- */
-const SUMMON_PASSIVE = /^被动效果[：:]\s*(陷阱|棋子|地雷|无人机|沙地兽|召唤物|装置)/;
-const ACTIVE_HALF = /(主动效果|主动开启|自动开启)[：:]/;
-const STAT_WORDS = Object.freeze({
-  atk: '攻击力', def: '防御力', base_attack_time: '攻击间隔', attack_speed: '攻击速度', max_hp: '生命上限',
-  magic_resistance: '法术抗性', def_penetrate_fixed: '防御力', 'attack@projectile_range': '溅射',
-  ability_range_forward_extend: '攻击范围', block_cnt: '阻挡',
-});
-function operatorHalf(desc, bb) {
-  const text = desc.replace(/<[^>]*>/g, '');
-  if (!SUMMON_PASSIVE.test(text)) return null;
-  const at = text.search(ACTIVE_HALF);
-  const active = at >= 0 ? text.slice(at) : '';
-  const nums = [...active.matchAll(/(\d+(?:\.\d+)?)/g)].map((m) => +m[1]);
-  const named = (v) => nums.some((n) => Math.abs(n - Math.abs(v)) < 1e-6 || Math.abs(n - Math.abs(v) * 100) < 0.5 || Math.abs(n - Math.abs(v - 1) * 100) < 0.5);
-  const out = {};
-  for (const [k, raw] of Object.entries(bb || {})) {
-    const v = num(raw);
-    const word = STAT_WORDS[k] ?? STAT_WORDS[k.replace(/^(skill|attack)@/, '')];
-    if (k === 'cnt' || (v !== undefined && v !== 0 && named(v)) || (word && active.includes(word))) out[k] = raw;
-  }
-  return out;
-}
-
 export function genericSkillSpec(sk, bb = sk?.bb ?? {}, def = null) {
   if (!sk) return null;
-  const desc = String(sk.description || '');
-  // a summon-passive skill: the operator gets only its active half's values (operatorHalf)
-  const own = def?.type !== 'token' ? operatorHalf(desc, bb) : null;
-  if (own) bb = own;
-  // a summon's own stats named with `attack@` keys ("Mon3tr的攻击力+35%") are not the operator's (DESIGN_BC R6)
-  const link = def && def.type !== 'token' ? summonLink(desc, bb) : { both: false, summonOnly: false, summonMods: null };
-  const g = link.summonOnly ? ((k) => num(bb[k]) ?? num(bb['skill@' + k])) : getter(bb);
+  const g = getter(bb);
   const ga = attackGetter(bb);
   let kind = genericKind(sk, bb);
+  const desc = String(sk.description || '');
   // "受到攻击时…造成…" numbers belong to a counter effect (the operator's own, or an ally's: 刺玫 "该角色受到攻击时")
   const counterCtx = /受到(敌人的)?攻击时/.test(desc);
   const counterText = counterCtx && !/该(角色|干员|单位)受到攻击时/.test(desc);
@@ -220,7 +156,12 @@ export function genericSkillSpec(sk, bb = sk?.bb ?? {}, def = null) {
   // Effect inference keeps the original kind; a deployment window only changes the lifecycle.
   const passive = kind === 'passive';
   const timed = kind === 'duration' || kind === 'ammo' || kind === 'toggle';
-  const passiveTimed = passive && Object.keys(mods).length && num(bb.duration) > 0 && /\d+(\.\d+)?秒内/.test(desc) ? num(bb.duration) : 0;
+  // a passive stat buff limited in time ("部署后…在14秒内攻击力+65%", 宴) runs as a duration skill from every deployment;
+  // so does an ON_DEPLOY passive whose duration is the skill's own (一击即退 "部署后攻击力+X%，防御力+Y%", duration 10, no bb key)
+  const ownDuration = num(bb.duration) === undefined && sk.duration > 0 && /^部署后/.test(desc) ? sk.duration : 0;
+  const passiveTimed = passive && Object.keys(mods).length
+    ? (num(bb.duration) > 0 && /\d+(\.\d+)?秒内/.test(desc) ? num(bb.duration) : ownDuration)
+    : 0;
   if (passiveTimed) kind = 'duration';
 
   // ---- targeting / attack override (never for passives: their scales describe procs)
@@ -354,16 +295,26 @@ export function genericSkillSpec(sk, bb = sk?.bb ?? {}, def = null) {
 
   if (passiveTimed) Object.assign(spec, { activateOnDeploy: true, spCost: 0, spType: 'none', trigger: 'NEVER' });
   if (Object.keys(mods).length) spec.mods = mods;
-  // the summons' share of the skill (content/tokens.js applies it to the owner's summons while the skill runs)
-  if (link.summonMods) spec.summonMods = link.summonMods;
   if (Object.keys(targeting).length) spec.targeting = targeting;
   // instant/charges skills act on the next attack: mods/targeting without an explicit attack still need one
   if (!Object.keys(attack).length && (kind === 'instant' || kind === 'charges') && (spec.mods || spec.targeting)) spec.attack = {};
   if (Object.keys(attack).length) spec.attack = attack;
 
+  // ---- deployment cost: "立即获得N点部署费用" (冲锋号令 `cost`) — the player gains it at the start
+  const dpGain = !passive && /获得\d+点部署费用/.test(desc) ? g('cost') : undefined;
+  const gainsDp = dpGain !== undefined && dpGain > 0;
+  // an AUTO skill with nothing else to do fires as soon as its SP is full (德克萨斯's kit casts 冲锋号令·γ型 so)
+  if (gainsDp && sk.skillType === 'AUTO' && !spec.mods && !spec.targeting && !spec.attack) spec.trigger = 'SP_FULL';
+
   // ---- start / end effects
   const starts = [];
   const ends = [];
+  if (gainsDp) {
+    starts.push(({ battle, unit }) => {
+      battle.addDp(unit.ownerId, dpGain);
+      battle.fx('dp', { x: unit.x, y: unit.y, n: dpGain, id: unit.id });
+    });
+  }
   const hr = g('hp_ratio');
   if (hr !== undefined && hr > 0 && hr <= 1 && /立即流失\d+(\.\d+)?%(的)?当前生命/.test(desc)) {
     starts.push(({ battle, unit }) => { const loss = unit.hp * hr; if (loss > 0 && unit.hp - loss >= 1) battle.loseHp(unit, loss, { source: unit }); });
@@ -449,17 +400,67 @@ function installGeneric(spec) {
   };
 }
 
+/** Stat talents genericTalents applies: the stat named in the text → [blackboard key, mod for "+N%", mod for "+N"]. */
+const TALENT_STATS = Object.freeze({
+  攻击力: ['atk', 'atkPct', 'atkFlat'], 防御力: ['def', 'defPct', 'defFlat'], 生命上限: ['max_hp', 'hpPct', 'hpFlat'],
+  攻击速度: ['attack_speed', null, 'aspd'],
+});
+const STAT_CLAUSE = /^(攻击力|防御力|生命上限|攻击速度)\+(\d+(?:\.\d+)?)(%?)$/;
+
 /**
- * Generic kit: `(bb, chess, def?) => Kit`. `chess` is the data record; `def` the normalised def when available. Its
- * talents are the generic ones of the def (genericTalents.js: the loadout-resolved talents and module trait addition);
- * `opts.talents === false` leaves them out (a caller with talents of its own).
+ * The mods of an unconditional stat talent — its text is only stat clauses ("攻击力+8%", "攻击速度+9", joined by "，" /
+ * "、") and each clause's number is its blackboard key's (×100 for a percentage); every other blackboard key is 0 —
+ * else null.
  */
-export function genericKit(bb, chess, def = null, opts = {}) {
+export function statTalentMods(t) {
+  const text = String(t?.description ?? t?.desc ?? '').trim();
+  const bb = t?.bb ?? {};
+  if (!text) return null;
+  const mods = {};
+  const used = new Set();
+  for (const part of text.split(/[，、,]/)) {
+    const m = STAT_CLAUSE.exec(part.trim());
+    if (!m) return null;
+    const [key, pctMod, flatMod] = TALENT_STATS[m[1]];
+    const v = num(bb[key]);
+    const pct = m[3] === '%';
+    const mod = pct ? pctMod : flatMod;
+    if (v === undefined || !mod || used.has(key) || Math.abs((pct ? v * 100 : v) - Number(m[2])) > 1e-6) return null;
+    mods[mod] = v;
+    used.add(key);
+  }
+  if (Object.keys(bb).some((k) => !used.has(k) && num(bb[k]) !== 0)) return null;
+  return Object.keys(mods).length ? mods : null;
+}
+
+/**
+ * Talents the generic kit can apply exactly — the 补位 stand-ins without a kit of their own (content/index.js
+ * setupUnitKit; 预备干员 "攻击提升 攻击力+8%", "防御提升 防御力+10%", "施法速度提升 攻击速度+9"): every unconditional stat
+ * talent (statTalentMods) as a persistent buff, as the operator kits write theirs (`talent:` key, persist, allowDead).
+ * Any other talent — a condition, a proc, a key its text does not state — needs a hand-authored kit and is left out,
+ * never half applied.
+ * @param {object} def normalised operator def
+ * @returns {{ install(battle: object, unit: object): void }[]}
+ */
+export function genericTalents(def) {
+  const out = [];
+  (def?.talents ?? []).forEach((t, i) => {
+    const mods = statTalentMods(t);
+    if (!mods) return;
+    const key = `talent:generic:${i}`;
+    out.push({ install(battle, unit) { battle.addBuff(unit, { key, mods: { ...mods }, persist: true, allowDead: true, tags: ['talent'] }); } });
+  });
+  return out;
+}
+
+/**
+ * Generic kit: `(bb, chess, def?) => Kit`. `chess` is the data record; `def` the normalised def when available.
+ */
+export function genericKit(bb, chess, def = null) {
   const sk = def?.skill ?? normalizeSkill(chess);
-  const talents = def && opts.talents !== false ? genericTalentSpecs(def, { token: def.type === 'token' }) : [];
-  if (!sk) return { skill: null, talents, generic: true };
+  if (!sk) return { skill: null, talents: [], generic: true };
   const spec = genericSkillSpec(sk, bb && Object.keys(bb).length ? bb : sk.bb, def);
-  const kit = { skill: spec, talents, generic: true };
+  const kit = { skill: spec, talents: [], generic: true };
   const inst = installGeneric(spec);
   if (inst) kit.install = inst;
   return kit;

@@ -40,7 +40,9 @@ test('a normal round\'s scouting board carries the bench and temp pieces on rows
   const by = new Map(meta.units.map((u) => [u.uid, u]));
   assert.equal(by.size, 4, 'board + bench + temp operators, and the held item (GitHub #44 / PR #129)');
   assert.deepEqual([by.get(onBoard.uid).area, by.get(onBoard.uid).y, by.get(onBoard.uid).x], ['board', 10, 3]);
-  assert.deepEqual([by.get(bench.uid).area, by.get(bench.uid).y, by.get(bench.uid).x, by.get(bench.uid).dir], ['hand', GEO.HAND_ROW, 2, 'RIGHT']);
+  assert.deepEqual([by.get(bench.uid).area, by.get(bench.uid).y, by.get(bench.uid).x], ['hand', GEO.HAND_ROW, 2]);
+  // a bench piece has no stored facing: it faces right, as the own prep bench draws it (0.2.0 views.js prepFieldMeta)
+  assert.ok(by.get(bench.uid).dir == null || by.get(bench.uid).dir === 'RIGHT', 'a bench piece faces right');
   assert.deepEqual([by.get(temp.uid).area, by.get(temp.uid).y, by.get(temp.uid).x], ['temp', GEO.TEMP_ROW, GEO.TEMP_C0 + 1]);
   // the client draws a held item's floating plate (render/app.js scoutItemInfo → ItemView)
   assert.deepEqual([by.get(item.uid).kind, by.get(item.uid).area, by.get(item.uid).y, by.get(item.uid).x, by.get(item.uid).defId],

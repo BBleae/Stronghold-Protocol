@@ -1,5 +1,4 @@
-// Usage: node tools/fetch-assets-retry.mjs [--rounds N] [--only missing|waiguan] [--concurrency N]
-//                                          [--asset-source=direct|mirror] [--dry-run]
+// Usage: node tools/fetch-assets-retry.mjs [--rounds N] [--concurrency N] [--asset-source=direct|mirror] [--dry-run]
 //
 // `tools/fetch-assets.mjs` writes data/assets.json only when nothing required is missing, so one stubborn file keeps the
 // whole manifest from being written. On some networks the jsDelivr mirror drops large responses (operator Spine pages are
@@ -9,7 +8,9 @@
 //
 // Job list = the manifest template leaves (tools/assets/manifest.mjs collectLeaves) PLUS plan.models, which holds the
 // Spine models separately ({ skel, atlas, pngs[] }, downloaded by assets/spine.mjs processModels). Missing the models here
-// leaves every operator model un-downloaded - the first version of this script did exactly that.
+// leaves every operator model un-downloaded - the first version of this script did exactly that. The plan is built from
+// the same inputs as tools/fetch-assets.mjs (data/*.json through its dataExtras, the committed local-client model
+// files), without the operator voice (run fetch-assets for that).
 //
 // Mirror host rotation: the project mirrors raw.githubusercontent.com to cdn.jsdelivr.net (tools/assets/sources.mjs
 // mirrorUrl). Any jsDelivr host serves the same path, so each jsDelivr URL is also tried on the hosts below. This machine
@@ -29,10 +30,11 @@ import { loadIndexes } from './assets/cache.mjs';
 import { indexAudio } from './assets/audio.mjs';
 import { buildPlan } from './assets/plan.mjs';
 import { collectLeaves } from './assets/manifest.mjs';
-import { loadLocalEnemySpines, LOCAL_ENEMY_SPINES_FILE } from './assets/spine.mjs';
+import { loadLocalSpines, LOCAL_ENEMY_SPINES_FILE, LOCAL_TOKEN_SPINES_FILE } from './assets/spine.mjs';
 import { kindOf, validate } from './assets/formats.mjs';
 import { MirrorPolicy, validateSource } from './assets/network.mjs';
 import { githubProxyUrl, normalizeProxyPrefix } from './assets/sources.mjs';
+import { dataExtras } from './fetch-assets.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const argv = process.argv.slice(2);
@@ -44,7 +46,6 @@ const arg = (name, def) => {
   return i >= 0 && argv[i + 1] ? argv[i + 1] : def;
 };
 const ROUNDS = Math.max(1, parseInt(arg('--rounds', '6'), 10) || 6);
-const ONLY = arg('--only', 'missing');
 const DRY = argv.includes('--dry-run');
 const CONC = Math.max(1, parseInt(arg('--concurrency', '4'), 10) || 4);
 const SOURCE = validateSource(arg('--asset-source', process.env.SP_ASSET_SOURCE || 'direct'));
@@ -65,19 +66,21 @@ const [assets07, ops03, enemies05, maps05] = await Promise.all([
 ]);
 const { audioData, modelsData } = await loadIndexes(ROOT, { offline: true, log: () => {} });
 const audio = indexAudio(audioData);
-const [dataEnemies, dataTokens, dataBosses] = await Promise.all(
-  ['data/enemies.json', 'data/tokens.json', 'data/bosses.json'].map((f) => readJson(f).catch(() => null)));
+const [dataEnemies, dataTokens, dataBosses, dataBackups, dataChess] = await Promise.all(
+  ['data/enemies.json', 'data/tokens.json', 'data/bosses.json', 'data/backups.json', 'data/chess.json'].map((f) => readJson(f).catch(() => null)));
+const extras = dataExtras(dataBackups, dataChess);
 const extraHandbook = {};
 for (const b of Object.values(dataBosses || {})) if (b?.enemyKey && typeof b.handbookId === 'string') extraHandbook[b.enemyKey] = b.handbookId;
-const waiguanOperators = await readJson('tools/assets/waiguan-operators.json').catch(() => null);
 
 const plan = buildPlan({
   assets07, ops03, enemies05, maps05, audio, modelsData,
   extraEnemyIds: Object.keys(dataEnemies || {}),
-  extraTokenIds: Object.keys(dataTokens || {}),
+  extraTokenIds: [...Object.keys(dataTokens || {}), ...extras.tokenIds],
   extraHandbook,
-  localEnemySpines: await loadLocalEnemySpines(join(ROOT, LOCAL_ENEMY_SPINES_FILE)).catch(() => ({})),
-  extraOperators: waiguanOperators?.operators || {},
+  localEnemySpines: await loadLocalSpines(join(ROOT, LOCAL_ENEMY_SPINES_FILE)).catch(() => ({})),
+  localTokenSpines: await loadLocalSpines(join(ROOT, LOCAL_TOKEN_SPINES_FILE)).catch(() => ({})),
+  extraOperators: extras.extraOperators,
+  moduleTypes: extras.moduleTypes,
 });
 
 /** Every downloadable in the plan: { rel, urls, bytes, mutable, kind }. */
@@ -87,9 +90,6 @@ const addJob = (a) => {
 };
 for (const { leaf } of collectLeaves(plan.template)) for (const a of leaf?.alts || []) addJob(a);
 for (const m of plan.models.values()) for (const a of [m.skel, m.atlas, ...(m.pngs || [])]) addJob(a);
-
-const waiguanIds = Object.keys(waiguanOperators?.operators || {});
-const isWaiguan = (rel) => waiguanIds.some((id) => rel.includes(id));
 
 /**
  * Every usable URL for one candidate, in preference order. A raw.githubusercontent.com URL is unreachable on this
@@ -177,14 +177,13 @@ async function missingJobs() {
     const size = await sizeOf(job.rel);
     const want = Number.isInteger(job.bytes) && job.bytes > 0 && !job.mutable ? job.bytes : null;
     if (size > 0 && (!want || size === want)) continue;
-    if (ONLY === 'waiguan' && !isWaiguan(job.rel)) continue;
     out.push(job);
   }
   return out;
 }
 
 let left = await missingJobs();
-console.log(`plan ${jobs.length} files; missing ${left.length}${ONLY === 'waiguan' ? ' (waiguan only)' : ''} (${plan.models.size} models)`);
+console.log(`plan ${jobs.length} files; missing ${left.length} (${plan.models.size} models)`);
 if (left.length && process.env.SP_DEBUG_URLS) {
   for (const j of left.slice(0, 3)) console.log('[urls]', j.rel, '=>', JSON.stringify([...proxyUrls(j.urls), ...expandUrls(j.urls)]));
 }

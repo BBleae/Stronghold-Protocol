@@ -1,4 +1,5 @@
 import { sendSession, sendRaw } from '../../server/net.js';
+import { uniteGroupOf } from '../../server/match/unite.js';
 import { CLOSE } from '../close-codes.js';
 import { withRules } from './rules.js';
 
@@ -128,6 +129,7 @@ export class Spectators {
   stop(session) {
     session.spectating = false;
     delete session.watchField;
+    delete session.watchPlayer;
     this.sent.delete(session.playerId);
   }
 
@@ -157,8 +159,33 @@ export class Spectators {
       || (!match.fields.length && msg.fieldId.startsWith('n:') && match.players.get(msg.fieldId.slice(2))?.alive);
     if (!valid) return { error: 'BAD_TARGET' };
     session.watchField = msg.fieldId;
+    // The player this spectator follows through the phase changes (upstream 0.2.0 item 56, Match._watchPrefSet): the
+    // one it scouted, the one it tapped on a shared field (`playerId`), a field's only player.
+    const field = match.fields.find((f) => f.fieldId === msg.fieldId);
+    const players = field ? (Array.isArray(field.players) ? field.players : []) : [msg.fieldId.slice(2)];
+    const followed = players.includes(msg.playerId) ? msg.playerId : players.length === 1 ? players[0] : null;
+    if (followed) session.watchPlayer = followed;
     this.sync(session, true);
     return { ok: true };
+  }
+
+  /**
+   * The player `session` follows: the one it last chose while still in (null: it chose none, or that player is out).
+   * A spectator that never chose keeps the default field.
+   */
+  followed(session, match) {
+    const target = typeof session.watchPlayer === 'string' ? match.players.get(session.watchPlayer) : null;
+    return target?.alive && !target.left ? target : null;
+  }
+
+  /** The field of the followed player among the match's fields (联防: a leaker's is the one holding its enemies). */
+  followedField(session, match) {
+    const target = this.followed(session, match);
+    if (!target) return null;
+    const own = match.fields.find((f) => Array.isArray(f.players) && f.players.includes(target.playerId));
+    if (own || !match.unitePlan) return own || null;
+    const group = uniteGroupOf(match.unitePlan, target.playerId);
+    return (group && match.fields.find((f) => f.kind === 'unite' && f.fieldId === group.fieldId)) || null;
   }
 
   /**
@@ -210,7 +237,9 @@ export class Spectators {
       sendSession(session, match.publicView());
     }
     const previous = this.sent.get(session.playerId);
-    const field = match.fields.find((f) => f.fieldId === session.watchField) || match.fields.find((f) => !f.done) || match.fields[0];
+    // the field it watches while it exists; after a phase change, the field of the player it follows
+    const field = match.fields.find((f) => f.fieldId === session.watchField) || this.followedField(session, match)
+      || match.fields.find((f) => !f.done) || match.fields[0];
     if (field?.cc) {
       session.watchField = field.fieldId;
       if (previous?.fieldKey === field.battleId) return;
@@ -225,7 +254,7 @@ export class Spectators {
       }
       this.sent.set(session.playerId, { fieldKey: field.battleId });
     } else if (!match.fields.length) {
-      const target = match.players.get(session.watchField?.slice(2));
+      const target = (session.watchField?.startsWith('n:') && match.players.get(session.watchField.slice(2))) || this.followed(session, match);
       const player = target?.alive ? target : match.order.find((p) => p.alive && !p.left);
       if (!player) return;
       const { meta, key } = (prepFields ?? new PrepFields(match)).of(player);

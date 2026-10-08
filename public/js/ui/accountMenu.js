@@ -9,6 +9,7 @@ import { net, identity } from '../net.js';
 import { store, useStore } from '../store.js';
 import { toast } from './toasts.js';
 import { openLogin, NicknameDialog, PasswordDialog } from './accountForms.js';
+import { t, N_ } from '../../../shared/i18n.js';
 
 /**
  * An account GET kept fresh: loaded on mount, when the tab becomes visible, on refresh() and every `interval` ms
@@ -51,11 +52,11 @@ export function useAccountPoll(path, interval = 10000, enabled = true) {
 const run = (fn) =>
   Promise.resolve()
     .then(fn)
-    .catch((e) => toast(e.message, 'warn'));
+    .catch((e) => toast(t(e.message), 'warn'));
 
 /** A join application went out (join by code, invite link): the host decides, the room is entered on approval. */
 export function applicationSent(code) {
-  toast(`已申请加入同盟 ${code}，等待房主审批`, 'info');
+  toast(t('已申请加入同盟 {code}，等待房主审批', { code }), 'info');
 }
 
 export function LogoutButton() {
@@ -69,10 +70,10 @@ export function LogoutButton() {
       location.reload();
     } catch (e) {
       setBusy(false);
-      toast(e.message, 'warn');
+      toast(t(e.message), 'warn');
     }
   };
-  return html`<${Button} variant="ghost" size="sm" loading=${busy} disabled=${busy} onClick=${logout}>退出登录<//>`;
+  return html`<${Button} variant="ghost" size="sm" loading=${busy} disabled=${busy} onClick=${logout}>${t('退出登录')}<//>`;
 }
 
 /**
@@ -102,18 +103,18 @@ export function AccountMenu({ mode, difficulty }) {
     ${
       account.user
         ? html`
-      ${active ? html`<${Button} size="sm" icon="play" loading=${busy} onClick=${() => run(resume)}>继续对局<//>` : null}
-      <${Button} variant="secondary" size="sm" icon="book" onClick=${() => store.patch('ui', { accountPage: 'history' })}>对局记录<//>
-      <${Button} variant="secondary" size="sm" icon="signal" onClick=${() => store.patch('ui', { accountPage: 'statistics' })}>个人统计<//>
-      <${Button} variant="secondary" size="sm" icon="edit" onClick=${() => setDialog('nickname')}>修改代号<//>
+      ${active ? html`<${Button} size="sm" icon="play" loading=${busy} onClick=${() => run(resume)}>${t('继续对局')}<//>` : null}
+      <${Button} variant="secondary" size="sm" icon="book" onClick=${() => store.patch('ui', { accountPage: 'history' })}>${t('对局记录')}<//>
+      <${Button} variant="secondary" size="sm" icon="signal" onClick=${() => store.patch('ui', { accountPage: 'statistics' })}>${t('个人统计')}<//>
+      <${Button} variant="secondary" size="sm" icon="edit" onClick=${() => setDialog('nickname')}>${t('修改代号')}<//>
       ${
         account.user.provider === 'password'
-          ? html`<${Button} variant="secondary" size="sm" icon="shield" onClick=${() => setDialog('password')}>修改密码<//>`
+          ? html`<${Button} variant="secondary" size="sm" icon="shield" onClick=${() => setDialog('password')}>${t('修改密码')}<//>`
           : null
       }
       <${LogoutButton} />
     `
-        : html`<${Button} size="sm" onClick=${openLogin}>登录<//>`
+        : html`<${Button} size="sm" onClick=${openLogin}>${t('登录')}<//>`
     }
     ${dialog === 'nickname' ? html`<${NicknameDialog} onClose=${closeDialog} />` : null}
     ${dialog === 'password' ? html`<${PasswordDialog} onClose=${closeDialog} />` : null}
@@ -121,13 +122,13 @@ export function AccountMenu({ mode, difficulty }) {
 }
 
 const APPLICATION_TEXT = {
-  pending: '等待房主审批',
-  approved: '已获批准',
-  joining: '正在加入',
-  joined: '已加入',
-  rejected: '申请已被拒绝',
-  expired: '申请已过期',
-  cancelled: '已取消',
+  pending: N_('等待房主审批'),
+  approved: N_('已获批准'),
+  joining: N_('正在加入'),
+  joined: N_('已加入'),
+  rejected: N_('申请已被拒绝'),
+  expired: N_('申请已过期'),
+  cancelled: N_('已取消'),
 };
 
 /** Public rooms: apply to join a waiting room, watch a running match; the account's application and its state. */
@@ -149,20 +150,20 @@ export function PublicRooms() {
       }
     });
   const applicationText =
-    application?.status === 'failed' ? `加入失败：${application.error.message}` : APPLICATION_TEXT[application?.status];
+    application?.status === 'failed' ? t('加入失败：{message}', { message: t(application.error.message) }) : t(APPLICATION_TEXT[application?.status]);
   return html`<${Panel} class="public-rooms">
-    <div class="account-row"><div><${MicroLabel} tone="mint">ACTIVE ALLIANCES<//><h2>在线大厅</h2></div>
+    <div class="account-row"><div><${MicroLabel} tone="mint">ACTIVE ALLIANCES<//><h2>${t('在线大厅')}</h2></div>
       <${Button} variant="ghost" size="sm" icon="refresh" onClick=${() => {
         setCursor('');
         rooms.refresh();
-      }}>刷新<//></div>
-    ${rooms.error ? html`<p class="t-lo" role="alert">${rooms.error}</p>` : null}
+      }}>${t('刷新')}<//></div>
+    ${rooms.error ? html`<p class="t-lo" role="alert">${t(rooms.error)}</p>` : null}
     ${
       application
         ? html`<div class="account-row"><span>${application.code} · ${applicationText}</span>
-      ${application.status === 'pending' ? html`<${Button} size="sm" variant="ghost" onClick=${() => run(() => net.cancelApplication())}>取消申请<//>` : null}
-      ${application.status === 'failed' ? html`<${Button} size="sm" onClick=${() => net.retryApplication()}>重试加入<//>` : null}
-      ${applying ? null : html`<${Button} size="sm" variant="ghost" onClick=${() => net.watchApplication(null)}>关闭<//>`}</div>`
+      ${application.status === 'pending' ? html`<${Button} size="sm" variant="ghost" onClick=${() => run(() => net.cancelApplication())}>${t('取消申请')}<//>` : null}
+      ${application.status === 'failed' ? html`<${Button} size="sm" onClick=${() => net.retryApplication()}>${t('重试加入')}<//>` : null}
+      ${applying ? null : html`<${Button} size="sm" variant="ghost" onClick=${() => net.watchApplication(null)}>${t('关闭')}<//>`}</div>`
         : null
     }
     <div class="public-rooms__list">
@@ -170,18 +171,18 @@ export function PublicRooms() {
         rooms.data?.items?.length
           ? rooms.data.items.map(
               (room) => html`<div class="account-row public-room" key=${room.roomId}>
-        <div><b>${room.hostName}</b><div class="t-lo"><span class="num">${room.roomId}</span> · ${room.connectedHumans} 人在线 · ${room.occupied}/${room.capacity}${room.inMatch ? ` · ${room.spectatorCount || 0} 人观战` : ''}</div></div>
+        <div><b>${room.hostName}</b><div class="t-lo"><span class="num">${room.roomId}</span> · ${t('{n} 人在线', { n: room.connectedHumans })} · ${room.occupied}/${room.capacity}${room.inMatch ? ` · ${t('{n} 人观战', { n: room.spectatorCount || 0 })}` : ''}</div></div>
         <${DifficultyTag} difficulty=${room.difficulty} />
         <${Button} size="sm" variant="secondary" disabled=${busy || applying || !account.user || (!room.inMatch && room.occupied >= room.capacity)}
-          onClick=${() => enterRoom(room)}>${room.inMatch ? '进入观战' : room.occupied >= room.capacity ? '已满员' : '申请加入'}<//>
+          onClick=${() => enterRoom(room)}>${room.inMatch ? t('进入观战') : room.occupied >= room.capacity ? t('已满员') : t('申请加入')}<//>
       </div>`,
             )
-          : html`<p class="t-lo">${rooms.data ? '当前没有有真人在线的公开大厅' : '正在查找在线大厅…'}</p>`
+          : html`<p class="t-lo">${rooms.data ? t('当前没有有真人在线的公开大厅') : t('正在查找在线大厅…')}</p>`
       }
     </div>
     <div class="account-row">
-      ${cursor ? html`<${Button} variant="ghost" size="sm" onClick=${() => setCursor('')}>返回首页<//>` : null}
-      ${rooms.data?.nextCursor ? html`<${Button} variant="ghost" size="sm" onClick=${() => setCursor(rooms.data.nextCursor)}>下一页<//>` : null}
+      ${cursor ? html`<${Button} variant="ghost" size="sm" onClick=${() => setCursor('')}>${t('返回首页')}<//>` : null}
+      ${rooms.data?.nextCursor ? html`<${Button} variant="ghost" size="sm" onClick=${() => setCursor(rooms.data.nextCursor)}>${t('下一页')}<//>` : null}
     </div>
   <//>`;
 }
@@ -193,16 +194,16 @@ export function Applications({ code }) {
     state.refresh();
   };
   return html`<${Panel} class="room-applications">
-    <div class="account-row"><span>加入申请</span><${Button} size="sm" variant="ghost"
-      onClick=${() => run(() => action({ public: !state.data.public }, 'visibility'))}>${state.data.public ? '公开大厅 · 点击设为私密' : '私密大厅 · 点击公开'}<//></div>
-    ${state.error ? html`<p role="alert">${state.error}</p>` : null}
+    <div class="account-row"><span>${t('加入申请')}</span><${Button} size="sm" variant="ghost"
+      onClick=${() => run(() => action({ public: !state.data.public }, 'visibility'))}>${state.data.public ? t('公开大厅 · 点击设为私密') : t('私密大厅 · 点击公开')}<//></div>
+    ${state.error ? html`<p role="alert">${t(state.error)}</p>` : null}
     ${state.data.items
       .filter((x) => x.status === 'pending')
       .map(
         (item) => html`<div class="account-row" key=${item.id}>
       <span>${item.name}</span>
-      <${Button} size="sm" onClick=${() => run(() => action({ action: 'approve', id: item.id }))}>同意<//>
-      <${Button} size="sm" variant="ghost" onClick=${() => run(() => action({ action: 'reject', id: item.id }))}>拒绝<//>
+      <${Button} size="sm" onClick=${() => run(() => action({ action: 'approve', id: item.id }))}>${t('同意')}<//>
+      <${Button} size="sm" variant="ghost" onClick=${() => run(() => action({ action: 'reject', id: item.id }))}>${t('拒绝')}<//>
     </div>`,
       )}
   <//>`;

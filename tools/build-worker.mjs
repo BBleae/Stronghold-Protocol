@@ -2,7 +2,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
 import { gzipSync } from 'node:zlib';
 import { vendor } from './vendor.mjs';
@@ -24,6 +24,15 @@ async function copyTree(source, target, allow, prefix = '') {
       await fs.copyFile(path.join(source, entry.name), destination);
     }
   }
+}
+
+/** The operators a 自选 slot may field (server/sim/content/kits/index.js KITTED_CHARS), or null for a tree without it. */
+async function diyKitted(root) {
+  const file = path.join(root, 'server/sim/content/kits/index.js');
+  try { await fs.access(file); } catch { return null; }
+  const list = (await import(pathToFileURL(file).href)).KITTED_CHARS;
+  if (!Array.isArray(list) || list.some((id) => !/^[A-Za-z0-9_]+$/.test(id))) throw new Error('KITTED_CHARS: unexpected operator ids');
+  return list;
 }
 
 /** data/local-assets.json, or null when this machine has no local client extraction. */
@@ -71,7 +80,9 @@ export async function copyRuntimeAssets({ root = ROOT, out = path.join(root, 'di
     await fs.mkdir(path.join(out, ...name.slice(0, -1)), { recursive: true });
     await fs.copyFile(path.join(root, 'public', ...name), path.join(out, ...name));
   }
-  await copyTree(path.join(root, 'data'), path.join(out, 'data'), (name, dir) => !dir && name.endsWith('.json'));
+  // data/*.json, and data/i18n/<code>.json: the game-text overlays of the language packs (shared/i18nData.js)
+  await copyTree(path.join(root, 'data'), path.join(out, 'data'), (name, dir) => (dir ? name === 'i18n' : /^(?:i18n\/)?[^/]+\.json$/.test(name)));
+  await writePackTree({ root, out });
   await copyTree(path.join(root, 'shared'), path.join(out, 'shared'), (name, dir) => dir || name.endsWith('.js'));
   await copyTree(path.join(root, 'server/sim'), path.join(out, 'sim'), (name, dir) => dir || (name.endsWith('.js') && !name.toLowerCase().endsWith('nodedata.js')));
   await fs.writeFile(path.join(out, 'data.js'), SHIM);
@@ -92,7 +103,12 @@ export async function copyRuntimeAssets({ root = ROOT, out = path.join(root, 'di
   // SP_NODE_CLIENT=1 (the node-protocol compatibility deployment, worker/lobby-gateway.js): the page keeps the plain
   // Node client (main.js, no runtime flag) — its /ws carries the whole lobby and there is no account system to boot.
   const nodeClient = process.env.SP_NODE_CLIENT === '1';
-  html = html.replace('<html ', `<html ${nodeClient ? '' : 'data-sp-runtime="cloudflare" '}data-sp-build="${buildTag}" data-sp-rules="${rulesVersion}" `);
+  // data-sp-diy-kitted: the operators a 自选 slot may field (the kit registry's KITTED_CHARS, what the room Worker's
+  // welcome.diyKitted says): a room Worker's page meets a room only when it enters one, and its menu's 干员调配 offers
+  // them from here (worker-entry.js). A Node server sends them in the welcome of every page.
+  const kitted = nodeClient ? null : await diyKitted(root);
+  html = html.replace('<html ', `<html ${nodeClient ? '' : 'data-sp-runtime="cloudflare" '}data-sp-build="${buildTag}" data-sp-rules="${rulesVersion}" `
+    + (kitted ? `data-sp-diy-kitted="${kitted.join(',')}" ` : ''));
   if (!nodeClient) html = html.replace('src="/js/main.js"', 'src="/js/worker-entry.js"');
   // Local fonts and system fallbacks keep the resource gate independent of Google Fonts reachability.
   html = html.replace(/\s*<link[^>]+https:\/\/fonts\.(?:googleapis|gstatic)\.com[^>]*>/g, '');
@@ -131,6 +147,30 @@ export async function copyRuntimeAssets({ root = ROOT, out = path.join(root, 'di
   await check(out);
   if (count > 100000) throw new Error(`Static asset count ${count} exceeds the Workers Paid limit`);
   return { out, count };
+}
+
+/**
+ * The content packs (docs/PACKS.md) as static files: the Node server answers /packs/index.json from its live registry
+ * (server/packs.js) and serves /packs/<id>/<file> from the pack folders; the Worker publishes the index of this checkout's
+ * packs (tools/packs.mjs writes the same body for a static host) and every file a folder pack's manifest names. The
+ * single-file language packs' files are public/i18n/<code>.json and data/i18n/<code>.json, published with their folders.
+ * Without the index the client's language menu offers only Chinese (public/js/ui/lang.js).
+ */
+async function writePackTree({ root, out }) {
+  const { scanPacks, packIndexOf } = await import('../server/packs.js');
+  const { PACKS_URL, PACK_INDEX_FILE } = await import('../shared/packs.js');
+  const { packs } = scanPacks({ publicDir: path.join(root, 'public'), dataDir: path.join(root, 'data'), packsDir: path.join(root, 'packs') });
+  const dir = path.join(out, ...PACKS_URL.split('/').filter(Boolean));
+  for (const pack of packs) {
+    if (pack.layout !== 'folder') continue;
+    for (const file of Object.values(pack.files)) {
+      const target = path.join(dir, pack.id, ...file.rel.split('/'));
+      await fs.mkdir(path.dirname(target), { recursive: true });
+      await fs.copyFile(file.abs, target);
+    }
+  }
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, PACK_INDEX_FILE), JSON.stringify(packIndexOf(packs)));
 }
 
 /** Files data/assets.json references (`/assets/…`) that are not under public/ (the whole manifest when it is missing). */
@@ -244,16 +284,20 @@ export async function bundleWorker({ root = ROOT, outfile = path.join(root, 'dis
     [path.join(root, 'server/data-node.js'), path.join(root, 'worker/data-loader.js')],
     [path.join(root, 'server/sim/nodeData.js'), path.join(root, 'worker/sim-data-loader.js')],
   ]);
-  // The Node/browser content loader intentionally catches missing optional modules. Its import(path)
-  // cannot be discovered by a bundler. Enumerate the same supported modules with literal imports.
+  // The Node/browser content loaders intentionally catch missing optional modules. Their dynamic imports cannot be
+  // discovered by a bundler: enumerate the same supported modules with literal imports. content/index.js loads the kit
+  // registry and the domain modules by path (import(path)); kits/index.js one file per kit (import(`./ops/${file}`)) over
+  // its three lists, read from the module itself so a new kit file needs no change here.
+  const { KIT_FILES, STANDIN_KIT_FILES, OPERATOR_KIT_FILES } = await import(pathToFileURL(path.join(root, 'server/sim/content/kits/index.js')).href);
   const contentImports = new Map([
-    [path.join(root, 'server/sim/content/index.js'), [
-      ...[1, 2, 3, 4, 5, 6].map(t => `./kits/tier${t}.js`),
-      './kits/waiguan/index.js',
+    [path.join(root, 'server/sim/content/index.js'), { call: 'import(path)', key: 'path', imports: [
+      './kits/index.js',
       ...['tokens', 'devices', 'enemies', 'bosses', 'bonds', 'garrisons', 'items', 'bands', 'choices'].map(n => `./${n}.js`),
-    ]],
-    [path.join(root, 'server/sim/content/bands.js'), ['./bands/battle.js', './bands/meta.js']],
-    [path.join(root, 'server/sim/content/bonds.js'), ['./bonds/core.js', './bonds/addon.js', './support/meta.js']],
+    ] }],
+    [path.join(root, 'server/sim/content/kits/index.js'), { call: 'import(`./ops/${file}`)', key: '`./ops/${file}`',
+      imports: [...KIT_FILES.flat(), ...STANDIN_KIT_FILES, ...OPERATOR_KIT_FILES].map(file => `./ops/${file}`) }],
+    [path.join(root, 'server/sim/content/bands.js'), { call: 'import(path)', key: 'path', imports: ['./bands/battle.js', './bands/meta.js'] }],
+    [path.join(root, 'server/sim/content/bonds.js'), { call: 'import(path)', key: 'path', imports: ['./bonds/core.js', './bonds/addon.js', './support/meta.js'] }],
   ]);
   const result = await build({
     entryPoints: [path.join(root, entry)],
@@ -300,13 +344,14 @@ export async function bundleWorker({ root = ROOT, outfile = path.join(root, 'dis
         const replacement = replacements.get(path.resolve(args.resolveDir, args.path));
         return replacement ? { path: replacement } : undefined;
       });
-      builder.onLoad({ filter: /[\\/]content[\\/](?:index|bands|bonds)\.js$/ }, async args => {
-        const imports = contentImports.get(args.path);
-        if (!imports) return;
+      builder.onLoad({ filter: /[\\/]content[\\/](?:index|bands|bonds|kits[\\/]index)\.js$/ }, async args => {
+        const loader = contentImports.get(args.path);
+        if (!loader) return;
         const source = await fs.readFile(args.path, 'utf8');
-        if (!source.includes('import(path)')) throw new Error(`Content import boundary changed: ${args.path}`);
-        const registry = `const workerContentImports = {${imports.map(name => `${JSON.stringify(name)}: () => import(${JSON.stringify(name)})`).join(',')}};\n`;
-        return { contents: registry + source.replace('import(path)', 'workerContentImports[path]()'), loader: 'js' };
+        // exactly one dynamic import per loader, in the form this build replaces
+        if (source.split(loader.call).length !== 2) throw new Error(`Content import boundary changed: ${args.path}`);
+        const registry = `const workerContentImports = {${loader.imports.map(name => `${JSON.stringify(name)}: () => import(${JSON.stringify(name)})`).join(',')}};\n`;
+        return { contents: registry + source.replace(loader.call, `workerContentImports[${loader.key}]()`), loader: 'js' };
       });
     } }],
   });

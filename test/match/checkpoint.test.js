@@ -248,3 +248,64 @@ test('server-taken client battles keep an exact spec replay through recovery', {
   m.dispose();
   restored.dispose();
 });
+
+test('the 0.2.0 seat inputs travel with the recorded seats: a restore keeps 补位 (notOwned) and 自选 (diy) — private views, stock and stand-ins', { timeout: 120000 }, () => {
+  // server/match/checkpoint.js OPTION_KEYS 'seats': each human's not-owned list and 自选 picks are fixed for the match
+  // (0.2.0, Match.js header), so the restore below gets them from the recording, not from its own deps
+  const SILVER = 'chess_char_4_22_a'; // 银灰 → his stand-in (data/backups.json)
+  const T5A = 'chess_char_5_diy1_a';
+  const T6A = 'chess_char_6_diy1_a';
+  const SHARP = 'char_609_acguad'; // a kitted 自选 operator for both tiers
+  const seats = [
+    { seat: 0, playerId: 'p0', name: 'Alice', isBot: false, connected: true, notOwned: [SILVER], diy: { [T5A]: { charId: SHARP }, [T6A]: { charId: SHARP } } },
+    { seat: 1, playerId: 'p1', name: 'Bob', isBot: false, connected: true },
+  ];
+  let clock = 1000;
+  const m = new RecordedMatch(opts({ seats, difficulty: 'NORMAL', now: () => clock, clientCombat: false }));
+  const p0 = m.players.get('p0');
+  assert.deepEqual([...p0.standIns], [SILVER]);
+  assert.deepEqual(Object.keys(p0.diy).sort(), [T5A, T6A]);
+  assert.deepEqual(m.recording.options.seats[0].notOwned, [SILVER], 'recorded with the seats');
+  assert.deepEqual(Object.keys(m.recording.options.seats[0].diy).sort(), [T5A, T6A]);
+  m.start();
+  for (const id of ['p0', 'p1']) {
+    m.handle(id, { t: 'g.autoplay', on: true });
+    m.handle(id, { t: 'g.infoReady' });
+  }
+  const views = (x) => ['p0', 'p1'].map((id) => {
+    const ps = x.players.get(id);
+    return { priv: ps.privateView(), stock: ps.diyStock.snapshot(), standIns: [...ps.standIns], diy: ps.diy };
+  });
+  const restoreAt = () => {
+    // the restore's own deps carry the default seats: the recorded ones win (restoreMatch spreads checkpoint.options)
+    const restored = restoreMatch(JSON.parse(JSON.stringify(exportMatch(m))), opts({ difficulty: 'NORMAL', now: () => clock, clientCombat: false }));
+    assert.deepEqual(views(restored), views(m), `R${m.round} ${m.phase}`);
+    assert.deepEqual(exportMatch(restored), exportMatch(m));
+    return restored;
+  };
+  let checked = 0;
+  for (let n = 0; n < 200000 && !m.ended && m.round <= 9; n++) {
+    const at = m.sched.nextAt();
+    assert.notEqual(at, null, 'game must keep progressing');
+    clock = Math.max(clock, at);
+    const before = `${m.round}:${m.phase}`;
+    m.pump(clock, 10);
+    if (m.phase === 'PREP' && before !== `${m.round}:${m.phase}` && m.round % 3 === 0) { restoreAt().dispose(); checked++; }
+  }
+  assert.ok(checked >= 2, `${checked} restores checked`);
+  assert.ok(Object.keys(p0.diyStock.snapshot()).length > 0, 'the 自选 pieces have their own stock');
+  // the restored match goes on exactly like the live one
+  const restored = restoreAt();
+  for (let n = 0; n < 2000 && !m.ended; n++) {
+    const at = m.sched.nextAt();
+    if (at == null) break;
+    clock = Math.max(clock, at);
+    m.pump(clock, 10);
+    restored.pump(clock, 10);
+  }
+  assert.deepEqual(views(restored), views(m));
+  assert.deepEqual(exportMatch(restored), exportMatch(m));
+  assert.equal(m.errorCount, 0, JSON.stringify(m.errors.slice(0, 2)));
+  m.dispose();
+  restored.dispose();
+});

@@ -12,6 +12,7 @@ import { identity, CLIENT_ERR_TEXT } from '../net.js';
 import { store } from '../store.js';
 import { normalizeName } from '../names.js';
 import { USERNAME_PATTERN, validPassword, validNickname } from '../../../shared/account-protocol.js';
+import { t, N_ } from '../../../shared/i18n.js';
 
 // The rules a field is checked against: the code of the one it breaks (its text: net.js CLIENT_ERR_TEXT), or null.
 const RULES = {
@@ -46,7 +47,7 @@ function useForm(initial) {
     value: values[name],
     onInput: (value) => setValues((current) => ({ ...current, [name]: value })),
     invalid: !!mistakes[name],
-    hint: mistakes[name] ? html`<span class="t-red" role="alert">${CLIENT_ERR_TEXT[mistakes[name]]}</span>` : null,
+    hint: mistakes[name] ? html`<span class="t-red" role="alert">${t(CLIENT_ERR_TEXT[mistakes[name]])}</span>` : null,
   });
   const submit = async (found, send) => {
     const shown = Object.fromEntries(Object.entries(found).filter(([, code]) => code));
@@ -76,8 +77,8 @@ export function openLogin() {
 }
 
 const TABS = [
-  { id: 'login', label: '登录' },
-  { id: 'register', label: '注册' },
+  { id: 'login', label: N_('登录') },
+  { id: 'register', label: N_('注册') },
 ];
 
 /**
@@ -110,25 +111,25 @@ export function AccountCard({ pendingJoin, autoFocus }) {
     setTab(id);
   };
   return html`
-    <${Tabs} items=${TABS} value=${tab} onChange=${switchTab} />
+    <${Tabs} items=${TABS.map((item) => ({ ...item, label: t(item.label) }))} value=${tab} onChange=${switchTab} />
     <form class="title-login__form" onSubmit=${send}>
-      <${TextField} label="用户名" micro="USERNAME" icon="user" autocomplete="username" maxLength=${20} autoFocus=${autoFocus}
-        placeholder=${register ? '仅用于登录，不会展示给其他博士' : '输入用户名'} ...${form.field('username')} />
+      <${TextField} label=${t('用户名')} micro="USERNAME" icon="user" autocomplete="username" maxLength=${20} autoFocus=${autoFocus}
+        placeholder=${register ? t('仅用于登录，不会展示给其他博士') : t('输入用户名')} ...${form.field('username')} />
       ${
         register
-          ? html`<${TextField} label="博士代号" micro="CALLSIGN" icon="edit" placeholder="输入你的代号（最多 12 字）"
+          ? html`<${TextField} label=${t('博士代号')} micro="CALLSIGN" icon="edit" placeholder=${t('输入你的代号（最多 12 字）')}
         ...${form.field('nickname')} />`
           : null
       }
-      <${TextField} label="密码" micro="PASSWORD" icon="shield" type="password" autocomplete=${register ? 'new-password' : 'current-password'}
-        placeholder=${register ? '8–128 位' : '输入密码'} ...${form.field('password')} />
+      <${TextField} label=${t('密码')} micro="PASSWORD" icon="shield" type="password" autocomplete=${register ? 'new-password' : 'current-password'}
+        placeholder=${register ? t('8–128 位') : t('输入密码')} ...${form.field('password')} />
       ${
         register
-          ? html`<${TextField} label="确认密码" micro="CONFIRM" icon="shield" type="password" autocomplete="new-password"
-        placeholder="再次输入密码" ...${form.field('confirm')} />`
+          ? html`<${TextField} label=${t('确认密码')} micro="CONFIRM" icon="shield" type="password" autocomplete="new-password"
+        placeholder=${t('再次输入密码')} ...${form.field('confirm')} />`
           : null
       }
-      <${Button} type="submit" variant="primary" size="xl" block=${true} loading=${form.busy}>${register ? '注册' : '登录'}<//>
+      <${Button} type="submit" variant="primary" size="xl" block=${true} loading=${form.busy}>${register ? t('注册') : t('登录')}<//>
     </form>
     ${
       register
@@ -137,18 +138,18 @@ export function AccountCard({ pendingJoin, autoFocus }) {
       ${
         account.github
           ? html`<${Button} class="title-login__github" variant="ghost" size="lg" block=${true}
-        onClick=${() => location.assign(githubLoginUrl(pendingJoin))}>使用 GitHub 登录<//>`
+        onClick=${() => location.assign(githubLoginUrl(pendingJoin))}>${t('使用 GitHub 登录')}<//>`
           : null
       }
-      <${Button} variant="ghost" size="lg" block=${true} onClick=${() => store.patch('session', { entered: true })}>浏览在线大厅<//>`
+      <${Button} variant="ghost" size="lg" block=${true} onClick=${() => store.patch('session', { entered: true })}>${t('浏览在线大厅')}<//>`
     }`;
 }
 
 // A dialog of the account menu: a form in a Modal, its buttons in the Modal's footer.
 function AccountDialog({ id, title, form, onSubmit, onClose, children }) {
-  return html`<${Modal} open=${true} title=${title} micro="ACCOUNT // 账号" onClose=${onClose}
-    actions=${html`<${Button} variant="secondary" onClick=${onClose}>取消<//>
-      <${Button} type="submit" form=${id} variant="primary" icon="check" loading=${form.busy}>确认<//>`}>
+  return html`<${Modal} open=${true} title=${title} micro=${t('ACCOUNT // 账号')} onClose=${onClose}
+    actions=${html`<${Button} variant="secondary" onClick=${onClose}>${t('取消')}<//>
+      <${Button} type="submit" form=${id} variant="primary" icon="check" loading=${form.busy}>${t('确认')}<//>`}>
     <form id=${id} class="account-form" onSubmit=${(event) => {
       event.preventDefault();
       onSubmit();
@@ -164,11 +165,11 @@ export function NicknameDialog({ onClose }) {
       const { user } = await accountRequest('/api/me/nickname', { nickname: form.values.nickname });
       account.user = user;
       store.patch('me', { name: user.name });
-      toast(`博士代号已改为 ${user.name}`, 'success');
+      toast(t('博士代号已改为 {name}', { name: user.name }), 'success');
       onClose();
     });
-  return html`<${AccountDialog} id="account-nickname" title="修改代号" form=${form} onSubmit=${save} onClose=${onClose}>
-    <${TextField} label="博士代号" micro="CALLSIGN" icon="edit" ...${form.field('nickname')} />
+  return html`<${AccountDialog} id="account-nickname" title=${t('修改代号')} form=${form} onSubmit=${save} onClose=${onClose}>
+    <${TextField} label=${t('博士代号')} micro="CALLSIGN" icon="edit" ...${form.field('nickname')} />
   <//>`;
 }
 
@@ -185,15 +186,15 @@ export function PasswordDialog({ onClose }) {
       },
       async () => {
         await accountRequest('/api/me/password', { current, password });
-        toast('密码已修改，其他设备上的登录已退出', 'success');
+        toast(t('密码已修改，其他设备上的登录已退出'), 'success');
         onClose();
       },
     );
   // The hidden username (for password managers) comes last: the dialog focuses its first input, 当前密码.
-  return html`<${AccountDialog} id="account-password" title="修改密码" form=${form} onSubmit=${save} onClose=${onClose}>
-    <${TextField} label="当前密码" micro="PASSWORD" icon="shield" type="password" autocomplete="current-password" ...${form.field('current')} />
-    <${TextField} label="新密码" micro="NEW PASSWORD" icon="shield" type="password" autocomplete="new-password" ...${form.field('password')} />
-    <${TextField} label="确认新密码" micro="CONFIRM" icon="shield" type="password" autocomplete="new-password" ...${form.field('confirm')} />
+  return html`<${AccountDialog} id="account-password" title=${t('修改密码')} form=${form} onSubmit=${save} onClose=${onClose}>
+    <${TextField} label=${t('当前密码')} micro="PASSWORD" icon="shield" type="password" autocomplete="current-password" ...${form.field('current')} />
+    <${TextField} label=${t('新密码')} micro="NEW PASSWORD" icon="shield" type="password" autocomplete="new-password" ...${form.field('password')} />
+    <${TextField} label=${t('确认新密码')} micro="CONFIRM" icon="shield" type="password" autocomplete="new-password" ...${form.field('confirm')} />
     <input type="text" name="username" autocomplete="username" value=${account.user.username} hidden />
   <//>`;
 }

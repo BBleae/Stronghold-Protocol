@@ -240,6 +240,8 @@ export class RoomRuntime {
       routeGame: (s, msg) => (s.spectating ? this.spectators.command(s, msg) : this.lobby.routeGame(s, msg)),
       onDisconnect: (s) => (s.spectating ? this.spectators.disconnect(s) : this.lobby.onDisconnect(s)),
       onExpire: (s) => (s.spectating ? this.spectators.leave(s) : this.lobby.onExpire(s)),
+      // The lobby's extra `welcome` fields (diyKitted: the operators a 自选 slot may field, which the client's picker offers).
+      welcomeInfo: () => this.lobby.welcomeInfo(),
     };
     // (The Network's own connection caps are never consulted here — admission() is — and are those of the largest room.)
     this.network = new RoomNetwork({ registry: this.registry, handler, now, log,

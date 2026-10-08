@@ -3,7 +3,7 @@
 // SLEEPING 沉睡 = 「无法行动+无敌+不可阻挡」, and BLOCK_FREE 不可阻挡 = 「无法阻挡/被阻挡，自动解除阻挡」. So a sleeping enemy
 // is let go by its blocker (the slot frees for the next enemy), is never blocked while asleep, stays where it is (it
 // cannot move), and when it wakes it is blocked again only by a blocker with a free slot — else it walks on, like any
-// unblocked enemy (DESIGN §25.9). Sleeping operators already released what they block (unchanged).
+// unblocked enemy (DESIGN §24.9). Sleeping operators already released what they block (unchanged).
 //
 // Flat stage: enemies walk row 9 from the gate (9,10) to the goal (9,2), i.e. towards smaller columns (0.5 tile/s).
 

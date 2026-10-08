@@ -5,14 +5,15 @@
 // key is missing, so a partial data set (tests, data being regenerated) still yields a working match.
 //
 // No custom balance (DESIGN §14 corrections, research 08 §6): enemy numbers are the official ones — the PRTS
-// per-round enemyScale table of data/config.json, the leader pool = bloodPoint. data/tuning.json only overrides result
-// titles:
+// per-round enemyScale table of data/config.json, the leader pool = bloodPoint per player alive at the fight's start
+// (bossPoolShareOf). data/tuning.json only overrides result titles:
 //   titles[titleId]                                                { stat?, rule? } merged over config.titles
 // (the former enemyHpMul / enemyAtkMul / enemySpeedMul / bossHpMul / flyPlaceholders knobs were removed; a tuning file
 // that still carries them is ignored).
 
 import { getConfig, getMode } from '../data.js';
 import { isShopItem } from '../sim/simdata.js';
+import { standInRecord } from '../../shared/standIn.js';
 
 const own = (map, id) => (map && typeof map === 'object' && typeof id === 'string' && Object.hasOwn(map, id) && map[id] && typeof map[id] === 'object' ? map[id] : null);
 const numOr = (v, d) => (typeof v === 'number' && Number.isFinite(v) ? v : d);
@@ -54,8 +55,10 @@ export const DEFAULTS = Object.freeze({
    * players above `players` (4) every count below scales by f = n / players, at or below it nothing changes (1–4 keep
    * every rule, number, timer and random draw). config.largeRoom may override any key.
    *   pool copies per chess        ceil(base × f), f from the match's seats (humans + bots) at match start
-   *   leader pool                  bloodPoint × f, f from the players alive at that boss phase's start (also the
-   *                                hidden leader); the per-field damage budget / BOSS_HIT shares follow the pool
+   *   leader pool                  the share of 4 × f (bossPoolShareOf): bloodPoint per player alive keeps counting
+   *                                past 4 (perPlayer, 0.2.0), the fixed pool of perPlayer false × f; f from the
+   *                                players alive at that boss phase's start (also the hidden leader); the per-field
+   *                                damage budget / BOSS_HIT shares follow the pool
    *   Hidden Core co-op threshold  hiddenCore.multi × f, f from the players whose layers are summed (end of R14 prep)
    *   overtime drain               bossOvertimeDrainPerSec × f, f from the players alive at the boss phase's start
    *   机变 cards                    max(the round's cards, alive + spCardsPlus) when alive > players (5–8 → 7–10)
@@ -69,6 +72,41 @@ export const DEFAULTS = Object.freeze({
 /** Game seconds per real second of a battle (forced 2×): combat limits in data are real seconds (combatTimeLimit). */
 export const COMBAT_TIME_SCALE = 2;
 
+/**
+ * Multiplier of bloodPoint[difficulty] for the shared leader pool (DESIGN §20.10, §25.13.4), from config bossHpScale —
+ * each key from the mode's entry first, then the global one; the defaults are the current rule:
+ *   solo   `solo` (1: the table value — one player's share);
+ *   co-op  `perPlayer` true (the owner's decision of 2026-10-06, adopting PR #209 by @qingjingshenghuo): `coop` (1) × the
+ *          players alive when the fight starts — bots and AI 托管 seats count, eliminated and departed seats do not —
+ *          at most `aliveFull` (4); a count left out means a full team;
+ *          `perPlayer` false: the fixed pool of 0.1.x (「保持固定血量」, restorable with `solo` 0.25): `coop` whatever the
+ *          count, × min(alive, aliveFull) / aliveFull with `aliveScaling`;
+ *   co-op rooms of 5–8 (remake extension, DEFAULTS.largeRoom): either share × alive / `largeRoomPlayers` (4) when more
+ *          than `largeRoomPlayers` are alive — the per-player rule then counts every player alive (8 alive: × 8); 1–4
+ *          alive, solo or a count left out: unchanged.
+ * @param {object|null|undefined} modeScale config.modes[modeId].bossHpScale
+ * @param {object|null|undefined} cfgScale config.bossHpScale
+ * @param {boolean} isSolo
+ * @param {number} [aliveCount] alive players at the Final Assault / Hidden Core start (co-op)
+ * @param {number} [largeRoomPlayers] GameData.largeRoom.players (config.largeRoom; default 4)
+ * @returns {number}
+ */
+export function bossPoolShareOf(modeScale, cfgScale, isSolo, aliveCount, largeRoomPlayers = DEFAULTS.largeRoom.players) {
+  const ms = modeScale && typeof modeScale === 'object' ? modeScale : {};
+  const cs = cfgScale && typeof cfgScale === 'object' ? cfgScale : {};
+  const pick = (k, d) => (Number.isFinite(ms[k]) && ms[k] > 0 ? ms[k] : Number.isFinite(cs[k]) && cs[k] > 0 ? cs[k] : d);
+  const flag = (k, d) => (typeof ms[k] === 'boolean' ? ms[k] : typeof cs[k] === 'boolean' ? cs[k] : d);
+  if (isSolo) return pick('solo', 1);
+  const full = Math.max(1, Math.floor(pick('aliveFull', 4)));
+  const n = Number(aliveCount);
+  const alive = Number.isFinite(n) && n >= 1 ? Math.min(full, Math.floor(n)) : full;
+  const share = flag('perPlayer', true) ? pick('coop', 1) * alive
+    : pick('coop', 1) * (flag('aliveScaling', false) ? alive / full : 1);
+  const large = Number.isInteger(largeRoomPlayers) && largeRoomPlayers > 0 ? largeRoomPlayers : DEFAULTS.largeRoom.players;
+  const k = Math.floor(n);
+  return Number.isFinite(k) && k > large ? share * (k / large) : share;
+}
+
 /** Strip the _a/_b suffix of an item id (the registry key of an item family). */
 export const itemKey = (id) => (typeof id === 'string' ? id.replace(/_[ab]$/, '') : '');
 
@@ -76,25 +114,20 @@ export class GameData {
   /**
    * @param {Readonly<Record<string, any>>} data server/data.js getData() (may be partial)
    * @param {string} modeId e.g. 'mode_multi_hard'
-   * @param {{ chess?: Record<string, any> }} [patch] per-match additions to the chess table — the 外援 / 甄选 (DIY)
-   *   records of the players in THIS match (data/waiguan.json, DESIGN §27). They live on this instance only, so a
-   *   match's private chess never leaks into another match or into getChess().
    */
-  constructor(data, modeId, patch = null) {
+  constructor(data, modeId) {
     this.raw = data && typeof data === 'object' ? data : {};
     this.config = getConfig(this.raw) || {};
     this.modeId = modeId;
     this.mode = getMode(modeId, this.raw) || {};
     this.economy = this.config.economy && typeof this.config.economy === 'object' ? this.config.economy : {};
-    const base = this.raw.chess && typeof this.raw.chess === 'object' ? this.raw.chess : {};
-    const extra = patch && patch.chess && typeof patch.chess === 'object' ? patch.chess : null;
-    this._chess = extra ? { ...base, ...extra } : base;
+    const chess = this.raw.chess && typeof this.raw.chess === 'object' ? this.raw.chess : {};
+    this._chess = chess;
     this._items = this.raw.items && typeof this.raw.items === 'object' ? this.raw.items : {};
     this._bonds = this.raw.bonds && typeof this.raw.bonds === 'object' ? this.raw.bonds : {};
-    /** visible, shop-eligible base (normal) chess ids — a match's 甄选 (DIY) records are NOT here: they are private to
-     * one player and enter its shop through SharedPool.addOwned (DESIGN §27). */
-    this.visibleChess = Object.keys(this._chess).filter((id) => {
-      const c = this._chess[id];
+    /** visible, shop-eligible base (normal) chess ids */
+    this.visibleChess = Object.keys(chess).filter((id) => {
+      const c = chess[id];
       return c && c.visible && !c.isGolden && !c.isDiy && !c.isHidden && Number.isInteger(c.tier);
     }).sort();
     /**
@@ -115,20 +148,8 @@ export class GameData {
     this.inactiveEnemies = new Set(Array.isArray(this.mode.inactiveEnemyKeys) ? this.mode.inactiveEnemyKeys : []);
     /** data/tuning.json (titles only, see the header) */
     this.tuning = this.raw.tuning && typeof this.raw.tuning === 'object' ? this.raw.tuning : {};
-  }
-
-  /**
-   * Add one chess record to THIS match's table — how a 甄选 (DIY) pick taken after the match was constructed reaches the
-   * engine (DESIGN §27, Match.setPicks). The record stays local to this instance: `visibleChess` is untouched (a 甄选
-   * record is never shop-visible) and no global lookup learns about it.
-   * @param {object} rec the chess record (data/waiguan.json)
-   * @returns {object|null} the stored record, or null when the record is unusable
-   */
-  addChess(rec) {
-    if (!rec || typeof rec !== 'object' || typeof rec.chessId !== 'string' || !Number.isInteger(rec.tier)) return null;
-    if (this._chess[rec.chessId]) return this._chess[rec.chessId];
-    this._chess = { ...this._chess, [rec.chessId]: rec };
-    return rec;
+    /** standIn memo: chess id → composed 补位 record | null */
+    this._standIns = new Map();
   }
 
   /**
@@ -141,14 +162,13 @@ export class GameData {
   }
 
   /**
-   * Official shared leader HP pool (DESIGN §20.10): ONE pool for every boss field of the match (official tip "最终攻势中，
+   * Shared leader HP pool (DESIGN §20.10, §25.13.4): ONE pool for every boss field of the match (official tip "最终攻势中，
    * 所有人将一起对敌方领袖造成伤害"; the mirrored copies of a pair field share it — notice 5114 "两侧的敌方领袖共享生命值
-   * （敌方领袖的总生命值不变）", which is about those copies, not about the number of players). Co-op = bloodPoint
-   * [difficulty]; with config bossHpScale.aliveScaling (default false) × alive / aliveFull (4) — 巴哈姆特 12294 "聯機隊友
-   * (撤退/死掉)變少，最後boss血條也會變少" is one community note without a proportion, kept off until confirmed (it would
-   * shorten fights after eliminations, the opposite of the playtest report); `aliveCount` omitted ⇒ a full team. Solo = bloodPoint ×
-   * bossHpScale.solo (0.25 = one player of four, [ASSUMED]). Leaders are never scaled by enemyScale ("领袖单位于服务器的
-   * 生命值加成不受上述加成影响"). Rooms of 5–8 (remake extension, DEFAULTS.largeRoom): × alive / 4 on top.
+   * （敌方领袖的总生命值不变）", which is about those copies). Size = bloodPoint[difficulty] × bossPoolShare: the table value
+   * per player alive when the fight starts (the owner's decision of 2026-10-06, PR #209; it replaces the fixed pool of
+   * 「保持固定血量」, which config bossHpScale restores — bossPoolShareOf); `aliveCount` omitted ⇒ a full team. Rooms of
+   * 5–8 (remake extension, DEFAULTS.largeRoom): × alive / 4 on top of the share of 4, so the per-player rule keeps counting
+   * every player alive. Leaders are never scaled by enemyScale ("领袖单位于服务器的生命值加成不受上述加成影响").
    * @param {string} bossId
    * @param {number} [aliveCount] alive players at the Final Assault / Hidden Core start (co-op)
    * @returns {number}
@@ -163,23 +183,12 @@ export class GameData {
   }
 
   /**
-   * Multiplier of bloodPoint for the leader pool (see bossPoolHp): solo = bossHpScale.solo (0.25); co-op = coop (1) ×
-   * min(alive, aliveFull) / aliveFull when bossHpScale.aliveScaling (mode entry first, then the global one), × the
-   * large-room factor max(1, alive / 4) (largeRoomFactor: 1 for 1–4 alive, so aliveScaling keeps its meaning there).
+   * Multiplier of bloodPoint for the leader pool (see bossPoolHp; the rule and the config keys: bossPoolShareOf, with
+   * this match's largeRoom.players for the 5–8 factor).
    * @param {number} [aliveCount]
    */
   bossPoolShare(aliveCount) {
-    const ms = this.mode.bossHpScale && typeof this.mode.bossHpScale === 'object' ? this.mode.bossHpScale : {};
-    const cs = this.config.bossHpScale && typeof this.config.bossHpScale === 'object' ? this.config.bossHpScale : {};
-    const pick = (k, d) => (Number.isFinite(ms[k]) && ms[k] > 0 ? ms[k] : Number.isFinite(cs[k]) && cs[k] > 0 ? cs[k] : d);
-    if (this.isSolo) return pick('solo', 0.25);
-    const scaling = typeof ms.aliveScaling === 'boolean' ? ms.aliveScaling : cs.aliveScaling === true;
-    const full = Math.max(1, Math.floor(pick('aliveFull', 4)));
-    const n = Number(aliveCount);
-    const alive = scaling && Number.isFinite(n) && n >= 1 ? Math.min(full, Math.floor(n)) : full;
-    const share = pick('coop', 1) * (alive / full);
-    const f = this.largeRoomFactor(aliveCount);
-    return f > 1 ? share * f : share;
+    return bossPoolShareOf(this.mode.bossHpScale, this.config.bossHpScale, this.isSolo, aliveCount, this.largeRoom.players);
   }
 
   // ---- co-op rooms of 5–8 players (remake extension, DEFAULTS.largeRoom) --------------------------------------
@@ -254,6 +263,26 @@ export class GameData {
   token(id) { return own(this.raw.tokens, id); }
   get choices() { return this.raw.choices && typeof this.raw.choices === 'object' ? this.raw.choices : {}; }
   get factions() { return this.raw.factions && typeof this.raw.factions === 'object' ? this.raw.factions : {}; }
+
+  /**
+   * The 补位 record of chess `id` (normal or elite; DATA.md §18): shared/standIn.js standInRecord over data/backups.json
+   * — the chess's identity (ids, tier, bonds, 特质, price, merge) with its official stand-in's body (stats, range, skills
+   * with the backup skill as the default, talents, module, art, `standInFor`). Null for a PRESET / 自选 chess, an unknown
+   * id or data without backups.json. Memoized (frozen records).
+   * @param {string} id
+   * @returns {object|null}
+   */
+  standIn(id) {
+    if (typeof id !== 'string') return null;
+    if (this._standIns.has(id)) return this._standIns.get(id);
+    const c = this.chess(id);
+    const backups = this.raw.backups && typeof this.raw.backups === 'object' ? this.raw.backups : null;
+    let rec;
+    try { rec = c && backups ? standInRecord(c, backups) : null; } catch { rec = null; }
+    if (rec) Object.freeze(rec);
+    this._standIns.set(id, rec);
+    return rec;
+  }
 
   /** Normal (base) chess id of a chess id (golden → base). */
   baseIdOf(id) {
@@ -449,14 +478,20 @@ export class GameData {
     return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null;
   }
 
-  /** Official enemy multipliers of round r (config enemyScale: the PRTS table + 终极 speed ×1.15 from R3). */
+  /**
+   * Official enemy multipliers of round r (config enemyScale: the PRTS table + 终极 speed ×1.15 from R3). `supplyHpMul`
+   * (only when ≠ 1: co-op 终极 R5–R15) = the share of hpMul from 补给线 / 补给线II (config `supplyHp`), effects whose
+   * `enemy_exclude` leaves out the 14 器物 hit-count keys — they take hpMul / supplyHpMul (archetypes.js `times`).
+   */
   baseEnemyScale(r) {
     const e = this.mode.enemyScale && this.mode.enemyScale[String(r)];
     if (!e || typeof e !== 'object') return { hpMul: 1, atkMul: 1, speedMul: 1 };
+    const supply = numOr(e.supplyHp, 1);
     return {
       hpMul: Math.max(0.01, numOr(e.hp, 1)),
       atkMul: Math.max(0, numOr(e.atk, 1)),
       speedMul: Math.max(0.01, numOr(e.speed, 1)),
+      ...(supply > 0 && supply !== 1 ? { supplyHpMul: supply } : {}),
     };
   }
 
@@ -601,8 +636,8 @@ export class GameData {
    * that the chess makes under `loadout` ({ skillIndex } from shared/protocol.js resolveLoadout; absent ⇒ its default
    * skill): the owner variant's `sources` (`bySkill[skillIndex]` for a non-default skill) name a talent or a skill —
    * 赫默 / 巫恋 on S1 make no drone / doll. `count` = the summon's deploy limit (PRTS 卫戍协议/帮助 "根据召唤物部署数量
-   * 上限（非初始持有量），发送等量召唤物至手牌区": 凯瑟琳 2 of her 3 devices; build-data adds the summon's talent
-   * `max_deploy_count` — 令 3 souls, 4 with SUM-Y), of the selected module when it changes it (`byModule[moduleId].stats`).
+   * 上限（非初始持有量），发送等量召唤物至手牌区": 凯瑟琳 2 of her 3 devices), the selected module's own when its variant
+   * has one (`byModule[loadout.moduleId].stats`, as player/diy.js diyGameData reads it for a 自选 record).
    */
   placeableTokens(chessId, loadout = null) {
     const c = this.chess(chessId);

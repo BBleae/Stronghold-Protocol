@@ -1,4 +1,4 @@
-// 匹配 in account mode (DESIGN §28.2): worker/matchmaker.js MatchQueue — the Node queue's grouping rules
+// 匹配 in account mode (DESIGN §F4.2): worker/matchmaker.js MatchQueue — the Node queue's grouping rules
 // (server/lobby.js queueTick, test/matchmaking.test.js) behind a polled Durable Object, plus the room hand-over: the host
 // reports its room's code, the members get it.
 import test from 'node:test';

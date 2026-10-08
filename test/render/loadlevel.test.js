@@ -100,11 +100,13 @@ describe('maxAnimInterval', () => {
   });
 });
 
-// phone audit P8 (DESIGN §26.6): a 90 / 120 Hz phone drew 120 fps in the nearly static prep phase
+// phone audit P8 (DESIGN §F2.6): a 90 / 120 Hz phone drew 120 fps in the nearly static prep phase
 describe('render/app.js frame-rate cap (source)', () => {
   const src = readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '../../public/js/render/app.js'), 'utf8');
+  // the constant lives with the renderer's resolution settings since 0.2.0 split the app prelude (render/app/host.js)
+  const host = readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '../../public/js/render/app/host.js'), 'utf8');
   test('the ticker is capped at about 60 fps when the app is created, on every device', () => {
-    const cap = Number(src.match(/^const MAX_FPS = (\d+);/m)?.[1]);
+    const cap = Number(host.match(/^const MAX_FPS = (\d+);/m)?.[1]);
     // PIXI's limiter compares whole milliseconds: exactly 60 skips frames on a 60 Hz display, a little headroom does not
     assert.ok(cap >= 60 && cap <= 64, `MAX_FPS ${cap}`);
     assert.match(src, /new P\.Application\(\{[^]*?\}\);\s*app\.ticker\.maxFPS = MAX_FPS;/, 'set right after the Application is created');

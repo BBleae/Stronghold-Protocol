@@ -108,6 +108,15 @@ test('items: 信标 on a bench single; both 博士投影 on a normal operator ev
   // 拟态物质 (a third copy when two are owned): the pair
   const mimic = itemTarget(m, ps, giveItem(m, ps, 'chess_item_5_05_e_a'));
   assert.ok(mimic && [pairA.uid, pairB.uid].includes(mimic.uid), '拟态物质 on the pair');
+  // …but not once the pool has no third copy: the item would give nothing (GitHub #207)
+  m.pool.take(pairId, m.pool.left(pairId));
+  const mimic2 = itemTarget(m, ps, giveItem(m, ps, 'chess_item_5_05_e_a'));
+  assert.ok(mimic2 && ![pairA.uid, pairB.uid].includes(mimic2.uid), '拟态物质 not on a pair whose pool is out');
+  // 盟约之币 (the same on anyone): a full carrier would lose an item to it (the replace rule, GitHub #263) — every
+  // deployed operator wears two items here, so a bench operator with free slots takes it
+  for (const p of deployed()) while (p.items.length < m.gd.equipPerChess) p.items.push(ps.newPiece('item', 'chess_item_3_03_e_a'));
+  const coin = itemTarget(m, ps, giveItem(m, ps, 'chess_item_1_03_e_a'));
+  assert.ok(coin && [single.uid, pairA.uid, pairB.uid].includes(coin.uid), '盟约之币 on an operator with a free slot');
   m.dispose();
 });
 
@@ -233,14 +242,15 @@ test('坎诺特 (利滚利: leftover funds are kept, +1 at ≥ 5): with a full b
     assert.ok(m.gd.leftoverKeptBands.includes(ps.bandId));
     ps.funds = 14;
     const merges = ps.stats.merges;
+    // the level-up on the curve is paid for first (its price depends on the rounds the run levelled at: 9 or 10 here);
+    // after it the bot buys / refreshes nothing that takes it under the 5 capital
+    const level0 = ps.shop.level, price0 = ps.shop.upgradePrice;
     h.run(() => m.phase === PHASE.COMBAT && m.round === 7);
-    // (a merge may spend the reserve; the level-up on the curve is paid for first and leaves enough here)
+    // (a merge may spend the reserve)
     if (ps.stats.merges === merges) {
       checked++;
-      //   ≥ 4, not ≥ 5: the bot's own 甄选 (DIY) picks (DESIGN §27) put four more operators into its private pool, so a
-      //   seed can spend one coin more without merging. The rule under test is the band's 利滚利 (leftover funds kept,
-      //   +1 at ≥ 5), not the exact balance — every seed still banks its interest capital instead of refreshing it away.
-      assert.ok(ps.funds >= 4, `seed ${seed}: ${ps.funds} funds banked`);
+      const afterLevelUp = 14 - (ps.shop.level > level0 ? price0 : 0);
+      assert.ok(ps.funds >= Math.min(5, afterLevelUp), `seed ${seed}: ${ps.funds} funds banked (${afterLevelUp} after the level-up)`);
     }
     m.dispose();
   }

@@ -9,6 +9,7 @@
 // downloads and imports start with it. Cache Storage is shared by every page of the site; the caller runs one
 // operation at a time across all of them (js/resources/index.js).
 import { mediaUrl } from '../media.js';
+import { t } from '../../../shared/i18n.js';
 import { CACHE_PREFIX, checkAbort, matchesResource, readBoundedResponse, resourceResponse, verifyBytes } from './common.js';
 
 const MANIFEST_URL = '/resource-manifest.json';
@@ -48,7 +49,7 @@ export function addFile(status, file) {
 export class DownloadError extends Error {
   constructor(failed) {
     const [{ file, error }] = failed;
-    super(`${failed.length} 个文件下载失败，例如 ${file.url}（${error.message}）`);
+    super(t('{n} 个文件下载失败，例如 {url}（{message}）', { n: failed.length, url: file.url, message: error.message }));
     this.name = 'DownloadError';
     this.failed = failed;
   }

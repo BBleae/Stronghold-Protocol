@@ -31,6 +31,7 @@
 
 import { PROTOCOL_VERSION, ERR_TEXT, MAX_SEATS } from '../../shared/constants.js';
 import { validateC2S } from '../../shared/protocol.js';
+import { N_ } from '../../shared/i18n.js';
 
 export const REQUEST_TIMEOUT_MS = 8000;
 export const HELLO_TIMEOUT_MS = 8000;
@@ -40,44 +41,44 @@ export const BACKOFF = Object.freeze({ base: 500, factor: 2, max: 10000, jitter:
 
 /** Client-side error codes (in addition to shared ERR codes). */
 export const CLIENT_ERR_TEXT = Object.freeze({
-  TIMEOUT: '请求超时，请重试',
-  OFFLINE: '未连接到服务器',
-  DISCONNECTED: '连接已断开，请重试',
-  CLOSED: '连接已关闭',
-  REPLACED: '该身份已在其他页面登录',
-  VERSION: '客户端版本与服务器不一致，请刷新页面',
+  TIMEOUT: N_('请求超时，请重试'),
+  OFFLINE: N_('未连接到服务器'),
+  DISCONNECTED: N_('连接已断开，请重试'),
+  CLOSED: N_('连接已关闭'),
+  REPLACED: N_('该身份已在其他页面登录'),
+  VERSION: N_('客户端版本与服务器不一致，请刷新页面'),
   // Account mode: the room client (room-net.js) and the account API (account.js accountRequest).
-  ALREADY_IN_ROOM: '请先离开当前房间',
-  BUSY: '正在进入房间，请稍候',
-  ROOM_GONE: '房间已关闭或已过期',
-  NO_ACTIVE_MATCH: '对局已结束或恢复时间已过',
-  UNAVAILABLE: '服务器暂时不可用，请稍后重试',
-  LOGIN_REQUIRED: '登录已失效，请重新登录',
+  ALREADY_IN_ROOM: N_('请先离开当前房间'),
+  BUSY: N_('正在进入房间，请稍候'),
+  ROOM_GONE: N_('房间已关闭或已过期'),
+  NO_ACTIVE_MATCH: N_('对局已结束或恢复时间已过'),
+  UNAVAILABLE: N_('服务器暂时不可用，请稍后重试'),
+  LOGIN_REQUIRED: N_('登录已失效，请重新登录'),
   // Sign-in and the account's name and password (the title screen's account card, the account menu's dialogs).
-  INVALID_USERNAME: '用户名为 3–20 位字母、数字或下划线',
-  USERNAME_TAKEN: '用户名已被使用',
-  INVALID_PASSWORD: '密码长度为 8–128 位',
-  PASSWORD_MISMATCH: '两次输入的密码不一致',
-  INVALID_NICKNAME: '代号为 1–12 个字，不能包含 #',
-  NICKNAME_FULL: '这个代号已被太多人使用，请换一个',
-  BAD_CREDENTIALS: '用户名或密码错误',
-  WRONG_PASSWORD: '当前密码不正确',
-  RATE_LIMITED: '尝试次数过多，请稍后再试',
-  GITHUB_UNAVAILABLE: 'GitHub 登录暂不可用',
-  ACCOUNT_UNAVAILABLE: '账户服务暂时不可用，请稍后重试',
-  ALREADY_SEATED: '你已有一个房间，请先继续对局或离开',
-  APPLICATION_PENDING: '已有一个加入申请，请先取消或等待处理',
-  APPLICATION_EXPIRED: '申请已过期，请重新申请',
-  APPLICATION_NOT_FOUND: '该申请已失效',
-  ALREADY_JOINED: '已加入该同盟',
-  TOO_MANY_APPLICATIONS: '该同盟待处理的申请过多，请稍后再试',
-  APPLICATION_FAILED: '申请处理失败，请重试',
-  APPLICANT_BUSY: '对方已在其他房间，申请已失效',
-  LOBBY_UNAVAILABLE: '在线大厅暂时不可用，请稍后重试',
-  HISTORY_UNAVAILABLE: '对局记录暂时不可用，请重试',
-  ARCHIVE_NOT_READY: '对局记录尚未生成，请稍后再试',
-  REPLAY_INCOMPLETE: '回放记录不完整，暂时无法播放',
-  FORBIDDEN: '无权查看该内容',
+  INVALID_USERNAME: N_('用户名为 3–20 位字母、数字或下划线'),
+  USERNAME_TAKEN: N_('用户名已被使用'),
+  INVALID_PASSWORD: N_('密码长度为 8–128 位'),
+  PASSWORD_MISMATCH: N_('两次输入的密码不一致'),
+  INVALID_NICKNAME: N_('代号为 1–12 个字，不能包含 #'),
+  NICKNAME_FULL: N_('这个代号已被太多人使用，请换一个'),
+  BAD_CREDENTIALS: N_('用户名或密码错误'),
+  WRONG_PASSWORD: N_('当前密码不正确'),
+  RATE_LIMITED: N_('尝试次数过多，请稍后再试'),
+  GITHUB_UNAVAILABLE: N_('GitHub 登录暂不可用'),
+  ACCOUNT_UNAVAILABLE: N_('账户服务暂时不可用，请稍后重试'),
+  ALREADY_SEATED: N_('你已有一个房间，请先继续对局或离开'),
+  APPLICATION_PENDING: N_('已有一个加入申请，请先取消或等待处理'),
+  APPLICATION_EXPIRED: N_('申请已过期，请重新申请'),
+  APPLICATION_NOT_FOUND: N_('该申请已失效'),
+  ALREADY_JOINED: N_('已加入该同盟'),
+  TOO_MANY_APPLICATIONS: N_('该同盟待处理的申请过多，请稍后再试'),
+  APPLICATION_FAILED: N_('申请处理失败，请重试'),
+  APPLICANT_BUSY: N_('对方已在其他房间，申请已失效'),
+  LOBBY_UNAVAILABLE: N_('在线大厅暂时不可用，请稍后重试'),
+  HISTORY_UNAVAILABLE: N_('对局记录暂时不可用，请重试'),
+  ARCHIVE_NOT_READY: N_('对局记录尚未生成，请稍后再试'),
+  REPLAY_INCOMPLETE: N_('回放记录不完整，暂时无法播放'),
+  FORBIDDEN: N_('无权查看该内容'),
 });
 
 /** Server close code: the session was taken over by another socket (server/net.js CLOSE.REPLACED). */
@@ -94,7 +95,7 @@ const QUIET_SWAP_MIN_AGE_MS = 5000;
  * @returns {string}
  */
 export function errorText(code, msg) {
-  return ERR_TEXT[code] || CLIENT_ERR_TEXT[code] || (typeof msg === 'string' && msg) || String(code || '未知错误');
+  return ERR_TEXT[code] || CLIENT_ERR_TEXT[code] || (typeof msg === 'string' && msg) || String(code || N_('未知错误'));
 }
 
 /** Error thrown/rejected by requests. `code` is an ERR code or a CLIENT_ERR_TEXT key. */

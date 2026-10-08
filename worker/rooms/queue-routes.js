@@ -1,4 +1,4 @@
-// POST /api/queue — 匹配 (matchmaking, DESIGN §28.2) in account mode: the page polls its place in the queue
+// POST /api/queue — 匹配 (matchmaking, DESIGN §F4.2) in account mode: the page polls its place in the queue
 // (worker/matchmaker.js) every 1.5 s while it waits. Body `{ action: 'join'|'poll'|'leave'|'hosted', difficulty?, code? }`
 // ('join' is the 匹配 click and starts over, 'poll' keeps the account's place); the answer is the account's queue status
 // (`matched` once a group was formed). Only the game's own page, signed in; counted against QUEUE_LIMIT per network.

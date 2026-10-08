@@ -1,4 +1,4 @@
-// 匹配 (matchmaking queue) — a remake feature (DESIGN §28). Boots a real server in-process on a random port and drives
+// 匹配 (matchmaking queue) — a remake feature (DESIGN §F4). Boots a real server in-process on a random port and drives
 // several WebSocket clients through the queue: joining, the queue.status frames, the group being formed into a new 同盟
 // room (queue.matched), the seats the group could not fill, the grace / timeout rules, leaving, disconnecting, the
 // same-difficulty rule, and the healthz counter.

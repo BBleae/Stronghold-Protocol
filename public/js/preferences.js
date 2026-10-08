@@ -1,7 +1,16 @@
 import { PREFERENCE_KEYS, validPreference, cleanPreferences } from './preferenceSchema.js';
-import { parseStored, toStored } from './ui/loadoutModel.js';
+import { LOADOUT_PREF, parseStored, toStored } from './ui/loadoutModel.js';
+import { DIY_PREF, parseStoredDiy, toStoredDiy } from './ui/diyModel.js';
+import { OWNERSHIP_PREF, parseStoredOwnership, toStoredOwnership } from './ui/ownershipModel.js';
+import { t } from '../../shared/i18n.js';
 
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+/** A device-local value in the stored form its account key takes (an older build's shape is parsed and re-saved). */
+const STORED_FORM = {
+  [LOADOUT_PREF]: (value) => toStored(parseStored(value)),
+  [DIY_PREF]: (value) => toStoredDiy(parseStoredDiy(value)),
+  [OWNERSHIP_PREF]: (value) => toStoredOwnership(parseStoredOwnership(value)),
+};
 async function requestPreferences(body) {
   const response = await fetch('/api/me/preferences', {
     method: body === undefined ? 'GET' : 'POST', credentials: 'same-origin', cache: 'no-store',
@@ -19,7 +28,7 @@ export function createPreferences({storage = () => globalThis.localStorage, requ
   timers = globalThis, events = globalThis, onError = () => {}} = {}) {
   let accountId = null, values = {}, pending = {}, hydrated = false, blocked = false;
   // this browser's old local values of keys this account's cache has never held (a key that joined the synced set later,
-  // e.g. the 甄选 picks): uploaded at hydration where the cloud has nothing for them — never over a cloud value
+  // e.g. the 自选编队 picks and the 干员持有 list): uploaded at hydration where the cloud has nothing for them — never over a cloud value
   let lateLegacy = {};
   let timer = null, flight = null, status = 'local', disposed = false, generation = 0, errorNotified = false;
   const listeners = new Set();
@@ -97,7 +106,7 @@ export function createPreferences({storage = () => globalThis.localStorage, requ
       for (const key of PREFERENCE_KEYS) {
         if (cached && (key in known || key in lateLegacy)) continue;
         let value = read(`sp.pref.${key}`);
-        if (key === 'loadout' && value != null) value = toStored(parseStored(value));
+        if (value != null && STORED_FORM[key]) value = STORED_FORM[key](value);
         if (!validPreference(key, value)) continue;
         if (cached) lateLegacy[key] = value; // a first login migrates everything below; a cached account only fills gaps
         else values[key] = value;
@@ -136,6 +145,6 @@ export function createPreferences({storage = () => globalThis.localStorage, requ
 export const preferences = createPreferences({onError: error => {
   // Loaded lazily to keep the preference store independent of UI boot order.
   void import('./ui/toasts.js').then(({toast}) => toast(
-    ['ACCOUNT_CHANGED','LOGIN_REQUIRED'].includes(error.code) ? '登录状态已变化，请刷新页面以继续保存账号偏好'
-      : '账号偏好暂未同步，修改已在本机保留，将自动重试', 'warn'));
+    ['ACCOUNT_CHANGED','LOGIN_REQUIRED'].includes(error.code) ? t('登录状态已变化，请刷新页面以继续保存账号偏好')
+      : t('账号偏好暂未同步，修改已在本机保留，将自动重试'), 'warn'));
 }});

@@ -1,6 +1,7 @@
 // Co-op rooms of 5–8 players (remake extension, owner's decision; server/match/gamedata.js DEFAULTS.largeRoom): with
-// n players above 4 the counts scale by f = n / 4 — shared pool copies (seats at match start), the leader pool and the
-// overtime drain (alive at the boss phase's start), the Hidden Core threshold (players whose layers are summed) —, the
+// n players above 4 the counts scale by f = n / 4 — shared pool copies (seats at match start), the leader pool (0.2.0's
+// bloodPoint per player alive keeps counting past 4) and the overtime drain (alive at the boss phase's start), the
+// Hidden Core threshold (players whose layers are summed) —, the
 // 机变 draft has max(6, alive + 2) cards (the structured drafts topped up), the strategy draft turn is 20 s above 4
 // seats, a later 机变 pick 12 s above 4 alive, and result titles get a second pass that may repeat a title. Every rule,
 // number, timer and random draw of 1–4 players stays the official one (the existing suites pin those; here the 1–4
@@ -18,7 +19,6 @@ import { BAND_TURN_SECONDS } from '../../server/match/Match.js';
 import { createRng } from '../../server/sim/rng.js';
 import { FakeBattle } from './fakeBattle.js';
 import { DATA, makeMatch, checkInvariants } from './harness.js';
-import { WAIGUAN_POOL_COPIES } from '../../shared/waiguan.js';
 
 const bossFields = () => FakeBattle.instances.filter((b) => b.kind === 'boss' || b.kind === 'hidden');
 const MULTI = ['mode_multi_funny', 'mode_multi_normal', 'mode_multi_hard', 'mode_multi_abyss'];
@@ -68,31 +68,35 @@ test('pool copies: the official counts for 1–4 seats; ceil(count × seats / 4)
   for (const [humans, bots, f] of [[1, 3, 1], [2, 2, 1], [1, 4, 5 / 4], [3, 3, 6 / 4], [1, 7, 2]]) {
     const h = makeMatch({ mode: 'coop', difficulty: 'NORMAL', humans, bots, seed: 300 + humans + bots, fake: true });
     for (const [id, e] of h.m.pool.entries) {
-      // a player's own 甄选 entry (AI teammates bring theirs, DESIGN §27) keeps the official per-tier copies at any size
-      if (e.owner != null) { assert.equal(e.cap, WAIGUAN_POOL_COPIES[e.tier], `${humans}+${bots}: own ${id}`); continue; }
       assert.equal(e.cap, f === 1 ? gd.poolCopies(id) : Math.ceil(gd.poolCopies(id) * f - 1e-9), `${humans}+${bots}: ${id}`);
     }
     h.m.dispose();
   }
 });
 
-test('leader pool: bloodPoint for 1–4 alive, × alive / 4 for 5–8 (every co-op difficulty, hidden leaders too); solo unchanged', () => {
+test('leader pool: bloodPoint × alive for 1–4 (0.2.0, DESIGN §25.13.4) and on past 4 — the 4 players\' pool × alive / 4 for 5–8 (every co-op difficulty, hidden leaders too); solo unchanged', () => {
   const { tuning, ...RAW } = DATA; // eslint-disable-line no-unused-vars
   for (const modeId of MULTI) {
     const gd = new GameData(RAW, modeId);
     for (const bossId of ['boss_1', 'boss_8']) {
       const bp = gd.boss(bossId).bloodPoint[gd.difficulty];
-      for (const n of [1, 2, 3, 4, undefined]) assert.equal(bossPoolHp(gd, bossId, n), bp, `${modeId} ${bossId} ${n}`);
-      for (const n of [5, 6, 7, 8]) assert.equal(bossPoolHp(gd, bossId, n), Math.round((bp * n) / 4), `${modeId} ${bossId} ${n}`);
+      for (const n of [1, 2, 3, 4]) assert.equal(bossPoolHp(gd, bossId, n), bp * n, `${modeId} ${bossId} ${n}`);
+      assert.equal(bossPoolHp(gd, bossId), bp * 4, `${modeId} ${bossId}: no count, a full team`);
+      for (const n of [5, 6, 7, 8]) assert.equal(bossPoolHp(gd, bossId, n), Math.round(((bp * 4) * n) / 4), `${modeId} ${bossId} ${n}`);
       assert.equal(gd.bossPoolHp(bossId, 6), bossPoolHp(gd, bossId, 6), 'GameData agrees');
     }
   }
   const solo = new GameData(RAW, 'mode_single_abyss');
-  assert.equal(bossPoolHp(solo, 'boss_5', 1), 750000);
-  // a data view without bossPoolShare (the fallback branch) applies the same factor
+  assert.equal(bossPoolHp(solo, 'boss_5', 1), 3000000, 'solo: the table value');
+  // a data view without bossPoolShare (the fallback branch, gamedata.js bossPoolShareOf) applies the same factor
   const bare = { boss: (id) => RAW.bosses[id], difficulty: 'HARD', isSolo: false, mode: {}, config: {} };
-  assert.equal(bossPoolHp(bare, 'boss_1', 4), 1800000);
-  assert.equal(bossPoolHp(bare, 'boss_1', 6), 2700000);
+  assert.equal(bossPoolHp(bare, 'boss_1', 4), 1800000 * 4);
+  assert.equal(bossPoolHp(bare, 'boss_1', 6), 1800000 * 6);
+  // the fixed pool (config bossHpScale perPlayer false, 「保持固定血量」) keeps the fork's rule: bloodPoint up to 4 alive,
+  // × alive / 4 above
+  const fixed = new GameData({ ...RAW, config: { ...RAW.config, bossHpScale: { ...RAW.config.bossHpScale, perPlayer: false } } }, 'mode_multi_hard');
+  for (const n of [1, 4]) assert.equal(bossPoolHp(fixed, 'boss_1', n), 1800000);
+  assert.equal(bossPoolHp(fixed, 'boss_1', 6), 2700000);
 });
 
 test('Hidden Core threshold: 1200 for 1–4 summed players, 1200 × players / 4 for 5–8; solo 350', () => {
@@ -128,7 +132,7 @@ test('overtime drain: 1 LP per real second for 1–4 alive at the boss phase sta
 });
 
 for (const n of [5, 8]) {
-  test(`Final Assault with ${n} players: ${Math.ceil(n / 2)} boss fields (seat pairs, a lone last player on _s), pool × ${n}/4, overtime × ${n}/4 → defeat`, () => {
+  test(`Final Assault with ${n} players: ${Math.ceil(n / 2)} boss fields (seat pairs, a lone last player on _s), pool × ${n}, overtime × ${n}/4 → defeat`, () => {
     const h = makeMatch({ mode: 'coop', difficulty: 'FUNNY', humans: n, seed: 60 + n, fake: true, instant: false, script: (b) => (b.kind === 'boss' ? { bossDps: 1 } : {}) }).start();
     const m = h.m;
     const audit = attachAudit(m);
@@ -142,7 +146,7 @@ for (const n of [5, 8]) {
     assert.deepEqual(m.fields.map((f) => f.players), Array.from({ length: Math.ceil(n / 2) }, (_, i) => [`p_${2 * i}`, `p_${2 * i + 1}`].filter((id) => m.players.has(id))));
     for (const f of fields) assert.equal(/_s$/.test(f.opts.waveId), f.opts.players.length === 1, `${f.fieldId}: ${f.opts.waveId}`);
     const bp = m.gd.boss(m.bossId).bloodPoint.FUNNY;
-    assert.equal(m.bossPool.maxHp, Math.round((bp * n) / 4), 'leader pool × alive / 4');
+    assert.equal(m.bossPool.maxHp, bp * n, 'leader pool: bloodPoint per player alive, also past 4');
     assert.ok(fields.every((f) => f.sharedBoss === m.bossPool), 'one pool for every field');
     assert.ok(m.publicView().overtimeAt > 0);
     assert.equal(m.publicView().overtimeDrainPerSec, n / 4, 'm.public carries the scaled drain');
@@ -156,13 +160,13 @@ for (const n of [5, 8]) {
   });
 }
 
-test('Final Assault with 4 players: the official pool, 1 LP/s, no overtimeDrainPerSec in m.public', () => {
+test('Final Assault with 4 players: the 0.2.0 pool (bloodPoint × 4), 1 LP/s, no overtimeDrainPerSec in m.public', () => {
   const h = makeMatch({ mode: 'coop', difficulty: 'FUNNY', humans: 4, seed: 64, fake: true, instant: false, script: (b) => (b.kind === 'boss' ? { bossDps: 1 } : {}) }).start();
   const m = h.m;
   h.drive(() => m.phase === PHASE.PREP && m.round === 14);
   for (const p of m.players.values()) p.lp = 10;
   h.drive(() => m.phase === PHASE.FINAL_ASSAULT);
-  assert.equal(m.bossPool.maxHp, m.gd.boss(m.bossId).bloodPoint.FUNNY);
+  assert.equal(m.bossPool.maxHp, m.gd.boss(m.bossId).bloodPoint.FUNNY * 4);
   assert.ok(m.publicView().overtimeAt > 0);
   assert.ok(!('overtimeDrainPerSec' in m.publicView()));
   h.runToEnd();
@@ -170,7 +174,7 @@ test('Final Assault with 4 players: the official pool, 1 LP/s, no overtimeDrainP
   m.dispose();
 });
 
-test('Hidden Core with 6 players: Σ layers over 1200 but not over 1800 keeps it shut; over 1800 opens it (pool × 6/4)', () => {
+test('Hidden Core with 6 players: Σ layers over 1200 but not over 1800 keeps it shut; over 1800 opens it (pool × 6)', () => {
   for (const [per, open] of [[210, false], [320, true]]) {
     const h = makeMatch({ mode: 'coop', difficulty: 'NORMAL', humans: 2, bots: 4, seed: 52, fake: true, script: (b) => (b.kind === 'boss' || b.kind === 'hidden' ? { bossDps: 1e9 } : {}) }).start();
     const m = h.m;
@@ -191,7 +195,7 @@ test('Hidden Core with 6 players: Σ layers over 1200 but not over 1800 keeps it
     assert.equal(end.hiddenReached, open, `Σ ${m.hiddenLayerSum} vs 1800`);
     if (open) {
       const f = bossFields().find((b) => b.kind === 'hidden');
-      assert.equal(f.sharedBoss.maxHp, Math.round((m.gd.boss(m.hiddenBossId).bloodPoint.NORMAL * 6) / 4));
+      assert.equal(f.sharedBoss.maxHp, m.gd.boss(m.hiddenBossId).bloodPoint.NORMAL * 6);
     }
     assert.deepEqual(audit.violations, [], audit.violations.join('\n'));
     m.dispose();

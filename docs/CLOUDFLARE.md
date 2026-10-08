@@ -4,7 +4,7 @@
 
 当前唯一公开入口：[stronghold.lunar.ag](https://stronghold.lunar.ag)。`workers.dev` 和版本预览入口均关闭；目前未启用密码或 Cloudflare Access。
 
-适用场景：4–20 位朋友，分为多个游戏房间（每个同盟房间默认 4 个席位，和官方一样；房主可以在等待室扩到 8 个，5–8 人是本作的扩展，规则见 [玩法指南](PLAYING.md) 第 11 节）。网页、游戏代码和素材（美术、音频、字体）由 **Workers Static Assets** 提供；每个房间使用独立的 **SQLite Durable Object + WebSocket**，复用原有房间、经济、回合和战斗协议。玩家浏览器计算正常战斗，AI / 掉线玩家由服务端处理。玩家可以在「资源管理」在线下载全部素材、下载完整资源包 ZIP 或导入本地 ZIP，也可以按需加载（见下文「资源包」）。
+适用场景：4–20 位朋友，分为多个游戏房间（每个同盟房间默认 4 个席位，和官方一样；房主可以在等待室扩到 8 个，5–8 人是本作的扩展，规则见 [玩法指南](PLAYING.md) 第 12 节）。网页、游戏代码和素材（美术、音频、字体）由 **Workers Static Assets** 提供；每个房间使用独立的 **SQLite Durable Object + WebSocket**，复用原有房间、经济、回合和战斗协议。玩家浏览器计算正常战斗，AI / 掉线玩家由服务端处理。玩家可以在「资源管理」在线下载全部素材、下载完整资源包 ZIP 或导入本地 ZIP，也可以按需加载（见下文「资源包」）。
 
 ## 为什么这样分配
 
@@ -41,9 +41,9 @@ npm run deploy:worker
 
 这些命令使用 `npm ci` 按 `package-lock.json` 安装的项目内 Wrangler，使本地开发、配置校验与部署使用相同版本。更新 Wrangler 时，应更新锁文件并完成构建与测试后再部署。若已安装 Bun，也可在完成上述 `npm ci` 后运行 `bun run dev:worker` 和 `bun run deploy:worker`，同样调用项目内 Wrangler；Bun 是可选工具，不是部署前提。
 
-Wrangler 执行构建、上传本地静态文件，保留 `ROOMS`（房间），并通过追加迁移增加 `SITES`（身份/目录）、`ACCOUNTS`（个人索引）、`MATCH_ARCHIVES`（历史/回放）SQLite DO。按网络（IPv4 地址 / IPv6 /64）和账号的请求限流使用 Cloudflare 的 rate limiting 绑定（`wrangler.jsonc` 的 `ratelimits`，每分钟计数，不写存储）：每个 `/api` 请求和房间连接先按网络计数，再接触任何 DO（包括登录查询）；注册、登录和修改密码另按网络计数（`REGISTER_LIMIT`、`LOGIN_LIMIT`），登录和修改密码再按「用户名 + 网络」计数（`USERNAME_LIMIT`，别人的尝试不会用掉玩家自己的次数）；原来的 `ADMISSION` 限流 DO 由迁移 `v3-ratelimits` 删除（它只存短期计数）。快速匹配的队列是 `MATCHMAKER` DO（迁移 `v4-matchmaker`，单个实例，只在内存里排队，不写存储），页面在大厅通过 `POST /api/queue` 轮询，按网络另计 `QUEUE_LIMIT`，不占用 `API_LIMIT`（[DESIGN §28.2](DESIGN.md)）。限流绑定的 `namespace_id` 在同一 Cloudflare 账号内必须唯一。账号的两种登录方式（用户名密码，以及配置有效时的 GitHub）、管理员重置密码的凭据 `ACCOUNT_ADMIN_TOKEN` 与 `npm run accounts:reset-password`、迁移、独立备份见 [账号与历史指南](ACCOUNTS-HISTORY.md)。
+Wrangler 执行构建、上传本地静态文件，保留 `ROOMS`（房间），并通过追加迁移增加 `SITES`（身份/目录）、`ACCOUNTS`（个人索引）、`MATCH_ARCHIVES`（历史/回放）SQLite DO。按网络（IPv4 地址 / IPv6 /64）和账号的请求限流使用 Cloudflare 的 rate limiting 绑定（`wrangler.jsonc` 的 `ratelimits`，每分钟计数，不写存储）：每个 `/api` 请求和房间连接先按网络计数，再接触任何 DO（包括登录查询）；注册、登录和修改密码另按网络计数（`REGISTER_LIMIT`、`LOGIN_LIMIT`），登录和修改密码再按「用户名 + 网络」计数（`USERNAME_LIMIT`，别人的尝试不会用掉玩家自己的次数）；原来的 `ADMISSION` 限流 DO 由迁移 `v3-ratelimits` 删除（它只存短期计数）。快速匹配的队列是 `MATCHMAKER` DO（迁移 `v4-matchmaker`，单个实例，只在内存里排队，不写存储），页面在大厅通过 `POST /api/queue` 轮询，按网络另计 `QUEUE_LIMIT`，不占用 `API_LIMIT`（[DESIGN §F4.2](design/fork.md)）。限流绑定的 `namespace_id` 在同一 Cloudflare 账号内必须唯一。账号的两种登录方式（用户名密码，以及配置有效时的 GitHub）、管理员重置密码的凭据 `ACCOUNT_ADMIN_TOKEN` 与 `npm run accounts:reset-password`、迁移、独立备份见 [账号与历史指南](ACCOUNTS-HISTORY.md)。
 
-构建只发布 `dist/client/` 以及 `dist/worker/index.mjs`。前端保持 `/data/`、`/shared/`、`/sim/` 的既有路径；Node 文件系统数据读取由构建时 JSON 导入替换。`public/assets/`、`public/fonts/` 发布资源清单列出的全部文件，包括本机客户端提取的 `public/assets/local/`；`data/local-assets.json` 原样发布，游戏优先使用其中列出的本地提取素材（官方 3D 棋盘、模组图标、表情、指南等），清单缺少它列出的文件时构建失败；`public/dev/`、ZIP、日志、source map 和服务端私有数据读取模块不会发布。不要手动把整个仓库上传为静态站点。
+构建只发布 `dist/client/` 以及 `dist/worker/index.mjs`。前端保持 `/data/`、`/shared/`、`/sim/` 的既有路径；Node 文件系统数据读取由构建时 JSON 导入替换（`worker/data-loader.js`：服务器和模拟读取的数据文件，包括补位与自选编队用的 `data/backups.json`；`data/assets.json`、`data/emotes.json` 只给客户端，不进 Worker 和规则版本引擎）。内容加载器按路径动态导入的模块（`server/sim/content/index.js` 的 kit 注册表与各领域模块，`kits/index.js` 按 `KIT_FILES` / `STANDIN_KIT_FILES` / `OPERATOR_KIT_FILES` 逐个导入的 `kits/ops/*.js`，`bands.js`、`bonds.js` 的分块）由 `tools/build-worker.mjs` 换成字面导入，三份 kit 列表直接从 `kits/index.js` 读取：漏掉的模块在 Worker 里会悄悄退回通用 kit（`test/content/kit-registry.test.js` 检查）。语言包按静态文件发布：`public/i18n/<code>.json`（界面文字）、`data/i18n/<code>.json`（游戏文字）和 `/packs/index.json`（Node 服务器由 `server/packs.js` 实时回答，这里在构建时按同样内容写出，`packs/<id>/` 文件夹包清单所列的文件一并发布）；没有这个索引时语言菜单只有中文。`public/assets/`、`public/fonts/` 发布资源清单列出的全部文件，包括本机客户端提取的 `public/assets/local/`；`data/local-assets.json` 原样发布，游戏优先使用其中列出的本地提取素材（官方 3D 棋盘、模组图标、表情、指南等），清单缺少它列出的文件时构建失败；`public/dev/`、ZIP、日志、source map 和服务端私有数据读取模块不会发布。不要手动把整个仓库上传为静态站点。
 
 ## 资源包
 
@@ -69,11 +69,13 @@ Wrangler 执行构建、上传本地静态文件，保留 `ROOMS`（房间），
 
 登录后普通断网使用绑定账号的房间 token 重连，换设备可点击「继续对局」接管原席位。房间连接被拒绝或结束时，服务器以 WebSocket 关闭码说明原因（席位被接管 4001、登录失效 4003、房间不存在或已结束 4004、连接过多 1013 等），浏览器读不到被拒绝升级请求的 HTTP 状态，所以拒绝也先接受连接再关闭；完整列表见 `worker/close-codes.js`。每个房间的连接数按它的席位数计算：每个玩家席位加 1 个（重连时新旧连接重叠）留给房间成员，其余 11 个连接给观战者等房间外的账号（同一网络最多 3 个）；所以 4 席的房间最多 16 个连接、同一网络 8 个（与以前相同），8 席的房间 20 个、同一网络 12 个。部署前保存的房间按 4 席恢复。登录只在建立连接时由 Worker 验证；之后房间在后台每分钟向账号目录确认一次（退出登录最迟约一分钟后以 4003 断开），会话到期则在下一条消息时断开，游戏消息从不等待账号目录。等候房间、玩家席位、审批和活动对局日志持久化，支持 DO 休眠/重启后恢复。房间代码 / token 不与其他房间共用。
 
+补位（干员持有，`room.ownership`）和自选编队（`room.diy`）与 Node 服务器相同（[DESIGN §25.3 / §25.4](history/0.2.0.md)，取代了 fork 的外援 / 甄选，见 [DESIGN §F3](design/fork.md)）：房间运行时把大厅的 `welcome.diyKitted`（可上场的自选干员）带给每个连接；页面在菜单里还没有连上房间，构建把同一份列表（kit 注册表的 `KITTED_CHARS`）写进页面的 `data-sp-diy-kitted`，大厅的干员调配在进房前就能挑选。进房后页面在 `welcome` 之后发送 `room.ownership` 和 `room.diy`，服务器存到会话和席位上，开局时交给对局（`seats[].notOwned` / `seats[].diy`，随对局记录保存，恢复时取记录里的值）；对局进行中再发只对下一局生效（`ROOM_STARTED`）。账号偏好同步的是 `diy` 和 `ownership`（`public/js/preferenceSchema.js`，`POST /api/me/preferences`）；账号里旧的 `waiguan` 值读取时不再返回，下一次保存时从存储中删除。Worker 模式下页面在 `room.create` 时才连上房间，这两项在随后的 `welcome` 之后约 50 ms 发出：在此之前到达的 `room.start` 开的对局不带它们。
+
 进行中的对局通过原版本规则及完整有序日志恢复；构建会保留旧规则引擎。无法恢复的对局按中断结束并释放席位（见 [持久状态说明](persistence-fields.md)）：在 Cloudflare 上回滚到更早的部署会中断所有在新规则版本上进行的对局（玩家看到「服务器版本已回退」），修复问题应提交回退改动重新部署（前滚）。Worker 只有账号模式（房间都属于账号，对局都有日志）；Node 本地模式保持原匿名流程。部署会断开所有 WebSocket，客户端自动重连。恢复成本随对局长度增长，长时间对局、AI 计算、回放体积和 DO 请求 / 存储写入仍受 Cloudflare 配额限制，具体边界见 [规则版本与容量边界](ACCOUNTS-HISTORY.md#规则版本与容量边界)。PITR 不能代替独立备份。
 
 ## 公开对局观战
 
-公开同盟房开局后，登录玩家可在主界面在线大厅点击「进入观战」，无需房主审批，也不占玩家席位。观战者看到玩家（包括已淘汰的队友）观看战场时看到的内容：对局的公开画面、所选战场的战斗（浏览器按对局的规则版本模拟），准备阶段为所选玩家的阵地；看不到任何玩家的手牌、商店等私有信息，也不能操作。观战者的界面提示与 Node 服务器的观战席相同（「观战中 · 点击左侧成员头像切换查看」；作战中显示正在观看的博士「👁 名字」），没有表情和准备按钮。观战人数在有人观战时显示给玩家，观战者自己总能看到人数和「退出观战」。私密房、独立模拟和未开局房间不开放此入口。Node 本地模式没有这个入口，改为在大厅凭同盟密钥进入观战席（每个同盟最多 2 名，见 [玩法说明](PLAYING.md) §8）；Cloudflare 部署的大厅不显示观战席的「观战」按钮。
+公开同盟房开局后，登录玩家可在主界面在线大厅点击「进入观战」，无需房主审批，也不占玩家席位。观战者看到玩家（包括已淘汰的队友）观看战场时看到的内容：对局的公开画面、所选战场的战斗（浏览器按对局的规则版本模拟），准备阶段为所选玩家的阵地；看不到任何玩家的手牌、商店等私有信息，也不能操作。观战者的界面提示与 Node 服务器的观战席相同（「观战中 · 点击左侧成员头像切换查看」；作战中显示正在观看的博士「👁 名字」），没有表情和准备按钮。观战者选过的玩家在阶段切换后继续被跟随（上游 0.2.0 第 56 项）：所看的战场在新阶段不存在时（联防、首领战之后），转到该玩家的阵地或战场；没选过玩家、或所选玩家已出局时，照旧显示第一个战场或第一名在场玩家的阵地。观战人数在有人观战时显示给玩家，观战者自己总能看到人数和「退出观战」。私密房、独立模拟和未开局房间不开放此入口。Node 本地模式没有这个入口，改为在大厅凭同盟密钥进入观战席（每个同盟最多 2 名，见 [玩法说明](PLAYING.md) §8）；Cloudflare 部署的大厅不显示观战席的「观战」按钮。
 
 对局结束时观战者与玩家一样收到结算（先 `room.closed {ended}`，再是最终画面与结算），随后连接关闭（4004），闲置的观战页不会占用下一局的观战名额；掉线的观战者下次连接时收到同样的结束通知，不会进入下一局。观战者的 hello / room.spectate 只回复其本人，观战人数的变化合并后最多每秒向房间广播一次。观战身份与玩家、战斗结果和历史记录分离，不进入对局日志；保留的旧版本恢复引擎恢复的对局同样可以观战。
 

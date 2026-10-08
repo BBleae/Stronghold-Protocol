@@ -1,4 +1,4 @@
-// Browser E2E of 匹配 (matchmaking queue, a remake feature; DESIGN §28) against the real server, headless Chrome.
+// Browser E2E of 匹配 (matchmaking queue, a remake feature; DESIGN §F4) against the real server, headless Chrome.
 // Opt-in: SP_E2E=1 node --test test/ui/matchmaking.e2e.test.js
 //
 // Desktop: lobby → 快速匹配 → the queue panel appears and counts up (`queue.status`) → the server forms a room

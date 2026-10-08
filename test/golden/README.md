@@ -7,7 +7,7 @@ through.
 
 - `tools/golden.mjs` builds the corpus from `data/*.json` (fixed order, fixed seeds) and reduces every scenario to a
   digest. Its header documents the families and the digest fields.
-- `test/golden/<family>.json` hold the digests (`roster`, `bonds`, `fields`, `matches`).
+- `test/golden/<family>.json` hold the digests (`roster`, `bonds`, `fields`, `matches`, `standins`, `diy`).
 - `test/golden.test.js` recomputes them and compares. On a mismatch it prints the scenario, the field and old → new.
 
 ## The corpus
@@ -16,8 +16,10 @@ through.
 |---|---|
 | `roster` | 49 battles: every visible chess record (normal and elite) with every selectable skill and module (DESIGN §16), 12 operators per battle on a real stage (all 11 in turn) against the round's real wave three times over, every non-leader enemy kind of `data/enemies.json` as extra spawns (half of them bounties), placeable summons on the board, every equipment item, band, battle-side 机变 card and stage map card in turn, bonds from the board |
 | `bonds` | 46 battles: every bond at its activation threshold (1 layer) and at its top tier (999 layers) |
-| `fields` | 22 battles: every Final Assault / Hidden Core leader on a pair and a solo template (shared pool, 200 s cap) and the 联防 field with 1 and 2 helpers (carried HP / SP, a knocked-out operator, two leakers' enemies) |
-| `matches` | 16 bot-only matches to the end in virtual time: solo 标准 / 险境 / 绝境 / 终极 × 2 seeds, co-op 2 / 3 / 4, one server-run combat match, two runs boosted to the Hidden Core |
+| `fields` | 22 battles: every Final Assault / Hidden Core leader on a pair and a solo template (shared pool, 200 s cap) and the 联防 field with 1 and 2 helpers on the round's stage, both halves (carried HP / SP, a knocked-out operator, two leakers' enemies) |
+| `matches` | 18 matches to the end in virtual time: 16 bot-only (solo 标准 / 险境 / 绝境 / 终极 × 2 seeds, co-op 2 / 3 / 4, one server-run combat match, two runs boosted to the Hidden Core), one co-op match whose human seat (AI 托管, offline) does not own 9 NORMAL chess — they fight as their 补位 stand-ins (its digest lists them per round, `standIns`) — and one whose human seat slots 自选 picks (推进之王 and prototypes) with its 调度中心 at level 5 from the first prep: its own shop draws them and its AI fields 推进之王 (its digest lists per round the 自选 shop draws and the fielded pieces, `diy`) |
+| `standins` | 10 battles: every NORMAL chess record (normal and elite, 110) fielded as its 补位 stand-in (`standIn: true`: the stand-in's body, backup skill / module and kit — all 17 stand-ins, every skill a chess names for them), 12 per battle by strength band, laid out by the stand-in's position on a real stage, against the round's real wave three times over plus 8 ground enemy kinds (melee stand-ins always meet an enemy), an item each, bonds from the board |
+| `diy` | battles of 自选 pieces (a DIY slot with its `diy` pick, `shared/diy.js`): every owned 6★ with an operator kit (`kits/index.js OPERATOR_KITS`) in each form of tiers 5 and 6 (normal; elite with no module and with each module) under each skill, then every prototype pick with a kit at its locked selection, normal and elite, 12 per battle against the round's real wave; a new operator kit adds its scenarios (the battle count grows with the kits) |
 
 Battles go through the production BattleSpec path (`server/sim/spec.js`, as browsers and the server's headless fields
 run them); matches construct `Match` directly with a `VirtualScheduler`. Every option is explicit, so a change to a
@@ -29,7 +31,8 @@ within a tick (they are counted, not hashed) and wall-clock time. Damage / heali
 to 2 decimals.
 
 `npm test` runs the fast subset (the scenarios marked `"fast": true`: every chess record with its default loadout,
-every stage and every non-leader enemy kind, every bond at its top tier, six fields, five matches — 53 of the 133). `GOLDEN_FULL=1` checks everything.
+every stage and every non-leader enemy kind, every bond at its top tier, six fields, seven matches, the five stand-in
+battles of the normal records, the first 自选 battle of the operator kits and of the prototypes — 62 of the 151). `GOLDEN_FULL=1` checks everything.
 
 ## Workflow
 
@@ -59,28 +62,17 @@ node tools/golden.mjs --twice                   # determinism: the corpus twice 
 ## This fork
 
 The digests in this directory are the fork's own (BBleae/Stronghold-Protocol), regenerated after merging upstream
-0.1.4 and then fork PRs #15–#20. They differ from upstream's files in two ways, and in no other:
+0.2.1 (2026-10-08). They differ from upstream's files in one way, and in no other:
 
 - **Client effect counts** (`events.fx` and the `fx` kinds) of 31 scenarios (roster 13, bonds 5, fields 13): the fork's
   sim sends extra cosmetic effect events and parameters (fork commit 6d5c094, PR #5 — `snowTiles`, `motes`, the
   同盟支援 `link`, `shell` → `helmShell`, `beam` → `sentryRecall`). Every gameplay field of the roster, bonds and
-  fields families (units, enemies, players, hooks, `rngDraws`, `snaps`) equals upstream's.
-- **15 of the 16 matches** — all but `solo-FUNNY-1` — because the bots bring 外援 / 甄选 picks (DESIGN §27): since
-  fork PR #17 every bot seat brings its own picks (`botWaiguanPicks` in `server/match/Match.js`; all bots of a match
-  pick alike), and since PR #19's 524fb56 (2026-10-07) those picks are really in play: every player's picks are pool
-  entries of its own (`SharedPool.owned`, keyed by owner — each bot now holds its 4 entries, where only the first bot's
-  were accepted before), its shop, rewards and effect draws offer them (`Match.rollPool`, `choices.js`,
-  `effectsMeta.js` with the player id), and the bot heuristics (`server/match/bot.js` `refreshValue`,
-  `bondPoolStats`) and `Match.bondInPool` count the shared pool plus the player's own picks only. So the bots refresh,
-  buy and field their bonds differently: different `rng.shop` / `rng.bots` / `rng.meta` counts, boards and bond
-  layers; `solo-HARD-2` ends in an elimination in round 11 instead of a victory, `coop2-NORMAL-8-serverrun` in a
-  victory instead of both seats' elimination in round 13, and in `coop4-FUNNY-6` a bot fields a 甄选 chess (`ai_2`'s
-  阿, tier V from round 11, tier VI from round 12). With `data/waiguan.json` left out of the data all 16 matches equal
-  upstream's again (checked on 2026-10-07 against upstream 9f93096's `matches.json`).
+  fields families (units, enemies, players, hooks, `rngDraws`, `snaps`) equals upstream's, and the `matches`,
+  `standins` and `diy` families equal upstream's entirely (checked on 2026-10-08 against upstream c2a2ef7). The
+  fork's 外援 / 甄选 picks, which moved 15 of the matches until then (DESIGN §F3), were retired in favour of upstream's
+  自选编队; the bots bring no 自选 picks, as upstream's.
 
 After each merge, run `npm run golden:update` and compare with upstream's files (`git show
-<upstream commit>:test/golden/<family>.json`): in the roster, bonds and fields families a moved value outside
-`events.fx` / `fx` is a merge bug unless a fork change explains it — check by rerunning the moved scenarios with that
-change left out, then record the cause here. For the matches, rerun the family in a copy of the tree without
-`data/waiguan.json` and with upstream's `matches.json` in place (`node tools/golden.mjs --family matches`): all 16 must
-match; one that does not is a merge bug unless a fork change explains it.
+<upstream commit>:test/golden/<family>.json`): a moved value outside `events.fx` / `fx` in the roster, bonds and
+fields families, or any moved value in the other families, is a merge bug unless a fork change explains it — check by
+rerunning the moved scenarios with that change left out, then record the cause here.

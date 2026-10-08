@@ -9,6 +9,7 @@
 import { useEffect, useReducer } from '../../vendor/hooks.module.js';
 import { html, Button, alertDialog } from './components.js';
 import { detectFeatures } from './device.js';
+import { t } from '../../../shared/i18n.js';
 
 let deferred = null;       // the beforeinstallprompt event, until it is used
 let installed = false;     // appinstalled fired in this page
@@ -48,23 +49,24 @@ function currentMode() {
 }
 
 const steps = (...items) => html`<ol class="install-steps">${items.map((s, i) => html`<li key=${i}>${s}</li>`)}</ol>`;
-const AFTER = html`<p class="modal__text">之后从图标打开，就是全屏的应用，不再有浏览器的地址栏。</p>`;
+// the texts are getters: read when the dialog opens, in the language of that moment (docs/I18N.md)
+const after = () => html`<p class="modal__text">${t('之后从图标打开，就是全屏的应用，不再有浏览器的地址栏。')}</p>`;
 export const INSTALL_HELP = Object.freeze({
   ios: {
-    title: '添加到主屏幕',
-    text: html`${steps('点浏览器的「分享」按钮（Safari 在底部工具栏，iPad 在右上角）', '在列表里选「添加到主屏幕」', '点「添加」')}${AFTER}`,
+    get title() { return t('添加到主屏幕'); },
+    get text() { return html`${steps(t('点浏览器的「分享」按钮（Safari 在底部工具栏，iPad 在右上角）'), t('在列表里选「添加到主屏幕」'), t('点「添加」'))}${after()}`; },
   },
   'mac-safari': {
-    title: '添加到程序坞',
-    text: html`${steps('点菜单栏的「文件」', '选「添加到程序坞」')}<p class="modal__text">之后从程序坞或启动台打开，就是独立的应用窗口。</p>`,
+    get title() { return t('添加到程序坞'); },
+    get text() { return html`${steps(t('点菜单栏的「文件」'), t('选「添加到程序坞」'))}<p class="modal__text">${t('之后从程序坞或启动台打开，就是独立的应用窗口。')}</p>`; },
   },
   android: {
-    title: '安装到桌面',
-    text: html`${steps('点浏览器右上角的菜单（⋮ 或 ≡）', '选「安装应用」或「添加到主屏幕」')}${AFTER}`,
+    get title() { return t('安装到桌面'); },
+    get text() { return html`${steps(t('点浏览器右上角的菜单（⋮ 或 ≡）'), t('选「安装应用」或「添加到主屏幕」'))}${after()}`; },
   },
   inapp: {
-    title: '请先用浏览器打开',
-    text: html`<p class="modal__text">微信、QQ 等应用里打开的页面不能安装。请点右上角的「…」，选「在浏览器打开」，再在浏览器里点「安装」。</p>`,
+    get title() { return t('请先用浏览器打开'); },
+    get text() { return html`<p class="modal__text">${t('微信、QQ 等应用里打开的页面不能安装。请点右上角的「…」，选「在浏览器打开」，再在浏览器里点「安装」。')}</p>`; },
   },
 });
 
@@ -88,8 +90,8 @@ export function InstallButton({ class: cls, size = 'sm', variant = 'ghost' }) {
       return;
     }
     const help = INSTALL_HELP[mode];
-    if (help) await alertDialog({ title: help.title, micro: 'INSTALL', text: help.text, okText: '知道了' });
+    if (help) await alertDialog({ title: help.title, micro: 'INSTALL', text: help.text, okText: t('知道了') });
   };
   return html`<${Button} id="install-app" class=${cls} size=${size} variant=${variant} icon="download"
-    onClick=${onClick} title="把游戏安装到桌面或主屏幕，像应用一样打开">安装<//>`;
+    onClick=${onClick} title=${t('把游戏安装到桌面或主屏幕，像应用一样打开')}>${t('安装')}<//>`;
 }

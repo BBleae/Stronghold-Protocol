@@ -2,7 +2,7 @@
 // blocking, long-press = detail, fullscreen), ui/compat.js polyfills, the HUD 🔍 buttons (hud.js checkButtons), the
 // enemy preview pen helpers (gameLogic penPlacement / previewEnemyKey), the connection-banner class, the audio unlock on
 // iOS-like contexts, and the name normalization's lone-surrogate scan (names.js; no regex lookbehind: a SyntaxError in
-// Safari < 16.4). Phone audit 2026-10-06 (DESIGN §26.6): the screen wake lock, the 全屏并横屏 button of the rotate hint,
+// Safari < 16.4). Phone audit 2026-10-06 (DESIGN §F2.6): the screen wake lock, the 全屏并横屏 button of the rotate hint,
 // isPhone and the graphics default.
 
 import { test, describe } from 'node:test';

@@ -1,6 +1,6 @@
 // Full co-op match with 8 seats (the largest room — a remake extension: the official mode stops at 4) — the REAL
 // simulation, client-side combat, 2 humans on "AI 托管" + 6 AI teammates (a timed match: the 20 s strategy turns of a
-// room above 4 seats), to RESULT with zero errors, and the 5–8-player rules (DESIGN §24) checked on what the match did
+// room above 4 seats), to RESULT with zero errors, and the 5–8-player rules (DESIGN §F1) checked on what the match did
 // (fullmatchLarge.js): 10 机变 cards, several 联防 fields, four Final Assault pair fields on a doubled pool.
 // min(MATCH_SEEDS, 6) seeds, so the full suite grows little; split from the 5-seat file so node --test runs the two in
 // parallel.

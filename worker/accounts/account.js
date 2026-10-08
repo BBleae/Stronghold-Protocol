@@ -1,9 +1,20 @@
 import { DurableObject } from 'cloudflare:workers';
 import { requireId, AccountError, isAccountError, displayName } from '../../shared/account-protocol.js';
 import { aggregateStats } from '../../shared/history.js';
-import { validatePreferencePatch } from '../../public/js/preferenceSchema.js';
+import { PREFERENCE_KEYS, validatePreferencePatch } from '../../public/js/preferenceSchema.js';
 import { directoryOf } from './auth.js';
 import { githubNickname } from './names.js';
+
+/**
+ * Stored preferences without the keys that are no preference any more (PREFERENCE_KEYS): an account saved before the
+ * 自选编队 replaced the 外援 picks still holds 'waiguan' (DESIGN §F3). Reads leave such a key out, and the next save
+ * writes the preferences without it; the values of the current keys are kept as stored.
+ * @param {Record<string, unknown> | null | undefined} value
+ */
+export function withoutRetiredKeys(value) {
+  if (value == null) return null;
+  return Object.fromEntries(Object.entries(value).filter(([key]) => PREFERENCE_KEYS.includes(key)));
+}
 
 /**
  * One account: its profile, preferences, seat, join application and match history.
@@ -159,12 +170,12 @@ export class AccountDurableObject extends DurableObject {
   }
 
   async getPreferences() {
-    return (await this.ctx.storage.get('preferences')) ?? null;
+    return withoutRetiredKeys((await this.ctx.storage.get('preferences')) ?? null);
   }
   async savePreferences(patch, initialize = false) {
     validatePreferencePatch(patch);
     return this.ctx.storage.transaction(async (tx) => {
-      const current = await tx.get('preferences');
+      const current = withoutRetiredKeys(await tx.get('preferences'));
       // First-login migration is atomic: a stale device never replaces an existing account profile.
       if (initialize && current != null) return current;
       const next = { ...current, ...patch };

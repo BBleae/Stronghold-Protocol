@@ -204,7 +204,7 @@ describe('skills', () => {
 
   test('a looping base clip already playing is not restarted (Idle@x → Idle@0 was a pop)', () => {
     // a skill whose clip is the attack clip plays nothing of its own when it starts (a lone skill clip of its own plays
-    // once since upstream #160, DESIGN §25.1), so the idle simply runs on
+    // once since upstream #160, DESIGN §24.1), so the idle simply runs on
     const entry = { anims: { idle: 'Idle', attack: { begin: null, loop: 'Attack', end: null }, skill: { begin: null, loop: 'Attack', end: null } },
       animations: { Idle: 2, Attack: 1 }, hits: { Attack: [0.4] } };
     const a = actor(entry);
