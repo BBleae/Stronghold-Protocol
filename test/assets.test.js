@@ -614,11 +614,12 @@ describe('自选 picks: voice and the summons\' skin models', () => {
     const none = buildPlan({ assets07: {}, ops03: {}, enemies05: {}, maps05: {}, audio: indexAudio({}), modelsData: {},
       extraTokenIds: ['token_10002_kalts_mon3tr'], tokenSkinSpines: {} });
     assert.equal(none.template.tokens.token_10002_kalts_mon3tr.spineVariant, 'token_10002_kalts_mon3tr', 'the table is the only source');
-    // the table: 24 summons of the 自选 picks (data/backups.json tokens), each a skin of the token itself; the committed
+    // the table: 25 summons of the 自选 picks (data/backups.json tokens) — 艾拉's 雷暴 mine, a collab pick of the fork, the
+    // 25th —, each a skin of the token itself; the committed
     // manifest carries each as the token's web `spine` (when its files were downloaded)
     const backups = readJson('data/backups.json');
     const manifest = readJson('data/assets.json');
-    assert.equal(Object.keys(TOKEN_SKIN_SPINES).length, 24);
+    assert.equal(Object.keys(TOKEN_SKIN_SPINES).length, 25);
     for (const [id, v] of Object.entries(TOKEN_SKIN_SPINES)) {
       assert.ok(v.startsWith(`${id}_`), id);
       assert.ok(backups.tokens[id], `${id}: a 自选 summon`);
@@ -951,7 +952,7 @@ describe('operator voice lines (tools/assets/voice.mjs)', () => {
     const backups = readJson('data/backups.json');
     const picks = backups.diy.ownedPool;
     const reserve = Object.keys(backups.units).filter((id) => !picks.includes(id));
-    assert.equal(picks.length, 71);
+    assert.equal(picks.length, 78, 'the 7 collab picks of the fork included (tools/build-data.mjs FORK_INCLUDE_COLLAB_PICKS)');
     assert.equal(reserve.length, 17);
     for (const id of reserve) assert.match(id, /^char_6\d\d_/, `${id}: a unit outside the picks is a 原型干员`);
     for (const [lang, per] of Object.entries(v)) {

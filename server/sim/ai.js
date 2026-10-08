@@ -219,7 +219,7 @@ export function performAttack(b, u, prof, targets, opts = null) {
       resolveHit(b, u, prof, t, info, t.x, t.y);
     }
   }
-  if (b._hooks.attack) b.emit('attack', { attacker: u, targets, isSkill });
+  if (b._hooks.attack) b.emit('attack', { attacker: u, targets, isSkill, attackId });
   if (u.skill) u.skill.onAttackPerformed(targets, isSkill, !!(opts && opts.noAmmo));
   if (prof.afterAttack) b._safe(() => prof.afterAttack(b, u, targets), 'profile.afterAttack', u);
 }
@@ -853,7 +853,7 @@ function enemyAttack(b, e, prevCd) {
       b.addProjectile({ from: e, target: t, speed: PROJECTILE_SPEEDS.enemy, visual: 'enemy', source: e, onHit: (c) => hit(c.target, true) });
     } else hit(t);
   }
-  if (b._hooks.attack) b.emit('attack', { attacker: e, targets, isSkill: false });
+  if (b._hooks.attack) b.emit('attack', { attacker: e, targets, isSkill: false, attackId });
   e.atkCd = e.s.interval;
   // stands for the rest of its attack clip (attackStand; the wind-up was stood before the strike) — every enemy, blocked
   // or not: PRTS 状态机, an enemy's ATTACK / COMBAT state "攻击结束后回退到MOVE状态" and checks only 异常状态 every frame

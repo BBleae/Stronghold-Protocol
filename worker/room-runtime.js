@@ -79,6 +79,14 @@ class RoomNetwork extends Network {
 class AlarmLobby extends Lobby {
   // The platform's one alarm handles every lobby grace deadline; no idle JS timer prevents hibernation.
   deadlines = new Map();
+  // 在线人数 (worker/presence.js): the site-wide counters as the room's last report to the presence board answered them
+  // (null until it answered). A room holds only its own sockets, so the base class's count of them never goes out: the
+  // `presence` frames (a hello's, and the push when they changed) carry these, and only once they are known. They go out
+  // when the board answers (RoomRuntime.showPresence), never on a clock: no timer keeps the room from hibernating.
+  sitePresence = null;
+  get presenceOn() { return !!this.sitePresence; }
+  presence() { return this.sitePresence; }
+  startPresenceClock() {}
   startGrace(room, seat) { this.deadlines.set(seat.playerId, this.now() + this.opts.lobbyGraceMs); }
   clearGrace(playerId) { this.deadlines.delete(playerId); }
   resync(session, coalesce) {
@@ -581,6 +589,23 @@ export class RoomRuntime {
     const match = this.lobby.getRoom(this.code)?.match;
     const due = [match?.recording ? match.sched.nextAt() : null, this.spectators.presenceDue()].filter((at) => at != null);
     return due.length ? Math.min(...due) : null;
+  }
+
+  /**
+   * 在线人数: what this room reports to the presence board (worker/presence.js) — `online`: its open sockets (members,
+   * spectators, sockets still awaiting their hello); `inRoom`: its humans holding a seat (a dropped one too, while the
+   * seat is kept) plus its spectators, as the Node server counts them (Lobby.presence).
+   * @returns {{ online: number, inRoom: number }}
+   */
+  presenceCounts() {
+    const { humans, spectators } = this.lobby.stats();
+    return { online: this.network.connectionCount, inRoom: humans + spectators + this.spectators.count };
+  }
+
+  /** The board's site-wide counters: the room's sessions get them (`presence`) when they changed. */
+  showPresence(totals) {
+    this.lobby.sitePresence = { online: totals.online, inRoom: totals.inRoom };
+    this.lobby.broadcastPresence?.();
   }
 
   /** Someone (a member or a spectator) is connected. */

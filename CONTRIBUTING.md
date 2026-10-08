@@ -92,7 +92,7 @@ SIM_E2E=1 node --test 'test/sim/*.browser.test.js'               # 浏览器里�
    跑 `node --test test/content/kits_layout.test.js`，再 `npm run golden:update`（只应新增 `test/golden/diy.json` 的场景）。
 5. PR 里逐项勾选 README 里的「Fidelity checklist」。
 
-目前池子里的 71 名干员都已经有 kit；改进现有的 kit 也按同样的清单来。相关讨论见 GitHub issue #136。
+目前池子里的 78 名干员都已经有 kit（上游 71 名，本 fork 另有 7 名联动干员，见 docs/design/fork.md §F6）；改进现有的 kit 也按同样的清单来。相关讨论见 GitHub issue #136。
 
 ---
 
@@ -122,4 +122,4 @@ SIM_E2E=1 node --test 'test/sim/*.browser.test.js'               # 浏览器里�
 - **Adding an operator (自选)**: follow "How to add an operator (自选)" in
   [server/sim/content/kits/README.md](server/sim/content/kits/README.md): `op-<codename>.js` keyed by the charId,
   registered in `OPERATOR_KIT_FILES`, a test `test/content/op_<codename>.test.js`, the fidelity checklist in the pull
-  request. All 71 operators of the current pool have kits; improvements follow the same checklist (GitHub issue #136).
+  request. All 78 operators of the current pool have kits (upstream 71, plus this fork's 7 collab picks, docs/design/fork.md §F6); improvements follow the same checklist (GitHub issue #136).

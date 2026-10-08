@@ -5,7 +5,7 @@
 // The design document (0.2.0 split): docs/DESIGN.md is the index, every `## N.` section sits exactly once in
 // docs/design/ (the current rules) or docs/history/ (the per-release revisions), the index names each file with its
 // sections, and every "DESIGN §N" / "DESIGN §N.M" cited anywhere in the repository is a heading of it. This fork's own
-// sections are `## F1.` … in docs/design/fork.md (DESIGN §F1–§F4, outside upstream's numbering); a "DESIGN §F1.2" cited
+// sections are `## F1.` … in docs/design/fork.md (DESIGN §F1–§F6, outside upstream's numbering); a "DESIGN §F1.2" cited
 // anywhere is a heading of that file.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

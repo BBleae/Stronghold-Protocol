@@ -96,7 +96,7 @@ Base stats (from data): `maxHp, atk, def, res` (0–100), `aspd` (100 base), `ba
 | `deploy` | `{ unit, initial }` | ops/tokens/enemies spawn |
 | `tick` | `{ dt }` | every tick after movement & attacks |
 | `beforeAttack` | `{ attacker, targets }` | may modify `targets` |
-| `attack` | `{ attacker, targets, isSkill }` | an attack was performed |
+| `attack` | `{ attacker, targets, isSkill, attackId }` | an attack was performed (`attackId`: its damage instances' DamageInfo `attackId`) |
 | `hit` | `{ source, target, dmg }` | before mitigation; mutate `dmg` (DamageInfo) |
 | `damaged` | `{ source, target, amount, type, dmg }` | after application |
 | `heal` | `{ source, target, amount }` | before application (mutable amount) |

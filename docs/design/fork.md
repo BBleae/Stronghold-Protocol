@@ -1,7 +1,7 @@
-# DESIGN §F1, §F2, §F3, §F4 — This fork's own sections (BBleae/Stronghold-Protocol)
+# DESIGN §F1, §F2, §F3, §F4, §F5, §F6 — This fork's own sections (BBleae/Stronghold-Protocol)
 
 Part of [DESIGN.md](../DESIGN.md) (the index). Upstream's section numbers are global and stay as upstream gives them;
-this fork's own sections have fork ids, §F1 … §F4, so they never take a number upstream gives a later release. Code,
+this fork's own sections have fork ids, §F1 … §F6, so they never take a number upstream gives a later release. Code,
 tests and the other documents cite them as "DESIGN §F1.4" and so on.
 
 **Ids before 2026-10-08.** Until the merge of upstream 0.2.1 the fork numbered these sections inside the global sequence
@@ -192,6 +192,9 @@ Decorations make room:
 
 ## F3. 外援 / 甄选 (DIY) slots — retired on 2026-10-08 (history only)
 
+> The same day the maintainer brought the 7 collab 6★ that upstream leaves out of 自选编队 back as 自选 picks (78 owned
+> picks, not upstream's 71): §F6. The comparison below states upstream's numbers.
+
 **Retired.** On 2026-10-08, merging upstream 0.2.1, the maintainer decided that upstream's 自选编队 (§25.4, upstream
 0.2.0: `room.diy`, `shared/diy.js`, data/backups.json `diy`, `server/match/player/diy.js`, `screens/diy.js`,
 `kits/ops/op-*.js`) replaces this section's 外援 / 甄选: one implementation of the official four DIY slots, not two.
@@ -295,3 +298,162 @@ migration `v4-matchmaker` in `wrangler.jsonc`), reached over the account API; th
 | Admission | The host's page approves the join applications of **its group's accounts only** (`QUEUE_APPROVE_MS`, 60 s); a stranger's application waits for the host as always. Nothing in the queue seats, approves or creates anything: every room write is one of the players' own requests, with its usual checks |
 | Readiness and start | A matched member says `room.ready` itself once inside (the Node server marks it; a failed try is repeated once the room is online again). It waits until that room's `room.ownership` / `room.diy` have their replies (`loadoutSync.js roomPrefsSettled`): a room Worker is a new session that sends them ~50 ms after its `welcome`, and the match takes them from the seat at `room.start`. The host's `screens/room.js` sequence first waits (≤ 30 s) until the `expect`ed humans are in — their seats must not go to AI teammates first — then fills the free seats and starts once the others are ready |
 | Tests | `test/worker/matchmaker.test.js` (MatchQueue rules, the Durable Object's answers), `test/worker/matchmaking.test.js` (workerd: queue → host opens and reports → the member is approved in), `test/worker-client.test.js` (the page: polling, leaving, host / member hand-over, approvals of the group only, a cancel while the host opens its room, entering another way, errors) |
+
+---
+
+## F5. 在线人数 (presence counters) — a remake addition, ported from Jerryzhu1234510's fork
+
+**Source and decision.** Ported from Jerryzhu1234510/Stronghold-Protocol, branch `v0.1.4-jerry`, commit 4f4e848f (its
+`public/js/ui/presence.js`, `server/lobby.js presence()` / `broadcastPresence` / `presenceTickMs`, the `/healthz`
+counters, `shared/protocol.js 'presence'`, the title footer and lobby top bar readout, `test/presence.test.js`,
+`test/ui/presence.test.js`, `test/ui/presence.e2e.test.js`), on the maintainer's decision of 2026-10-08, onto today's
+layout (`server/http/*` instead of `server/index.js`, every text through `t()`) and onto the Cloudflare Worker. The
+official mode has no such readout.
+
+**What the player sees.** The title footer (beside the version) and the lobby top bar show 「在线 N 人 · 房间内 M 人」
+(EN "N online · M in rooms"; the four language packs): `online` = the pages with the game open, `inRoom` = the humans
+holding a seat plus the spectators. A number not known yet, or a failed read, shows as —. On a phone the readout keeps a
+10 px floor and ellipsises when the bar is short (`css/components.css`, `css/screens/title.css`); in the title footer it
+keeps to the side of the centred account card and wraps above the version where both do not fit on one line (the
+Cloudflare site's sign-in page at 640×360 in Japanese ran it under the card).
+
+### F5.1 The Node server — `server/lobby.js`, `server/http/websocket.js` / `routes.js` / `config.js`, `shared/protocol.js`
+
+| Piece | Rule |
+|---|---|
+| Counting | `Lobby.presence()`: `online` = the live sockets (`network.connectionCount`, passed as the lazy `sockets` option by `createSessionStack`: a title-screen socket that has not said hello counts), `inRoom` = `stats().humans + stats().spectators` |
+| Frames | `presence { online, inRoom }` (S→C, `shared/protocol.js`): one right after every `welcome` (`onHello` → `sendPresence`), then the clock (`presenceTickMs`, default 5000, unref'd; `0` = the hello frame only) pushes to every connected session **whose last numbers differ** (`broadcastPresence`; `session.presenceSent`): never the same numbers twice, and a hello that caught a passing count (a reload's socket gap) or a congested socket that skipped a push (droppable) is corrected at the next tick. `shutdown` stops the clock |
+| Who sends | Only a lobby that counts presence (`presenceOn`: given `sockets`). A bare lobby (unit tests) sends nothing and starts no timer |
+| `/healthz` | Carries `online` / `inRoom` (`healthReport`): the path of a page without a session |
+| Options | `presenceTickMs` is a lobby option (`server/http/config.js`, `startServer`) |
+
+### F5.2 The client — `public/js/ui/presence.js`, `store.js`, `main.js`, `screens/title.js`, `screens/lobby.js`
+
+The store slice `presence { online, inRoom, via }`; `main.js` writes a frame with `via: 'frame'`. `usePresencePoll`
+(title screen and lobby) reads `/healthz` every `PRESENCE_POLL_MS` (10 s) with a 5 s timeout and abort — not while the
+page is hidden (one read as it comes back), and not while frames reach the page (a frame arrived and the session is
+online). Changed from Jerry's version: the poll pauses while the page is hidden (request volume on Cloudflare), the
+slice gains `via`, a failed read shows unknown, and the timeout no longer passes a Promise to `clearTimeout`.
+
+### F5.3 The Cloudflare Worker — `worker/presence.js`, `worker/room-runtime.js`, `worker/matchmaker.js`, `worker/lobby-gateway.js`, `worker/index.js`
+
+The Worker has no lobby every page is connected to, so the counters are summed on a **presence board** in the
+`MATCHMAKER` Durable Object (instance `'queue'`, route `/_presence`; memory only, no new class or migration):
+
+- **Rooms report** (`RoomDurableObject.publishPresence`, a background task like the lobby listing) their open sockets and
+  their seated humans + spectators (`RoomRuntime.presenceCounts`) when the two numbers change, renew with the first event
+  55 s after the last report (a connected room wakes every minute anyway), set one alarm only when 100 s pass without an
+  event, and withdraw at zero. The board keeps a report 150 s: a room that stopped reporting (evicted, crashed, redeployed)
+  drops out by itself.
+- **The 匹配 queue's pages** have no socket: `MatchQueue.waiting()` counts the ones that polled within 6 s and are not in a
+  room yet.
+- **Frames:** the board answers a report with the site-wide totals; the room's `AlarmLobby` overrides `presenceOn` /
+  `presence()` with them and pushes `presence` to its sessions when they changed — never on a clock (no timer keeps a room
+  awake).
+- **`GET /healthz`**: this isolate's copy (5 s), then the data centre's Cache API copy, then the board (2 s timeout; only
+  this read counts against `STATUS_LIMIT`); concurrent requests share one read; a failure answers the last totals of the
+  past 60 s, else `null`, and waits 5 s before trying again. A network over its limit gets the last totals for itself
+  only: its refusal is no attempt of the isolate's, and a request of another network that joined it reads the board
+  itself (one NAT of many lobby pages kept everyone on —). The shared read runs under the starting request's
+  `ctx.waitUntil`, and nobody waits for one longer than 2 s + 1 s (`PRESENCE.graceMs`): a read whose request was
+  cancelled with its I/O no longer hangs every later `/healthz` of the isolate.
+- **The node-protocol gateway** (`NODE_COMPAT`, `worker/lobby-gateway.js`): one lobby is the whole site, so it passes
+  `sockets` like the Node server; frames go out at each event's commit (`startPresenceClock` is a no-op: the object must
+  hibernate) and `/_status` / `/healthz` carry the two numbers.
+
+**Differences from Node** (docs/CLOUDFLARE.md「在线人数」, with the request cost): in account mode the title screen and
+the lobby hold no socket, so a visitor only browsing there is not in `online`; a room nobody is connected to leaves
+`inRoom` after the 150 s lease (Node counts seated humans while their seats are kept); after the board's instance
+restarts the totals refill within about a minute.
+
+### F5.4 Tests
+
+`test/presence.test.js` (Node: the hello frame, the push on connect / room entry / leave / drop, the change guard,
+`presenceTickMs: 0`, `/healthz`, the Lobby class on its own, the per-session correction of a passing hello count and of
+a skipped push), `test/ui/presence.test.js` (formatting in the five languages, the poll and visibility rules),
+`test/ui/presence.e2e.test.js` (browser: the desktop flow, the 640×360 / 844×390 phone layouts in Chinese and English,
+and the Cloudflare sign-in title page at 640×360 / 667×375 in Japanese / Chinese / English: clear of the account card),
+`test/worker/presence.test.js` (board, leases, reports, `/healthz` caching and limits, a network over its limit, a read
+that never settles), `test/worker/presence-integration.test.js` (workerd, the production bundle),
+`test/worker/gateway-compat.test.js` (the node-protocol gateway's counters), `test/lobby.test.js` (the replay order
+ignores `presence`, `/healthz` carries the counters).
+
+---
+
+## F6. The 7 collab 6★ as 自选 picks — the maintainer's decision of 2026-10-08
+
+**Decision.** Upstream's owner left the obtainable collab 6★ out of 自选编队 on 2026-10-05 for copyright (§25.4:
+`tools/build-data.mjs DIY_EXCLUDED_TEAMS` rainbow / action4 / mujica / sees / laios and `DIY_EXCLUDED_NUMBER_PREFIXES`
+MH / RS / AM / PS / DD → `data/backups.json diy.excluded`). This fork's maintainer reversed that on 2026-10-08: 灰烬
+`char_456_ash`, 麒麟R夜刀 `char_1029_yato2`, 焰狐龙梓兰 `char_1048_orchd2`, 艾拉 `char_4123_ela`, 玛露西尔
+`char_4141_marcil`, 丰川祥子 `char_4182_oblvns` and 结城理 `char_4217_makoto` are owned-6★ picks like every other — any
+of their three skills, any elite module, both tiers, at full potential — with their art, sound, voice, summons, bonds,
+names and a full kit each.
+
+### F6.1 The switch and the data — `tools/build-data.mjs FORK_INCLUDE_COLLAB_PICKS`
+
+- **One switch**, `FORK_INCLUDE_COLLAB_PICKS = true`, right under upstream's two constants (kept verbatim, still evaluated
+  — the build warns when a collab team no longer matches anyone), commented as the fork owner's decision: `diy.excluded`
+  is `[]` and the 7 stay in `diy.ownedPool` (71 → 78), `units` (their three slot forms) and `diy.operators`. `false`
+  rebuilds upstream's data. An upstream merge that touches the exclusion keeps the switch.
+- **Bonds** come from the data like every pick's: 结城理 拉特兰 (his subPower `laterano`); the other six 协防干员.
+- **Summons:** 艾拉's 雷鸣地雷 `token_10033_ela_grzmot` joins `tokens` (hand count 4 = its deploy limit).
+- **Names and texts** in every interface language: `data/i18n/{en,ja,ko,zh-TW}.json` rebuilt from the official clients
+  (only these 7 entries and the coverage numbers moved). 焰狐龙梓兰 and 结城理 are in none of the four foreign clients and
+  麒麟R夜刀 is not in zh-TW, so their texts stay Chinese there (no invented names); the EN talent coverage is 94.6 %, and
+  `test/i18n-data.test.js` has a 94 % talent floor in this fork.
+- **Art, sound and voice** (`node tools/fetch-assets.mjs`, the manifest only grew: +73 keys, +307 files, +23.9 MiB):
+  avatar and portrait (E2 included), the battle Spine Front / Back, the skill icons, the module type icon `trp-d`, their
+  battle sound effects, and the 14 battle voice lines in 中文 and 日文 (`audio.voice.{cn,jp}.<charId>.<role>`; 198 voiced
+  operators). 艾拉's mine draws its skin model `token_10033_ela_grzmot_rainbow6_2` (`tools/assets/plan.mjs
+  TOKEN_SKIN_SPINES`, the 25th entry); it has no local-client official-model overlay yet (`tools/local-extract/extract.py
+  TOKEN_SPINES`).
+
+### F6.2 The kits — `server/sim/content/kits/ops/op-{ash,yato2,orchd2,ela,marcil,oblvns,makoto}.js`
+
+Registered at the end of `kits/index.js OPERATOR_KIT_FILES` (so the Worker bundle imports them), each written to
+kits/README.md's fidelity checklist from the composed record (`data/backups.json` via `diyRecordOf`: every number from
+the data, every form × module × skill), PRTS's notes and the official buff templates; each file's header lists its
+sources and its [ASSUMED] readings. Tests: `test/content/op_<codename>.test.js` (one per kit, every form × skill).
+
+| Operator | What is modelled | Main [ASSUMED] readings / decisions |
+|---|---|---|
+| 灰烬 (速射手) | 31-round S2 突击战术 (30 after an emptied clip in one deployment), S1 flashbang (radius 1) with MAR-X's ×1.1 mark, S3 grenade path (1.2 collider, hits the adjacent rows; burst on the 4th tile, at a 高台's edge with `hitwall` — the 高台 rows around the field included —, or at the map edge; the burst takes the enemies where they stand at the cast, the pushes come after it), S2's ×atk_scale settled per bullet at its launch, T1 vs stunned enemies, 突击手 cost cut, MAR-Y / MAR-X | S1 支援射击 auto-cast `SP_FULL` (checklist item 5); the S3 path takes enemies ahead of her only; leaving the field rect onto LOW ground ends the grenade's flight there; the 31 / 2-per-deployment numbers parsed from the text |
+| 麒麟R夜刀 (处决者) | S1 鬼人化 (two hits, the 6-hit tail split 4 + 2), S2 乱舞 on the skeleton's 16 OnAttack frames (3.433 s), S3 dash with per-frame slashes lengthening by 0.3 per hit, T1 arts follow-up, T2 ATK window, EXE-Y 术法充盈 and the 0 s first redeploy | S2 area = 1-1 + blocked, ground only; EXE-X's refund has no effect (no manual retreat); S2 / S3 fire at the deployment instant (nothing to hit at the battle-start one) |
+| 焰狐龙梓兰 (重射手) | three-hit normal attack × `damage_scale`, S1 刚射 / 刚连射 (settled and paid at the cast, PRTS; 刚连射 1.167 s after the 4 arrows — Skill_1_End_2 —, stun rolls, retarget, the charge back when no target), S2 airborne volleys 3 / 4 / 5 and the 1-3 landing on her clips' timing (Begin_First at the first opening: 1.667 / 2.5 / 3.333 s + landing 4.233 s, then 0.833 / 1.667 / 2.5 s + 3.4 s; grounded from the landing; free cast after each deployment), S3 龙之箭 (charge 3 s, +20 frames on the first opening, the arrow 3 frames into Skill_3_End from her 弹道受击点 0.2323 north, Skill_3_End holds her; 10 tiles/s, physical then arts, fixed-direction push with a 1 s cooldown), T1 强击瓶 (50 rounds × 1.2, each round's multiplier settled at its launch), T2 翔虫机动 | `damage_scale` also on the skill arrows (as the retired 外援 kit); S3 has no duration in the data — an instant cast with a disarm while charging and through Skill_3_End |
+| 艾拉 (陷阱师) | 雷鸣地雷 hand pieces (free at the battle start, a return costs 1 of her stock — reset to 4 at each deployment — 5 DP, 5 s), trigger 1.35 / effect 1.7, ground only, the mine effect of each skill (S1's 命中率 cut judged at the enemy's attack start, PRTS 命中率), her exit burst, 正中靶心 rolls per attack (always on a mined target), S1 stock +1 with 阻回, S2 DEF / splash / ignore-DEF, S3 ammo, priority and +2 stock | TRP-D's placement addition (deploy positions) not modelled (no such placement in this mode); 阻回 only with S1 |
+| 玛露西尔 (扩散术师) | 魔力 as her SP bar (cap 80 whatever changes SP costs — 绝技's ×0.7 included —, no natural regen, off-field +1/s banked), 吟唱 (interrupted by stun / freeze / levitate / sleep / silence / leaving), S1 per-attack cost and the no-enemy heal, S2's two-step 使魔 (re-cast after the 3 s operation cooldown), S3 chained explosions every 0.45 s with 高台 debris stuns, SPC-Y | S1 heal = 1.0 × ATK (no source); S3 interrupted 追加吟唱 = one explosion; T2's squad bonus can never apply (莱欧斯 / 森西 / 齐尔查克 are in no pool) |
+| 丰川祥子 (领主) | notes simulated with PRTS's movement tables (free / tracking / 钢琴 pass-through), 持续攻击 with no target, the 80 % ranged rule per note at launch, penetration by note count, the shared Fever gauge (450, 20 s, free casts, timed skills paused or ended), the ASPD aura and the Ave Mujica range extension, S1 fan, S2 钢琴 → 风琴 toggle (a cast on a full gauge only starts the Fever: no switch, PRTS), S3 dual tracking and 不撤退 under Fever, LOR-Y; each note picks its target at every update (the minimum free time only holds the tracking back); a 持续攻击 with no target is an `atk` event with no target (her swing and sound) | S2 switched once per deployment (切换类); 持续攻击 gives attack SP; the S3 cast that starts a Fever is paused, then runs its 25 s |
+| 结城理 (傀儡师) | the engine's dollkeeper with the persona of his skill (<俄耳甫斯> arts / heal, <塔纳托斯> multi-target + 恐惧斩杀, <塔纳托斯·改> weakness damage → <俄耳甫斯·改> through a 1.5 s change on a lethal hit or a cast: dodge aura and delayed heals), T1 stats and 停顿, T2 总攻击 when the 替身's time is up — that switch back is the <总攻击> form, 1.6 s of his clips with 无敌 and 静默 —, PUM-Y, a silence on every switch animation | the automation presses S3 again only when charged; the 替身's 20 s runs on through the change; the S.E.E.S. members are in no pool (the 总攻击 strikes around him only) |
+
+### F6.3 Engine and client additions for them
+
+- **`attack` hook `attackId`** (`server/sim/ai.js`; docs/SIM.md, design/engine.md) and **`Battle.nextAttackId()`**
+  (`battle/combat.js`): 丰川祥子's notes carry their attack's id (a target-less 持续攻击 draws its own), and 焰狐龙梓兰's
+  强击瓶 settles each round's multiplier at its launch (arrows still flying when the window opens or closes keep it).
+  Additive: no other scenario of the golden corpus moved.
+- **结城理's personas on his skeleton** (`public/js/render/units.js FORMS char_4217_makoto`): the kit follows the engine's
+  'doll' with an fx `persona { form, dur }` (`op-makoto.js MODEL`; `render/fx/kinds.js` draws nothing for it) and keeps
+  the persona as the UnitInfo `form`: each persona comes in on its SwitchIn, idles / attacks on its own clips, leaves on
+  its SwitchOut over its last second, and the 本体 comes back on the 总攻击 clip; S3's change plays ChangeBegin /
+  ChangeEnd (`test/render/makoto-persona.test.js`).
+- **丰川祥子's notes on screen:** her engine shot draws nothing (kit trait `projectile: 'none'`) and each note shows where
+  it strikes (fx `oblvnsNote`, a spark on the enemy as its damage number appears).
+
+### F6.4 Not done (open)
+
+The Fever gauge, her pink SP bar and the KiLLKiSS BGM switch are not drawn (the Fever's start is a `buff` fx), nor the
+notes' flight; 龙之箭 has no flight graphic of its own (a strike and a beam per enemy touched); 艾拉's mine has no
+local-client model; the engine's own 傀儡师 switch window (归溟幽灵鲨, 风丸) still lacks PRTS's "切换期间额外持有静默"
+(only 结城理's kit adds it — changing it would move upstream operators); possible engine follow-ups, not needed by the
+kits: a SkillRuntime "mana" mode (玛露西尔's kit casts and writes her bar itself) and a professions.js switch between
+two 替身 forms (结城理's kit reuses the engine's switch-window key).
+
+### F6.5 Tests and the golden corpus
+
+The upstream copyright test (`test/assets-diy.test.js`) became a fork test that asserts the 7 ARE present — data, art,
+Spine, sound, 中文 / 日文 voice, 艾拉's mine; `test/backups.test.js`, `test/diy.test.js`, `test/assets.test.js`,
+`test/local-token-models.test.js` and `test/content/feedback5-we2-summon-hand.test.js` (艾拉: 4) follow. The golden `diy`
+family grows from 138 to 150 battles: 12 new ones field the 7 kits (diy-135 … diy-146, all forms × modules × skills), and
+the four prototype battles that followed re-pack 6 slots later (old diy-135 … 138 → diy-146 … 150); with the 7 kits
+taken out of `OPERATOR_KIT_FILES` the whole corpus of HEAD matches.

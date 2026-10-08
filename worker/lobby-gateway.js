@@ -78,6 +78,10 @@ class GatewayLobby extends Lobby {
     this.startQueueClock(); // the next tick; queueTick stops the clock once nobody waits
     this.queueTick();
   }
+  // 在线人数 (server/lobby.js presence): the base Lobby pushes changed counters on a setInterval clock. Here they go out
+  // at every event's commit instead (LobbyGatewayDurableObject.commit → broadcastPresence, only when they changed): an
+  // interval would keep the object from hibernating, and its frames would wait for the next event's flush anyway.
+  startPresenceClock() {}
   expireResync() {
     for (const [playerId, at] of [...this.resyncDue]) {
       if (at > this.now()) continue;
@@ -101,7 +105,11 @@ export class LobbyRuntime {
     this.registry = new SessionRegistry({ now, maxSessions: GATEWAY_LIMITS.sessions });
     // RecordedMatch (not the plain Match): matches log their events, so a checkpoint plus
     // the event log can bring a running match back — the choice the account rooms make too.
-    this.lobby = new GatewayLobby({ registry: this.registry, now, log, MatchClass: RecordedMatch });
+    // `sockets`: the live socket count, the `online` of the presence counters (在线人数), as the Node server passes it;
+    // the whole node-protocol deployment is this one lobby, so its counters are the site's (frames: commit; /healthz:
+    // status). Read lazily: the network below takes the lobby as its handler.
+    this.lobby = new GatewayLobby({ registry: this.registry, now, log, MatchClass: RecordedMatch,
+      sockets: () => this.network?.connectionCount ?? 0 });
     this.network = new Network({ registry: this.registry, handler: this.lobby, log, now,
       options: { autoTimers: false, trustProxy: false, heartbeatMs: GATEWAY_LIMITS.heartbeatMs,
         helloTimeoutMs: GATEWAY_LIMITS.helloTimeoutMs, maxConnections: GATEWAY_LIMITS.sockets,
@@ -393,6 +401,8 @@ export class LobbyGatewayDurableObject {
     }
     if (rt.isEmpty()) await this.clear();
     else await this.save();
+    // 在线人数: the counters this event changed reach every connected session with the event's own frames
+    rt.lobby.broadcastPresence?.();
     for (const adapter of [...this.sockets.values(), ...closed]) adapter.flush();
     await this.schedule();
   }
@@ -578,8 +588,9 @@ export class LobbyGatewayDurableObject {
   status() {
     const rt = this.runtime;
     const stats = rt.lobby.stats();
+    // `online` / `inRoom`: the presence counters (在线人数), as the Node server's /healthz carries them
     return Response.json({ rooms: stats.rooms, matches: stats.matches, humans: stats.humans, bots: stats.bots,
-      sockets: rt.network.connectionCount, sessions: rt.registry.size }, { headers: { 'Cache-Control': 'no-store' } });
+      sockets: rt.network.connectionCount, sessions: rt.registry.size, ...rt.lobby.presence() }, { headers: { 'Cache-Control': 'no-store' } });
   }
 
   async webSocketMessage(ws, message) {

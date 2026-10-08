@@ -1162,6 +1162,17 @@ const DIY_EXCLUDED_TEAMS = Object.freeze(['rainbow', 'action4', 'mujica', 'sees'
 const DIY_EXCLUDED_NUMBER_PREFIXES = Object.freeze(['MH', 'RS', 'AM', 'PS', 'DD']);
 
 /**
+ * FORK SWITCH (BBleae/Stronghold-Protocol) — the fork owner's decision of 2026-10-08: the 7 collab 6★ that upstream
+ * leaves out above (DIY_EXCLUDED_TEAMS / DIY_EXCLUDED_NUMBER_PREFIXES: 灰烬 char_456_ash, 麒麟R夜刀 char_1029_yato2,
+ * 焰狐龙梓兰 char_1048_orchd2, 艾拉 char_4123_ela, 玛露西尔 char_4141_marcil, 丰川祥子 char_4182_oblvns, 结城理
+ * char_4217_makoto) come back COMPLETELY in this fork: owned-6★ picks like every other (`diy.ownedPool`, their units,
+ * summons and bonds), and `diy.excluded` stays empty. Upstream's constants and its exclusion code above stay as they are
+ * (still evaluated: the build warns when a collab team no longer matches anyone); `false` restores upstream's data.
+ * An upstream merge that touches the exclusion must keep this switch (docs/design/fork.md §F6).
+ */
+const FORK_INCLUDE_COLLAB_PICKS = true;
+
+/**
  * The skill a prototype carries in a 自选 slot when no 补位 row of the slot's tier names it (only 预备干员-医疗 at tier 5:
  * it stands in at tier 3 only). PRTS 卫戍协议 says the prototypes' "技能携带规则与系统补位时一致"; [ASSUMED] (the owner's
  * decision of 2026-10-05) the selection of its 补位 rows at that tier, and for this one S3 — every other 4★ reserve's
@@ -1282,7 +1293,8 @@ function buildUnitForm(ctx, charId, status, { chessId = null, skillIndex = null 
  * - `diy`: the slots (tier, elite id, the shop level that lists them, the rarity requirement), the prototype picks per
  *   slot tier (DIY_EXTRA_PROTOTYPES) and the skill / module each carries there (`locked`: its 补位 rows' selection at
  *   that tier — "技能携带规则与系统补位时一致"), the owned-6★ pool (obtainable, not a roster operator: no chess names it,
- *   hidden chess included — "不可甄选加入已在名单中的固定干员" — and not a collab, DIY_EXCLUDED_TEAMS: `excluded`) and, for
+ *   hidden chess included — "不可甄选加入已在名单中的固定干员" — and, upstream, not a collab, DIY_EXCLUDED_TEAMS: `excluded`;
+ *   this fork keeps the collab picks, FORK_INCLUDE_COLLAB_PICKS, so `excluded` is empty) and, for
  *   every pick, its faction ids (`mainPower` and every `subPower`: "依据其「所属势力」「隐藏势力」等属性决定其盟约") and the
  *   core bonds whose `powerIdList` meets them, else `constData.fallbackBondId` (协防干员) — PRTS 「卫戍协议」
  *   "甄选加入的干员会根据其实际阵营所属分配核心盟约，若没有可匹配的则改为分配协防干员盟约".
@@ -1350,8 +1362,9 @@ function buildBackups(ctx, chess) {
       && !ch.isNotObtainable && !roster.has(id);
   }).sort(naturalCmp);
   const collabNumber = (ch) => DIY_EXCLUDED_NUMBER_PREFIXES.some((p) => new RegExp(`^${p}\\d`).test(ch.displayNumber || ''));
-  const excluded = legal6.filter((id) => teamsOf(charTable[id]).some((t) => excludedTeams.has(t)) || collabNumber(charTable[id]));
-  for (const t of DIY_EXCLUDED_TEAMS) if (!excluded.some((id) => teamsOf(charTable[id]).includes(t))) warn(`DIY_EXCLUDED_TEAMS: no owned-6★ pick of team ${t}`);
+  const collab = legal6.filter((id) => teamsOf(charTable[id]).some((t) => excludedTeams.has(t)) || collabNumber(charTable[id]));
+  for (const t of DIY_EXCLUDED_TEAMS) if (!collab.some((id) => teamsOf(charTable[id]).includes(t))) warn(`DIY_EXCLUDED_TEAMS: no owned-6★ pick of team ${t}`);
+  const excluded = FORK_INCLUDE_COLLAB_PICKS ? [] : collab; // the fork switch above: the collab picks stay in the pool
   const ownedPool = legal6.filter((id) => !excluded.includes(id));
   for (const id of ownedPool) for (const st of diyStatuses.values()) addNeed(id, st);
 

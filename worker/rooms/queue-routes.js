@@ -30,6 +30,7 @@ export async function handleQueueRoutes(request, env) {
     const seat = await seatOf(env, session.accountId);
     if (!seat || seat.reserved || seat.activeSeat?.roomId !== body.code) throw new AccountError('BAD_TARGET');
   }
+  // the single instance (it also holds the presence board: worker/presence.js)
   const queue = env.MATCHMAKER.get(env.MATCHMAKER.idFromName('queue'));
   const response = await queue.fetch(new Request('https://queue.internal/_queue', {
     method: 'POST',

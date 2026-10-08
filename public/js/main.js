@@ -60,6 +60,7 @@ import { applicationSent } from './ui/accountMenu.js';
 import { HistoryScreen } from './screens/history.js';
 import { ReplayScreen } from './screens/replay.js';
 import { startBuildGuard } from './ui/buildGuard.js';
+import { presenceFacts } from './ui/presence.js';
 import { initLang, useLang, tickerText } from './ui/lang.js';
 import { t, N_, translateWire } from '../../shared/i18n.js';
 
@@ -248,6 +249,9 @@ function wireNet() {
     store.patch('queue', { matched: { code: msg.code, difficulty: msg.difficulty, seated: !!msg.seated,
       expect: Number.isInteger(msg.expect) ? msg.expect : 0 } });
   });
+  // 在线人数 (ui/presence.js): the live counters next to the version (title footer / lobby top bar). The server pushes
+  // them once after `welcome` and again whenever they change; a page without the frames polls /healthz instead.
+  net.on('presence', (msg) => store.set({ presence: { ...presenceFacts(msg), via: 'frame' } }));
   net.on('room.closed', (msg) => {
     // A match that ended with a result to show (spectators get it after room.closed: worker/rooms/spectators.js) stays on
     // screen for its final view and result; the result screen leads back to the lobby. Anything else leaves at once.

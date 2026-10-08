@@ -99,6 +99,18 @@
 //     time → room.closed {kicked} to it. A spectator in a LOBBY room may take a free player seat with room.join of the same
 //     code; a player never switches to spectating in place (ALREADY). Disconnect / grace / reconnect / expiry work as for
 //     a player seat (the seat is kept and given back on resume).
+//   * 在线人数 (presence counters — a remake addition, ported from Jerryzhu1234510's fork, 4f4e848f; the owner's decision
+//     of 2026-10-08): `presence { online, inRoom }` — `online` = the live sockets (pages with the game open, the title
+//     screen's hello-less socket included), `inRoom` = the humans holding a seat plus the spectators. Sent right after
+//     every `welcome` (onHello) and then by an unref'd clock every `presenceTickMs` to every connected session whose last
+//     numbers differ (`session.presenceSent`: a hello that caught a passing count, or a congested socket that skipped a
+//     push, is corrected at the next tick — never the same numbers twice). /healthz carries the same two numbers
+//     (server/http/routes.js) for a page without a session.
+//     ▸ Only a lobby that counts presence (`presenceOn`: given the live socket count, `sockets`) sends the frames and runs
+//     the clock. The Node server passes it; so does the Worker's node-protocol gateway (worker/lobby-gateway.js: frames at
+//     each event's commit, no clock); the Worker's room Durable Objects pass none and override `presenceOn` /
+//     `presence()` with the site-wide counters of the presence board (worker/room-runtime.js AlarmLobby,
+//     worker/presence.js; no clock either); a bare lobby (unit tests) sends nothing. DESIGN §F5.
 
 import { randomBytes, randomInt } from 'node:crypto';
 import { ERR, MAX_SEATS, DEFAULT_SEATS, MAX_SPECTATORS, ROOM_CODE_LEN, modeIdFor } from '../shared/constants.js';
@@ -125,6 +137,9 @@ export const LOBBY_DEFAULTS = Object.freeze({
   queueGraceMs: 3000,     // a player waits at least this long for a second one before playing with AI teammates
   queueTimeoutMs: 20_000, // …and at most this long, so a lone player is never stuck in the queue
   queueSilentMs: 45_000,  // a waiting session that stopped answering is dropped (it never joined on purpose)
+  // 在线人数 (presence counters, a remake addition): how often the numbers are re-checked and pushed when they changed
+  // (0 = only the frame that answers each hello). Used only by a lobby that counts presence (the `sockets` option).
+  presenceTickMs: 5000,
 });
 
 /** Official `singleReconnectTime` (s) when the data lacks it (constData, research 01 §1). */
@@ -272,16 +287,26 @@ export class Lobby {
    *   getData?: () => object,
    *   now?: () => number,
    *   seedFn?: () => number,
+   *   sockets?: (() => number) | null,
    *   options?: Partial<typeof LOBBY_DEFAULTS>,
    * }} opts
    */
-  constructor({ registry, log = noopLog, MatchClass = DefaultMatch, getData = defaultGetData, now = Date.now, seedFn, options = {} }) {
+  constructor({ registry, log = noopLog, MatchClass = DefaultMatch, getData = defaultGetData, now = Date.now, seedFn, sockets = null, options = {} }) {
     this.registry = registry;
     this.log = log;
     this.MatchClass = MatchClass;
     this.getData = getData;
     this.now = now;
     this.seedFn = seedFn || (() => randomInt(2 ** 32));
+    /**
+     * 在线人数: the live socket count (the Node server passes `network.connectionCount`), the "online" half of
+     * presence(). Passed as a closure and read lazily — the network is built after the lobby (it takes the lobby as its
+     * handler). It also switches the presence frames on (presenceOn): a lobby without it (a unit test's bare lobby) sends
+     * no `presence` frame and never starts the presence clock — unless a subclass overrides presenceOn / presence() (the
+     * Worker's room Durable Objects: worker/room-runtime.js AlarmLobby).
+     * @type {(() => number) | null}
+     */
+    this.sockets = typeof sockets === 'function' ? sockets : null;
     this.opts = { ...LOBBY_DEFAULTS, ...options };
     /** @type {Map<string, Room>} */
     this.rooms = new Map();
@@ -300,6 +325,12 @@ export class Lobby {
      * Durable Object of the Worker, which holds a lobby of one room — keeps no timer, so it can sleep.
      */
     this.queueTimer = null;
+    /** @type {NodeJS.Timeout | null} the presence clock (unref'd), started by the first hello of a counting lobby */
+    this.presenceTimer = null;
+    /** @type {string | null} the counters last pushed (JSON): the clock pushes only a change */
+    this.presenceJson = null;
+    /** a session may hold other numbers than presenceJson (a hello's passing count, a skipped push): the next push checks each */
+    this.presenceBehind = false;
     /** per-network limit warnings: at most one log line per 10 s (the rest are counted) */
     this.limitLog = { at: -Infinity, suppressed: 0 };
   }
@@ -323,6 +354,82 @@ export class Lobby {
   }
 
   // ---------------------------------------------------------------------------------------------------
+  // 在线人数 (presence counters) — a remake addition, ported from Jerryzhu1234510's fork (4f4e848f)
+  // ---------------------------------------------------------------------------------------------------
+
+  /** Whether this lobby pushes presence frames: it was given the live socket count (`sockets`, constructor). */
+  get presenceOn() { return !!this.sockets; }
+
+  /**
+   * The counters the client shows next to the version (title footer, lobby top bar; public/js/ui/presence.js) and
+   * /healthz carries: `online` = the pages with the game open (the live sockets — a visitor still on the title screen
+   * has one but no session yet, and counts), `inRoom` = the humans holding a seat plus the spectators.
+   * Without a socket count (a bare lobby) `online` falls back to the connected sessions.
+   * @returns {{ online: number, inRoom: number }}
+   */
+  presence() {
+    let online = 0;
+    if (this.sockets) online = Math.max(0, this.sockets() | 0);
+    else for (const s of this.registry.all()) if (s.connected) online++;
+    const st = this.stats();
+    return { online, inRoom: st.humans + st.spectators };
+  }
+
+  /**
+   * Push `presence` to every connected session whose last numbers (`session.presenceSent`) differ from the counters now
+   * — nothing when they did not change since the last push and every session got them (`force` re-sends to every
+   * session). A lobby without presence frames (presenceOn) sends nothing.
+   * @param {boolean} [force]
+   * @returns {boolean} whether a frame went out
+   */
+  broadcastPresence(force = false) {
+    if (!this.presenceOn) return false;
+    const p = this.presence();
+    const json = JSON.stringify(p);
+    if (!force && json === this.presenceJson && !this.presenceBehind) return false;
+    this.presenceJson = json;
+    this.presenceBehind = false;
+    const frame = encode({ t: 'presence', ...p });
+    let out = false;
+    for (const session of this.registry.all()) {
+      if (!session.connected || (!force && session.presenceSent === json)) continue;
+      // droppable: a socket that is already congested skips it (the counters are a convenience, never game state) —
+      // and gets the numbers at a later push
+      if (sendRaw(session.ws, frame, { droppable: true })) { session.presenceSent = json; out = true; } else this.presenceBehind = true;
+    }
+    return out;
+  }
+
+  /**
+   * Answer a hello with the counters as they are now; the clock pushes the changes after it. When they differ from the
+   * last push (they moved and may come back before the next tick), the next tick checks every session.
+   */
+  sendPresence(session) {
+    if (!this.presenceOn) return;
+    try {
+      const p = this.presence(), json = JSON.stringify(p);
+      if (sendSession(session, { t: 'presence', ...p })) session.presenceSent = json; else this.presenceBehind = true;
+      if (json !== this.presenceJson) this.presenceBehind = true;
+    } catch (e) { this.log.error('[presence] hello frame failed', e); }
+    this.startPresenceClock();
+  }
+
+  /** Start the presence clock (idempotent; none with `presenceTickMs` 0; unref'd: it never keeps the process alive). */
+  startPresenceClock() {
+    if (this.presenceTimer || !this.presenceOn || !(this.opts.presenceTickMs > 0)) return;
+    this.presenceTimer = setInterval(() => {
+      try { this.broadcastPresence(); } catch (e) { this.log.error('[presence] tick failed', e); }
+    }, this.opts.presenceTickMs);
+    this.presenceTimer.unref?.();
+  }
+
+  stopPresenceClock() {
+    if (!this.presenceTimer) return;
+    clearInterval(this.presenceTimer);
+    this.presenceTimer = null;
+  }
+
+  // ---------------------------------------------------------------------------------------------------
   // net.js handler interface
   // ---------------------------------------------------------------------------------------------------
 
@@ -332,6 +439,8 @@ export class Lobby {
    * @param {{ resumed: boolean, repeat: boolean }} info
    */
   onHello(session, { resumed, repeat }) {
+    // 在线人数: every hello is answered with the counters (a lobby that counts presence only, see presenceOn)
+    this.sendPresence(session);
     if (!resumed && !repeat) return;
     const room = this.roomOf(session);
     if (!room) {
@@ -427,6 +536,7 @@ export class Lobby {
   shutdown(reason = 'shutdown') {
     for (const room of [...this.rooms.values()]) this.disposeRoom(room, reason);
     this.stopQueueClock();
+    this.stopPresenceClock();
     this.queue = [];
     for (const t of this.graceTimers.values()) clearTimeout(t);
     this.graceTimers.clear();

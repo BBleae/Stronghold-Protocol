@@ -38,6 +38,8 @@ export const FX_KINDS = Object.freeze({
   // a dollkeeper knocked out as its <替身> (sim professions.js): only its model form goes back to the 本体 for the
   // redeploy — the 替身's death clip already shows the knock-out, nothing is drawn
   dollEnd: { a: 'none', c: 0xd8b0ff },
+  // 结城理's persona (the fork's sim kits/ops/op-makoto.js): only the model form changes, to the persona's clips (FORMS)
+  persona: { a: 'none', c: 0xd8b0ff },
   ulpiaReturn: { a: 'blink', c: 0x9ff0dc }, manifoldSplit: { a: 'blink', c: 0xd8b0ff },
   // boss 刺胄之弹 launched towards (tx, ty) (the shell itself is an enemy unit); 伊内丝's 影哨 flying back to her
   helmShell: { a: 'move', c: 0xc8b890 }, sentryRecall: { a: 'move', c: 0x8f7bff },
@@ -78,6 +80,8 @@ export const FX_KINDS = Object.freeze({
   veenBounce: { a: 'counter', c: 0xffd27a }, veenVolley: { a: 'volley', c: 0xffd27a },
   harpoon: { a: 'beam', c: 0xd0c0a0 }, arrowRain: { a: 'volley', c: 0xfff2d0 }, mark: { a: 'reticle', c: 0xff7b8a },
   bounce: { a: 'counter', c: 0xffd9a0 }, dying: { a: 'mark', c: 0xff5a4a },
+  // the fork's collab picks (docs/design/fork.md §F6): 丰川祥子's note striking an enemy (sim kits/ops/op-oblvns.js NOTE_FX)
+  oblvnsNote: { a: 'counter', c: 0xff8fc8 },
   // beams
   beam: { a: 'beam', c: 0xff7a5a }, link: { a: 'beam', c: 0x9ff0dc }, lightning: { a: 'bolt', c: 0xc9a2ff },
   // 断裂生殖 tentacle: a stun area of radius `r` for `dur` (bosses.js)

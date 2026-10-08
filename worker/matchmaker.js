@@ -18,6 +18,7 @@
 // room no longer waits for it.
 
 import { DEFAULT_SEATS, DIFFICULTIES } from '../shared/constants.js';
+import { PresenceBoard, PRESENCE_PATH } from './presence.js';
 
 /** Timings (ms) and sizes; the Node queue's grace / timeout / minimum, plus what polling adds. */
 export const QUEUE = Object.freeze({
@@ -155,6 +156,23 @@ export class MatchQueue {
     this.queue = [...back, ...this.queue.filter((x) => !back.some((b) => b.accountId === x.accountId))];
   }
 
+  /**
+   * 在线人数 (worker/presence.js): the accounts whose page is waiting here right now — in the queue, or in a group whose
+   * room they are not in yet — and polled within `silentMs`. They hold no socket, so the presence board counts them here;
+   * a member handed the room's code, and a host that reported its room, are in that room (its socket counts there).
+   * Reads only: forms no group.
+   */
+  waiting(now = this.now()) {
+    let n = 0;
+    for (const [accountId, t] of this.seen) {
+      if (now - t >= this.opts.silentMs) continue;
+      const g = this.groups.get(this.groupOf.get(accountId));
+      const inRoom = g && (g.handed.has(accountId) || (g.host === accountId && g.code));
+      if (g ? !inRoom : this.queue.some((e) => e.accountId === accountId)) n++;
+    }
+    return n;
+  }
+
   /** Drop the silent, expire the groups, and form every group the rules allow (server/lobby.js queueTick). */
   tick(now = this.now()) {
     const o = this.opts;
@@ -201,16 +219,37 @@ export class MatchQueue {
 }
 
 /**
- * The queue's Durable Object (binding MATCHMAKER, instance 'queue'). Its only caller is the Worker's /api/queue route,
- * which authenticated the account: `X-Account-ID` names it, the JSON body is `{ action: 'join'|'poll'|'leave'|'hosted',
- * difficulty?, code? }`.
+ * The queue's Durable Object (binding MATCHMAKER, instance 'queue'). Its caller for the queue is the Worker's /api/queue
+ * route, which authenticated the account: `X-Account-ID` names it, the JSON body is `{ action: 'join'|'poll'|'leave'|
+ * 'hosted', difficulty?, code? }`.
+ * It also holds the presence board (在线人数, worker/presence.js) at PRESENCE_PATH: rooms POST their `{ roomId, online,
+ * inRoom }` and GET /healthz reads the sums; both are answered with `{ online, inRoom, rooms, queued }`, `online`
+ * including the queue's waiting pages (`queued`). Like the queue, the board is memory only.
  */
 export class Matchmaker {
   constructor(state, env, { now = Date.now } = {}) {
     this.queue = new MatchQueue({ now });
+    this.board = new PresenceBoard({ now });
+  }
+
+  /** The site-wide presence counters: the rooms' sums, plus the pages waiting in the queue as online. */
+  presence() {
+    const { online, inRoom, rooms } = this.board.totals();
+    const queued = this.queue.waiting();
+    return { online: online + queued, inRoom, rooms, queued };
   }
 
   async fetch(request) {
+    if (new URL(request.url).pathname === PRESENCE_PATH) {
+      if (request.method === 'POST') {
+        let report = null;
+        try { report = await request.json(); } catch { /* malformed: refused below */ }
+        if (!this.board.report(report ?? {})) return Response.json({ error: 'BAD_MSG' }, { status: 400 });
+      } else if (request.method !== 'GET') {
+        return Response.json({ error: 'BAD_MSG' }, { status: 405 });
+      }
+      return Response.json(this.presence());
+    }
     const accountId = request.headers.get('X-Account-ID');
     if (!accountId || request.method !== 'POST') return Response.json({ error: 'BAD_MSG' }, { status: 400 });
     let body;

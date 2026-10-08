@@ -13,6 +13,9 @@
 // TOKEN_SKIN_SPINES, from the fork's asset probe for its retired 外援 roster) — which the manifest keeps as the token's
 // `spine`: the client then draws the official model when it is extracted, the skin when it is not (or fails to load:
 // `fallback`), and the diamond only for the summons with neither. Every other summon behaves exactly as above.
+// TOKEN_SKIN_SPINES has a 25th entry outside this list: 艾拉's 雷暴 mine (token_10033_ela_grzmot), a summon of a collab
+// pick only this fork keeps (tools/build-data.mjs FORK_INCLUDE_COLLAB_PICKS) — the skin is its only model (no extract.py
+// TOKEN_SPINES entry).
 
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';

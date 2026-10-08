@@ -4,7 +4,8 @@
 // 'a' → cookie 'aaaa…', profile name 'Player a#NNNN'), WebSocket upgrades on behalf of an actor, hooks on a room's
 // Durable Object (storage access, a snapshot rewrite applied at its next wake, the structured log lines of the isolate
 // (every room's), its in-memory timer, its login checks or its failed jobs' retries made due) and on the directory
-// (session lookups and room listings counted, a logout, an outage, a registration whose answer is lost). Any hook
+// (session lookups and room listings counted, a logout, an outage, a registration whose answer is lost), and the
+// presence board's sums as they are (in the Matchmaker, worker/presence.js). Any hook
 // wakes the room it is sent to. Storage persists across restart(), which replaces the runtime like a deployment does;
 // evict() puts one room to sleep with its sockets open, as the platform does.
 
@@ -153,6 +154,10 @@ export default {
     if (input.exec) {
       return Response.json(await env.SITES.get(env.SITES.idFromName('directory')).exec(input.exec, ...(input.params || [])));
     }
+    if (input.presence) {
+      // the presence board's sums as they are now (worker/presence.js; /healthz reads them through its cache)
+      return env.MATCHMAKER.get(env.MATCHMAKER.idFromName('queue')).fetch(new Request('https://queue.internal/_presence'));
+    }
     if (input.seed) {
       // A GitHub account as its first login makes it.
       const site = env.SITES.get(env.SITES.idFromName('directory'));
@@ -196,6 +201,8 @@ export async function createWorld(t, { bindings = {} } = {}) {
       const session = /__Host-sp_session=([a-f0-9]{64})/.exec(response.headers.get('Set-Cookie') ?? '')?.[1];
       return { status: response.status, body: text ? JSON.parse(text) : null, ...(session ? { session } : {}) };
     },
+    /** The presence board's sums now (`{ online, inRoom, rooms, queued }`), past /healthz's cache. */
+    presence: async () => (await h.fetch({ presence: true })).json(),
     /** The directory's SQL (rows), for a test to set up or read. */
     exec: async (query, ...params) => (await h.fetch({ exec: query, params })).json(),
     /** A hook of the room's Durable Object (see the fixture). */

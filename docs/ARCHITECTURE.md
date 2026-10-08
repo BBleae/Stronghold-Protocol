@@ -45,7 +45,7 @@ one Durable Object per room running the same lobby and match code (`worker/room-
 replays in further Durable Objects, the 匹配 queue (`worker/matchmaker.js`) and the account pages' API
 (`public/js/room-net.js`, `public/js/preferenceSchema.js`). `tools/build-worker.mjs` builds it; docs/CLOUDFLARE.md and
 docs/ACCOUNTS-HISTORY.md describe it, and `tools/build-android.mjs` the android app (docs/ANDROID.md). The fork's own
-design sections — 5–8 player rooms, phones, 匹配 — are in `docs/design/fork.md` (§F1 … §F4).
+design sections — 5–8 player rooms, phones, 匹配, 在线人数, the collab 自选 picks — are in `docs/design/fork.md` (§F1 … §F6).
 
 ## 2. The WebSocket protocol
 

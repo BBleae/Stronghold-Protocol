@@ -20,7 +20,9 @@ const NET_OPTION_KEYS = ['reconnectWindowMs', 'heartbeatMs', 'helloTimeoutMs', '
   'maxConnectionsPerAddr', 'heavyPerSec', 'heavyBurst', 'trustProxy'];
 const LOBBY_OPTION_KEYS = ['lobbyGraceMs', 'maxRooms', 'maxRoomsPerAddr', 'maxMatchesPerAddr', 'resyncMinGapMs', 'soloReconnectWindowMs',
   // 匹配 (matchmaking queue): the timings a test (or a tweaked deployment) may override
-  'queueTickMs', 'queueMinSeats', 'queueGraceMs', 'queueTimeoutMs', 'queueSilentMs'];
+  'queueTickMs', 'queueMinSeats', 'queueGraceMs', 'queueTimeoutMs', 'queueSilentMs',
+  // 在线人数 (presence counters, title footer / lobby top bar): the push interval
+  'presenceTickMs'];
 
 /**
  * Where to listen: the `port` / `host` options, else PORT / HOST, else port 3000 on 0.0.0.0.

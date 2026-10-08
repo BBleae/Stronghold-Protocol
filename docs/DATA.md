@@ -581,7 +581,7 @@ This fork's 外援 / 甄选 roster (`data/waiguan.json`: 87 candidates, their ti
 
 `chess 266 (112 visible; 283 selectable skills over the visible chess, 184 module choices over 129 goldens; 74 PRESET / 55 NORMAL / 4 DIY base chess)`, `bonds 23`, `garrisons 249 (43 effect keys)`, `items 115`, `bands 40`, `effects 361`,
 `enemies 249`, `factions 67 entries`, `waves 38`, `stages 11 (8 active)`, `bosses 10`, `tokens 22`, `choice events 109`,
-`bounty cards 129`, `tactic cards 43`, `backups: 88 units (17 stand-ins, 71 owned-6★ picks; 256 forms), 38 自选 summons, 4 DIY slots, 15 / 9 prototype picks (tier 5 / 6), 71 owned-6★ picks (7 collab operators excluded)`.
+`bounty cards 129`, `tactic cards 43`, `backups: 95 units (17 stand-ins, 78 owned-6★ picks; 277 forms), 39 自选 summons, 4 DIY slots, 15 / 9 prototype picks (tier 5 / 6), 78 owned-6★ picks (the 7 collab operators upstream excludes included: the fork, `FORK_INCLUDE_COLLAB_PICKS`)`.
 
 ## 17. Integrity guarantees (checked by the builder and `test/data.test.js`)
 
@@ -633,13 +633,13 @@ server/match/player/diy.js, docs/META.md §3). The rules in the data (activity_t
   even their elite form has none) and the row's potential (`potRank` 0 on all 55) — moot: every unit form is built at
   full potential like a chess (the owner's decision of 2026-10-07), and the 17 原型干员 have no potential ranks.
 
-`units[charId]` — first the 17 stand-ins, then the 71 owned-6★ 自选 picks (`diy.ownedPool`); no unit for a PRESET or DIY
+`units[charId]` — first the 17 stand-ins, then the 78 owned-6★ 自选 picks (`diy.ownedPool`); no unit for a PRESET or DIY
 chess:
 
 | Field | Example (`char_611_acnipe`) | Meaning |
 |---|---|---|
 | `charId`, `name`, `appellation`, `rarity`, `profession`, `subProfessionId`, `subProfessionName`, `position`, `nationId`, `isNotObtainable` | `"char_611_acnipe"`, `"Stormeye"`, `"Stormeye"`, `6`, `"SNIPER"`, `"fastshot"`, `"速射手"`, `"RANGED"`, `null`, `true` | as on a chess record (`isNotObtainable` false for the owned picks) |
-| `assets` | `{"avatar":"char_611_acnipe","avatarGolden":"char_611_acnipe","portrait":"char_611_acnipe_1","portraitGolden":"char_611_acnipe_1","spine":"char_611_acnipe","subProfIcon":"sub_fastshot_icon"}` | art ids (URLs in `data/assets.json`, which carries all 89 — the owned picks since 0.2.0, ASSETS.md); the elite form takes the E2 art when it exists — of the stand-ins only 领主·Sharp has it, every owned pick does |
+| `assets` | `{"avatar":"char_611_acnipe","avatarGolden":"char_611_acnipe","portrait":"char_611_acnipe_1","portraitGolden":"char_611_acnipe_1","spine":"char_611_acnipe","subProfIcon":"sub_fastshot_icon"}` | art ids (URLs in `data/assets.json`, which carries all 95 — the owned picks since 0.2.0, the fork's 7 collab picks since 2026-10-08, ASSETS.md); the elite form takes the E2 art when it exists — of the stand-ins only 领主·Sharp has it, every owned pick does |
 | `moduleNames` | `{"uniequip_001_acnipe":{"name":"Stormeye证章","typeName":"ORIGINAL"},"uniequip_002_acnipe":{"name":"Stormeye证章","typeName":"MAR-X"}}` | every module of the character (a composed record names its module on the normal form too) |
 | `standsIn[]` | `["chess_char_3_21_a","chess_char_4_02_a","chess_char_5_18_a","chess_char_5_22_a","chess_char_6_01_a","chess_char_6_05_a"]` | the NORMAL base chess it replaces (`[]` for an owned pick) |
 | `forms[statusKey]` | keys `"2/1/4/0"`, `"2/60/7/1"`, `"2/60/7/3"` | the character at every status it fights at — of the chess it stands in for and of the DIY slots it may fill (`statusKey(status)` = `phase/level/skillLevel/equipLevel`): 3 forms per 6★ (an owned pick: exactly the three DIY slot statuses — E2 Lv1 skill rank 4 without a module, E2 Lv60 rank 7 with every module at stage 1 and at stage 3), 2 per 4★ |
@@ -647,7 +647,7 @@ chess:
 A **form** holds the operator fields of a chess record with **nothing selected**: `status`; `stats`, `trait`, `talents`
 **without** a module, at full potential as on a chess; `immunities`, `rangeId`, `rangeGrid`, `dmgType`, `attackKind`, `projectile`, `canHitFly`,
 `targetPriority`; `skills[]` — every skill unlocked at the status, at its skill level, `trigger` resolved per skill, no
-`isDefault`; `displayTokens` / `tokens` (summons — none of the 17 stand-ins has one; 27 of the owned picks do, their
+`isDefault`; `displayTokens` / `tokens` (summons — none of the 17 stand-ins has one; 28 of the owned picks do, their
 records in `tokens` below); at `equipLevel > 0` `modules[]` (§2.2 shape without `isDefault`). `buildUnitForm` uses buildChess's helpers and rules, and the build fails when `buildUnitForm` +
 `composeUnitRecord` do not give back every PRESET chess field for field (each is its own backup), so a later change to
 buildChess that the stand-ins would miss stops the build. The chess trigger deviations (§2.2, DESIGN §21.29) name chess
@@ -698,11 +698,11 @@ operator (自选)").
 | `slots[slotId]` | `{"tier":5,"goldenId":"chess_char_5_diy1_b","shopLevel":5,"requirement":"TIER_6"}` | the four DIY chess `chess_char_5_diy1/2_a`, `chess_char_6_diy1/2_a` (chess.json: price 4, sell 1, `diyRequirement`, empty `bonds` / `garrisonIds`); `shopLevel` = the 调度中心 level whose `shopLevelDisplayDataDict.charChessDiySlotIdList` lists the slot |
 | `prototypes[tier]` | `{"5":[…15],"6":[…9]}` | the legal prototype picks: the nine 6★ at both tiers, at tier 5 also the six 4★ that are not 先锋 / 特种 ("第5阶可额外从6名四星原型干员（先锋、特种职业除外）中选取"; `DIY_EXTRA_PROTOTYPES`). A prototype may fill a tier-5 and a tier-6 slot ("原型干员可于5、6阶之间重复选取") |
 | `locked[tier][charId]` | `{"skillIndex":2,"uniEquipId":"uniequip_002_acguad","from":["chess_char_5_06_a","chess_char_5_13_a"]}` | the skill and module a prototype carries in a slot of that tier — "技能携带规则与系统补位时一致" (PRTS 卫戍协议), read as [ASSUMED] (the owner's decision of 2026-10-05) the selection of its 补位 rows at that tier (`from`): the eight 6★ elites S3 with their own module, 领主·Sharp S1, the reserves S3 without a module; 预备干员-医疗 has no tier-5 row: S3 by analogy (`from` `[]`, `DIY_PROTOTYPE_FALLBACK_SKILL`) |
-| `ownedPool[]` | 71 charIds | the owned 6★ a player may slot: obtainable, rarity = the requirement, and no chess names it — hidden chess included ("不可甄选加入已在名单中的固定干员"); each at most once per roster ("玩家已拥有干员不可重复选取"). Not the collab operators (`excluded`) |
-| `excluded[]` | `["char_456_ash","char_1029_yato2","char_1048_orchd2","char_4123_ela","char_4141_marcil","char_4182_oblvns","char_4217_makoto"]` | the 7 obtainable 6★ outside the pool that come from a 联动寻访 — a collab team in `mainPower` / `subPower` (`DIY_EXCLUDED_TEAMS`: rainbow, action4, mujica, sees, laios — 灰烬, 麒麟R夜刀, 艾拉, 玛露西尔, 丰川祥子, 结城理) or a collab series in `displayNumber` (`DIY_EXCLUDED_NUMBER_PREFIXES` MH / RS / AM / PS / DD — also 焰狐龙梓兰 MH05, whose team reserve6 names no collab): left out of the data and the pool by the owner's decision of 2026-10-05 (copyright); the excel does not exclude them |
+| `ownedPool[]` | 78 charIds | the owned 6★ a player may slot: obtainable, rarity = the requirement, and no chess names it — hidden chess included ("不可甄选加入已在名单中的固定干员"); each at most once per roster ("玩家已拥有干员不可重复选取"). In this fork the 7 collab operators upstream leaves out are picks too (`excluded`) |
+| `excluded[]` | `[]` | upstream: the 7 obtainable 6★ outside the pool that come from a 联动寻访 — a collab team in `mainPower` / `subPower` (`DIY_EXCLUDED_TEAMS`: rainbow, action4, mujica, sees, laios — 灰烬, 麒麟R夜刀, 艾拉, 玛露西尔, 丰川祥子, 结城理) or a collab series in `displayNumber` (`DIY_EXCLUDED_NUMBER_PREFIXES` MH / RS / AM / PS / DD — also 焰狐龙梓兰 MH05, whose team reserve6 names no collab), left out of the data and the pool by upstream's owner on 2026-10-05 (copyright; the excel does not exclude them). **The fork** keeps them: `tools/build-data.mjs FORK_INCLUDE_COLLAB_PICKS` (the fork owner's decision of 2026-10-08) leaves this list empty, so `char_456_ash`, `char_1029_yato2`, `char_1048_orchd2`, `char_4123_ela`, `char_4141_marcil`, `char_4182_oblvns` and `char_4217_makoto` are in `ownedPool`, `units` (艾拉's 雷鸣地雷 `token_10033_ela_grzmot` in `tokens`) and `operators` — 结城理 拉特兰 by his subPower laterano, the other six 协防干员 |
 | `operators[charId]` | `{"name":"煌","rarity":6,"profession":"WARRIOR","subProfessionId":"centurion","obtainable":true,"powers":["rhodes","elite","yan","victoria"],"bonds":["yanShip","victoriaShip"]}` | every pick (owned pool + prototypes): `powers` = the `nationId` / `groupId` / `teamId` of `mainPower` and of every `subPower` (隐藏势力); `bonds` = the core bonds whose `powerIdList` meets them — one or several — else `economy.fallbackBondId` 协防干员 ("甄选加入的干员会根据其实际阵营所属分配核心盟约，若没有可匹配的则改为分配协防干员盟约"); every prototype gets `["emptyShip"]` |
 
-`tokens[tokenId]` — the summons of the owned picks (38 tokens of 27 operators): a tokens.json record (§14: name, text,
+`tokens[tokenId]` — the summons of the owned picks (39 tokens of 28 operators): a tokens.json record (§14: name, text,
 `placeable`, `ownerRange`, `abnormal`, `assets`) whose `variants` are keyed by the owner FORM `<charId>@<statusKey>`
 (`owners` = those keys; shared/diy.js `diyTokenOwner`) instead of a chess id — a DIY piece is a slot, and two players may
 fill one slot with different operators. A variant is the token at the owner's status for its first skill and no module,

@@ -783,7 +783,7 @@ registration order. `battle.off(handle)` / `battle.off(name, fn)` / `battle.offO
 | `tick` | `{ dt }` | end of every tick |
 | `beforeAttack` | `{ attacker, targets, isSkill, profile }` | allies **and** enemies; replace/filter `ctx.targets` |
 | `enemyAttackStart` | `{ enemy, targets }` | an enemy starts a normal attack (it has targets), **before** 麻痹 may interrupt it (ai.js enemyAttack; the client's ON_BEFORE_ABILITY_SPELL_ON): a burst a handler causes interrupts that very attack (酒神 堕梦, PRTS 备注 "触发的元素爆发可打断当次普攻"); a handler that kills or stuns the enemy ends it |
-| `attack` | `{ attacker, targets, isSkill }` | an attack/heal was performed (projectiles may still be in flight) |
+| `attack` | `{ attacker, targets, isSkill, attackId }` | an attack/heal was performed (projectiles may still be in flight); `attackId` is the DamageInfo `attackId` every damage instance of this attack carries |
 | `hit` | `{ source, target, dmg, credit }` | before mitigation; mutate `dmg` (not fired for gauge fills — see `elementHit`). `source` may be null (terrain; 无来源 `dmg.sourceless` bursts, whose `credit` names the unit credited) |
 | `elementHit` | `{ source, target, dmg }` | before a gauge fill (`dmg.type === 'element'`); mutate `dmg.amount`/`dmg.mul`, set `dmg.cancel` |
 | `damaged` | `{ source, target, amount, type, dmg, credit }` | after application (`amount` may be 0 when shielded); element fills too (with their source); 无来源: `source` null, `credit` set |

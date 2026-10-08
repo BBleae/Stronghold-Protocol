@@ -73,6 +73,9 @@ export const TOKEN_SKIN_SPINES = Object.freeze({
   token_10027_ironmn_pile3: 'token_10027_ironmn_pile3_ambienceSynesthesia_5',
   token_10029_slent2_protrb: 'token_10029_slent2_protrb_epoque_32',
   token_10032_jesca2_jckshd: 'token_10032_jesca2_jckshd_cfa_1',
+  // 艾拉's 雷暴 mine: a 自选 summon of this fork only (tools/build-data.mjs FORK_INCLUDE_COLLAB_PICKS, the fork owner's
+  // decision of 2026-10-08: the 7 collab 6★ are picks here); the variant the 外援 probe found for her
+  token_10033_ela_grzmot: 'token_10033_ela_grzmot_rainbow6_2',
   token_10034_ray_sndbst: 'token_10034_ray_sndbst_shining_2',
   token_10035_wisdel_wward: 'token_10035_wisdel_wward_game_9',
   token_10043_necras_skeltn: 'token_10043_necras_skeltn_ambienceSynesthesia_7',

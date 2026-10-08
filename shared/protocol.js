@@ -431,6 +431,11 @@ export const S2C = [
   // 匹配 (matchmaking): the queue the player is waiting in (`queue.status`), and the room the server put it in
   // (`queue.matched` → the client sends room.join with that code like any other room code).
   'queue.status', 'queue.matched',
+  // 在线人数 (presence counters, a remake addition): `{ online, inRoom }` (server/lobby.js presence) — the live sockets and
+  // the humans holding a seat plus the spectators. Sent once right after `welcome` and again whenever the numbers change;
+  // the title footer and the lobby top bar show them (public/js/ui/presence.js). A page without a session reads the
+  // same two numbers from GET /healthz.
+  'presence',
   'm.public', 'm.private', 'm.field', 'm.toast', 'm.ticker', 'm.emote', 'm.result',
   // m.unitStats { seq, round, units: [unitStatsEntry] } — the answer to g.unitStats (the requester only)
   'm.unitStats',

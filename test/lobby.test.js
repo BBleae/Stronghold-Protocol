@@ -1270,6 +1270,9 @@ describe('websocket lobby', () => {
     assert.ok(h.rooms >= 1);
     assert.ok(h.sockets >= 1);
     assert.ok(h.sessions >= 1);
+    // 在线人数 (test/presence.test.js): the live sockets and the humans / spectators in a room
+    assert.equal(h.online, h.sockets);
+    assert.ok(h.inRoom >= 1);
   });
 });
 
@@ -1705,8 +1708,13 @@ describe('match result replay', () => {
     return { host, guest, st, hostResult };
   }
 
-  /** Frames of a resumed socket in arrival order (types + phase), after welcome. */
-  const order = (c) => c.log.filter((m) => m.t !== 'welcome' && m.t !== 'pong').map((m) => m.t + (m.t === 'm.public' ? `:${m.phase}` : ''));
+  /**
+   * Frames of a resumed socket in arrival order (types + phase), after welcome. `presence` (the 在线人数 counters that
+   * answer every welcome, a remake addition) is not part of the replay contract asserted below, like welcome and pong.
+   */
+  const order = (c) => c.log
+    .filter((m) => m.t !== 'welcome' && m.t !== 'pong' && m.t !== 'presence')
+    .map((m) => m.t + (m.t === 'm.public' ? `:${m.phase}` : ''));
 
   for (const unicast of [true, false]) {
     test(`a human disconnected when the match ends gets room.state, the final m.public and m.result on resume (${unicast ? 'per-player' : 'broadcast'} result)`, async () => {
@@ -1778,7 +1786,7 @@ describe('match result replay', () => {
     await back.terminate();
     const again = await pool.connect();
     await again.hello('Guest', guest.token);
-    await again.expectNone(null, (m) => m.t !== 'welcome', 300);
+    await again.expectNone(null, (m) => m.t !== 'welcome' && m.t !== 'presence', 300); // the counters answer every welcome
   });
 
   test('real Match: a human who is away when the match finishes gets its m.result on resume', async () => {

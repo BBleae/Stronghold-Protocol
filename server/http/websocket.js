@@ -25,8 +25,12 @@ export function createSessionStack(opts, { data, log }) {
   const netOptions = netOptionsFrom(opts);
   const registry = new SessionRegistry({ reconnectWindowMs: netOptions.reconnectWindowMs ?? NET_DEFAULTS.reconnectWindowMs });
   const lobbyOptions = lobbyOptionsFrom(opts);
-  const lobby = new Lobby({ registry, log, MatchClass: opts.MatchClass, getData: () => data, seedFn: opts.seedFn, options: lobbyOptions });
-  const network = new Network({ registry, handler: lobby, log, options: netOptions });
+  // `sockets`: the live socket count, the "online" half of the presence counters (在线人数, Lobby.presence). Read lazily:
+  // the network below does not exist yet (it takes the lobby as its handler).
+  let network = null;
+  const lobby = new Lobby({ registry, log, MatchClass: opts.MatchClass, getData: () => data, seedFn: opts.seedFn,
+    sockets: () => (network ? network.connectionCount : 0), options: lobbyOptions });
+  network = new Network({ registry, handler: lobby, log, options: netOptions });
   return { registry, lobby, network };
 }
 

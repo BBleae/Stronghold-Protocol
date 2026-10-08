@@ -23,6 +23,7 @@ import { CLOSE, refuseSocket } from './close-codes.js';
 import { PACK_PATH, servePack } from './pack.js';
 import { serveMedia } from './media.js';
 import { MEDIA_PREFIX } from '../shared/media.js';
+import { PRESENCE, healthPresence, reportPresence } from './presence.js';
 
 // the deployed commit (tools/build-worker.mjs buildId; esbuild defines it, unbundled tests see 'local')
 const BUILD = typeof __SP_BUILD__ === 'string' ? __SP_BUILD__ : 'local';
@@ -34,9 +35,9 @@ const sameOrigin = (request) => !request.headers.has('Origin') || request.header
 
 export default {
   // The one place a request's unexpected error ends: logged with its route, answered with a status (worker/http.js).
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     try {
-      return await route(request, env);
+      return await route(request, env, ctx);
     } catch (error) {
       const url = new URL(request.url);
       return errorResponse(error, { method: request.method, path: url.pathname, room: url.searchParams.get('room') ?? undefined });
@@ -90,7 +91,7 @@ async function compatRoute(request, env, url, path) {
   return env.ASSETS ? env.ASSETS.fetch(request) : error(404, 'ROOM_NOT_FOUND');
 }
 
-async function route(request, env) {
+async function route(request, env, ctx) {
   const url = new URL(request.url);
   const path = url.pathname;
   // Resource files: the complete resource ZIP and the extension-less audio alias, both read from the static assets.
@@ -123,8 +124,12 @@ async function route(request, env) {
   if (queueResponse) return queueResponse;
   const historyResponse=await handleHistoryRoutes(request,env);
   if(historyResponse) return historyResponse;
+  // /healthz also carries the 在线人数 counters (`online`, `inRoom`: numbers, null when unknown) for the title screen
+  // and the lobby, which hold no socket: read from the presence board through a short cache (worker/presence.js).
   if (path === '/healthz') return request.method === 'GET'
-    ? json({ ok: true, runtime: 'cloudflare', version: APP_VERSION, build: BUILD }) : error(405, 'BAD_MSG');
+    ? json({ ok: true, runtime: 'cloudflare', version: APP_VERSION, build: BUILD,
+      ...await healthPresence(request, env, { waitUntil: ctx?.waitUntil ? (p) => ctx.waitUntil(p) : undefined }) })
+    : error(405, 'BAD_MSG');
   // Internal endpoints are only invoked on a DO stub; the public entry point never forwards them.
   if (path.startsWith('/_')) return error(404, 'ROOM_NOT_FOUND');
   if (path === '/api/rooms') {
@@ -231,6 +236,9 @@ export class RoomDurableObject {
     this.archiving = false;
     this.listing = { busy: false, failures: 0, retryAt: 0, fingerprint: null, refreshAt: 0 };
     this.logins = { busy: false, failures: 0, retryAt: 0 };
+    // The presence report's job (publishPresence): in flight, failures in a row, not before, the numbers the board holds
+    // for this room ('online/inRoom'; null: none), when they were reported.
+    this.presence = { busy: false, failures: 0, retryAt: 0, key: null, at: 0 };
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('{"t":"ping","c":0}', '{"t":"pong","c":0}'));
     this.ready = ctx.blockConcurrencyWhile(async () => {
       try {
@@ -516,12 +524,14 @@ export class RoomDurableObject {
   }
 
   // Background jobs, started after a commit: the archives of finished matches, the public lobby listing, the logins of
-  // open sockets. A failure is logged and retried after a backoff (the alarm wakes the room for it), never at every
-  // event. Seat pointers need no job: a pointer this room no longer confirms is released by its next reader (seatOf).
+  // open sockets, the presence report. A failure is logged and retried after a backoff (the alarm wakes the room for
+  // it), never at every event. Seat pointers need no job: a pointer this room no longer confirms is released by its next
+  // reader (seatOf).
   startJobs() {
     this.archiveNext();
     this.publishListing();
     this.checkLogins();
+    this.publishPresence();
   }
 
   // The oldest due archive is published. A failed one waits for its own backoff, stored with it: it neither blocks the
@@ -633,8 +643,52 @@ export class RoomDurableObject {
       })));
   }
 
+  // 在线人数 (worker/presence.js): the room reports its open sockets and its people (humans holding a seat, spectators)
+  // to the presence board when the numbers change, renews the report at its first event PRESENCE.refreshMs after the
+  // last one (while a socket is open its login checks wake it every minute, so the renewal rides on those wakes), and
+  // withdraws it once both are zero. The board's answer, the site-wide sums, reaches the room's sessions as the
+  // `presence` frame when it changed. A failed report is retried after a backoff of at most PRESENCE.refreshMs while
+  // someone is connected; a failed withdrawal is not retried (the board's lease drops the report), nor is a room that
+  // nobody is connected to woken for its report (it lapses, and the next wake reports again).
+  publishPresence() {
+    const rt = this.runtime;
+    const job = this.presence;
+    const now = Date.now();
+    if (job.busy || now < job.retryAt || !rt.code || !this.env.MATCHMAKER) return;
+    const counts = rt.presenceCounts();
+    const key = counts.online || counts.inRoom ? `${counts.online}/${counts.inRoom}` : null;
+    if (key === job.key && (key === null || now < job.at + PRESENCE.refreshMs)) return;
+    job.busy = true;
+    const reported = reportPresence(this.env, { roomId: rt.code, ...counts });
+    this.ctx.waitUntil(reported.then(
+      (totals) => this.event(() => {
+        this.presence = { busy: false, failures: 0, retryAt: 0, key, at: Date.now() };
+        this.runtime.showPresence(totals);
+      }),
+      (error) => this.event(() => {
+        job.busy = false;
+        if (key === null) {
+          // the withdrawal is lost: the board forgets the room when its lease lapses
+          Object.assign(job, { failures: 0, retryAt: 0, key: null });
+          return;
+        }
+        job.failures += 1;
+        job.retryAt = Date.now() + Math.min(PRESENCE.refreshMs, backoff(job.failures));
+        logWarn('presence_report_failed', { room: rt.code, attempts: job.failures, retryAt: job.retryAt, error: errorFields(error) });
+      })));
+  }
+
+  // When the presence report is due (Infinity: not before some other event): its retry, or its forced renewal. Only a
+  // room someone is connected to is woken for it.
+  presenceDue() {
+    const job = this.presence;
+    if (job.busy || !this.runtime.connected()) return Infinity;
+    if (job.failures) return job.retryAt;
+    return job.key === null ? Infinity : job.at + PRESENCE.forceMs;
+  }
+
   // When the next background job is due (Infinity: none): an archive's retry, the listing's retry or lease refresh,
-  // the next login check. Called after arm().
+  // the next login check, the presence report's retry or renewal. Called after arm().
   jobsDue() {
     const archive = !this.outboxSize || this.archiving ? Infinity
       : this.ctx.storage.sql.exec('SELECT MIN(retry_at) AS at FROM archive_outbox').one().at;
@@ -646,7 +700,7 @@ export class RoomDurableObject {
     const listing = job.busy || (!room && !job.failures) || (room?.match && !this.timer) ? Infinity
       : job.failures ? job.retryAt : job.refreshAt;
     const logins = this.logins.busy ? Infinity : Math.max(this.logins.retryAt, this.runtime.nextLoginCheck());
-    return Math.min(archive, listing, logins);
+    return Math.min(archive, listing, logins, this.presenceDue());
   }
 
   async fetch(request) {

@@ -170,3 +170,38 @@ test('匹配: a group forms by the queue clock alone, its frames committed witho
   const stats = await h.request('https://test.example/healthz').then((r) => r.json());
   assert.equal(stats.rooms, 1, 'the room the queue opened is the lobby\'s');
 });
+
+// 在线人数 (presence counters) in the node-protocol deployment: the gateway's lobby counts like the Node server (every live
+// socket is online, a hello-less one too; the humans holding a seat are in a room). A hello is answered with the counters,
+// a change reaches every session with the event that made it (the commit, not an interval clock), and /healthz carries
+// the same two numbers.
+test('NODE_COMPAT: 在线人数 — a hello gets the counters, changes go out with their event, /healthz carries them', { timeout: 120_000 }, async (t) => {
+  const h = await world(t);
+  const empty = await (await h.request('https://test.example/healthz')).json();
+  assert.deepEqual([empty.online, empty.inRoom], [0, 0]);
+  // a page on the title screen: a socket, no hello yet
+  const lurker = await h.request('https://test.example/ws', { headers: { Upgrade: 'websocket', 'CF-Connecting-IP': '7.7.7.7' } });
+  lurker.webSocket.accept();
+  const a = await client(h, 'A', '8.8.8.8');
+  const first = await a.wait('presence');
+  assert.deepEqual([first.online, first.inRoom], [2, 0], 'the hello-less socket counts as online');
+  const waitPresence = async (socket, ok) => {
+    for (let i = 0; i < 250; i++) {
+      const frame = socket.frames.filter((f) => f.t === 'presence').at(-1);
+      if (frame && ok(frame)) return frame;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.fail(`no matching presence frame: ${JSON.stringify(socket.frames.filter((f) => f.t === 'presence'))}`);
+  };
+  const b = await client(h, 'B', '9.9.9.9');
+  await waitPresence(a, (f) => f.online === 3 && f.inRoom === 0);
+  assert.equal((await b.request('room.create', { mode: 'coop', difficulty: 'FUNNY' })).t, 'ok');
+  await waitPresence(a, (f) => f.online === 3 && f.inRoom === 1);
+  const health = await (await h.request('https://test.example/healthz')).json();
+  assert.deepEqual([health.online, health.inRoom, health.sockets], [3, 1, 3]);
+  // B's socket drops: no longer online; its seat is kept for the lobby grace, so it is still in the room
+  b.ws.close(1000, 'gone');
+  await waitPresence(a, (f) => f.online === 2 && f.inRoom === 1);
+  lurker.webSocket.close(1000, 'gone');
+  await waitPresence(a, (f) => f.online === 1);
+});

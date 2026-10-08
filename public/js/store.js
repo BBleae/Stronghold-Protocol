@@ -11,6 +11,7 @@
 //                 every local clock; `leaks`: { [fieldId]: counted leaks so far } of every normal field simulated
 //                 locally (the live LP of ui/hud.js liveLp, user playtest #3 item 2). Under client-side combat `field`
 //                 is published by the runner (the m.field shape of the battle on screen, `local: true`).
+//   presence    – { online, inRoom, via } the 在线人数 counters (ui/presence.js)
 //   ticker      – recent `m.ticker` lines, emotes – recent `m.emote` events
 //   clock       – { offset, rtt } server clock correction: serverNow ≈ Date.now() + offset
 //   ui          – small bits of local UI state shared between screens
@@ -85,6 +86,9 @@ export const initialState = Object.freeze({
   // the queue.matched payload the server sent when it put this player in a room ({ code, difficulty, seated, expect }:
   // `expect` is how many humans a matched host waits for in account mode, DESIGN §F4.2; 0 from the Node server).
   queue: { waiting: false, difficulty: null, count: 0, total: 0, waitedMs: 0, minSeats: 0, seats: 0, matched: null },
+  // 在线人数 (ui/presence.js): the server's live counters — `online` pages, the players / spectators inside a room —
+  // null while unknown; `via` says where they came from: 'frame' (the pushed `presence` frame), 'healthz' (polled), null
+  presence: { online: null, inRoom: null, via: null },
   ticker: [],
   emotes: [],
   clock: { offset: 0, rtt: null, synced: false },

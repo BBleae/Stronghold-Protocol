@@ -1279,5 +1279,7 @@
   "微信、QQ 等应用里打开的页面不能安装。请点右上角的「…」，选「在浏览器打开」，再在浏览器里点「安装」。": "Pages opened inside apps such as WeChat or QQ cannot be installed. Tap \"…\" at the top right, choose \"Open in Browser\", then tap \"Install\" in the browser.",
   "知道了": "Got it",
   "把游戏安装到桌面或主屏幕，像应用一样打开": "Install the game on your desktop or home screen and open it like an app",
-  "安装": "Install"
+  "安装": "Install",
+  "在线 {online} 人 · 房间内 {inRoom} 人": "{online} online · {inRoom} in rooms",
+  "本服务器当前的在线人数，以及其中在房间里（含观战）的人数": "Players on this server right now, and how many of them are in a room (spectators included)"
 }

@@ -4,7 +4,7 @@
 //   * a URL longer than 4096 characters → 414; one that does not parse → 400;
 //   * any method but GET / HEAD → 405 with `Allow: GET, HEAD`;
 //   * GET /healthz → JSON status (protocol `version`, release `app`, uptime, the served `build`, sockets, sessions,
-//     rooms, matches), never cached;
+//     rooms, matches, and the presence counters `online` / `inRoom`), never cached;
 //   * everything else → the static files (static.js).
 // A route that throws is logged and answers 500.
 
@@ -26,6 +26,9 @@ export function healthReport({ startedAt, network, registry, lobby }) {
     // older than this reloads itself, so a deploy reaches clients that never reload
     build: buildTag(),
     sockets: network.connectionCount, sessions: registry.size, ...lobby.stats(),
+    // 在线人数: the counters the client shows next to the version (title footer / lobby top bar, the `presence` frame) —
+    // a page that has no session (the title screen) reads them from here (public/js/ui/presence.js fetchPresence)
+    ...lobby.presence(),
   };
 }
 

@@ -32,6 +32,7 @@ import { t, N_ } from '../../../shared/i18n.js';
 import { scriptOf } from '../../../shared/i18nPacks.js';
 import { GIcon } from '../ui/gameComponents.js';
 import { SettingsModal } from '../ui/settings.js';
+import { presenceLabel, presenceHint, usePresencePoll } from '../ui/presence.js';
 
 /**
  * Enter the game shell with a nickname (title → lobby).
@@ -156,6 +157,10 @@ const STATUS_TEXT = {
 export function TitleScreen() {
   const conn = useStore((s) => s.connection, shallowEqual);
   const pendingJoin = useStore((s) => s.ui.pendingJoin);
+  // 在线人数 (ui/presence.js): this screen has no session yet (`hello` goes out on entering), so the pushed `presence`
+  // frame cannot reach it — it reads the same counters from /healthz while it is up
+  const presence = useStore((s) => s.presence, shallowEqual);
+  usePresencePoll();
   useLang(); // re-render on a language switch
   const [name, setName] = useState(() => store.get().me.name || identity.loadName() || '');
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -272,8 +277,11 @@ export function TitleScreen() {
     <${SettingsModal} open=${settingsOpen} onClose=${() => setSettingsOpen(false)} />
 
     <footer class="title-foot">
-      <span>${t('非官方同人复刻 · 游戏素材版权归 上海鹰角网络 / Yostar 所有')}</span>
-      <${MicroLabel}>v${APP_VERSION} · WEB SIMULATION<//>
+      <span class="title-foot__note">${t('非官方同人复刻 · 游戏素材版权归 上海鹰角网络 / Yostar 所有')}</span>
+      <span class="title-foot__right">
+        <span class="presence num" data-testid="title-presence" title=${presenceHint()}>${presenceLabel(presence)}</span>
+        <${MicroLabel}>v${APP_VERSION} · WEB SIMULATION<//>
+      </span>
       ${DEV_BUILD ? html`<span class="title-dev" role="note">${t('开发版 · 不稳定，请勿用于公开服务器')}</span>` : null}
     </footer>
   </div>`;

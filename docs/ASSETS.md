@@ -55,8 +55,11 @@ How downloads are fetched:
 - A manifest entry with fallbacks (for example an enemy icon that falls back to its base enemy's icon) only moves on to the next alternative after a **definitive 404**. When the primary fails transiently (network error, 5xx or an invalid payload after all retries), no fallback is fetched. The path is listed under `downloadErrors` in the report, and the next run retries the primary.
 - A skeleton that fails to parse is deleted and removed from the ledger, so the next online run downloads it again.
 
-The first run downloads the whole manifest; `data/assets.json` `stats` gives its size. Measured after the 0.2.1 merge
-(2026-10-08): 550.5 MiB (577,278,949 bytes) in 10,715 files, of them the operator voice 150.8 MiB in 5,348 files (191
+The first run downloads the whole manifest; `data/assets.json` `stats` gives its size. Measured with the fork's 7 collab
+picks back (2026-10-08, `tools/build-data.mjs FORK_INCLUDE_COLLAB_PICKS`): 574.4 MiB (602,352,921 bytes) in 11,022 files,
+of them the operator voice 155.0 MiB in 5,544 files (198 operators × 14 lines in each language: 中文 67.6 MiB, 日文
+87.4 MiB); the 7 operators and 艾拉's mine added 307 files and 23.9 MiB (25,073,972 bytes; their voice 4.1 MiB in 196
+files), and nothing left. Measured after the 0.2.1 merge (2026-10-08): 550.5 MiB (577,278,949 bytes) in 10,715 files, of them the operator voice 150.8 MiB in 5,348 files (191
 operators × 14 lines in each language: 中文 65.6 MiB, 日文 85.2 MiB) — without the 日文 voice about 465 MiB. Measured
 before the merge (2026-10-07, with the retired 外援 roster of DESIGN §F3): about 560 MiB in about 10,700 files — the
 operator voice in both languages ~155 MiB in 5,544 files (the 外援 operators' 63 MiB in 2,184 of them, gone with them), the 55 emote and 玩法说明
@@ -109,8 +112,8 @@ The `stem` of a Spine model is the upstream file name. Two examples: `char_107_l
 
 ### Id scope
 
-- **Operators:** all 138 pool charIds from `activity_table` (`charShopChessDatas[*].charId ∪ backupCharId`), including hidden chess and backup operators; plus every unit of `data/backups.json` research 07 does not list — the 71 自选 owned-6★ picks (`diy.ownedPool`, DATA.md §18; the collab operators are not in the data, and 焰狐龙梓兰's entries left the manifest when she left the pool in 0.2.0) — planned from 07's URL patterns (`tools/assets/plan.mjs patternOperator`, `tools/fetch-assets.mjs dataExtras`): avatar and portrait (E0–E1 and E2), the default-skin battle Spine Front / Back, the icon and skill sound of each skill, the sub-profession icon. 209 operators in all (206 with a Back model).
-- **Tokens:** the 20 pool tokens, and the 38 summons of the 自选 picks (`data/backups.json tokens`) as extra tokens (below): their avatars; no dump carries the battle Spine of the 自选 summons (upstream has at most skin variants, which the default locations miss), so the web manifest has no model for them — 35 of them, and 4 pool summons, have the official model as an optional local-client overlay ("Token models from the local client"); 3 have no model in the game at all.
+- **Operators:** all 138 pool charIds from `activity_table` (`charShopChessDatas[*].charId ∪ backupCharId`), including hidden chess and backup operators; plus every unit of `data/backups.json` research 07 does not list — the 78 自选 owned-6★ picks (`diy.ownedPool`, DATA.md §18; upstream leaves the 7 collab operators out of the data, this fork keeps them — 灰烬, 麒麟R夜刀, 焰狐龙梓兰, 艾拉, 玛露西尔, 丰川祥子, 结城理, back in the manifest on 2026-10-08) — planned from 07's URL patterns (`tools/assets/plan.mjs patternOperator`, `tools/fetch-assets.mjs dataExtras`): avatar and portrait (E0–E1 and E2), the default-skin battle Spine Front / Back, the icon and skill sound of each skill, the sub-profession icon. 216 operators in all (213 with a Back model).
+- **Tokens:** the 20 pool tokens, and the 39 summons of the 自选 picks (`data/backups.json tokens`) as extra tokens (below): their avatars; no dump carries the battle Spine of the 自选 summons under their own id (upstream has at most skin variants, which the default locations miss) — the fork plans the skin variant of 25 of them (`tools/assets/plan.mjs TOKEN_SKIN_SPINES`, from its 外援 asset probe; 艾拉's 雷鸣地雷 `token_10033_ela_grzmot_rainbow6_2` the 25th) as their web model — and 35 of them, and 4 pool summons, have the official model as an optional local-client overlay ("Token models from the local client"; not 艾拉's mine: no `extract.py TOKEN_SPINES` entry yet); 3 have no model in the game at all.
 - **Enemies:** 253 ids planned, 252 in the manifest (心烛 has no assets). The set is the union of:
   - the 07 enemy list;
   - every enemy in the `act1autochess_*` wave, boss and 联防 levels that act2 modes use (from `05-maps.json`; the tutorial is excluded);
@@ -215,7 +218,8 @@ moments (PR #73, @Convey123), ported onto this fork's voice engine (DESIGN §21.
   (upstream 0.2.0, DESIGN §25.9, on this engine).
 - Lines outside a battle (编入队伍, 任命队长, 干员报到, 精英化晋升, home and base lines) are not downloaded.
 - Languages: `cn` = `CN_MANDARIN` (folder `voice_cn/`), `jp` = `JP` (`voice/`); a linkage operator with only its own
-  `LINKAGE` voice uses it in both. 120 of the 138 pool operators have voice, and the 71 自选 picks (DESIGN §25.12):
+  `LINKAGE` voice uses it in both. 120 of the 138 pool operators have voice, and the 78 自选 picks (DESIGN §25.12; the fork's
+  7 collab picks included):
   14 lines each, ~0.34 MiB per operator in 中文 and ~0.45 MiB in 日文. On request (`--voice=…,en,kr`, from upstream #73): `en` = `EN` (`voice_en/`), `kr` = `KR`
   (`voice_kr/`), the same file names; an operator without that dub has no line in it, a linkage operator keeps its own.
 - `combat` keeps its key although it is positional now: `tools/assets/manifest.mjs droppedEntries` takes an array as

@@ -27,6 +27,7 @@ import { AccountMenu, PublicRooms, applicationSent } from '../ui/accountMenu.js'
 import { store, useStore, shallowEqual, loadPref, savePref, usePref } from '../store.js';
 import { getConfig, getMode, getStage, useData } from '../data.js';
 import { t, tc, tParts, N_ } from '../../../shared/i18n.js';
+import { presenceLabel, presenceHint, usePresencePoll } from '../ui/presence.js';
 
 /** Official mode texts (activity_table act2autochess.modeDataDict), fallback when config.json is absent. */
 export const MODE_TEXT = {
@@ -272,6 +273,10 @@ export function LobbyScreen() {
   const displayName = account.user?.name || me.name;
   const conn = useStore((s) => s.connection, shallowEqual);
   const queue = useStore((s) => s.queue, shallowEqual);
+  // 在线人数 (ui/presence.js): pushed by the Node server to this session; /healthz is read while no frame comes (account
+  // mode's menu has no socket)
+  const presence = useStore((s) => s.presence, shallowEqual);
+  usePresencePoll();
   useData('config');
   const [savedMode, pickMode] = usePref('lobby.mode', 'coop');
   const [savedDifficulty, pickDifficulty] = usePref('lobby.difficulty', 'FUNNY');
@@ -345,6 +350,7 @@ export function LobbyScreen() {
       <div class="topbar__left">
         <${Button} variant="ghost" size="sm" icon="chevronLeft" onClick=${backToTitle} title=${t('返回标题')}>${t('返回')}<//>
         ${conn.status !== 'menu' ? html`<${PingPill} ms=${conn.ping} online=${conn.status === 'online'} />` : null}
+        <span class="presence num" data-testid="lobby-presence" title=${presenceHint()}>${presenceLabel(presence)}</span>
       </div>
       <div class="topbar__center">
         <${MicroLabel} tone="mint">SIMULATION PROTOCOL SELECT<//>

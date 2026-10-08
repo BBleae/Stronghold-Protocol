@@ -14,8 +14,8 @@
 //   (完成高难行动 for a perfect 绝境 / 终极 battle). Not taken: 编入队伍, 任命队长, 干员报到, 精英化晋升, the home and
 //   base lines.
 // - Every operator a player can field is voiced (tools/assets/plan.mjs charIds): the pool's (research 07) and the 自选
-//   owned-6★ picks (data/backups.json units) — 191 voiced operators: 120 of the pool's 138 and the 71 picks, each with
-//   the 14 lines. Operators without voice (the 17 reserve operators 预备干员 / 原型干员 char_60x / char_617_sharp2, the
+//   owned-6★ picks (data/backups.json units) — 198 voiced operators: 120 of the pool's 138 and the 78 picks (upstream 71;
+//   the fork's 7 collab picks, docs/design/fork.md §F6), each with the 14 lines. Operators without voice (the 17 reserve operators 预备干员 / 原型干员 char_60x / char_617_sharp2, the
 //   盟约·辅助干员 char_616_pithst) have no voiceLangDict entry and get no voice.
 
 /** Voice languages offered by the client: key → official voiceLangType preference (first present wins) + folder. */
@@ -35,7 +35,7 @@ const LANG_DIRS = Object.freeze({ CN_MANDARIN: 'voice_cn', JP: 'voice', LINKAGE:
  * that place's lines, played at random (select, deploy). An array role of several places is POSITIONAL (POSITIONAL_ROLES):
  * entry k-1 is the first line of the k-th place, in order, so `combat`[k-1] is 作战中k and the client plays 作战中N
  * for skill N (public/js/audio.js voiceUrl with an index, combatSlot). A missing place is left out, which shortens the
- * array (the client then draws at random); all 191 voiced operators (pool and 自选 picks) have the four.
+ * array (the client then draws at random); all 198 voiced operators (pool and 自选 picks) have the four.
  * The key stays `combat` (not renamed to a slot name) on purpose: tools/assets/manifest.mjs droppedEntries treats an
  * array as one leaf, so a renamed key would read as audio.voice.*.*.combat dropped and trip the shrink guard.
  */

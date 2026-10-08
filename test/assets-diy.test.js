@@ -3,6 +3,7 @@
 // units of data/backups.json are planned from research 07's URL patterns (avatar, portrait — E2 too —, battle Spine
 // Front / Back, every skill icon), their summons as tokens, and every module's type icon as manifest `modules`; the
 // committed data/assets.json lists them (checked against public/assets when present); --add-only never rewrites a file.
+// The fork: the 7 collab 6★ upstream leaves out are picks with everything the others have (the last test).
 // Run: node --test test/assets-diy.test.js
 
 import { test } from 'node:test';
@@ -13,6 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { dataExtras, orphanFiles, parseArgs } from '../tools/fetch-assets.mjs';
 import { patternOperator, buildPlan } from '../tools/assets/plan.mjs';
 import { indexAudio } from '../tools/assets/audio.mjs';
+import { VOICE_ROLES } from '../tools/assets/voice.mjs';
 import { Downloader } from '../tools/assets/downloader.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -111,18 +113,51 @@ test('the committed data/assets.json lists every 自选 operator\'s avatar, port
   assert.equal(m.stats.modules, Object.keys(m.modules).length);
 });
 
-test('an operator left out of 自选 (data/backups.json diy.excluded: the collab picks, 焰狐龙梓兰 MH05 among them) keeps no art in data/assets.json, so the full release zip (tools/package.mjs) never ships it', () => {
+// The fork (the owner's decision of 2026-10-08): the 7 collab 6★ upstream leaves out of 自选 for copyright
+// (tools/build-data.mjs DIY_EXCLUDED_TEAMS / DIY_EXCLUDED_NUMBER_PREFIXES) are picks here (FORK_INCLUDE_COLLAB_PICKS), so
+// the manifest carries their art, Spine models, skill / module icons, battle sound effects, voice and summons like every
+// other pick's — upstream's test asserted the opposite (no art of theirs, so the release zip never ships it).
+const COLLAB = ['char_456_ash', 'char_1029_yato2', 'char_1048_orchd2', 'char_4123_ela', 'char_4141_marcil', 'char_4182_oblvns', 'char_4217_makoto'];
+
+test('the fork\'s 7 collab picks (焰狐龙梓兰 MH05 among them) are in the data and in data/assets.json in full: art, Front / Back Spine, icons, unit sfx, cn + jp voice, 艾拉\'s mine (files on disk when public/assets is here)', () => {
   const m = load('assets');
-  const text = JSON.stringify(m);
-  assert.ok(BACKUPS.diy.excluded.includes('char_1048_orchd2'), '焰狐龙梓兰 is excluded');
-  for (const id of BACKUPS.diy.excluded) {
-    const code = id.split('_').slice(2).join('_');
-    assert.equal(m.chars[id], undefined, `${id}: chars`);
-    assert.equal(m.audio.sfx.units[id], undefined, `${id}: unit sfx`);
-    assert.equal(m.audio.voice?.[id], undefined, `${id}: voice`);
-    assert.ok(!Object.keys(m.skills).some((k) => k.startsWith(`skchr_${code}_`)), `${id}: skill icons`);
-    assert.ok(!text.includes(id), `${id}: no file of theirs`);
+  const disk = existsSync(join(ROOT, 'public', 'assets', 'char'));
+  const onDisk = (u) => !disk || existsSync(join(ROOT, 'public', u));
+  assert.deepEqual(BACKUPS.diy.excluded, [], 'nothing left out');
+  const roles = Object.keys(VOICE_ROLES).sort();
+  for (const id of COLLAB) {
+    assert.ok(BACKUPS.diy.ownedPool.includes(id) && BACKUPS.units[id] && BACKUPS.diy.operators[id], `${id}: a 自选 pick of the data`);
+    const c = m.chars[id];
+    assert.ok(c, `${id}: chars`);
+    for (const k of ['avatar', 'avatarE2', 'portrait', 'portraitE2']) assert.ok(c[k] && onDisk(c[k]), `${id}: ${k}`);
+    for (const side of ['front', 'back']) {
+      const sp = c.spine?.[side];
+      assert.ok(sp?.skel, `${id}: ${side} Spine`);
+      for (const u of [sp.skel, sp.atlas, ...sp.textures]) assert.ok(onDisk(u), `${id}: ${u} on disk`);
+    }
+    assert.deepEqual(Object.keys(c.spine.front.anims.skills || {}).sort(), ['0', '1', '2'], `${id}: a clip per skill index`);
+    for (const key of Object.keys(BACKUPS.units[id].forms)) {
+      const f = BACKUPS.units[id].forms[key];
+      for (const s of f.skills) assert.ok(m.skills[m.skillsById[s.skillId]] || m.skills[s.iconId], `${id}: skill icon ${s.skillId}`);
+      for (const mod of f.modules || []) assert.ok(m.modules[mod.typeIcon] && onDisk(m.modules[mod.typeIcon]), `${id}: module type icon ${mod.typeIcon}`);
+    }
+    const sfx = m.audio.sfx.units[id];
+    assert.ok(sfx && sfx.attack, `${id}: unit sfx`);
+    for (const lang of ['cn', 'jp']) {
+      const v = m.audio.voice?.[lang]?.[id];
+      assert.ok(v, `${id}: ${lang} voice`);
+      assert.deepEqual(Object.keys(v).sort(), roles, `${id}: ${lang} voice roles`);
+      const files = Object.values(v).flat();
+      assert.equal(files.length, 14, `${id}: ${lang} 14 battle lines`);
+      for (const u of files) assert.ok(onDisk(u), `${id}: ${u} on disk`);
+    }
   }
+  // 艾拉's summon, the 雷暴 mine: its avatar and the web skin model of plan.mjs TOKEN_SKIN_SPINES
+  assert.deepEqual(BACKUPS.units.char_4123_ela.forms['2/1/4/0'].tokens, ['token_10033_ela_grzmot']);
+  const mine = m.tokens.token_10033_ela_grzmot;
+  assert.ok(mine && onDisk(mine.avatar), 'token_10033_ela_grzmot: avatar');
+  assert.equal(mine.spineVariant, 'token_10033_ela_grzmot_rainbow6_2');
+  for (const u of [mine.spine.skel, mine.spine.atlas, ...mine.spine.textures]) assert.ok(onDisk(u), `token_10033_ela_grzmot: ${u} on disk`);
   assert.equal(m.stats.chars, Object.keys(m.chars).length);
   assert.equal(m.stats.skills, Object.keys(m.skills).length);
 });

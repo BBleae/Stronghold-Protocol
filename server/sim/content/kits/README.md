@@ -143,8 +143,10 @@ or a prototype (DATA.md §18, `shared/diy.js`). The prototypes run their stand-i
 an owned 6★ can be picked only once it has a kit of its own: one file per operator, the same rules as every kit above.
 Contributions are welcome — one operator per pull request is easiest to review.
 
-**Who.** The owned-6★ picks are `data/backups.json diy.ownedPool` (71 operators; the collab operators are not included,
-the owner's decision of 2026-10-05). The ones still without a kit:
+**Who.** The owned-6★ picks are `data/backups.json diy.ownedPool` (upstream: 71 operators, the collab operators not
+included, the owner's decision of 2026-10-05; this fork: 78 — its owner's decision of 2026-10-08 brings the 7 collab 6★
+back, `tools/build-data.mjs FORK_INCLUDE_COLLAB_PICKS`, kits `op-ash.js` … `op-makoto.js`, docs/design/fork.md §F6). The
+ones still without a kit:
 
 ```sh
 node --input-type=module -e "import { readFileSync } from 'node:fs'; import { KITTED_CHARS } from './server/sim/content/kits/index.js';

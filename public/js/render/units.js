@@ -289,6 +289,20 @@ export const FORMS = Object.freeze({
   char_4016_kazema: Object.freeze({
     doll: Object.freeze({ change: 'Start_B', leave: 'Start', roles: dollRoles('Idle_B', 'Die_B', 'Attack_B') }),
   }),
+  // 结城理 (the fork's collab pick, docs/design/fork.md §F6): his <替身> is the persona of his skill, each on its own clips
+  // (sim kits/ops/op-makoto.js MODEL: fx 'persona' { form, dur } right after the engine's 'doll'): it comes in on its
+  // SwitchIn and leaves on its SwitchOut over the last second of `dur`; the 本体 comes back on the <总攻击> clip
+  // (S.E.E.S.队长 strikes then). S3: <塔纳托斯·改>, a lethal hit or a cast turns it into <俄耳甫斯·改> through the change
+  // window ('orpheusRChange': ChangeBegin, then ChangeEnd landing in 'orpheusR'). <塔纳托斯> and <俄耳甫斯·改> have no attack
+  // clip (the latter never attacks); <塔纳托斯·改> never dies (a lethal hit makes the change) — P2's Die stands in. The Back
+  // skeleton has only the personas' idles and attacks.
+  char_4217_makoto: Object.freeze({
+    orpheus: Object.freeze({ change: 'Doll_Skill_1_SwitchIn', end: 'Doll_Skill_1_SwitchOut', leave: 'Skill_AllOutAttack_End', roles: dollRoles('Doll_Skill_1_Idle', 'Doll_Skill_1_Die', 'Doll_Skill_1_Attack') }),
+    thanatos: Object.freeze({ change: 'Doll_Skill_2_SwitchIn', end: 'Doll_Skill_2_SwitchOut', leave: 'Skill_AllOutAttack_End', roles: dollRoles('Doll_Skill_2_Loop', 'Doll_Skill_2_Die') }),
+    thanatosR: Object.freeze({ change: 'Doll_Skill_3_P1_SwitchIn', end: 'Doll_Skill_3_P1_SwitchOut', leave: 'Skill_AllOutAttack_End', roles: dollRoles('Doll_Skill_3_P1_Idle', 'Doll_Skill_3_P2_Die', 'Doll_Skill_3_P1_Attack_A') }),
+    orpheusRChange: Object.freeze({ change: 'Doll_Skill_3_P1toP2_ChangeBegin', end: 'Doll_Skill_3_P1toP2_ChangeEnd', next: 'orpheusR', leave: 'Skill_AllOutAttack_End', roles: dollRoles('Doll_Skill_3_P2_Loop', 'Doll_Skill_3_P2_Die') }),
+    orpheusR: Object.freeze({ change: null, end: 'Doll_Skill_3_P2_SwitchOut', leave: 'Skill_AllOutAttack_End', roles: dollRoles('Doll_Skill_3_P2_Loop', 'Doll_Skill_3_P2_Die') }),
+  }),
   enemy_1040_bombd: Object.freeze({
     bombed: Object.freeze({
       roles: Object.freeze({

@@ -43,6 +43,13 @@ export class BattleCombat {
   effectiveProfile(u) { return effectiveProfile(u); }
 
   /**
+   * A new DamageInfo `attackId` (the counter ai.js performAttack draws one per attack from) for an attack content makes
+   * outside performAttack — 丰川祥子's 持续攻击 with no target (kits/ops/op-oblvns.js): every damage instance of that one
+   * attack carries it. An attack made by performAttack hands its own id to the `attack` hook (`ctx.attackId`).
+   */
+  nextAttackId() { return ++this._attackSeq; }
+
+  /**
    * Perform an immediate attack with a unit's current profile (content: "立即攻击", extra attacks, counters). It is an
    * attack in every respect (hooks, attack SP, a running ammo skill's bullet) — except with `noAmmo: true`: an extra
    * attack that spends no ammo (no `ammoUsed`, the skill never ends on it; 圣约送葬人 "不额外消耗弹药").

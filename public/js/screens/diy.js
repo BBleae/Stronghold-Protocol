@@ -8,7 +8,7 @@
 // /diy.js). Out of match: the next match takes the picks. The picks live in ui/loadoutSync.js (localStorage + room.diy);
 // the model is ui/diyModel.js. Styles: css/screens/loadout.css (diy-*).
 
-import { useEffect, useState } from '../../vendor/hooks.module.js';
+import { useLayoutEffect, useState } from '../../vendor/hooks.module.js';
 import { html, Icon, Button, TierChip } from '../ui/components.js';
 import { Img, RichText, BondGlyph } from '../ui/gameComponents.js';
 import { chessAvatarUrl, chessPortraitUrl, profIconUrl, skillRecordIconUrl, moduleTypeIconUrl } from '../ui/assetUrls.js';
@@ -142,8 +142,10 @@ export function DiyPicker(props) {
   const [query, setQuery] = useState('');
   const [draft, setDraft] = useState(cur ? { ...cur } : null);
   // Esc cancels only the picker, like its 取消 (GitHub #284, idea from PR #286); the 干员调配 overlay's own Esc skips
-  // while a picker is open, and a dialog over the picker (导入) still takes Esc first
-  useEffect(() => {
+  // while a picker is open, and a dialog over the picker (导入) still takes Esc first. A layout effect: the key handler is
+  // on as soon as the picker is in the DOM — a passive effect ran after the paint, and an Esc pressed in between was
+  // taken by neither (the overlay skips while `.diy-pick` exists), more often with the fork's longer list (DESIGN §F6)
+  useLayoutEffect(() => {
     const onKey = (e) => {
       if (e.key !== 'Escape' || e.ctrlKey || e.metaKey || e.altKey || document.querySelector('.modal')) return;
       e.preventDefault();

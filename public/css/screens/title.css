@@ -288,6 +288,14 @@ html[data-script="alphabetic"] .title-login :is(.title-login__github, .title-log
   font-size: .13rem;
   color: var(--text-dim);
 }
+/* the 在线人数 readout beside the version (ui/presence.js; .presence in components.css). The group keeps to the side of
+   the centred account card (.title-login, 4.9rem wide: half of it + a margin): where both do not fit on one line — a
+   phone in Japanese, 640×360 — the readout wraps above the version instead of running under the card */
+.title-foot__right {
+  display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: flex-end; gap: .02rem .24rem;
+  min-width: 0; max-width: calc(50% - 2.45rem - .08rem);
+}
+.title-foot .presence { font-size: max(.13rem, 10px); }
 /* a development build (shared/constants.js DEV_BUILD): an unmissable tag in the footer */
 .title-dev {
   padding: .03rem .1rem;

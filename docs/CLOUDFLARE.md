@@ -41,7 +41,7 @@ npm run deploy:worker
 
 这些命令使用 `npm ci` 按 `package-lock.json` 安装的项目内 Wrangler，使本地开发、配置校验与部署使用相同版本。更新 Wrangler 时，应更新锁文件并完成构建与测试后再部署。若已安装 Bun，也可在完成上述 `npm ci` 后运行 `bun run dev:worker` 和 `bun run deploy:worker`，同样调用项目内 Wrangler；Bun 是可选工具，不是部署前提。
 
-Wrangler 执行构建、上传本地静态文件，保留 `ROOMS`（房间），并通过追加迁移增加 `SITES`（身份/目录）、`ACCOUNTS`（个人索引）、`MATCH_ARCHIVES`（历史/回放）SQLite DO。按网络（IPv4 地址 / IPv6 /64）和账号的请求限流使用 Cloudflare 的 rate limiting 绑定（`wrangler.jsonc` 的 `ratelimits`，每分钟计数，不写存储）：每个 `/api` 请求和房间连接先按网络计数，再接触任何 DO（包括登录查询）；注册、登录和修改密码另按网络计数（`REGISTER_LIMIT`、`LOGIN_LIMIT`），登录和修改密码再按「用户名 + 网络」计数（`USERNAME_LIMIT`，别人的尝试不会用掉玩家自己的次数）；原来的 `ADMISSION` 限流 DO 由迁移 `v3-ratelimits` 删除（它只存短期计数）。快速匹配的队列是 `MATCHMAKER` DO（迁移 `v4-matchmaker`，单个实例，只在内存里排队，不写存储），页面在大厅通过 `POST /api/queue` 轮询，按网络另计 `QUEUE_LIMIT`，不占用 `API_LIMIT`（[DESIGN §F4.2](design/fork.md)）。限流绑定的 `namespace_id` 在同一 Cloudflare 账号内必须唯一。账号的两种登录方式（用户名密码，以及配置有效时的 GitHub）、管理员重置密码的凭据 `ACCOUNT_ADMIN_TOKEN` 与 `npm run accounts:reset-password`、迁移、独立备份见 [账号与历史指南](ACCOUNTS-HISTORY.md)。
+Wrangler 执行构建、上传本地静态文件，保留 `ROOMS`（房间），并通过追加迁移增加 `SITES`（身份/目录）、`ACCOUNTS`（个人索引）、`MATCH_ARCHIVES`（历史/回放）SQLite DO。按网络（IPv4 地址 / IPv6 /64）和账号的请求限流使用 Cloudflare 的 rate limiting 绑定（`wrangler.jsonc` 的 `ratelimits`，每分钟计数，不写存储）：每个 `/api` 请求和房间连接先按网络计数，再接触任何 DO（包括登录查询）；注册、登录和修改密码另按网络计数（`REGISTER_LIMIT`、`LOGIN_LIMIT`），登录和修改密码再按「用户名 + 网络」计数（`USERNAME_LIMIT`，别人的尝试不会用掉玩家自己的次数）；原来的 `ADMISSION` 限流 DO 由迁移 `v3-ratelimits` 删除（它只存短期计数）。快速匹配的队列是 `MATCHMAKER` DO（迁移 `v4-matchmaker`，单个实例，只在内存里排队，不写存储；它也承载在线人数看板，见下文「在线人数」），页面在大厅通过 `POST /api/queue` 轮询，按网络另计 `QUEUE_LIMIT`，不占用 `API_LIMIT`（[DESIGN §F4.2](design/fork.md)）。限流绑定的 `namespace_id` 在同一 Cloudflare 账号内必须唯一。账号的两种登录方式（用户名密码，以及配置有效时的 GitHub）、管理员重置密码的凭据 `ACCOUNT_ADMIN_TOKEN` 与 `npm run accounts:reset-password`、迁移、独立备份见 [账号与历史指南](ACCOUNTS-HISTORY.md)。
 
 构建只发布 `dist/client/` 以及 `dist/worker/index.mjs`。前端保持 `/data/`、`/shared/`、`/sim/` 的既有路径；Node 文件系统数据读取由构建时 JSON 导入替换（`worker/data-loader.js`：服务器和模拟读取的数据文件，包括补位与自选编队用的 `data/backups.json`；`data/assets.json`、`data/emotes.json` 只给客户端，不进 Worker 和规则版本引擎）。内容加载器按路径动态导入的模块（`server/sim/content/index.js` 的 kit 注册表与各领域模块，`kits/index.js` 按 `KIT_FILES` / `STANDIN_KIT_FILES` / `OPERATOR_KIT_FILES` 逐个导入的 `kits/ops/*.js`，`bands.js`、`bonds.js` 的分块）由 `tools/build-worker.mjs` 换成字面导入，三份 kit 列表直接从 `kits/index.js` 读取：漏掉的模块在 Worker 里会悄悄退回通用 kit（`test/content/kit-registry.test.js` 检查）。语言包按静态文件发布：`public/i18n/<code>.json`（界面文字）、`data/i18n/<code>.json`（游戏文字）和 `/packs/index.json`（Node 服务器由 `server/packs.js` 实时回答，这里在构建时按同样内容写出，`packs/<id>/` 文件夹包清单所列的文件一并发布）；没有这个索引时语言菜单只有中文。`public/assets/`、`public/fonts/` 发布资源清单列出的全部文件，包括本机客户端提取的 `public/assets/local/`；`data/local-assets.json` 原样发布，游戏优先使用其中列出的本地提取素材（官方 3D 棋盘、模组图标、表情、指南等），清单缺少它列出的文件时构建失败；`public/dev/`、ZIP、日志、source map 和服务端私有数据读取模块不会发布。不要手动把整个仓库上传为静态站点。
 
@@ -79,6 +79,27 @@ Wrangler 执行构建、上传本地静态文件，保留 `ROOMS`（房间），
 
 对局结束时观战者与玩家一样收到结算（先 `room.closed {ended}`，再是最终画面与结算），随后连接关闭（4004），闲置的观战页不会占用下一局的观战名额；掉线的观战者下次连接时收到同样的结束通知，不会进入下一局。观战者的 hello / room.spectate 只回复其本人，观战人数的变化合并后最多每秒向房间广播一次。观战身份与玩家、战斗结果和历史记录分离，不进入对局日志；保留的旧版本恢复引擎恢复的对局同样可以观战。
 
+## 在线人数
+
+标题页页脚和大厅顶栏的「在线 N 人 · 房间内 M 人」（来自 Jerryzhu1234510 的分支 4f4e848f）在 Cloudflare 上与 Node 服务器含义相同：`online` 是连着游戏 WebSocket 的客户端，`inRoom` 是占着席位的真人加观战者。`GET /healthz` 带这两个数（`online` / `inRoom`，未知时为 `null`）；房间内的连接另外收到 `presence` 帧。实现在 `worker/presence.js`：
+
+- **房间上报**：每个房间 DO 在两个数变化时把自己的「打开的连接数 / 席位真人 + 观战者」报给看板（`publishPresence`，后台任务，与大厅列表同一模式），之后在距上次上报 55 秒后的第一个事件顺带续报：有连接时房间每分钟都会被登录复核唤醒，续报不额外唤醒；万一 100 秒内没有别的事件，才为它定一次闹钟。两个数都归零（房间关闭、所有人离开）时立即撤下。没有人连接的房间（例如所有玩家掉线、在休眠中的对局）不会为上报被唤醒。上报失败按退避重试（最多 55 秒一次），撤下失败不重试。
+- **看板**：放在 `MATCHMAKER` 的唯一实例里（与匹配队列一样只在内存，不写存储，不新增 DO 类和迁移）。每份上报保留 150 秒，过期即不再计入：被驱逐、崩溃或因部署重启而不再上报的房间会自己掉出去。匹配队列里等待的页面没有 WebSocket（它轮询 `/api/queue`），在看板这里按「6 秒内轮询过、仍在队列里，或在已成组但还没进房的组里」计入 `online`（拿到房间代码的成员和报告了房间的房主已在房间里，由房间计数）。看板回答每份上报时附带全站总数，房间据此在总数变化时向自己的连接推送 `presence` 帧，不另发请求（所以帧里的总数随本房间的上报更新，至少约每分钟一次）。
+- **`/healthz` 读取**：先看本 isolate 的副本（5 秒内有效），再看本数据中心的 Cache API 副本（同样以读取时刻计 5 秒），都没有才读看板（2 秒超时）。只有读看板这一步按客户端网络计入 `STATUS_LIMIT`（与大厅列表等状态轮询共用），超限或看板失败时返回 60 秒内读到的最后一次总数，再旧就返回 `null`；看板失败后 5 秒内不再重试。超限只影响超限的那个网络：它被拒不算本 isolate 的一次尝试，同时搭上这次读取的其他网络的请求会自己去读看板（否则同一 NAT 后的大量大厅页面一超限，同一 isolate 上所有人都只能看到 —）。同一 isolate 的并发请求共用一次读取；这次读取挂在发起请求的 `ctx.waitUntil` 下，任何请求最多等它 3 秒（`timeoutMs` + `PRESENCE.graceMs`），所以发起读取的页面中途关闭、其 I/O 被取消时，不会让这个 isolate 之后的每次 `/healthz` 都卡住。
+- **与 Node 服务器的差别**：Worker 的标题页和大厅页没有 WebSocket（大厅通过 HTTP 轮询），所以只开着标题页 / 在大厅浏览的访客不计入 `online`；Node 服务器会计入。所有人都掉线的房间在 150 秒后不再计入 `inRoom`（Node 服务器在席位保留期间一直计入）。看板所在实例重启（部署、长时间无请求后被驱逐）后从空开始，房间在下一次变化或续报时（最多约一分钟）补回；部署本身会断开所有连接，客户端重连时房间就会重新上报。
+- **Node 协议兼容部署**（`NODE_COMPAT`）：整个大厅就是一个 DO（`worker/lobby-gateway.js`），计数与 Node 服务器完全相同（标题页的连接也算）。`presence` 帧在改变计数的那个事件提交时发出（不用定时器，DO 照常休眠）；`/healthz` 与以前一样每次读一次网关的 `/_status`，多了这两个数。
+
+**请求成本**（以 50 个房间、200 个客户端为例：约 170 个在房间里，10 个在匹配队列，20 个停在标题页或大厅）：
+
+| 来源 | 每分钟 | 说明 |
+| --- | --- | --- |
+| 显示人数的页面读 `/healthz` | 约 120 次 Worker 请求 | 20 个页面 × 每 10 秒一次（约 520 万次 / 月）；与页面数成正比，但都不进 DO。各页面原有的版本检查（每分钟一次 `/healthz`）本来就有 |
+| `/healthz` 读看板 | 每个有玩家的数据中心最多约 12 次 DO 请求 | 与页面数无关（Cache API 每 5 秒一次）；玩家分布在 2–3 个数据中心时约 24–36 次 |
+| 房间上报 | 约 100 次 DO 请求 | 50 个房间 × 每分钟 1 次续报，加上进出房间、重连、观战造成的变化（按每房间每分钟约 1 次估算）。对局中人员稳定时只有续报 |
+| 合计（DO） | 约 130–140 次，约 600 万次 / 月 | 全部打到同一个看板实例，每次只是内存加减；不写存储，不新增房间唤醒或闹钟 |
+
+Workers Paid 每月含 1000 万次 Worker 请求和 100 万次 DO 请求（与房间等其他用量共用），超出部分按 [Cloudflare 价目表](https://developers.cloudflare.com/durable-objects/platform/pricing/) 计费：按写作时 DO 请求每百万次 0.15 美元计，上表的 DO 部分每月不到 1 美元；看板只做内存加减、没有定时器和 WebSocket，处理完请求即可休眠，时长费用可以忽略。对照：若 `/healthz` 每次向 50 个房间逐个询问，20 个页面每 10 秒一次就是每分钟 6000 次房间请求，而且会唤醒休眠中的房间（休眠的对局要完整重放才能回答）；若借用账号目录（`SITES`）的大厅列表，每次变化和续报都是一次 SQLite 写入，并压在所有登录和 API 请求都要经过的那个对象上。缓存时长等参数在 `worker/presence.js` 的 `PRESENCE` 中。
+
 ## 运行日志
 
 `wrangler.jsonc` 开启 Workers Logs（`observability`），每次部署都会带上该设置；只在控制台打开会被下一次部署关掉。URL 的查询字符串不记录（`/ws` 带房间票据，OAuth 回调带授权码）。Worker 自己写一行一个 JSON 对象，`event` 说明发生了什么，其余字段给出房间代码、对局编号、规则版本等上下文，从不记录 Cookie、会话或票据：
@@ -93,6 +114,7 @@ Wrangler 执行构建、上传本地静态文件，保留 `ROOMS`（房间），
 | `archive_publish_failed` | 对局归档发布失败；30 秒后重试，之后每次加倍，最多每小时一次，其他对局的归档照常发布 |
 | `listing_publish_failed` | 在线大厅列表更新失败，按同样的退避重试（带下次重试时间 `retryAt`） |
 | `login_check_failed` | 房间向账号目录复核已连接的登录失败；不断开任何连接，按同样的退避重试（带 `retryAt`） |
+| `presence_report_failed` | 警告：房间向在线人数看板（`MATCHMAKER`）上报失败；有人连接时按同样的退避重试，但最多 55 秒一次（带 `retryAt`）。看板 150 秒没收到某房间的上报就不再计入它 |
 | `room_runtime` | 规则代码（大厅、连接、对局）的警告和错误；恢复时重放出的行带 `restoring: true` |
 | `github_credentials_invalid` | GitHub OAuth App 的凭据无效（`incorrect_client_credentials` / `redirect_uri_mismatch`）：「使用 GitHub 登录」不再显示，1 小时后再检查；更换 secret 后立即重新检查 |
 | `github_check_failed` | 检查 GitHub 凭据时没有得到明确答复（网络错误或其他答复）；照常显示 GitHub 登录，5 分钟后再检查 |
