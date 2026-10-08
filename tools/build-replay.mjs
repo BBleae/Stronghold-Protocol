@@ -129,6 +129,25 @@ export function retainedRecovery(entries, current, keep = RECOVERY_RETAINED) {
 }
 
 /**
+ * The folders whose untracked files a Worker build publishes or runs (tools/build-worker.mjs: the Worker code, the page,
+ * data/ with its i18n overlays, shared/, server/sim, the folder content packs under packs/ — writePackTree lists every
+ * pack it finds there in /packs/index.json — and the build tools themselves).
+ */
+const DEPLOYED_DIRS = ['server', 'shared', 'data', 'worker', 'public', 'tools', 'packs'];
+const UNTRACKED_DEPLOYED = new RegExp(`^\\?\\? "?(?:${DEPLOYED_DIRS.join('|')})/`);
+
+/**
+ * The lines of `git status --porcelain --untracked-files=all` that keep `--release` from deploying: every change to a
+ * tracked file, and every untracked file where deployed code or content lives (DEPLOYED_DIRS; a path git quotes — a
+ * space or a non-ASCII name — too). Other untracked files (notes, local tools' output) are no part of a deployment.
+ * @param {string} porcelain
+ * @returns {string[]}
+ */
+export function releaseBlockers(porcelain) {
+  return String(porcelain).split('\n').filter((line) => line && (!line.startsWith('??') || UNTRACKED_DEPLOYED.test(line)));
+}
+
+/**
  * `--release`: what `npm run deploy:worker` checks before deploying. Exit 0: the current sources are a committed,
  * archived rules version — deploy. Exit 1: dirty tree, or a new version was just archived (commit it, run again).
  */
@@ -137,8 +156,7 @@ async function release(root) {
   // deployed Worker and its rules version must be a commit.
   const status = spawnSync('git', ['status', '--porcelain', '--untracked-files=all'], { cwd: root, encoding: 'utf8' });
   if (status.status !== 0) throw new Error('git status failed: ' + status.stderr);
-  const dirty = status.stdout.split('\n').filter((line) => line
-    && (!line.startsWith('??') || /^\?\? (server|shared|data|worker|public|tools)\//.test(line)));
+  const dirty = releaseBlockers(status.stdout);
   if (dirty.length) {
     console.error('Deploy from a clean checkout: commit or stash these changes first.\n' + dirty.join('\n'));
     return 1;

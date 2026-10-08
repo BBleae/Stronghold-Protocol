@@ -261,6 +261,20 @@ export function installLoadoutSync({ net, getChessReady, lookupChess, timers, ta
 }
 
 /**
+ * Whether the two settings a match takes from the seat at room.start — 干员持有 (`room.ownership`, `ownSync`) and 自选编队
+ * (`room.diy`, `diySync`) — have no send of this session waiting to go out or awaiting its reply ('pending' /
+ * 'sending'). A 匹配 member says room.ready only then (screens/room.js): on a room Worker every room is a new session and
+ * both go out ~50 ms after its welcome, so a ready on arrival could reach the room first and the host's automatic
+ * room.start open the match without the member's picks and not-owned list (the late frames only stored for the next
+ * match). Once both replies are in, the seat holds them, and the ready (same socket) comes after.
+ * @param {{ ownSync?: string, diySync?: string }} [s] the loadout store's state
+ */
+export function roomPrefsSettled(s = loadoutStore.get()) {
+  const busy = (x) => x === 'pending' || x === 'sending';
+  return !busy(s?.ownSync) && !busy(s?.diySync);
+}
+
+/**
  * Wire the 干员持有 sync once (0.2.0 补位): `room.ownership { notOwned }` after every welcome and edit. The list goes as
  * stored (structurally clean); the server keeps its droppable chess. During a match the server stores it for the next
  * one (ROOM_STARTED → 'locked'): the setting is out of match.

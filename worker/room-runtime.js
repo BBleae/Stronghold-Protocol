@@ -6,7 +6,8 @@ import { randomBytes } from 'node:crypto';
 import { Lobby, Room, CODE_ALPHABET } from '../server/lobby.js';
 import { Network, Session, SessionRegistry, TokenBucket, encode, newToken, normalizeIp, limitKeyOf, sendSession } from '../server/net.js';
 import { ERR, MAX_SEATS, DEFAULT_SEATS } from '../shared/constants.js';
-import { RecordedMatch, exportMatch, restoreMatch } from '../server/match/checkpoint.js';
+import { RecordedMatch, restoreMatch } from '../server/match/checkpoint.js';
+import { checkpointMatch } from './match-checkpoint.js';
 import { ApplicationQueue } from './rooms/applications.js';
 import { retainedMatchVersions } from './match-versions.js';
 import { Spectators } from './rooms/spectators.js';
@@ -593,7 +594,7 @@ export class RoomRuntime {
   checkpoint(match) {
     const count = match.recording.events.length;
     if (this.saved?.match !== match || this.saved.count !== count) {
-      this.saved = { match, count, checkpoint: exportMatch(match, { referenceEvents: true }) };
+      this.saved = { match, count, checkpoint: checkpointMatch(match) };
     }
     return this.saved.checkpoint;
   }

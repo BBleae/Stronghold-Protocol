@@ -6,7 +6,8 @@ import { pathToFileURL } from 'node:url';
 import { tmpdir } from 'node:os';
 import { bundleWorker, ROOT } from '../../tools/build-worker.mjs';
 import { exportMatch } from '../../server/match/checkpoint.js';
-import { buildReplayVersions, retainedRecovery, PLACEHOLDER } from '../../tools/build-replay.mjs';
+import { buildReplayVersions, retainedRecovery, PLACEHOLDER, releaseBlockers } from '../../tools/build-replay.mjs';
+import { spawnSync } from 'node:child_process';
 
 test("rules versions are the engines' content, minted only by a release and refused unarchived in CI", async (t) => {
   const root = await fs.mkdtemp(path.join(tmpdir(), 'sp-versions-'));
@@ -132,4 +133,26 @@ test('a new release retains executable old recovery and isolated old replay data
   assert.deepEqual(replay.stage(stageId), match.data.stages[stageId]);
   recovered.dispose();
   match.dispose();
+});
+
+test('deploy:worker refuses untracked files the Worker build publishes: folder content packs included', async (t) => {
+  // tools/build-worker.mjs writePackTree publishes every folder pack under packs/ and lists it in /packs/index.json, so an
+  // uncommitted translation pack must keep `--release` from deploying, like an untracked file under public/ or data/
+  const root = await fs.mkdtemp(path.join(tmpdir(), 'sp-release-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const git = (...args) => spawnSync('git', args, { cwd: root, encoding: 'utf8' });
+  assert.equal(git('init', '-q').status, 0);
+  for (const [name, text] of [['packs/xx/pack.json', '{}'], ['packs/中文/pack.json', '{}'], ['public/i18n/xx.json', '{}'], ['notes.txt', 'x']]) {
+    await fs.mkdir(path.dirname(path.join(root, name)), { recursive: true });
+    await fs.writeFile(path.join(root, name), text);
+  }
+  const status = git('status', '--porcelain', '--untracked-files=all');
+  assert.equal(status.status, 0);
+  const blockers = releaseBlockers(status.stdout);
+  assert.equal(blockers.length, 3, blockers.join('\n'));
+  assert.ok(blockers.some((line) => line.includes('packs/xx/pack.json')));
+  assert.ok(blockers.some((line) => line.includes('packs/')) && blockers.filter((line) => line.includes('packs/')).length === 2, 'a quoted (non-ASCII) path too');
+  assert.ok(!blockers.some((line) => line.includes('notes.txt')), 'an untracked file outside the deployed folders is no part of a deployment');
+  // tracked changes always block
+  assert.deepEqual(releaseBlockers(' M README.md\n?? scratch/x.txt\n'), [' M README.md']);
 });

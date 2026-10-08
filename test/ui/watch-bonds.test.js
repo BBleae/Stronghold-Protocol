@@ -368,7 +368,7 @@ test('§20.15 wiring: the game screen feeds the strip, the popup and the detail 
   assert.match(src, /requestWatch\(t\.fieldId, p\.playerId\)/, 'a team-row pick remembers the player');
   assert.match(src, /\(!watchingOther \|\| field\.fieldId === watching\) \? cameraLayers\(field, pub, myId\)/, 'the ‹ › pill on a watched shared field');
   // a reload while watching a teammate's battle: the resent field becomes the watched one again (observing pill, 返回战场)
-  assert.match(src, /const r = resumedWatch\(battleState, \{ pub, myId, alive, watching, seen: seenBattleRef\.current \}\);\s*seenBattleRef\.current = r\.seen;\s*if \(r\.fieldId\) setWatching\(r\.fieldId\);/);
+  assert.match(src, /const r = resumedWatch\(battleState, \{ pub, myId, alive, watching, seen: seenBattleRef\.current, pref: watchPrefRef\.current \}\);\s*seenBattleRef\.current = r\.seen;\s*if \(r\.fieldId\) setWatching\(r\.fieldId\);/);
 });
 
 describe('§20.15 the popup of a card\'s bond chip: the UNIT owner\'s bond (a shared field shows both halves\' units)', () => {

@@ -127,7 +127,7 @@ import { ResultScreen } from './result.js';
 import { net } from '../net.js';
 import { useStore, shallowEqual, serverNow, isSpectator } from '../store.js';
 import { battleRunner } from '../battle/runner.js';
-import { isClientCombat, observeTarget, teammateProgress, cameraLayers, layerCamera, sidesOf, resumedWatch, followedScout, uniteLocalFor, uniteSwitchFields, uniteHomeField, backTarget } from '../battle/observe.js';
+import { isClientCombat, observeTarget, teammateProgress, cameraLayers, layerCamera, sidesOf, resumedWatch, followedScout, uniteLocalFor, uniteSwitchFields, uniteHomeField, backTarget, watchPrefOf } from '../battle/observe.js';
 import { screenStrip, playerBonds, playerLayer, detailBondOwner, toggleBond, popupView } from '../ui/watchBonds.js';
 import { data, getChess, getMode } from '../data.js';
 import { audio, unitSoundClass, settlementVoice } from '../audio.js';
@@ -320,6 +320,15 @@ function MatchScreen() {
 
   // latest values for event handlers bound once
   const live = useRef({});
+  // the player this viewer follows as far as the server's watchPref goes (0.2.0 item 56): what its own accepted watches
+  // named (battle/observe.js watchPrefOf) and the player whose board the server's prep scout showed it (followedScout).
+  // With several 联防 fields the field shown by default — where 返回战场 and the ‹ › pick of it go back to — is that
+  // player's for anyone without a part of its own (uniteHomeField), as on the server. A reload starts it over.
+  const watchPrefRef = useRef(null);
+  const notePref = (fid, playerId = null) => {
+    const pid = watchPrefOf(live.current.pub, live.current.myId, fid, playerId);
+    if (pid) watchPrefRef.current = pid;
+  };
   // the field the own pieces are deployed on: the own board, or the player's half of the boss field in a boss round's
   // prep (user playtest #5 item 7: legality and the legal-tile highlights read THOSE tiles, like the server)
   const deployField = deployFieldOf(pub, myId);
@@ -779,7 +788,7 @@ function MatchScreen() {
   // row work again, and the bond strip's "👁 name" matches the HUD (battle/observe.js resumedWatch)
   const seenBattleRef = useRef(null);
   useEffect(() => {
-    const r = resumedWatch(battleState, { pub, myId, alive, watching, seen: seenBattleRef.current });
+    const r = resumedWatch(battleState, { pub, myId, alive, watching, seen: seenBattleRef.current, pref: watchPrefRef.current });
     seenBattleRef.current = r.seen;
     if (r.fieldId) setWatching(r.fieldId);
   }, [battleState?.battleId, battleState?.loading, !!pub]);
@@ -883,9 +892,12 @@ function MatchScreen() {
     if (!ok) {
       setWatching((w) => (w === fid ? prev : w));
       setWatchWho((w) => (w === who ? prevWho : w));
-    }
+    } else notePref(fid, playerId);
     return ok;
   }, []);
+
+  /** g.watch of the field 返回战场 goes back to (no player named: the server's watchPref changes only as watchPrefOf says). */
+  const watchBack = (target) => { void actions.watch(target).then((ok) => { if (ok) notePref(target); }); };
 
   /** Back to the own field (返回战场 / the own row). */
   const backHome = useCallback(() => {
@@ -893,10 +905,11 @@ function MatchScreen() {
     if (L.watching && L.watching !== L.home) {
       // client-side combat without an own field to go back to (a 联防 leaker, an eliminated player): the screen keeps
       // the field it shows — g.watch of a field that does not exist would only be refused (an error toast); several 联防
-      // fields: a leaker goes back to the one holding its enemies, anyone else to the first (battle/observe.js backTarget);
-      // an eliminated player / spectator seat has no prep board of its own either (item 56)
-      const target = backTarget(L.pub, L.myId, L.home, L.watching);
-      if (target && (isCombatPhase(L.pub?.phase) || (L.alive && !L.spectator))) actions.watch(target);
+      // fields: a leaker goes back to the one holding its enemies, anyone else to the field of the player it follows
+      // (battle/observe.js backTarget — the server's default); an eliminated player / spectator seat has no prep board of
+      // its own either (item 56)
+      const target = backTarget(L.pub, L.myId, L.home, L.watching, watchPrefRef.current);
+      if (target && (isCombatPhase(L.pub?.phase) || (L.alive && !L.spectator))) watchBack(target);
     }
     setWatching(null);
     setWatchWho(null);
@@ -916,8 +929,8 @@ function MatchScreen() {
     if (self) {
       // (an eliminated player / spectator seat has no prep board of its own to ask for: item 56)
       if (L.watching && L.watching !== L.home && (isCombatPhase(L.pub?.phase) || (L.alive && !L.spectator))) {
-        const target = backTarget(L.pub, L.myId, L.home, L.watching);
-        if (target) actions.watch(target);
+        const target = backTarget(L.pub, L.myId, L.home, L.watching, watchPrefRef.current);
+        if (target) watchBack(target);
       }
       setWatching(null);
       setWatchWho(null);
@@ -931,10 +944,10 @@ function MatchScreen() {
   const watchField = useCallback((fid) => { requestWatch(fid); }, []);
 
   // ‹ 联防阵地 N › (several 联防 fields): back to the field shown by default (a leaker's enemies, a helper's own field once
-  // it ended, else the first) like 返回战场 — any other field is watched like a pick
+  // it ended, else the field of the player it follows) like 返回战场 — any other field is watched like a pick
   const pickUniteField = useCallback((fid) => {
     const L = live.current;
-    if (L.watching && fid === uniteHomeField(L.pub, L.myId)) { backHome(); return; }
+    if (L.watching && fid === uniteHomeField(L.pub, L.myId, watchPrefRef.current)) { backHome(); return; }
     requestWatch(fid);
   }, []);
 
@@ -954,6 +967,8 @@ function MatchScreen() {
     // the phase reset's render (watching null) ran the own-prep branch with this scout meta in `field` and marked it
     // stale: un-mark it, or the enter effect refuses it and the board stays blank until the player moves (PR #189)
     if (staleFieldRef.current === field) staleFieldRef.current = null;
+    // the server's scout is the player it follows (Match._watchTargetOf) — the 联防 default below reads the same
+    watchPrefRef.current = fid.slice(2);
     setWatching(fid);
     setWatchWho({ fieldId: fid, playerId: fid.slice(2) });
   }, [field, pub, watching, alive, spectator, phaseKey, myId]);

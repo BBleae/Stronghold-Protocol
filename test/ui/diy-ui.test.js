@@ -194,6 +194,42 @@ test('diy sync: welcome brings the kit list and sends room.diy; edits are deboun
   s.dispose();
 });
 
+test('匹配 on a room Worker: a matched member says ready only once this room\'s room.ownership / room.diy have their replies', async () => {
+  // every Worker room is a new session: both go out ~50 ms after the room's welcome. The match takes the seat's picks and
+  // not-owned list at room.start, and the host starts as soon as every member is ready — a ready before the replies let
+  // the match open without them (they only got ROOM_STARTED, stored for the next match).
+  const { installOwnershipSync, roomPrefsSettled } = await import('../../public/js/ui/loadoutSync.js');
+  const net = fakeNet();
+  const held = [];
+  net.request = (t, fields) => { net.sent.push({ t, ...fields }); return new Promise((resolve) => held.push(resolve)); };
+  const T = fakeTimers();
+  const target = createStore({ diy: { [T5A]: SIEGE_PICK }, notOwned: [], diyKitted: null, open: false, diySync: 'idle', ownSync: 'idle' });
+  const diy = installDiySync({ net, timers: T, target, notify() {} });
+  const own = installOwnershipSync({ net, timers: T, target, notify() {} });
+  assert.equal(roomPrefsSettled(target.get()), true, 'nothing to send yet');
+  net.emit('welcome', { diyKitted: [SIEGE] });
+  assert.equal(roomPrefsSettled(target.get()), false, 'right after the room\'s welcome: both wait to go out');
+  await T.advance(60);
+  assert.deepEqual(net.sent.map((m) => m.t).sort(), ['room.diy', 'room.ownership']);
+  assert.equal(roomPrefsSettled(target.get()), false, 'sent, no reply yet');
+  held.shift()({ t: 'ok' });
+  await T.advance(0);
+  assert.equal(roomPrefsSettled(target.get()), false, 'one reply of two');
+  held.shift()({ t: 'ok' });
+  await T.advance(0);
+  assert.equal(roomPrefsSettled(target.get()), true, 'both replies in: the seat holds them');
+  // a failed or locked sync never holds the ready back for good
+  assert.equal(roomPrefsSettled({ diySync: 'error', ownSync: 'locked' }), true);
+  assert.equal(roomPrefsSettled({ diySync: 'idle', ownSync: 'synced' }), true);
+  diy.dispose();
+  own.dispose();
+  // the room screen's auto-ready of a matched member waits for it
+  const room = readFileSync(path.join(ROOT, 'public/js/screens/room.js'), 'utf8');
+  assert.match(room, /const prefsSettled = useStore\(roomPrefsSettled, Object\.is, loadoutStore\);/);
+  assert.match(room, /if \(!prefsSettled \|\| readiedRun\.current === code\) return;\s*readiedRun\.current = code;\s*net\.request\('room\.ready', \{ ready: true \}\)/);
+  assert.match(room, /facts\.mine && facts\.mine\.ready, online, prefsSettled\]\);/);
+});
+
 // ---- the tab --------------------------------------------------------------------------------------------------------------
 
 describe('自选编队 tab (screens/diy.js)', () => {

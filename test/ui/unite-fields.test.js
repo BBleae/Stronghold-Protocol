@@ -15,7 +15,7 @@ import { PHASE } from '../../shared/constants.js';
 import { validateC2S, RESULT_LIMITS } from '../../shared/protocol.js';
 import {
   multiUnite, uniteFields, uniteFieldOf, uniteHomeField, uniteFieldNo, uniteLocalFor, uniteSwitchFields, backTarget,
-  observeTarget, resumedWatch,
+  observeTarget, resumedWatch, followedPlayer, watchPrefOf,
 } from '../../public/js/battle/observe.js';
 import { fieldLabel, switcherLabel, phaseBanner, watchTarget, homeFieldId, cycleField } from '../../public/js/ui/gameLogic.js';
 import { rowLp } from '../../public/js/ui/teamPanel.js';
@@ -165,6 +165,35 @@ describe('switching between the 联防 fields', () => {
     assert.equal(backTarget({ phase: PHASE.COMBAT, combatMode: 'client', fields: [{ fieldId: 'n:a', kind: 'normal', players: ['a'] }] }, 'a', 'n:a', 'n:b'), 'n:a');
   });
 
+  test('a viewer without a part (eliminated, a spectator seat) follows a player: its default field and 返回战场 are that player\'s field (0.2.0 item 56, the server\'s watchPref)', () => {
+    // h1 eliminated: the first player still in is h2 (u); it last picked h3 (u2) or the leaker l6 (u2)
+    const v = pub8({ players: pub8().players.map((p) => (p.playerId === 'h1' ? { ...p, alive: false, status: 'dead', fieldId: null } : p)) });
+    v.unite.helpers = ['h2', 'h3', 'h4'];
+    v.unite.fields[0].helpers = ['h2'];
+    v.fields[0].players = ['h2'];
+    assert.equal(followedPlayer(v, 'zz'), 'h2', 'no preference: the first player still in');
+    assert.equal(followedPlayer(v, 'h2'), 'h3', 'never itself');
+    assert.equal(followedPlayer(v, 'zz', 'h3'), 'h3');
+    assert.equal(followedPlayer(v, 'zz', 'h1'), 'h2', 'a preference that is out: the first player still in');
+    assert.deepEqual([null, 'h3', 'l6', 'l5'].map((pref) => uniteHomeField(v, 'zz', pref)), ['u', 'u2', 'u2', 'u']);
+    assert.equal(uniteHomeField(v, 'l6', 'h2'), 'u2', 'a leaker: always the field holding its enemies');
+    assert.equal(backTarget(v, 'zz', 'n:zz', 'u', 'h3'), 'u2', '返回战场: the followed player\'s field');
+    assert.equal(backTarget(v, 'zz', 'n:zz', 'u2', 'h3'), null, 'already there');
+    assert.equal(backTarget(v, 'zz', 'n:zz', 'u2', null), 'u');
+    // which watches move the preference (watch.js _watchPrefSet / the prep scout)
+    assert.equal(watchPrefOf(v, 'zz', 'u2', 'h3'), 'h3', 'a player of the field');
+    assert.equal(watchPrefOf(v, 'zz', 'u2', 'l6'), null, 'a leaker\'s row: the field lists the helpers only');
+    assert.equal(watchPrefOf(v, 'zz', 'u2'), null, 'a field of two picked as such (the ‹ › pill)');
+    assert.equal(watchPrefOf(v, 'zz', 'u'), 'h2', 'a field of one');
+    assert.equal(watchPrefOf({ phase: PHASE.PREP, fields: [] }, 'zz', 'n:h3', 'h3'), 'h3', 'a prep scout');
+    assert.equal(watchPrefOf({ phase: PHASE.PREP, fields: [] }, 'h3', 'n:h3'), null, 'never itself');
+    assert.equal(watchPrefOf(v, 'zz', null), null);
+    // a reload of a viewer that follows h3, watching u2 (the server resends its watch): its default, nothing to adopt
+    const b = { battleId: 'b.u2', fieldId: 'u2', kind: 'unite', watch: true, loading: false };
+    assert.deepEqual(resumedWatch(b, { pub: v, myId: 'zz', alive: true, pref: 'h3' }), { seen: 'b.u2', fieldId: null });
+    assert.deepEqual(resumedWatch(b, { pub: v, myId: 'zz', alive: true }), { seen: 'b.u2', fieldId: 'u2' });
+  });
+
   test('labels: 联防阵地 1 / 2 with several fields, 联防（自己） for a helper\'s own; one field unchanged; the legacy switcher reads them', () => {
     const v = pub8();
     assert.deepEqual(v.fields.map((f) => fieldLabel(f, v, 'l5')), ['联防阵地 1', '联防阵地 2']);
@@ -265,8 +294,14 @@ describe('‹ 联防阵地 N › (ui/combatHud.js)', () => {
     const game = read('public/js/screens/game.js');
     assert.match(game, /const uniteList = cc && phase === PHASE\.UNITE && field && field\.kind === 'unite' \? uniteSwitchFields\(pub, myId, \{ alive \}\) : \[\];/);
     assert.match(game, /uniteFields: uniteSw \}/);
-    assert.match(game, /if \(L\.watching && fid === uniteHomeField\(L\.pub, L\.myId\)\) \{ backHome\(\); return; \}\s*requestWatch\(fid\);/);
-    assert.match(game, /const target = backTarget\(L\.pub, L\.myId, L\.home, L\.watching\);\s*if \(target\) actions\.watch\(target\);/);
+    assert.match(game, /if \(L\.watching && fid === uniteHomeField\(L\.pub, L\.myId, watchPrefRef\.current\)\) \{ backHome\(\); return; \}\s*requestWatch\(fid\);/);
+    assert.match(game, /const target = backTarget\(L\.pub, L\.myId, L\.home, L\.watching, watchPrefRef\.current\);\s*if \(target\) watchBack\(target\);/);
+    assert.match(game, /const target = backTarget\(L\.pub, L\.myId, L\.home, L\.watching, watchPrefRef\.current\);\s*if \(target && \(isCombatPhase\(L\.pub\?\.phase\) \|\| \(L\.alive && !L\.spectator\)\)\) watchBack\(target\);/);
+    // the follow preference mirrors the server's watchPref: accepted watches and the server's prep scout
+    assert.match(game, /const watchBack = \(target\) => \{ void actions\.watch\(target\)\.then\(\(ok\) => \{ if \(ok\) notePref\(target\); \}\); \};/);
+    assert.match(game, /\} else notePref\(fid, playerId\);\s*return ok;/);
+    assert.match(game, /watchPrefRef\.current = fid\.slice\(2\);\s*setWatching\(fid\);\s*setWatchWho\(\{ fieldId: fid, playerId: fid\.slice\(2\) \}\);/);
+    assert.match(game, /resumedWatch\(battleState, \{ pub, myId, alive, watching, seen: seenBattleRef\.current, pref: watchPrefRef\.current \}\)/);
   });
 });
 
@@ -432,4 +467,41 @@ test('runner, 8 alive and one perfect player: one field holding 7 leakers — ev
   assert.ok(prog.length >= 3);
   assert.equal(Object.keys(prog[0].left).length, 7, 'no leaker cut from the report');
   H.runner.dispose();
+});
+
+test('a real 7-seat match, two 联防 fields: the client\'s default field of an eliminated player and a spectator seat is the server\'s, through their picks (0.2.0 item 56)', () => {
+  // seed 66, leaks p_0 2 / p_1 4, p_6 out before the round's battle: 6 alive — u = [p_2, p_3] (leaker p_1), u2 = [p_4,
+  // p_5] (leaker p_0); p_6 and the spectator seat s_1 follow the first player still in, p_0 (u2) until they pick someone
+  const script = (b) => (b.kind === 'normal' ? { leaks: { p_0: 2, p_1: 4 } } : {});
+  const h = makeMatch({ mode: 'coop', humans: 7, seed: 66, fake: true, clientCombat: true, script, captureFrames: false });
+  h.start();
+  const m = h.m;
+  h.toPrep(1);
+  for (const ps of m.players.values()) ps.lp = 40;
+  h.ps('p_6').eliminate(m.round);
+  h.drive(() => m.phase === PHASE.UNITE);
+  assert.deepEqual(uniteGroups(m.unitePlan).map((g) => [g.fieldId, g.helpers.map((p) => p.playerId), g.leakers.map((p) => p.playerId)]),
+    [['u', ['p_2', 'p_3'], ['p_1']], ['u2', ['p_4', 'p_5'], ['p_0']]]);
+  m.addSpectator('s_1');
+  const view = m.publicView();
+  assert.equal(multiUnite(view), true);
+  const server = (pid) => m._uniteHomeField(m.players.get(pid) || m._spectator(pid)).fieldId;
+  assert.equal(h.lastTo('p_6', 'b.start').fieldId, 'u2', 'the 联防 start shows p_6 the field of p_0');
+  for (const pid of ['p_6', 's_1']) {
+    let pref = null; // (p_6's prep scout said p_0: the same answer)
+    assert.equal(uniteHomeField(view, pid, pref), server(pid), `${pid}: no pick yet`);
+    // the team rows / the ‹ › pill: a helper's row moves the server's watchPref, a leaker's row and the pill do not
+    for (const [fieldId, playerId] of [['u', null], ['u2', 'p_0'], ['u', 'p_2'], ['u2', null], ['u2', 'p_5'], ['u', 'p_1']]) {
+      assert.deepEqual(m.handle(pid, { t: 'g.watch', fieldId, ...(playerId ? { playerId } : {}) }), { ok: true });
+      pref = watchPrefOf(view, pid, fieldId, playerId) || pref;
+      const want = server(pid);
+      assert.equal(uniteHomeField(view, pid, pref), want, `${pid} after ${fieldId} ${playerId}`);
+      // 返回战场 (an eliminated player's own row; a spectator seat's ‹ › pick of the default field): back to the server's
+      // default, or nothing to ask when it is on screen
+      const other = want === 'u' ? 'u2' : 'u';
+      assert.equal(backTarget(view, pid, `n:${pid}`, other, pref), want);
+      assert.equal(backTarget(view, pid, `n:${pid}`, want, pref), null);
+    }
+  }
+  m.dispose();
 });

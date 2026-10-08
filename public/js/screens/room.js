@@ -23,6 +23,7 @@ import { GuideButton } from '../ui/guide.js';
 import { ResourceButton } from '../ui/resourceButton.js';
 import { useWakeLock } from '../ui/device.js';
 import { LoadoutButton } from './loadout.js';
+import { loadoutStore, roomPrefsSettled } from '../ui/loadoutSync.js';
 import { net } from '../net.js';
 import { account } from '../account.js';
 import { data, useData } from '../data.js';
@@ -235,6 +236,8 @@ export function RoomScreen() {
   const me = useStore((s) => s.me, shallowEqual);
   const conn = useStore((s) => s.connection, shallowEqual);
   const queue = useStore((s) => s.queue, shallowEqual);
+  // this session's room.ownership / room.diy have their replies (the 匹配 member's ready waits for them)
+  const prefsSettled = useStore(roomPrefsSettled, Object.is, loadoutStore);
   const [busy, setBusy] = useState(null);
   const alive = useRef(true);
   const inFlight = useRef(false); // synchronous guard against double clicks (state updates are async)
@@ -343,17 +346,19 @@ export function RoomScreen() {
   }, [queue.matched, room && room.code, me.playerId]);
 
   // 匹配: a matched member is ready on arrival. The Node server marks it so; in a room Worker the member came in through
-  // a join application (DESIGN §F4.2) and says so itself, once per room.
+  // a join application (DESIGN §F4.2) and says so itself, once per room — once this room's room.ownership / room.diy
+  // have their replies (loadoutSync.js roomPrefsSettled): the host starts as soon as everyone is ready, and the match
+  // takes the 自选 picks and the not-owned list the seat has at that moment.
   useEffect(() => {
     const code = queue.matched && queue.matched.seated ? queue.matched.code : null;
     if (!online || !code || !room || room.code !== code || room.inMatch || facts.isHost || !facts.mine || facts.mine.ready) return;
-    if (readiedRun.current === code) return;
+    if (!prefsSettled || readiedRun.current === code) return;
     readiedRun.current = code;
     net.request('room.ready', { ready: true }).catch((err) => {
       console.warn('[room] matched ready failed', err);
       if (readiedRun.current === code) readiedRun.current = null; // said again once the room is back online
     });
-  }, [queue.matched, room && room.code, facts.isHost, facts.mine && facts.mine.ready, online]);
+  }, [queue.matched, room && room.code, facts.isHost, facts.mine && facts.mine.ready, online, prefsSettled]);
   // spectator seats: the host frees one; a spectator takes a free player seat with room.join of this room
   const removeSpectator = (playerId) => run(`rs${playerId}`, () => net.request('room.removeSpectator', { playerId }));
   const sit = () => run('sit', () => net.request('room.join', { code: room.code }));

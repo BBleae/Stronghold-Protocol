@@ -11,9 +11,11 @@
 // 联防 with more than 4 alive players (a remake extension, server/match/unite.js): several 联防 fields 'u', 'u2', … (2
 // helpers each, each holding its own leakers' enemies; m.public.unite.fields). A helper plays its own field and cannot
 // look at another one while it runs (server/match/match/watch.js _watchClient 'own battle running'); a leaker is shown
-// the field holding its enemies — its row leads there, and 返回战场 goes back to it; anyone else starts on the first
-// field and may switch (uniteSwitchFields). With one 联防 field (1–4 alive) nothing of this applies: everything
-// works as before.
+// the field holding its enemies — its row leads there, and 返回战场 goes back to it; anyone else (an eliminated player, a
+// spectator seat, a living player without a part in it) starts on the field of the player it follows (0.2.0 item 56:
+// the one it last picked, else the first player still in — followedPlayer, the mirror of the server's watchPref), goes
+// back there with 返回战场, and may switch (uniteSwitchFields). With one 联防 field (1–4 alive) nothing of this applies:
+// everything works as before.
 
 import { PHASE } from '../../../shared/constants.js';
 import { data } from '../data.js';
@@ -63,13 +65,51 @@ export function uniteFieldOf(pub, playerId) {
 }
 
 /**
- * The 联防 field a viewer is shown by default (server/match/match/unitePhase.js _uniteHomeField(ps)): a helper's own
- * field, the field holding a leaker's enemies, else the first one. null outside 联防. (The server's default also sends an
- * eliminated human / a spectator seat to the field of the player it follows — watch.js _watchTargetField, 0.2.0 item 56;
- * this mirror does not know whom a viewer follows.)
+ * The player a viewer follows (server/match/match/watch.js _watchTargetOf, 0.2.0 item 56): `pref` — the player its own
+ * manual watches last named (watchPrefOf; the server's watchPref), or the one the server's prep scout showed it — while
+ * that player is still in, else the first player still in (seat order, AI teammates included); never the viewer itself.
+ * null when nobody is left. (A reload forgets `pref` until the next prep scout says it again.)
+ * @param {any} pub @param {string} myId @param {string|null} [pref]
+ * @returns {string|null}
  */
-export function uniteHomeField(pub, playerId) {
-  return uniteFieldOf(pub, playerId) || uniteFields(pub)[0]?.fieldId || null;
+export function followedPlayer(pub, myId, pref = null) {
+  const ok = (p) => isObj(p) && typeof p.playerId === 'string' && p.playerId !== myId && p.alive !== false && p.status !== 'left';
+  const ps = players(pub);
+  if (typeof pref === 'string' && ok(ps.find((p) => p.playerId === pref))) return pref;
+  return ps.find(ok)?.playerId ?? null;
+}
+
+/**
+ * The player an accepted g.watch { fieldId, playerId } makes the server follow for this viewer (watch.js watch /
+ * _watchPrefSet — only manual watches write it): a prep scout's player ('n:<pid>'), else `playerId` when it is one of
+ * the field's players, else a one-player field's player; never the viewer itself. null when the watch names nobody (a
+ * shared field picked as such, a leaker's row — its field lists the helpers only): the preference stays as it was.
+ * @param {any} pub @param {string} myId @param {string|null} fieldId @param {string|null} [playerId]
+ * @returns {string|null}
+ */
+export function watchPrefOf(pub, myId, fieldId, playerId = null) {
+  if (typeof fieldId !== 'string' || !fieldId) return null;
+  const f = fields(pub).find((x) => x.fieldId === fieldId) || null;
+  let pid = null;
+  if (f) {
+    const ps = ids(f.players);
+    pid = typeof playerId === 'string' && ps.includes(playerId) ? playerId : ps.length === 1 ? ps[0] : null;
+  } else if (fieldId.startsWith('n:')) pid = fieldId.slice(2);
+  return pid && pid !== myId ? pid : null;
+}
+
+/**
+ * The 联防 field a viewer is shown by default (server/match/match/unitePhase.js _uniteHomeField(ps)): a helper's own
+ * field, the field holding a leaker's enemies, else the 联防 field of the player it follows (followedPlayer — `pref` as
+ * there; watch.js _watchTargetField: an eliminated human, a spectator seat, a living player without a part in it), else
+ * the first one. null outside 联防.
+ * @param {any} pub @param {string} playerId @param {string|null} [pref] the viewer's follow preference (followedPlayer)
+ */
+export function uniteHomeField(pub, playerId, pref = null) {
+  const own = uniteFieldOf(pub, playerId);
+  if (own) return own;
+  const followed = followedPlayer(pub, playerId, pref);
+  return (followed && uniteFieldOf(pub, followed)) || uniteFields(pub)[0]?.fieldId || null;
 }
 
 /**
@@ -114,19 +154,21 @@ export function uniteSwitchFields(pub, myId, { alive = true } = {}) {
 
 /**
  * The field 返回战场 (or the own team row) asks the server for: the viewer's home field in battle (gameLogic homeFieldId),
- * its own board otherwise — and, with several 联防 fields, a viewer without a field of its own (a leaker …) goes back to
- * the 联防 field it is shown by default (uniteHomeField). null when there is nothing to ask for: client-side combat in
- * battle with no such field (a 联防 leaker with one field, an eliminated player — the screen keeps the field it shows),
- * or the field already watched.
+ * its own board otherwise — and, with several 联防 fields, a viewer without a field of its own (a leaker, an eliminated
+ * player …) goes back to the 联防 field it is shown by default (uniteHomeField: for one that follows a player, that
+ * player's field — `pref` as in followedPlayer). null when there is nothing to ask for: client-side combat in battle
+ * with no such field (a 联防 leaker with one field, an eliminated player — the screen keeps the field it shows), or the
+ * field already watched.
  * @param {any} pub @param {string} myId @param {string|null} home gameLogic homeFieldId @param {string|null} [watching]
+ * @param {string|null} [pref] the viewer's follow preference (followedPlayer)
  * @returns {string|null}
  */
-export function backTarget(pub, myId, home, watching = null) {
+export function backTarget(pub, myId, home, watching = null, pref = null) {
   const combat = COMBAT.has(pub?.phase);
   let target = combat ? home : `n:${myId}`;
   const listed = (fid) => fields(pub).some((f) => f.fieldId === fid);
   if (combat && pub?.phase === PHASE.UNITE && multiUnite(pub) && !listed(target)) {
-    const u = uniteHomeField(pub, myId);
+    const u = uniteHomeField(pub, myId, pref);
     if (u && listed(u)) {
       target = u;
       if (target === watching) return null;
@@ -185,12 +227,13 @@ export function observeTarget(p, pub, myId, { observing = false, ownDone = false
  * state carries no `watch` yet) is decided once it runs, unless the screen already watches (then it is marked seen).
  * Several 联防 fields (more than 4 alive): likewise a living viewer's 联防 field other than the one it is shown by default
  * (uniteHomeField: a helper's own field — it watches another only once its own ended —, the one holding a leaker's
- * enemies, else the first) is adopted, so 返回战场 brings the default one back. One 联防 field: never (as before).
+ * enemies, else the field of the player it follows — `pref` as in followedPlayer) is adopted, so 返回战场 brings the
+ * default one back. One 联防 field: never (as before).
  * @param {any} b battleRunner.state() @param {{ pub?: any, myId?: string, alive?: boolean, watching?: string|null,
- *   seen?: string|null }} [o]
+ *   seen?: string|null, pref?: string|null }} [o]
  * @returns {{ seen: string|null, fieldId: string|null }} seen: the new value to remember
  */
-export function resumedWatch(b, { pub = null, myId = '', alive = true, watching = null, seen = null } = {}) {
+export function resumedWatch(b, { pub = null, myId = '', alive = true, watching = null, seen = null, pref = null } = {}) {
   const keep = { seen, fieldId: null };
   if (!isObj(pub) || !isObj(b) || typeof b.battleId !== 'string' || !b.battleId || b.battleId === seen) return keep;
   if (b.loading && !watching) return keep;
@@ -198,7 +241,7 @@ export function resumedWatch(b, { pub = null, myId = '', alive = true, watching 
   if (!b.loading && !watching && alive && isClientCombat(pub) && pub.phase === PHASE.UNITE && multiUnite(pub)) {
     if (!b.watch || b.kind !== 'unite' || typeof b.fieldId !== 'string' || !b.fieldId) return done;
     const f = fields(pub).find((x) => x.fieldId === b.fieldId);
-    if (!f || f.kind !== 'unite' || b.fieldId === uniteHomeField(pub, myId)) return done;
+    if (!f || f.kind !== 'unite' || b.fieldId === uniteHomeField(pub, myId, pref)) return done;
     return { seen: b.battleId, fieldId: b.fieldId };
   }
   if (b.loading || watching || !alive || !isClientCombat(pub) || pub.phase !== PHASE.COMBAT) return done;

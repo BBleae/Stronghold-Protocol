@@ -190,12 +190,19 @@ export class RecordedMatch extends Match {
   setLoadout(...args) {
     return this._input('setLoadout', args);
   }
+  // usedOperators: the operators each player fielded, for the account history (the Worker archives them as the player's
+  // `operators`, shared/history.js). A chess counts as its base id (the elite folded into it); a 自选 piece (0.2.0: its
+  // slot chess_char_5_diy1_a … fights as the pick, PlayerState.battleInput `diy`) as its operator's charId — the slot id
+  // names no operator (every slot is '甄选干员'), and one operator stays one entry whichever slot fielded it.
   _ccField(options) {
     const field = super._ccField(options);
     for (const player of field.spec.players) {
       const used = new Set(this.usedOperators[player.playerId] || []);
-      for (const unit of player.units || [])
-        if (unit.kind === 'chess' && unit.chessId) used.add(this.gd.baseIdOf(unit.chessId));
+      for (const unit of player.units || []) {
+        if (unit.kind !== 'chess' || !unit.chessId) continue;
+        const charId = unit.diy && typeof unit.diy.charId === 'string' && unit.diy.charId ? unit.diy.charId : null;
+        used.add(charId || this.gd.baseIdOf(unit.chessId));
+      }
       this.usedOperators[player.playerId] = [...used];
     }
     return field;

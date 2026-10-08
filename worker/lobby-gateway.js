@@ -20,7 +20,8 @@
 import { randomBytes } from 'node:crypto';
 import { Lobby, Room } from '../server/lobby.js';
 import { Network, Session, SessionRegistry } from '../server/net.js';
-import { RecordedMatch, exportMatch, restoreMatch } from '../server/match/checkpoint.js';
+import { RecordedMatch, restoreMatch } from '../server/match/checkpoint.js';
+import { checkpointMatch } from './match-checkpoint.js';
 import { prepareMatchVersion, retainedMatchVersions } from './match-versions.js';
 import { logWarn, logError, logInfo, errorFields } from './log.js';
 import { CLOSE, refuseSocket } from './close-codes.js';
@@ -261,7 +262,7 @@ export class LobbyRuntime {
     const cached = this.savedCps.get(room.code);
     const count = match.recording.events.length;
     if (cached?.match !== match || cached.count !== count) {
-      this.savedCps.set(room.code, { match, count, checkpoint: exportMatch(match, { referenceEvents: true }) });
+      this.savedCps.set(room.code, { match, count, checkpoint: checkpointMatch(match) });
     }
     return this.savedCps.get(room.code).checkpoint;
   }

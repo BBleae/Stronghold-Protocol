@@ -21,6 +21,16 @@ const LABELS = {
   buys: N_('招募次数'),
   sells: N_('出售次数'),
 };
+/**
+ * The name of a 常用干员 entry (shared/history.js aggregateStats): a chess by its base id, else a 自选 operator by its
+ * charId (data/backups.json units — how a 自选 piece is recorded, server/match/checkpoint.js, and what an old 外援 record
+ * counts as), else the id itself (an operator the data no longer has).
+ * @param {{ chess: (id: string) => any, backups?: any }} gd useGameData() @param {string} id
+ */
+export function operatorName(gd, id) {
+  return gd.chess(id)?.name || gd.backups?.units?.[id]?.name || id;
+}
+
 export function HistoryScreen({ statistics = false }) {
   const gd = useGameData();
   const [mode, setMode] = useState(''),
@@ -108,7 +118,7 @@ export function HistoryScreen({ statistics = false }) {
               html`<div class="rstat" key=${label}><span>${label}</span><b class="num">${value}</b></div>`,
           )}
         </div><p class="t-lo">${t('胜率仅计算已完成的胜负对局；提前离开与中断单独统计。')}</p><h2>${t('常用干员')}</h2>
-        ${data.operators.length ? data.operators.slice(0, 20).map((op) => html`<div class="account-row" key=${op.id}><span>${gd.chess(op.id)?.name || op.id}</span><b class="num">${t('{matches} 场', { matches: op.matches })}</b></div>`) : html`<p class="t-lo">${t('完成对局后显示出场记录')}</p>`}<//>`
+        ${data.operators.length ? data.operators.slice(0, 20).map((op) => html`<div class="account-row" key=${op.id}><span>${operatorName(gd, op.id)}</span><b class="num">${t('{matches} 场', { matches: op.matches })}</b></div>`) : html`<p class="t-lo">${t('完成对局后显示出场记录')}</p>`}<//>`
             : data
               ? html`<div class="history-list">${
                   data.items.length

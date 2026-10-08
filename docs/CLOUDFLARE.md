@@ -35,7 +35,7 @@ npm run dev:worker
 npm run deploy:worker
 ```
 
-`deploy:worker` 只部署干净的提交；代码产生新规则版本时，它先归档该版本并要求提交 `replay-versions.json` 与新的 `replay-versions/<id>.json.gz`，提交后再运行一次（见 [规则版本与容量边界](ACCOUNTS-HISTORY.md#规则版本与容量边界)）。不要把仓库接到 Cloudflare 控制台的自动构建或其他 CI 部署：它们不能提交新规则版本，遇到未归档的版本会直接失败。
+`deploy:worker` 只部署干净的提交（已跟踪文件的改动，以及构建会发布的目录 `server` / `shared` / `data` / `worker` / `public` / `tools` / `packs` 里的未跟踪文件，都要先提交；`tools/build-replay.mjs releaseBlockers`）；代码产生新规则版本时，它先归档该版本并要求提交 `replay-versions.json` 与新的 `replay-versions/<id>.json.gz`，提交后再运行一次（见 [规则版本与容量边界](ACCOUNTS-HISTORY.md#规则版本与容量边界)）。不要把仓库接到 Cloudflare 控制台的自动构建或其他 CI 部署：它们不能提交新规则版本，遇到未归档的版本会直接失败。
 
 首次部署到新 Worker 后，在 **Workers & Pages → stronghold-protocol → Settings → Domains & Routes → Add → Custom domain** 中绑定自己的域名。已有 Worker 可在同一位置更换或增加域名，无需修改仓库。由于 `workers.dev` 和版本预览入口已关闭，新 Worker 绑定域名前没有公开访问入口。不要用 `"routes": []` 代替省略字段，否则部署会移除已有路由。
 
@@ -69,7 +69,7 @@ Wrangler 执行构建、上传本地静态文件，保留 `ROOMS`（房间），
 
 登录后普通断网使用绑定账号的房间 token 重连，换设备可点击「继续对局」接管原席位。房间连接被拒绝或结束时，服务器以 WebSocket 关闭码说明原因（席位被接管 4001、登录失效 4003、房间不存在或已结束 4004、连接过多 1013 等），浏览器读不到被拒绝升级请求的 HTTP 状态，所以拒绝也先接受连接再关闭；完整列表见 `worker/close-codes.js`。每个房间的连接数按它的席位数计算：每个玩家席位加 1 个（重连时新旧连接重叠）留给房间成员，其余 11 个连接给观战者等房间外的账号（同一网络最多 3 个）；所以 4 席的房间最多 16 个连接、同一网络 8 个（与以前相同），8 席的房间 20 个、同一网络 12 个。部署前保存的房间按 4 席恢复。登录只在建立连接时由 Worker 验证；之后房间在后台每分钟向账号目录确认一次（退出登录最迟约一分钟后以 4003 断开），会话到期则在下一条消息时断开，游戏消息从不等待账号目录。等候房间、玩家席位、审批和活动对局日志持久化，支持 DO 休眠/重启后恢复。房间代码 / token 不与其他房间共用。
 
-补位（干员持有，`room.ownership`）和自选编队（`room.diy`）与 Node 服务器相同（[DESIGN §25.3 / §25.4](history/0.2.0.md)，取代了 fork 的外援 / 甄选，见 [DESIGN §F3](design/fork.md)）：房间运行时把大厅的 `welcome.diyKitted`（可上场的自选干员）带给每个连接；页面在菜单里还没有连上房间，构建把同一份列表（kit 注册表的 `KITTED_CHARS`）写进页面的 `data-sp-diy-kitted`，大厅的干员调配在进房前就能挑选。进房后页面在 `welcome` 之后发送 `room.ownership` 和 `room.diy`，服务器存到会话和席位上，开局时交给对局（`seats[].notOwned` / `seats[].diy`，随对局记录保存，恢复时取记录里的值）；对局进行中再发只对下一局生效（`ROOM_STARTED`）。账号偏好同步的是 `diy` 和 `ownership`（`public/js/preferenceSchema.js`，`POST /api/me/preferences`）；账号里旧的 `waiguan` 值读取时不再返回，下一次保存时从存储中删除。Worker 模式下页面在 `room.create` 时才连上房间，这两项在随后的 `welcome` 之后约 50 ms 发出：在此之前到达的 `room.start` 开的对局不带它们。
+补位（干员持有，`room.ownership`）和自选编队（`room.diy`）与 Node 服务器相同（[DESIGN §25.3 / §25.4](history/0.2.0.md)，取代了 fork 的外援 / 甄选，见 [DESIGN §F3](design/fork.md)）：房间运行时把大厅的 `welcome.diyKitted`（可上场的自选干员）带给每个连接；页面在菜单里还没有连上房间，构建把同一份列表（kit 注册表的 `KITTED_CHARS`）写进页面的 `data-sp-diy-kitted`，大厅的干员调配在进房前就能挑选。进房后页面在 `welcome` 之后发送 `room.ownership` 和 `room.diy`，服务器存到会话和席位上，开局时交给对局（`seats[].notOwned` / `seats[].diy`，随对局记录保存，恢复时取记录里的值）；对局进行中再发只对下一局生效（`ROOM_STARTED`）。账号偏好同步的是 `diy` 和 `ownership`（`public/js/preferenceSchema.js`，`POST /api/me/preferences`）；账号里旧的 `waiguan` 值读取时不再返回，下一次保存时从存储中删除。Worker 模式下页面在 `room.create` / 进入房间时才连上房间，这两项在随后的 `welcome` 之后约 50 ms 发出：在此之前到达的 `room.start` 开的对局不带它们。匹配（[DESIGN §F4](design/fork.md)）的成员因此等这两项得到回复后才自动准备（`public/js/ui/loadoutSync.js roomPrefsSettled`），房主的自动开局总在它们之后。
 
 进行中的对局通过原版本规则及完整有序日志恢复；构建会保留旧规则引擎。无法恢复的对局按中断结束并释放席位（见 [持久状态说明](persistence-fields.md)）：在 Cloudflare 上回滚到更早的部署会中断所有在新规则版本上进行的对局（玩家看到「服务器版本已回退」），修复问题应提交回退改动重新部署（前滚）。Worker 只有账号模式（房间都属于账号，对局都有日志）；Node 本地模式保持原匿名流程。部署会断开所有 WebSocket，客户端自动重连。恢复成本随对局长度增长，长时间对局、AI 计算、回放体积和 DO 请求 / 存储写入仍受 Cloudflare 配额限制，具体边界见 [规则版本与容量边界](ACCOUNTS-HISTORY.md#规则版本与容量边界)。PITR 不能代替独立备份。
 

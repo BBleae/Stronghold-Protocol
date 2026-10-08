@@ -197,6 +197,40 @@ test('the 自选编队 picks and the 干员持有 list follow the account in the
   assert.deepEqual(server.accounts.get('a').ownership, { v: 1, notOwned: [] });
 });
 
+test('an account cached before diy / ownership were synced uploads this browser’s old local values once, never over a cloud value nor into another account', async () => {
+  const diy = { v: 1, picks: { chess_char_6_diy1_a: { charId: 'char_003_kalts', skillIndex: 2, uniEquipId: null } } };
+  // the cached account's gap is filled from this browser's old keys (the bare ownership array in today's envelope) ...
+  const old = storage();
+  old.setItem('sp.accountPrefs.legacyOwner', JSON.stringify('b'));
+  old.setItem('sp.accountPrefs.b', JSON.stringify({ values: { 'lobby.mode': 'coop' }, pending: {} }));
+  old.setItem('sp.pref.diy', JSON.stringify(diy));
+  old.setItem('sp.pref.ownership', JSON.stringify(['chess_char_3_05_a']));
+  const srv = cloud();
+  srv.accounts.set('b', { 'lobby.mode': 'coop' });
+  const b = client(old, srv.forAccount('b'));
+  await b.start('b');
+  assert.deepEqual(b.load('diy', null), diy);
+  assert.deepEqual(srv.accounts.get('b').diy, diy, 'uploaded where the cloud had none');
+  assert.deepEqual(srv.accounts.get('b').ownership, { v: 1, notOwned: ['chess_char_3_05_a'] });
+  // ... but never over a value the cloud already holds (another device synced first)
+  const other = { v: 1, picks: { chess_char_5_diy1_a: { charId: 'char_601_cguard' } } };
+  const old2 = storage();
+  old2.setItem('sp.accountPrefs.legacyOwner', JSON.stringify('c'));
+  old2.setItem('sp.accountPrefs.c', JSON.stringify({ values: {}, pending: {} }));
+  old2.setItem('sp.pref.diy', JSON.stringify(diy));
+  const srv2 = cloud();
+  srv2.accounts.set('c', { diy: other });
+  const c = client(old2, srv2.forAccount('c'));
+  await c.start('c');
+  assert.deepEqual(srv2.accounts.get('c').diy, other, 'the cloud value wins');
+  assert.deepEqual(c.load('diy', null), other);
+  // and another account on this browser never inherits the first account's local values
+  const d = client(old, srv.forAccount('d'));
+  await d.start('d');
+  assert.equal(srv.accounts.get('d')?.diy, undefined);
+  assert.equal(srv.accounts.get('d')?.ownership, undefined);
+});
+
 test('preferenceSchema: diy / ownership are checked structurally (the Worker uses the same schema); 外援 is gone', async () => {
   const { PREFERENCE_KEYS, validPreference, validatePreferencePatch } = await import('../../public/js/preferenceSchema.js');
   assert.ok(PREFERENCE_KEYS.includes('diy') && PREFERENCE_KEYS.includes('ownership'));

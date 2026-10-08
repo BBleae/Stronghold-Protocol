@@ -309,3 +309,51 @@ test('the 0.2.0 seat inputs travel with the recorded seats: a restore keeps 补�
   m.dispose();
   restored.dispose();
 });
+
+test('account history (usedOperators): a fielded 自选 piece counts as its operator, not as its slot (甄选干员)', { timeout: 120000 }, () => {
+  // server/match/player/round.js battleInput keeps the slot id as the unit's chessId and carries the pick in `diy`; the
+  // Worker archives usedOperators as the player's `operators` (worker/room-runtime.js), shared/history.js counts them and
+  // the history screen names them (public/js/screens/history.js operatorName)
+  const T5A = 'chess_char_5_diy1_a';
+  const SHARP = 'char_609_acguad';
+  const seats = [
+    { seat: 0, playerId: 'p0', name: 'Alice', isBot: false, connected: true, diy: { [T5A]: { charId: SHARP } } },
+    { seat: 1, playerId: 'p1', name: 'Bob', isBot: false, connected: true },
+  ];
+  let clock = 1000;
+  const m = new RecordedMatch(opts({ seats, now: () => clock, clientCombat: true }));
+  m.start();
+  for (const id of ['p0', 'p1']) {
+    m.handle(id, { t: 'g.autoplay', on: true });
+    m.handle(id, { t: 'g.infoReady' });
+  }
+  for (let i = 0; i < 20000 && m.phase !== 'PREP'; i++) {
+    clock = Math.max(clock, m.sched.nextAt());
+    m.pump(clock, 10);
+  }
+  assert.equal(m.phase, 'PREP');
+  const p0 = m.players.get('p0');
+  m.handle('p0', { t: 'g.autoplay', on: false });
+  // p0's board: its 自选 piece only
+  for (const p of [...p0.board.values()]) p0.returnCopies(p);
+  p0.board.clear();
+  p0.recompute();
+  const piece = p0.acquireChess(T5A, { source: 'buy' });
+  assert.ok(piece);
+  const placed = (() => {
+    for (let r = 0; r < 20; r++) for (let c = 0; c < 20; c++) {
+      if (m.handle('p0', { t: 'g.move', uid: piece.uid, to: { area: 'board', row: r, col: c } })?.ok) return true;
+    }
+    return false;
+  })();
+  assert.ok(placed && [...p0.board.values()].some((p) => p.uid === piece.uid), 'the piece is on the board');
+  for (let i = 0; i < 20000 && m.phase === 'PREP'; i++) {
+    clock = Math.max(clock, m.sched.nextAt());
+    m.pump(clock, 10);
+  }
+  assert.ok(m.usedOperators.p0, `fielded at ${m.phase}`);
+  assert.ok(m.usedOperators.p0.includes(SHARP), JSON.stringify(m.usedOperators.p0));
+  assert.ok(!m.usedOperators.p0.some((id) => /_diy\d_/.test(id)), 'no slot id');
+  assert.equal(m.errorCount, 0);
+  m.dispose();
+});
