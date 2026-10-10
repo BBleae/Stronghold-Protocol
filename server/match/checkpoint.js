@@ -7,10 +7,12 @@ export { RULES_VERSION };
 // Every input that changes the match is logged, so a restore (and a replay) re-applies it. The inputs a match takes at
 // its start are recorded options (OPTION_KEYS): `seats` carries each human's loadout, its 补位 not-owned list
 // (seats[].notOwned) and its 自选编队 picks (seats[].diy) — fixed for the match (0.2.0, server/match/Match.js header), so
-// a restore deals every player's shop, stand-ins and 自选 stock from the same seats. Later inputs are the methods below
-// (setLoadout: INFO_CHECK only). Spectator seats (opts.spectators / addSpectator) change no match state and are not
+// a restore deals every player's shop, stand-ins and 自选 stock from the same seats (since 0.2.2 also each human's
+// per-operator 潜能 / 练度, seats[].ops; aiPicksLast, the room's 「AI 队友最后选择」, is an option too). Later inputs are the
+// methods below (setLoadout: INFO_CHECK only — its third argument the 潜能 / 练度; the 0.2.3 setup reroll vote's
+// requestSetupReroll / cancelSetupReroll: INFO_CHECK only, the host's, through the lobby). Spectator seats (opts.spectators / addSpectator) change no match state and are not
 // recorded (the Worker keeps its own spectators, worker/rooms/spectators.js).
-const METHODS = new Set(['start', 'handle', 'onDisconnect', 'onReconnect', 'onLeave', 'setLoadout']);
+const METHODS = new Set(['start', 'handle', 'onDisconnect', 'onReconnect', 'onLeave', 'setLoadout', 'requestSetupReroll', 'cancelSetupReroll']);
 const copy = (value) => JSON.parse(JSON.stringify(value));
 // Work units, not wall-clock milliseconds: live execution and recovery must split at identical points. A match records
 // the values it started with (options.workSlice), so a restore keeps them when these defaults change. prepBurst: the AI
@@ -42,6 +44,7 @@ const OPTION_KEYS = [
   'verify',
   'battleContent',
   'workSlice',
+  'aiPicksLast',
 ];
 
 /** A manually pumped clock makes timer ordering reproducible, including callbacks with closures.
@@ -189,6 +192,12 @@ export class RecordedMatch extends Match {
   }
   setLoadout(...args) {
     return this._input('setLoadout', args);
+  }
+  requestSetupReroll(...args) {
+    return this._input('requestSetupReroll', args);
+  }
+  cancelSetupReroll(...args) {
+    return this._input('cancelSetupReroll', args);
   }
   // usedOperators: the operators each player fielded, for the account history (the Worker archives them as the player's
   // `operators`, shared/history.js). A chess counts as its base id (the elite folded into it); a 自选 piece (0.2.0: its

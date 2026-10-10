@@ -634,7 +634,7 @@ export class RoomRuntime {
     if (room?.match) base.matchCheckpoint = this.checkpoint(room.match);
     return { ...base, sessions: [...this.registry.all()].map(({ ws, ...s }) => ({ ...s,
       resyncAt: Number.isFinite(s.resyncAt) ? s.resyncAt : null })), deadlines: [...this.lobby.deadlines],
-    room: room ? { code: room.code, mode: room.mode, difficulty: room.difficulty, hostId: room.hostId,
+    room: room ? { code: room.code, mode: room.mode, difficulty: room.difficulty, aiPicksLast: room.aiPicksLast, hostId: room.hostId,
       seats: room.seats, matchCount: room.matchCount, lastSummary: room.lastSummary, ownerKey: room.ownerKey,
       createdAt: room.createdAt, archiveParticipants:room.archiveParticipants, replay: room.replay ? { publicFrame: room.replay.publicFrame,
         frames: [...room.replay.frames], pending: [...room.replay.pending] } : null } : null };

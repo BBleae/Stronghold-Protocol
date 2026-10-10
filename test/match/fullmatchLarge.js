@@ -1,7 +1,7 @@
 // test/match/fullmatchLarge.js — shared by the 5–8-seat soak suites (fullmatch-coop-5seats.test.js,
 // fullmatch-coop-8seats.test.js): one whole co-op match with the REAL simulation and client-side combat
 // (fullmatchRun.js runFull: zero errors, invariants at every phase change, no rejected client result), then the remake's
-// 5–8-player rules (DESIGN §F1, docs/PLAYING.md §12, docs/META.md) checked on what the match did:
+// 5–8-player rules (DESIGN §F1, docs/PLAYING.md §14, docs/META.md) checked on what the match did:
 //   * shared pool: copies per chess = ceil(base × max(1, n / 4)), n = the seats at the start (humans + AI);
 //   * strategy draft: one turn per seat; a timed draft of more than 4 seats gives 20 s a turn (30 s otherwise);
 //   * 机变: max(6, alive + 2) cards for the alive pickers (7–10 cards for 5–8 players);

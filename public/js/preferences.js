@@ -1,5 +1,5 @@
 import { PREFERENCE_KEYS, validPreference, cleanPreferences } from './preferenceSchema.js';
-import { LOADOUT_PREF, parseStored, toStored } from './ui/loadoutModel.js';
+import { LOADOUT_PREF, parseStored, parseStoredOps, toStored } from './ui/loadoutModel.js';
 import { DIY_PREF, parseStoredDiy, toStoredDiy } from './ui/diyModel.js';
 import { OWNERSHIP_PREF, parseStoredOwnership, toStoredOwnership } from './ui/ownershipModel.js';
 import { t } from '../../shared/i18n.js';
@@ -7,7 +7,7 @@ import { t } from '../../shared/i18n.js';
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 /** A device-local value in the stored form its account key takes (an older build's shape is parsed and re-saved). */
 const STORED_FORM = {
-  [LOADOUT_PREF]: (value) => toStored(parseStored(value)),
+  [LOADOUT_PREF]: (value) => toStored(parseStored(value), parseStoredOps(value)),   // the 潜能 / 练度 `ops` too (0.2.2)
   [DIY_PREF]: (value) => toStoredDiy(parseStoredDiy(value)),
   [OWNERSHIP_PREF]: (value) => toStoredOwnership(parseStoredOwnership(value)),
 };
@@ -121,7 +121,7 @@ export function createPreferences({storage = () => globalThis.localStorage, requ
   const hide = () => { if (globalThis.document?.visibilityState === 'hidden') wake(); };
   events.addEventListener?.('online', wake);
   events.addEventListener?.('pagehide', wake);
-  globalThis.document?.addEventListener('visibilitychange', hide);
+  globalThis.document?.addEventListener?.('visibilitychange', hide);
   return {
     start, flush,
     get status() { return status; },

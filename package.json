@@ -1,6 +1,6 @@
 {
   "name": "stronghold-protocol-alliance",
-  "version": "0.2.1",
+  "version": "0.2.3",
   "private": true,
   "description": "明日方舟「卫戍协议：盟约」非官方同人联机网页复刻（1–8 人合作，官方 1–4 人、5–8 人为本作扩展；Node.js 服务器 + 浏览器客户端）",
   "license": "GPL-3.0-or-later",
@@ -48,6 +48,7 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit --checkJs -p jsconfig.json",
     "check:imports": "node tools/check-imports.mjs",
+    "ci": "node tools/ci.mjs",
     "package": "node tools/package.mjs",
     "package:lite": "node tools/package.mjs --lite"
   },

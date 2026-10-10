@@ -39,6 +39,9 @@ test('first login migrates only selected preferences; a clean second device rest
   };
   for (const [key, value] of Object.entries({ ...expected, settings: { muted: true } }))
     local.setItem('sp.pref.' + key, JSON.stringify(value));
+  // the stored loadout form carries the 潜能 / 练度 `ops` (ui/loadoutModel.js toStored, upstream 0.2.2): an older
+  // device's loadout without them migrates as { v, entries, ops: {} }
+  expected.loadout = { ...expected.loadout, ops: {} };
   const first = client(local, server.forAccount('a'));
   await first.start('a');
   assert.deepEqual(server.accounts.get('a'), expected);
@@ -53,6 +56,14 @@ test('first login migrates only selected preferences; a clean second device rest
   second.save('loadout', { v: 1, entries: {} });
   await second.flush();
   assert.deepEqual(server.accounts.get('a').loadout, { v: 1, entries: {} });
+});
+
+test('first login carries the 潜能 / 练度 settings (`ops`) of the device loadout to the account', async () => {
+  const local = storage(), server = cloud();
+  const loadout = { v: 1, entries: { chess_test: { skill: 0 } }, ops: { char_103_angel: { potential: 2, cultivate: 1 } } };
+  local.setItem('sp.pref.loadout', JSON.stringify(loadout));
+  await client(local, server.forAccount('a')).start('a');
+  assert.deepEqual(server.accounts.get('a').loadout, loadout);
 });
 
 test('cloud wins over old local values; switching accounts cannot migrate someone else’s choices', async () => {

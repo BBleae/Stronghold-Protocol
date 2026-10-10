@@ -1,7 +1,7 @@
 // test/backups.test.js — the data of 补位 (stand-ins) and 自选 (DIY slots): chess.json `backup` and data/backups.json
 // (docs/DATA.md §18; tools/build-data.mjs buildBackups; shared/standIn.js, shared/diy.js). These tests pin the data the
 // gameplay reads: the 133 base chess and their types, the 17 stand-in characters and their forms, every NORMAL chess
-// resolving to its stand-in, the 4 DIY slots, the legal picks (the 78 owned 6★ with their forms and summons — the 7 collab
+// resolving to its stand-in, the 4 DIY slots, the legal picks (the 79 owned 6★ with their forms and summons — the 7 collab
 // 6★ upstream leaves out included: this fork's switch tools/build-data.mjs FORK_INCLUDE_COLLAB_PICKS, the fork owner's
 // decision of 2026-10-08 —, the prototypes and their locked selections) and the faction bonds.
 // With the official-data cache (.cache/gamedata) the backup fields, the stand-in numbers and the bond derivation are
@@ -247,9 +247,9 @@ test('DIY: prototype picks — the 9 elites at tiers 5 and 6, six 4★ reserves 
   assert.equal(diyRecordOf(chess.chess_char_5_01_a, { charId: 'char_608_acpion' }, data), null, 'not a DIY slot');
 });
 
-test('DIY: the 78 owned 6★ picks — a form at every slot status with all three skills, every module at stage 1 and 3, their summons', () => {
+test('DIY: the 79 owned 6★ picks — a form at every slot status with all three skills, every module at stage 1 and 3, their summons', () => {
   const { ownedPool } = backups.diy;
-  assert.equal(ownedPool.length, 78);
+  assert.equal(ownedPool.length, 79);
   let summoners = 0;
   for (const id of ownedPool) {
     const u = backups.units[id];
@@ -321,7 +321,7 @@ test('DIY: prototype picks carry the skill / module of their 补位 rows at the 
 test('DIY: the owned-6★ pool and the faction → bond rule (mainPower + every subPower vs powerIdList, else 协防干员)', () => {
   const { ownedPool, operators, prototypes } = backups.diy;
   const roster = new Set(base.map((c) => c.charId).filter(Boolean));
-  assert.equal(ownedPool.length, 78);
+  assert.equal(ownedPool.length, 79);
   for (const id of ownedPool) {
     assert.ok(!roster.has(id), `${id}: a roster operator is never a pick`);
     assert.deepEqual([operators[id].rarity, operators[id].obtainable], [6, true], id);
@@ -335,7 +335,7 @@ test('DIY: the owned-6★ pool and the faction → bond rule (mainPower + every 
   }
   const tally = {};
   for (const id of ownedPool) { const k = operators[id].bonds.join('+'); tally[k] = (tally[k] || 0) + 1; }
-  assert.deepEqual(tally, { emptyShip: 44, yanShip: 14, victoriaShip: 8, sargonShip: 4, siracusaShip: 4, lateranoShip: 2, kazimierzShip: 1, 'yanShip+victoriaShip': 1 });
+  assert.deepEqual(tally, { emptyShip: 44, yanShip: 14, victoriaShip: 8, sargonShip: 4, siracusaShip: 4, lateranoShip: 2, kazimierzShip: 1, egirShip: 1, 'yanShip+victoriaShip': 1 });
   // the fork: the collab operators upstream leaves out (copyright) are picks here, with their units and bonds, and nothing
   // is excluded (tools/build-data.mjs FORK_INCLUDE_COLLAB_PICKS, the fork owner's decision of 2026-10-08) — 结城理 拉特兰 by
   // his subPower laterano, the other six 协防干员 (no core bond meets their factions)
@@ -354,7 +354,7 @@ test('DIY: powers and the owned pool re-derived from character_table', { skip: !
   const collab = (c) => [c.mainPower, ...(c.subPower || [])].some((p) => ['rainbow', 'action4', 'mujica', 'sees', 'laios'].includes(p?.teamId))
     || /^(?:MH|RS|AM|PS|DD)\d/.test(c.displayNumber || '');
   const legal = Object.entries(CT).filter(([id, c]) => id.startsWith('char_') && c.rarity === 'TIER_6' && !['TOKEN', 'TRAP'].includes(c.profession) && !c.isNotObtainable && !roster.has(id));
-  assert.equal(legal.length, 78, 'the excel\'s 78 obtainable 6★ outside the chess pool');
+  assert.equal(legal.length, 79, 'the excel\'s 79 obtainable 6★ outside the chess pool');
   // the fork keeps the collab picks (FORK_INCLUDE_COLLAB_PICKS): the pool is every legal 6★, and upstream's collab rule
   // still finds exactly the 7 of COLLAB_BONDS among them
   assert.deepEqual([...backups.diy.ownedPool].sort(), legal.map(([id]) => id).sort());

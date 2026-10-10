@@ -98,6 +98,7 @@ import { frontOf } from '../../../dir.js';
 import { bodyDist } from '../../../body.js';
 import { hasHp } from '../../../damage.js';
 import { holdsUndying, PRIO_UNDYING_HELD } from '../../items/battle.js';
+import { hypot, sin, cos } from '../../../detmath.js';
 
 export const OBLVNS = 'char_4182_oblvns';
 const S1 = 'skchr_oblvns_1';
@@ -323,7 +324,7 @@ function search(battle, n) {
   let best = null, bd = Infinity;
   for (const e of battle.foesInRadius(n.x, n.y, n.P.radius)) {
     if (!validTarget(n.owner, e)) continue;
-    const d = Math.hypot(e.x - n.x, e.y - n.y);
+    const d = hypot(e.x - n.x, e.y - n.y);
     if (d < bd - 1e-9 || (Math.abs(d - bd) <= 1e-9 && best && e.spawnSeq < best.spawnSeq)) { bd = d; best = e; }
   }
   return best;
@@ -375,7 +376,7 @@ function stepNote(battle, n, dt) {
     const e = n.target;
     const step = n.P.speed * dt;
     if (validTarget(o, e)) {
-      const dx = e.x - n.x, dy = e.y - n.y, d = Math.hypot(dx, dy);
+      const dx = e.x - n.x, dy = e.y - n.y, d = hypot(dx, dy);
       const reach = e.hitArea ? bodyDist(e, n.x, n.y) : d;
       if (reach <= step + NOTE_HIT_RADIUS) {
         if (!n.P.pass) { strike(battle, n, e); return false; }
@@ -388,7 +389,7 @@ function stepNote(battle, n, dt) {
       if (d > 1e-9) {
         const w = n.P.turn;
         let vx = n.dx * (1 - w) + (dx / d) * w, vy = n.dy * (1 - w) + (dy / d) * w;
-        const l = Math.hypot(vx, vy);
+        const l = hypot(vx, vy);
         if (l > 1e-9) { vx /= l; vy /= l; } else { vx = dx / d; vy = dy / d; }
         n.dx = vx;
         n.dy = vy;
@@ -427,7 +428,7 @@ function stepNotes(battle, st) {
 /** One note from her position: heading her facing turned `deg` (counter-clockwise = to her left). */
 function addNote(st, unit, cfg, o) {
   const [fr, fc] = unit.fwd;
-  const a = (o.deg * Math.PI) / 180, cs = Math.cos(a), sn = Math.sin(a);
+  const a = (o.deg * Math.PI) / 180, cs = cos(a), sn = sin(a);
   st.notes.push({
     owner: unit, seq: unit.deploySeq, P: o.P, x: unit.x, y: unit.y, dx: fc * cs - fr * sn, dy: fc * sn + fr * cs,
     state: 'free', target: o.target ?? null, age: 0, nextUpdate: o.P.update, outFor: 0, delay: cfg.delay, passDur: cfg.passDur,

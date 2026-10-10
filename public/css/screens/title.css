@@ -206,7 +206,7 @@
 .title-cn em { font-style: normal; color: var(--mint-500); text-shadow: 0 0 .26rem rgba(23, 249, 183, .45); }
 .title-tag {
   margin-top: .12rem;
-  font-size: .19rem;
+  font-size: calc(.19 * var(--t));
   color: var(--text-lo);
   letter-spacing: .1em;
   animation: rise-in 600ms 200ms var(--ease-out) backwards;
@@ -244,8 +244,8 @@
 .title-login__form { display: contents; }
 .title-login__account { display: flex; align-items: center; gap: .12rem; }
 .title-login__identity { flex: 1; min-width: 0; }
-.title-login__identity > span { display: block; font-size: .13rem; color: var(--text-lo); }
-.title-login__identity > strong { display: block; font-size: .23rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.title-login__identity > span { display: block; font-size: calc(.13 * var(--t)); color: var(--text-lo); }
+.title-login__identity > strong { display: block; font-size: calc(.23 * var(--t)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .title-invite {
   display: flex;
   align-items: center;
@@ -254,25 +254,30 @@
   background: rgba(246, 163, 41, .08);
   border: 1px solid rgba(246, 163, 41, .35);
   color: var(--amber);
-  font-size: .16rem;
+  font-size: calc(.16 * var(--t));
 }
 .title-invite .icon { width: .2rem; height: .2rem; }
-.title-invite b { font-size: .2rem; letter-spacing: .2em; color: #ffd08a; }
+.title-invite b { font-size: calc(.2 * var(--t)); letter-spacing: .2em; color: #ffd08a; }
 /* The connection row: the state (● text · ping) and the tools (玩法说明 · 资源管理 · ⚙ · ⛶) share one line where they
    fit (a Node server: 玩法说明 · ⚙ · ⛶). Where they do not — a Cloudflare site's 资源管理 next to ⚙ — the tools take
    their own line under the state instead of squeezing the row (the state text broke over two lines, ⚙ / ⛶ stopped
    being squares). */
-.title-conn { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: .1rem; row-gap: .06rem; min-height: .32rem; overflow-x: clip; font-size: .14rem; color: var(--text-lo); }
+.title-conn { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: .1rem; row-gap: .06rem; min-height: .32rem; overflow-x: clip; font-size: calc(.14 * var(--t)); color: var(--text-lo); }
 .title-conn__state, .title-conn__tools { display: flex; align-items: center; gap: .1rem; }
-/* language menu (中文 | English | …, ui/lang.js) in the top-right corner; more than four languages make it a list */
+/* 统计 (the local stats page) beside the language menu in the top-right corner */
+.title-corner__tools { display: flex; align-items: center; justify-content: flex-end; gap: .1rem; margin-bottom: .1rem; }
+.title-corner__tools .title-lang { margin-bottom: 0; }
+/* language menu (中文 | English | …, ui/lang.js) in the top-right corner; more than four languages make it a list.
+   The height is max(design, 1.4em) so the buttons still hold their text at 设置 →「文字大小」 大 / 特大 (on a phone
+   1rem is clamped at 40 px and .3rem is only 12 px, less than the enlarged label). */
 .title-lang { display: inline-flex; margin-bottom: .1rem; }
-.title-lang button { min-width: .74rem; height: .3rem; font-size: .14rem; cursor: pointer; }
-.lang-select select { height: .38rem; min-width: 1.6rem; padding: 0 .12rem; background: #0a0d0c; border: 0; color: var(--text-hi); font-size: .16rem; cursor: pointer; }
-.title-lang.lang-select select { height: .3rem; font-size: .14rem; }
+.title-lang button { min-width: .74rem; height: max(.3rem, 1.4em); font-size: calc(.14 * var(--t)); cursor: pointer; }
+.lang-select select { height: max(.38rem, 1.4em); min-width: 1.6rem; padding: 0 .12rem; background: #0a0d0c; border: 0; color: var(--text-hi); font-size: calc(.16 * var(--t)); cursor: pointer; }
+.title-lang.lang-select select { height: max(.3rem, 1.4em); font-size: calc(.14 * var(--t)); }
 html[data-script="alphabetic"] .title-login .btn--xl { letter-spacing: .3em; }
 /* the account card's GitHub / 进入大厅 buttons keep their normal spacing in every script */
 html[data-script="alphabetic"] .title-login :is(.title-login__github, .title-login__enter) { letter-spacing: normal; }
-.title-conn .ping { height: .26rem; font-size: .15rem; }
+.title-conn .ping { height: max(.26rem, 1.6em); font-size: calc(.15 * var(--t)); }
 /* 安装 help (js/ui/install.js, shown in the shared alert dialog) */
 .install-steps { margin: 0 0 .1rem; padding-left: 1.4em; line-height: 1.75; color: var(--text-hi); }
 
@@ -285,7 +290,7 @@ html[data-script="alphabetic"] .title-login :is(.title-login__github, .title-log
   display: flex;
   justify-content: space-between;
   align-items: flex-end;
-  font-size: .13rem;
+  font-size: calc(.13 * var(--t));
   color: var(--text-dim);
 }
 /* the 在线人数 readout beside the version (ui/presence.js; .presence in components.css). The group keeps to the side of
@@ -295,7 +300,7 @@ html[data-script="alphabetic"] .title-login :is(.title-login__github, .title-log
   display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: flex-end; gap: .02rem .24rem;
   min-width: 0; max-width: calc(50% - 2.45rem - .08rem);
 }
-.title-foot .presence { font-size: max(.13rem, 10px); }
+.title-foot .presence { font-size: max(calc(.13 * var(--t)), 10px); }
 /* a development build (shared/constants.js DEV_BUILD): an unmissable tag in the footer */
 .title-dev {
   padding: .03rem .1rem;

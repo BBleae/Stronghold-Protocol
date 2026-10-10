@@ -112,6 +112,7 @@ import { net as appNet } from '../net.js';
 import { store as appStore } from '../store.js';
 import { unitStatsEntry, fxForm, RESULT_LIMITS } from '../../../shared/protocol.js';
 import { spectateEffects } from './observe.js';
+import { recordError, setBattleSource } from '../diag.js';
 
 const TICK = 1 / 30;
 /** Fast-forward budget per frame (ticks) when far behind. */
@@ -202,6 +203,14 @@ export const REPORT_INPUTS = 128;
 /** Ticks per frame at a speed (same cap as the server pacing: server/match/fields.js maxTicksPerInterval). */
 export const ticksPerFrameCap = (speed) => Math.max(8, Math.ceil((Number(speed) || 2) * 4));
 
+/**
+ * What the runner compares between two looks at a 联防 battle (noteUniteLeft) before it reads the leakers' enemies still
+ * standing again: a knock-out, a leak, a spawn, the end. `total` stands for the spawns no longer — a split child or a summon
+ * is outside the capsule's denominator (DESIGN §14 顶栏胶囊) — so the length of the enemy list does.
+ * @param {any} b the battle
+ */
+export const uniteLeftMark = (b) => `${Number(b.killed) || 0}:${Number(b.leakedCount) || 0}:${Number(b.total) || 0}:${Array.isArray(b.enemies) ? b.enemies.length : 0}:${b.finished ? 1 : 0}`;
+
 function deepFreeze(root) {
   const stack = [root];
   while (stack.length) {
@@ -254,9 +263,12 @@ export async function loadEngineSim(version, { importFn = (url) => import(url) }
   return { spec: engine.spec, ds: engine.dataSource() };
 }
 
-/** Battle logger: content errors are isolated by the sim; report them as warnings (the server logs its own). */
+/**
+ * Battle logger: content errors are isolated by the sim; report them as warnings (the server logs its own) and keep
+ * them for the diagnostics a player copies (diag.js).
+ */
 const SIM_LOGGER = Object.freeze({
-  error: (...a) => console.warn('[sim]', ...a),
+  error: (...a) => { console.warn('[sim]', ...a); recordError('sim', a.length === 1 ? a[0] : a.map(String).join(' ')); },
   warn: (...a) => console.warn('[sim]', ...a),
   info() {},
   debug() {},
@@ -418,7 +430,7 @@ export function createBattleRunner(deps) {
 
   function noteUniteLeft(e) {
     const b = e.battle;
-    const mark = `${Number(b.killed) || 0}:${Number(b.leakedCount) || 0}:${Number(b.total) || 0}:${b.finished ? 1 : 0}`;
+    const mark = uniteLeftMark(b);
     if (mark === e.leakMark) return;
     e.leakMark = mark;
     let left = e.left;
@@ -486,6 +498,7 @@ export function createBattleRunner(deps) {
     } catch (err) {
       stats.errors++;
       console.warn('[runner] battle step failed', err);
+      recordError('runner', err, 'battle step failed');
       try { b.forceEnd('timeout'); } catch { /* ignore */ }
     }
     stats.ticks += k;
@@ -528,7 +541,7 @@ export function createBattleRunner(deps) {
       const list = s.ev.filter(keepsState).map(handOver);
       if (list.length) emit('ev', { t: 'b.ev', fieldId: e.fieldId, gt: s.gt, ev: list, handOver: true });
     }
-    try { emit('snap', frameOf(e)); } catch (err) { console.warn('[runner] snapshot failed', err); }
+    try { emit('snap', frameOf(e)); } catch (err) { console.warn('[runner] snapshot failed', err); recordError('runner', err, 'snapshot failed'); }
   }
 
   /**
@@ -575,9 +588,16 @@ export function createBattleRunner(deps) {
   function report(e) {
     const p = e.sim.spec.battleProgress(e.battle);
     const msg = { battleId: e.battleId, gt: Math.min(1e5, p.gt), killed: Math.min(p.killed, p.total), total: Math.min(1e5, p.total), done: !!p.done };
+    // the HUD capsule's numerator of this field (shared/protocol.js b.progress `resolved`): the field's own scheduled
+    // enemies knocked out or leaked. Sent only when the battle reports one (Battle.resolved) — an absent field leaves
+    // the teammate UI on its `resolved ?? killed` fallback
+    if (Number.isFinite(p.resolved)) msg.resolved = Math.max(0, Math.min(msg.total, p.resolved));
     if (bossLike(e)) {
       const pool = e.battle.sharedBoss;
       msg.leaks = Math.min(1e6, e.meter.lp);
+      // the split of that LP between the players' own leaks (the rest is the leader's effects): the server holds the result's
+      // leaked lists to it before a perfect-payout bounty pays (Match._bossLeaksAgree)
+      if (p.leaksBy) msg.leaksBy = p.leaksBy;
       msg.bossDmg = pool && Number.isFinite(pool.cum) ? pool.cum : 0;
       if (pool && pool.byPlayer) {
         const by = {};
@@ -615,7 +635,7 @@ export function createBattleRunner(deps) {
         result = e.sim.spec.compactResult(e.battle.result());
         // an oversized frame would close the socket at the very end of the battle (64 KB inbound limit)
         if (typeof e.sim.spec.fitResult === 'function') result = e.sim.spec.fitResult(result, { bossLike: bossLike(e), battleId: e.battleId });
-      } catch (err) { console.warn('[runner] result failed', err); }
+      } catch (err) { console.warn('[runner] result failed', err); recordError('runner', err, 'result failed'); }
       if (result) {
         e.result = result;
         deliver(e);
@@ -653,6 +673,7 @@ export function createBattleRunner(deps) {
       if (!LOST_RESULT_CODES.includes(code)) {
         e.delivery = 'delivered';
         console.warn('[runner] b.result refused', code);
+        recordError('runner', code, 'b.result refused');
         return;
       }
       e.delivery = 'undelivered';
@@ -951,6 +972,7 @@ export function createBattleRunner(deps) {
       try { sim = await simFor(msg.rulesVersion); } catch (err) {
         if (!validPreparation(task)) return;
         console.warn('[runner] simulation unavailable', err);
+        recordError('runner', err, 'simulation unavailable');
         if (task.seq === startSeq) { loading = null; publishState(); }
         return;
       }
@@ -960,6 +982,7 @@ export function createBattleRunner(deps) {
         battle = sim.spec.createBattleFromSpec(msg.spec, sim.ds, { logger });
       } catch (err) {
         console.warn('[runner] battle construction failed', err);
+        recordError('runner', err, 'battle construction failed');
         if (task.seq === startSeq) { loading = null; publishState(); }
         return;
       }
@@ -1137,6 +1160,16 @@ export function createBattleRunner(deps) {
       return () => listeners.get(type)?.delete(fn);
     },
     state,
+    /**
+     * The battle on screen as a report attaches it (diag.js): its b.start fields and its game time; null without one.
+     * @returns {{ battleId: string, fieldId: string, kind: string, spec: object, time: number|null }|null}
+     */
+    currentBattle() {
+      const e = cur;
+      if (!e || !e.spec) return null;
+      const time = e.battle && Number.isFinite(e.battle.time) ? e.battle.time : null;
+      return { battleId: e.battleId, fieldId: e.fieldId, kind: e.kind, spec: e.spec, time };
+    },
     stats() {
       return { ...stats, avgTickMs: stats.ticks ? stats.stepMs / stats.ticks : 0, entries: entries.size, loadingSim: !!simP };
     },
@@ -1229,3 +1262,4 @@ export const battleRunner = typeof window !== 'undefined' && typeof document !==
   ? createBattleRunner({ net: appNet, store: appStore })
   : null;
 if (battleRunner) globalThis.__SP_RUNNER__ = battleRunner; // dev / E2E introspection
+if (battleRunner) setBattleSource(() => battleRunner.currentBattle());

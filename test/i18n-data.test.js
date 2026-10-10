@@ -97,9 +97,11 @@ test('data/i18n/en.json: shape, the 盟约 season of the EN build, coverage and 
   assert.equal(OVERLAY.meta.source.season, 'act2autochess', 'built from an EN client that has 卫戍协议：盟约 下半');
   // the 自选 data (0.2.0) brings 71 owned 6★, some of them (and some newer modules) not in the EN client yet: their
   // names, skills, talents and modules stay Chinese — measured 97.6 % in all, skills 95.9 / talents 95.1 % (2026-10-05).
+  // 0.2.3 adds Clementia before her EN release (upstream measured 2026-10-09: total 97.4%, skills 95.9%, talents 94.9%).
   // Fork (docs/design/fork.md §F6): the 7 collab picks come back, and 焰狐龙梓兰 / 结城理 are in no EN client — 97.3 % in
-  // all, skills 95.5 / talents 94.6 % (2026-10-08): talents have a 94 % floor in this fork.
-  assert.ok(OVERLAY.meta.totals.pct >= 97, `coverage ${OVERLAY.meta.totals.pct} %`);
+  // all, skills 95.5 / talents 94.6 % (2026-10-08): talents have a 94 % floor in this fork. With upstream 0.2.2 / 0.2.3
+  // merged (Clementia, the 潜能 texts) beside the collab picks: 96.9 % in all, skills 95.1 / talents 94.0 % (2026-10-11).
+  assert.ok(OVERLAY.meta.totals.pct >= 96.5, `coverage ${OVERLAY.meta.totals.pct} %`);
   const floor = { talents: 94, operators: 95, skills: 95, modules: 95 };
   for (const kind of ['operators', 'skills', 'talents', 'modules', 'traits', 'enemies', 'bonds', 'items', 'effects', 'bands', 'garrisons', 'stages', 'tokens', 'choices', 'config']) {
     const c = OVERLAY.meta.coverage[kind];
