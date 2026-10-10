@@ -492,6 +492,6 @@ parts the fork does not have):
 - **骨刺's A / B switch (PR #365)**: `SpineActor.syncFormPose` on the fork's swing engine — a running swing goes on in
   the new set's clip with its strike moment kept (slowed when the new strike frame lies further in than the time
   left); upstream's wind-up deadline (`windUntil` / `windTs`) does not exist here, and `poseHeld` drops that test.
-- **Storage refusing a write**: `ui/loadoutSync.js setEntries` / `setOpsMap` keep the other half of the loadout (entries /
-  `ops`) when the browser's storage refuses it.
+- **Cloud preference migration**: `preferences.js STORED_FORM` re-saves a device loadout with its `ops`; `loadoutSync.js`
+  `setEntries` / `setOpsMap` keep the other half when storage refuses the write.
 

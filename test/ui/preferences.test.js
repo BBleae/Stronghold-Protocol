@@ -58,6 +58,14 @@ test('first login migrates only selected preferences; a clean second device rest
   assert.deepEqual(server.accounts.get('a').loadout, { v: 1, entries: {} });
 });
 
+test('first login carries the 潜能 / 练度 settings (`ops`) of the device loadout to the account', async () => {
+  const local = storage(), server = cloud();
+  const loadout = { v: 1, entries: { chess_test: { skill: 0 } }, ops: { char_103_angel: { potential: 2, cultivate: 1 } } };
+  local.setItem('sp.pref.loadout', JSON.stringify(loadout));
+  await client(local, server.forAccount('a')).start('a');
+  assert.deepEqual(server.accounts.get('a').loadout, loadout);
+});
+
 test('cloud wins over old local values; switching accounts cannot migrate someone else’s choices', async () => {
   const local = storage(),
     server = cloud();
