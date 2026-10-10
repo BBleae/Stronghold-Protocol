@@ -102,8 +102,11 @@ export function drawnChanged(a, b) {
   return JSON.stringify(a) !== JSON.stringify(b);
 }
 
-/** Whether the capsule's numbers (killed / total) differ: a drawn kill goes out at once, DP alone keeps the HUD throttle. */
-export const hudChanged = (a, b) => !a || !b || a.killed !== b.killed || a.total !== b.total;
+/**
+ * Whether the capsule's numbers (killed / resolved / total) differ: a drawn kill or leak goes out at once, DP alone keeps
+ * the HUD throttle.
+ */
+export const hudChanged = (a, b) => !a || !b || a.killed !== b.killed || a.resolved !== b.resolved || a.total !== b.total;
 
 /**
  * The battle values the HUD shows: the released (drawn) slice of the battle `sim` is running, else the live state — a
@@ -138,7 +141,9 @@ export function snapUnits(snap) {
 }
 
 /**
- * HUD numbers from a b.snap: { killed, total, dp, boss } (boss: { hp, max } when present).
+ * HUD numbers from a b.snap: { killed, resolved, total, dp, boss } (boss: { hp, max } when present).
+ * `resolved` is the capsule's numerator — knocked out + leaked among the round's own enemies (Battle.leakedInTotal);
+ * an older snapshot without it falls back to the kill count.
  * @param {any} snap
  */
 export function snapHud(snap) {
@@ -146,7 +151,8 @@ export function snapHud(snap) {
   const n = (v) => (Number.isFinite(v) ? v : null);
   let boss = null;
   if (isObj(snap.boss) && Number.isFinite(snap.boss.hp)) boss = { hp: snap.boss.hp, max: n(snap.boss.max) ?? n(snap.boss.maxHp) };
-  return { killed: n(snap.killed), total: n(snap.total), dp: n(snap.dp), boss };
+  const killed = n(snap.killed);
+  return { killed, resolved: n(snap.resolved) ?? killed, total: n(snap.total), dp: n(snap.dp), boss };
 }
 
 /** Boss HP fraction 0..1 (null when unknown). */

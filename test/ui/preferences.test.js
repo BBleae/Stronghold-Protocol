@@ -39,6 +39,9 @@ test('first login migrates only selected preferences; a clean second device rest
   };
   for (const [key, value] of Object.entries({ ...expected, settings: { muted: true } }))
     local.setItem('sp.pref.' + key, JSON.stringify(value));
+  // the stored loadout form carries the 潜能 / 练度 `ops` (ui/loadoutModel.js toStored, upstream 0.2.2): an older
+  // device's loadout without them migrates as { v, entries, ops: {} }
+  expected.loadout = { ...expected.loadout, ops: {} };
   const first = client(local, server.forAccount('a'));
   await first.start('a');
   assert.deepEqual(server.accounts.get('a'), expected);

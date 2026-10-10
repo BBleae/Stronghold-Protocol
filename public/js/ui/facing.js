@@ -13,7 +13,7 @@
 // 销毁 on items and Arts (research 09 §5 / §6.5).
 
 import { GEO } from '../../../shared/constants.js';
-import { attackRangeGrid, loadoutRecord, resolveRecordLoadout } from '../../../shared/loadoutRecord.js';
+import { attackRangeGrid } from '../../../shared/loadoutRecord.js';
 import { N_ } from '../../../shared/i18n.js';
 
 export const DIRS = Object.freeze(['UP', 'RIGHT', 'DOWN', 'LEFT']);
@@ -150,26 +150,6 @@ export function previewGrid(lookups, piece) {
   else if (piece.kind === 'item') { rec = lookups.getItem?.(piece.id); if (rec?.itemType !== 'MAGIC') return null; }
   const grid = !rec ? null : piece.kind === 'chess' ? attackRangeGrid(rec) : (Array.isArray(rec.rangeGrid) ? rec.rangeGrid : null);
   return grid && grid.length ? grid : null;
-}
-
-/**
- * The range shown under a field unit whose card is open (issue #8): an ally operator / summon standing on a tile — a
- * battle unit, or a piece of a scouted / spectated prep board (UnitInfo `area` 'board'; bench and temp pieces have
- * none). The grid is the one it fights with under ITS owner's loadout (UnitInfo skillIndex / moduleId, DESIGN §16).
- * @param {any} unit UnitInfo (render view info) @param {{ getChess:(id:string)=>any, getToken:(id:string)=>any }} lookups
- * @returns {{ grid: number[][], row: number, col: number, dir: string } | null}
- */
-export function unitRange(unit, lookups) {
-  if (!isObj(unit) || unit.side !== 'ally' || (unit.kind !== 'op' && unit.kind !== 'token') || !lookups) return null;
-  if (unit.area != null && unit.area !== 'board') return null;
-  const row = Math.round(Number(unit.y)), col = Math.round(Number(unit.x));
-  if (!Number.isFinite(row) || !Number.isFinite(col) || typeof unit.defId !== 'string') return null;
-  const lo = { skillIndex: unit.skillIndex, moduleId: unit.moduleId };
-  const grid = previewGrid({ ...lookups, chessRecord: (rec) => loadoutRecord(rec, resolveRecordLoadout(rec, lo)) },
-    { kind: unit.kind === 'token' ? 'token' : 'chess', id: unit.defId });
-  if (!grid) return null;
-  const dir = normDir(unit.dir, null) || (unit.facing === -1 ? 'LEFT' : 'RIGHT');
-  return { grid, row, col, dir };
 }
 
 /** Whether an Art is placed with a direction (its range reaches beyond its own tile, e.g. 画卷 `[[0,0],[0,1]]`). */

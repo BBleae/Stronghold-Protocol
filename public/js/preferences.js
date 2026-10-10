@@ -121,7 +121,7 @@ export function createPreferences({storage = () => globalThis.localStorage, requ
   const hide = () => { if (globalThis.document?.visibilityState === 'hidden') wake(); };
   events.addEventListener?.('online', wake);
   events.addEventListener?.('pagehide', wake);
-  globalThis.document?.addEventListener('visibilitychange', hide);
+  globalThis.document?.addEventListener?.('visibilitychange', hide);
   return {
     start, flush,
     get status() { return status; },

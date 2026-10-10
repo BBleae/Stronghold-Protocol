@@ -59,6 +59,9 @@
 //     may cut that end clip), and the next attack goes straight back into the stance. The skill's real end plays its
 //     end clip unless the unit already stands in the plain idle (owner's decision 2026-10-05, merging 0.1.3: 星熊, 宴,
 //     塞雷娅 … end a spell of attacks as 0.1.3 does).
+//
+//   poseHeld()                            true while the pose cannot change (render/units.js then neither re-poses nor
+//                                         redraws the model, only advances `clock`)
 
 const clampN = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
 
@@ -98,15 +101,15 @@ export function windUpPlan(clipDur, hit, interval, lead, loop = false, begin = 0
   return { ts, start: Math.max(0, wind - L), early: L > wind + 1e-6 };
 }
 
-/** Whether any skin of the skeleton data has a clipping attachment (pixi-spine AttachmentType.Clipping = 6). */
+/** A clipping attachment (pixi-spine AttachmentType.Clipping = 6). */
+const isClip = (a) => !!a && (a.type === 6 || a.constructor?.name === 'ClippingAttachment' || ('endSlot' in a && 'vertices' in a && !('uvs' in a)));
+
+/** Whether any skin of the skeleton data has a clipping attachment. */
 export function hasClipping(data) {
   try {
     for (const skin of data?.skins || []) {
       const list = typeof skin.getAttachments === 'function' ? skin.getAttachments() : [];
-      for (const e of list) {
-        const a = e && e.attachment;
-        if (a && (a.type === 6 || a.constructor?.name === 'ClippingAttachment' || ('endSlot' in a && 'vertices' in a && !('uvs' in a)))) return true;
-      }
+      for (const e of list) if (isClip(e && e.attachment)) return true;
     }
   } catch { /* unknown runtime shape: assume none */ }
   return false;
@@ -164,6 +167,8 @@ export class SpineActor {
     this.clipPerAttack = false;
     // strike frames known for this skeleton (manifest `hits`); a skeleton without any keeps the old rule
     this.hitData = !!entry.hits && Object.keys(entry.hits).length > 0;
+    this._applied = false;        // an update has posed the skeleton since its clip last changed (poseHeld)
+    this._appliedTint = undefined; // the tint that update put on the slots (pixi-spine applies `tint` in update)
     this._play(this._idleName(), true);
   }
 
@@ -223,6 +228,46 @@ export class SpineActor {
     if (change && this.has(change)) this._change(change);
     else if (this.mode === 'base') this._play(this._baseName(), true);
     else if (this.mode === 'stun' && this.has(this.roles.stun?.loop)) this._play(this.roles.stun.loop, true);
+  }
+
+  /**
+   * Re-pose on the clip set in force right after an immediate form switch (render/units.js STEALTH_FORMS: 假想敌：骨刺's
+   * stealth bit; PR #365): a running swing goes on in the new set's attack clip at the same point relative to its
+   * strike frame — a swing whose strike is still ahead strikes at the same moment (a new strike frame later than the
+   * time left starts the clip at once, slowed to land it) — a stun / the resting state restarts on the new set's clip
+   * without a crossfade, and the skeleton is posed at once — also while a freeze holds it (`frozen`).
+   * FORK: on the fork's swing engine (windUp / attack / _engage: a swing is its clip on track 0, a one-shot hands over
+   * to the queued base clip after its strike frame); upstream's wind-up deadline (windUntil / windTs) has no counterpart.
+   */
+  syncFormPose() {
+    if (this.dead) return;
+    if (this.mode === 'attack') {
+      const e = this.spine.state.tracks[0], set = this._swingSet(this.down), now = this._nowClip();
+      if (!e || !set || now === set.clip || (!e.loop && now !== this.swingClip)) return;
+      const oldDur = this.dur(now), oldHit = this._hitTime(now, oldDur);
+      const dur = this.dur(set.clip), hit = this._hitTime(set.clip, dur);
+      const t = e.loop ? e.trackTime % oldDur : e.trackTime;
+      let ts = Math.max(0.05, e.timeScale || 1);
+      const want = t + hit - oldHit;
+      if (want < 0 && t < oldHit) ts *= hit / Math.max(1e-6, oldHit - t);
+      const start = clampN(want, 0, dur);
+      this._play(set.clip, set.loop, { timeScale: ts, start, mix: 0, restart: true });
+      if (!set.loop) {
+        this.swingClip = set.clip;
+        this.swingHit = hit;
+        this._queue(this._baseName(), true, 1, this._m(MIX.swingOut), hit);
+        this.attackUntil = this.clock + Math.max(0, dur - start) / ts;
+      }
+    } else if (this.mode === 'stun') {
+      const name = this.has(this.roles.stun?.loop) ? this.roles.stun.loop : this._baseName();
+      this._play(name, true, { mix: 0 });
+    } else if (this.mode === 'base') {
+      this._play(this._baseName(), true, { mix: 0 });
+    } else {
+      return;
+    }
+    // Apply the new attachments even when normal updates are frozen.
+    this.spine.update(0);
   }
 
   /** Play a form's transition clip once; attacks and the resting state wait for it (mode 'change'). */
@@ -347,6 +392,7 @@ export class SpineActor {
       if (start) e.trackTime = start;
     }
     this.current = name;
+    this._applied = false;
     return true;
   }
 
@@ -369,6 +415,7 @@ export class SpineActor {
     }
     const e = st.addAnimation(0, name, loop, delay);
     if (e) { e.timeScale = timeScale; e.mixDuration = blend; }
+    this._applied = false;
     return true;
   }
 
@@ -736,6 +783,24 @@ export class SpineActor {
     return 0;
   }
 
+  /**
+   * True while an update would draw the same pixels: a frozen model, or a dead one whose only clip — track 0, not
+   * looping, not mixing — has played out (the held end of a death clip; a skeleton without one holds its idle at
+   * timeScale 0). Only once an update has posed the current clip and put the current tint on the slots (pixi-spine applies
+   * `tint` in update: the grey of a knocked-out operator, a hit flash). Never while a form's closing clip is pending: it
+   * acts on the clock. (FORK: a wind-up is a swing clip playing — mode 'attack' — so upstream's windUntil test is moot.)
+   */
+  poseHeld() {
+    if (!this._applied || this.spine.tint !== this._appliedTint || this.endClip) return false;
+    if (this.frozen) return true;
+    if (this.mode !== 'die') return false;
+    const tracks = this.spine.state.tracks;
+    for (let i = 1; i < tracks.length; i++) if (tracks[i]) return false;
+    const e = tracks[0];
+    if (!e || e.loop || e.mixingFrom) return false;
+    return e.timeScale === 0 || e.trackTime >= e.animationEnd - e.animationStart;
+  }
+
   /** Revive (redeploy after death). */
   revive() {
     this.dead = false;
@@ -826,6 +891,8 @@ export class SpineActor {
     // the clip on screen: a queued clip (the base after a swing, a loop after its begin clip) takes over by itself
     const shown = this.spine.state.tracks?.[0]?.animation?.name;
     if (shown) this.current = shown;
+    this._applied = true;
+    this._appliedTint = this.spine.tint;
   }
 
   /** Model height in skeleton units (setup-pose bounds, else a chibi default). */

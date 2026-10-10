@@ -62,15 +62,18 @@ node tools/golden.mjs --twice                   # determinism: the corpus twice 
 ## This fork
 
 The digests in this directory are the fork's own (BBleae/Stronghold-Protocol), regenerated after merging upstream
-0.2.1 (2026-10-08). They differ from upstream's files in one way, and in no other:
+0.2.3 (2026-10-11, upstream 0.2.2 included). They differ from upstream's files in two ways, and in no other:
 
-- **Client effect counts** (`events.fx` and the `fx` kinds) of 31 scenarios (roster 13, bonds 5, fields 13): the fork's
+- **Client effect counts** (`events.fx` and the `fx` kinds) of 28 scenarios (roster 12, bonds 5, fields 11): the fork's
   sim sends extra cosmetic effect events and parameters (fork commit 6d5c094, PR #5 — `snowTiles`, `motes`, the
   同盟支援 `link`, `shell` → `helmShell`, `beam` → `sentryRecall`). Every gameplay field of the roster, bonds and
-  fields families (units, enemies, players, hooks, `rngDraws`, `snaps`) equals upstream's, and the `matches`,
-  `standins` and `diy` families equal upstream's entirely (checked on 2026-10-08 against upstream c2a2ef7). The
-  fork's 外援 / 甄选 picks, which moved 15 of the matches until then (DESIGN §F3), were retired in favour of upstream's
-  自选编队; the bots bring no 自选 picks, as upstream's.
+  fields families (units, enemies, players, hooks, `rngDraws`, `snaps`) equals upstream's, and the `matches` and
+  `standins` families equal upstream's entirely (checked on 2026-10-11 against upstream 0.2.3). The fork's 外援 /
+  甄选 picks, which moved 15 of the matches until then (DESIGN §F3), were retired in favour of upstream's 自选编队; the
+  bots bring no 自选 picks, as upstream's.
+- **The `diy` family's tail**: the fork's 7 collab 自选 picks (DESIGN §F6 — e.g. ash, yato2) join the owned pool after
+  upstream's, so the batches of 12 pieces from diy-136 on hold other pieces and the family has 151 scenarios, not
+  upstream's 140. diy-001 … diy-135 equal upstream's entirely.
 
 After each merge, run `npm run golden:update` and compare with upstream's files (`git show
 <upstream commit>:test/golden/<family>.json`): a moved value outside `events.fx` / `fx` in the roster, bonds and
