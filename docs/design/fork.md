@@ -1,7 +1,7 @@
-# DESIGN §F1, §F2, §F3, §F4, §F5, §F6, §F7 — This fork's own sections (BBleae/Stronghold-Protocol)
+# DESIGN §F1, §F2, §F3, §F4, §F5, §F6, §F7, §F8 — This fork's own sections (BBleae/Stronghold-Protocol)
 
 Part of [DESIGN.md](../DESIGN.md) (the index). Upstream's section numbers are global and stay as upstream gives them;
-this fork's own sections have fork ids, §F1 … §F7, so they never take a number upstream gives a later release. Code,
+this fork's own sections have fork ids, §F1 … §F8, so they never take a number upstream gives a later release. Code,
 tests and the other documents cite them as "DESIGN §F1.4" and so on.
 
 **Ids before 2026-10-08.** Until the merge of upstream 0.2.1 the fork numbered these sections inside the global sequence
@@ -28,9 +28,9 @@ The official 同盟模拟 has 1–4 players (research 09 §3.1; the room's four 
 - Client: the room shows one seat card per seat — 4 in one row as in the official room, 5–8 in two rows of 4 smaller cards (`seats--wide`) — and the host's **同盟席位** picker 4–8 (sizes below the occupied seats disabled; the bar's difficulty labels never wrap and its ready row's icons are smaller above 4 humans, so 8 humans leave the host's pickers their room at 640×360); the lobby's co-op card reads 「默认 4 席 · 创建者可扩至 8 席」. The in-match screens fit 8 players (the team panel's compact rows above 4 players, the strategy-draft order, the 机变 order strip and its up to 10 cards, the briefing, the result screen, history and replays), at 640×360 and on phones too; 1–4 players keep their layouts.
 - Room Worker (account mode): a room saved before rooms had a capacity (its 4-slot `seats`) restores as a 4-seat room. The socket limits follow the capacity (`socketLimits(seats)`): the members keep `reserve` = capacity + 1 sockets (every player seat plus one overlap during a reconnect) and strangers share the rest — sockets = reserve + 11, socketsPerIp = reserve + 3 — so a 4-seat room keeps 16 / 8 as before and an 8-seat room has 20 / 12. The public listing's capacity is `room.seats.length` (`x/4` for a 4-seat room as before). Sign-up / login rate limits are unchanged (owner's decision).
 
-### F1.2 The shared pool — `gamedata.js poolCopies(baseId, players)`, `pool.js SharedPool({ players })`, `Match` constructor
+### F1.2 The shared pool — `gamedata.js poolCopies(baseId, players)` / `itemPoolCopies(id, players)`, `pool.js SharedPool({ players })` / `SharedItemPool({ seats })`, `Match` constructor
 
-Copies per chess = ceil(official × n / 4), n = the match's seats (humans + bots) at the match start — every tier and the per-operator overrides (缪尔赛思 4): 5 seats 15 / 18 / 23 / 20 / 10 / 7 (缪尔赛思 5), 6 seats 18 / 21 / 27 / 24 / 12 / 8 (6), 7 seats 21 / 25 / 32 / 28 / 14 / 9 (7), 8 seats 24 / 28 / 36 / 32 / 16 / 10 (8). Sized once: an elimination returns the seat's copies as before and never shrinks the pool. A player's 自选编队 stock (§25.4, `match/player/diy.js`: 8 at tier 5, 5 at tier 6 per slot) is that player's own and never enters the shared pool, so the seat count does not size it (until 2026-10-08 the same held for the retired 外援 entries of §F3).
+Copies per chess = ceil(official co-op copies × n / 4), n = the match's seats (humans + bots) at the match start — every tier and the measured per-operator overrides. Since upstream 0.2.4 the official co-op pool is the single-player count × `coopPoolMultiplier` 2 (DESIGN §29.8): 24 / 28 / 36 / 32 / 16 / 10 for tiers I–VI at 1–4 seats, so 5 seats 30 / 35 / 45 / 40 / 20 / 13, 6 seats 36 / 42 / 54 / 48 / 24 / 15, 7 seats 42 / 49 / 63 / 56 / 28 / 18, 8 seats 48 / 56 / 72 / 64 / 32 / 20 (an override scales the same way). The shop-equipment stock of 0.2.4 scales alike (§F8). Sized once: an elimination returns the seat's copies as before and never shrinks the pool. A player's 自选编队 stock (§25.4, `match/player/diy.js`: 8 at tier 5, 5 at tier 6 per slot) is that player's own and never enters the shared pool, so the seat count does not size it (until 2026-10-08 the same held for the retired 外援 entries of §F3).
 
 ### F1.3 Drafts — `Match.bandTurnSeconds`, `gamedata.js bandTurnSeconds / spTurnSeconds`, `choices.js spDraftCardCount / bountyDraftCards / shopDraftCards`, `shared/protocol.js SP_CARDS_MAX`
 
@@ -495,3 +495,25 @@ parts the fork does not have):
 - **Cloud preference migration**: `preferences.js STORED_FORM` re-saves a device loadout with its `ops`; `loadoutSync.js`
   `setEntries` / `setOpsMap` keep the other half when storage refuses the write.
 
+---
+
+## F8. Merge of upstream 0.2.4 — the maintainer's decision of 2026-10-11
+
+Upstream 0.2.4 (1db8e51 → upstream/master, released 2026-10-11) is merged as it is, the §F7 decisions kept. Its rules
+changes reach the fork's 5–8 player rooms in two places:
+
+- **Operator pool** (DESIGN §29.8): the co-op pool doubles (`coopPoolMultiplier` 2) and its measured identity
+  overrides replace 缪尔赛思's 4. The fork's ceil(× seats / 4) applies on top of the doubled count (§F1.2), so a match of
+  1–4 seats has exactly upstream's pool.
+- **Shop-equipment stock** (DESIGN §29.8, `itemPoolCopies` 4 / 6 / 7 / 8 / 7 / 3 plus eight measured overrides; normal
+  equipment holds 1, an upgraded one 2): the maintainer chose to **scale it with the seats like the operator pool** —
+  ceil(count × n / 4) for a co-op match of 5–8 seats, n = the seats at the match start, sized once
+  (`gamedata.js itemPoolCopies(id, players)`, `pool.js SharedItemPool({ seats })`, `Match` constructor, checked by
+  `invariants.js`). 8 seats: 8 / 12 / 14 / 16 / 14 / 6 per tier, 商业包装方案 4. Without it 8 players would share the
+  stock 4 players have.
+- **Final Assault overtime** (DESIGN §29.1): the drain starts at 120 real s for an all-human team, 150 with a
+  non-departed AI teammate at fight start; the fork's × alive / 4 above 4 alive (§F1) is unchanged.
+
+The 机变 draft keeps the fork's card count (§F1.3) and passes upstream's `itemAvailable` (an exhausted equipment is not
+offered). The lobby takes upstream's top-bar tool group (设置 / 玩法说明 / 资源管理 as square buttons; the 统计 entry on
+the player chip, Node server only, §F7).

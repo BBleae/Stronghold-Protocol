@@ -46,19 +46,23 @@ test('large-room factor: 1 for 1–4 players, solo or no count; n / 4 above (def
 
 test('pool copies: the official counts for 1–4 seats; ceil(count × seats / 4) for 5–8 (overrides too), sized at match start', () => {
   const gd = new GameData(DATA, 'mode_multi_normal');
+  // upstream 0.2.4: the co-op stock is the measured single-player count × coopPoolMultiplier (2), DESIGN §29.8
+  const coop = DATA.config.economy.coopPoolMultiplier;
+  assert.equal(coop, 2);
   const base = { 1: 12, 2: 14, 3: 18, 4: 16, 5: 8, 6: 5 };
-  const byTier = (t) => gd.visibleChess.find((id) => gd.tierOf(id) === t && id !== 'chess_char_6_11_a');
+  const overrides = DATA.config.economy.poolCopiesOverrides;
+  const byTier = (t) => gd.visibleChess.find((id) => gd.tierOf(id) === t && !Object.hasOwn(overrides, id));
   for (let t = 1; t <= 6; t++) {
     const id = byTier(t);
-    for (const n of [undefined, 1, 2, 3, 4]) assert.equal(gd.poolCopies(id, n), base[t], `tier ${t}, ${n} seats`);
-    for (const n of [5, 6, 7, 8]) assert.equal(gd.poolCopies(id, n), Math.ceil((base[t] * n) / 4), `tier ${t}, ${n} seats`);
-    assert.equal(gd.poolCopies(id, 8), 2 * base[t], '8 seats double every count');
+    for (const n of [undefined, 1, 2, 3, 4]) assert.equal(gd.poolCopies(id, n), coop * base[t], `tier ${t}, ${n} seats`);
+    for (const n of [5, 6, 7, 8]) assert.equal(gd.poolCopies(id, n), Math.ceil((coop * base[t] * n) / 4), `tier ${t}, ${n} seats`);
+    assert.equal(gd.poolCopies(id, 8), 2 * coop * base[t], '8 seats double every count');
   }
-  assert.equal(gd.poolCopies('chess_char_6_11_a', 4), 4, '缪尔赛思 keeps her 4 copies');
-  assert.equal(gd.poolCopies('chess_char_6_11_a', 5), 5);
-  assert.equal(gd.poolCopies('chess_char_6_11_a', 8), 8);
-  assert.equal(gd.poolCopies(byTier(5), 5), 10, 'tier V: ceil(8 × 5 / 4)');
-  assert.equal(gd.poolCopies(byTier(6), 7), 9, 'tier VI: ceil(5 × 7 / 4) = ceil(8.75)');
+  const [ovId, ovCount] = Object.entries(overrides).find(([id]) => gd.visibleChess.includes(id));
+  assert.equal(gd.poolCopies(ovId, 4), coop * ovCount, 'a measured override, doubled in co-op');
+  assert.equal(gd.poolCopies(ovId, 8), 2 * coop * ovCount, 'and scaled like the rest above 4 seats');
+  assert.equal(gd.poolCopies(byTier(5), 5), 20, 'tier V: ceil(16 × 5 / 4)');
+  assert.equal(gd.poolCopies(byTier(6), 7), 18, 'tier VI: ceil(10 × 7 / 4) = ceil(17.5)');
   // SharedPool: omitted / 1–4 seats = the official pool
   const official = new SharedPool(gd);
   for (const n of [1, 4]) assert.deepEqual(new SharedPool(gd, { players: n }).snapshot(), official.snapshot());
@@ -70,6 +74,27 @@ test('pool copies: the official counts for 1–4 seats; ceil(count × seats / 4)
     for (const [id, e] of h.m.pool.entries) {
       assert.equal(e.cap, f === 1 ? gd.poolCopies(id) : Math.ceil(gd.poolCopies(id) * f - 1e-9), `${humans}+${bots}: ${id}`);
     }
+    h.m.dispose();
+  }
+});
+
+test('equipment stock (upstream 0.2.4 shared item pool): the measured count for 1–4 seats; ceil(count × seats / 4) for 5–8 (fork §F8)', () => {
+  const gd = new GameData(DATA, 'mode_multi_normal');
+  const items = Object.keys(DATA.items).filter((id) => Number.isInteger(gd.itemPoolCopies(id)));
+  assert.ok(items.length > 10, `capped shop items (${items.length})`);
+  for (const id of items) {
+    const c = gd.itemPoolCopies(id);
+    for (const n of [undefined, 1, 4]) assert.equal(gd.itemPoolCopies(id, n), c, `${id}, ${n} seats`);
+    for (const n of [5, 6, 7, 8]) assert.equal(gd.itemPoolCopies(id, n), Math.ceil((c * n) / 4), `${id}, ${n} seats`);
+  }
+  const pack = items.find((id) => gd.item(id)?.name === '商业包装方案');
+  assert.equal(gd.itemPoolCopies(pack, 4), 2, '商业包装方案: 2 held at once by the team');
+  assert.equal(gd.itemPoolCopies(pack, 8), 4, 'an 8-seat room: 4');
+  const effectOnly = Object.keys(DATA.items).find((id) => gd.item(id) && gd.itemPoolCopies(id) == null);
+  if (effectOnly) assert.equal(gd.itemPoolCopies(effectOnly, 8), null, 'effect-only equipment stays unlimited');
+  for (const [humans, bots, seats] of [[1, 3, 4], [1, 7, 8]]) {
+    const h = makeMatch({ mode: 'coop', difficulty: 'NORMAL', humans, bots, seed: 410 + seats, fake: true });
+    assert.equal(h.m.itemPool.cap(pack), gd.itemPoolCopies(pack, seats), `${seats} seats`);
     h.m.dispose();
   }
 });
@@ -153,8 +178,9 @@ for (const n of [5, 8]) {
     const end = h.runToEnd();
     assert.equal(end.victory, false);
     assert.equal(m.teamLp, 0);
-    // 10 LP each at n / 4 LP per real second: 40 real s of overtime → 300 + 80 game s (2 players at 1 LP/s: 340)
-    assert.ok(Math.abs(fields[0].time - 380) < 2.5, `ended ≈ 380 game s (${fields[0].time})`);
+    // 10 LP each at n / 4 LP per real second: 40 real s of overtime → 240 + 80 game s (2 players at 1 LP/s: 280) —
+    // an all-human team's overtime starts at 120 real s since upstream 0.2.4 (DESIGN §29.1; 150 with an AI teammate)
+    assert.ok(Math.abs(fields[0].time - 320) < 2.5, `ended ≈ 320 game s (${fields[0].time})`);
     assert.deepEqual(audit.violations, [], audit.violations.join('\n'));
     m.dispose();
   });
@@ -170,7 +196,8 @@ test('Final Assault with 4 players: the 0.2.0 pool (bloodPoint × 4), 1 LP/s, no
   assert.ok(m.publicView().overtimeAt > 0);
   assert.ok(!('overtimeDrainPerSec' in m.publicView()));
   h.runToEnd();
-  assert.ok(Math.abs(bossFields()[0].time - 380) < 2.5, `40 LP at 1 LP/s: 300 + 80 game s (${bossFields()[0].time})`);
+  // all humans: overtime from 120 real s (upstream 0.2.4, DESIGN §29.1)
+  assert.ok(Math.abs(bossFields()[0].time - 320) < 2.5, `40 LP at 1 LP/s: 240 + 80 game s (${bossFields()[0].time})`);
   m.dispose();
 });
 

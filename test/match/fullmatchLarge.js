@@ -40,8 +40,9 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 function baseCopies(gd, id) {
   const eco = gd.economy || gd.config?.economy || {};
   const ov = eco.poolCopiesOverrides;
-  if (ov && Number.isInteger(ov[id])) return ov[id];
-  return eco.poolCopies?.[gd.tierOf(id)];
+  const single = ov && Number.isInteger(ov[id]) ? ov[id] : eco.poolCopies?.[gd.tierOf(id)];
+  // the official co-op stock (upstream 0.2.4, DESIGN §29.8): the single-player copies doubled
+  return Number.isInteger(single) ? single * (eco.coopPoolMultiplier ?? 1) : single;
 }
 
 export function runLarge({ difficulty, humans, bots, seed }) {
@@ -160,6 +161,11 @@ export function runLarge({ difficulty, humans, bots, seed }) {
     check(m.pool.cap(id) === want, 'pool copies = ceil(base × n / 4)', `${id}: ${m.pool.cap(id)}, want ceil(${base} × ${n}/4) = ${want}`);
   }
   check(entries > 0, 'the pool has entries', 'none');
+  // the shared shop-equipment stock, sized alike (DESIGN §F8) — the measured overrides
+  for (const [id, count] of Object.entries(m.gd.economy.itemPoolCopiesOverrides || {})) {
+    const want = Math.ceil(count * f);
+    check(m.itemPool.cap(id) === want, 'equipment stock = ceil(count × n / 4)', `${id}: ${m.itemPool.cap(id)}, want ceil(${count} × ${n}/4) = ${want}`);
+  }
   check(seen.drafts === 1, 'the strategy draft was observed', `${seen.drafts} looks`);
 
   const rows = res.players || [];

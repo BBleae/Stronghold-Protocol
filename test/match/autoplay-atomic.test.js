@@ -264,8 +264,9 @@ test('autoplay switched on just before the prep deadline: the fight gets a whole
         });
         assert.ok(copy.phase !== PHASE.PREP && copy.round === 4, 'the deadline ended the prep');
         assert.equal(withdrawn, null, `cut ${x} ms after autoplay: a withdrawal was still open (${deploy}/${h1.deployCap})`);
-        // this prep buys nothing that merges a deployed copy: the lineup only grows
-        assert.ok(deploy >= deployed, `cut ${x} ms after autoplay: ${deploy}/${h1.deployCap} deployed when the deadline came (${deployed} before)`);
+        // since upstream 0.2.4's doubled co-op stock this prep buys a third tier-I copy (chess_char_1_20_a) that merges two deployed ones into an
+        // elite, so a whole step may leave fewer deployed for a moment (the board above is one of them); the fight's
+        // lineup still only grows
         assert.ok(boards.has(cut), `cut ${x} ms after autoplay: not a board of a whole step (${deploy}/${h1.deployCap})`);
         assert.equal(fight.withdrawn, null, `cut ${x} ms after autoplay: the fight gets a half-built board`);
         assert.ok(fight.deploy >= deployed, `cut ${x} ms after autoplay: ${fight.deploy}/${h1.deployCap} deployed went to the fight`);
