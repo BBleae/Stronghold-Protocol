@@ -39,7 +39,7 @@
 import { useEffect } from '../../vendor/hooks.module.js';
 import { html, Icon, TierChip, MicroLabel, Button, confirmDialog, useTicker } from './components.js';
 import { Img, RichText, UnitThumb, BondGlyph, GIcon, diyToken } from './gameComponents.js';
-import { attackInterval, rangeGridBox, fmtNum, tileKey, chessLoadout, nextThreshold, bondTier, briefingBondTip, pieceBondIds, grantedBonds, morphPairings, ownStandIn, standInOf, standInLoadout, standInLabel, standInTip, standInForText, ownDiyRecord, ownDiyPick, diyRecordFor, pickGetter } from './gameLogic.js';
+import { attackInterval, rangeGridBox, fmtNum, tileKey, chessLoadout, nextThreshold, bondTier, briefingBondTip, pieceBondIds, grantedBonds, morphPairings, ownStandIn, standInOf, standInLoadout, standInLabel, standInTip, standInForText, ownDiyRecord, ownDiyPick, diyRecordFor, pickGetter, unitPick, unitCultivation } from './gameLogic.js';
 import { chessPortraitUrl, skillIconUrl, skillRecordIconUrl, profIconUrl, subProfIconUrl, itemIconUrl, enemyIconUrl, tokenAvatarUrl, factionIconUrl, uiUrl, moduleTypeIconUrl } from './assetUrls.js';
 import { abilityRows } from './abilityLines.js';
 import { data } from '../data.js';
@@ -48,6 +48,7 @@ import { SKILL_SUMMON_START_DEPLOY } from '../../../shared/constants.js';
 import { moduleBadge, fullTraitText } from './loadoutModel.js';
 import { t, tc, N_ } from '../../../shared/i18n.js';
 import { audio } from '../audio.js';
+import { tokenVariantFor } from './gameLogic/loadout.js';
 
 const cx = (...p) => p.flat().filter(Boolean).join(' ');
 
@@ -321,7 +322,7 @@ export function garrisonTypeIconKey(garrison) {
 }
 
 /** The operator's own effect (特质, garrisons.json): trigger chip + description, compact. */
-function GarrisonBlock({ garrison, m }) {
+export function GarrisonBlock({ garrison, m }) {
   return html`<section class="dgarrison" aria-label=${t('特质')} data-garrison=${garrison.garrisonId || ''}>
     <div class="dgarrison__head">
       <span class="dgarrison__k">${t('特质')}</span>
@@ -389,7 +390,7 @@ function skillTextNote(sk) {
   return note ? html`<p class="dhint dhint--rule" data-skill-note=${sk.skillId}><${Icon} name="info" />${t(note)}</p>` : null;
 }
 
-export function ChessDetail({ chess, piece, unit, snapHp, editable, onSell, bonds, offBonds = null, loadout, onBond, live = null, hint = null, unitItems = null, standIn = null, diy = null }) {
+export function ChessDetail({ chess, piece, unit, snapHp, editable, onSell, bonds, offBonds = null, loadout, onBond, live = null, hint = null, unitItems = null, standIn = null, diy = null, cultOpts = null }) {
   const m = data.get('assets');
   const hp = hpOf(live, snapHp);
   // 0.2.0 自选编队: `chess` is then the composed 自选 record (the operator, the slot's tier / price); its skill and module are
@@ -401,7 +402,9 @@ export function ChessDetail({ chess, piece, unit, snapHp, editable, onSell, bond
   // still apply (the owner's recall of the official mode, 2026-10-06)
   const si = standIn && standIn.standInFor ? standIn : null;
   const body = si || chess;
-  const lo = si ? standInLoadout(si, getChess, data.get('backups')) : chessLoadout(chess, loadout, getChess);
+  // 0.2.2: at the operator's 潜能 / 练度 — the player's settings (`cultOpts.ops`) or a teammate's unit's own
+  // (`cultOpts.cultivation`); a stand-in has neither
+  const lo = si ? standInLoadout(si, getChess, data.get('backups')) : chessLoadout(chess, loadout, getChess, { ...(cultOpts || {}), effects: data.get('effects') });
   const c = chess;
   // stats / talents the unit fights with: the chosen module's (or none — statsBase) for an elite (DESIGN §16)
   const fr = lo?.record || body;
@@ -586,21 +589,6 @@ export function summonDeployHint(token, startDeploy = SKILL_SUMMON_START_DEPLOY)
     : t('所属干员发动技能时才在摆放的位置出现（未摆放则不会出现）');
 }
 
-/**
- * The token variant of the summon's owner (tokens.json `variants`, keyed by owner chess id): a golden owner's `_b`
- * entry (精锐 赫默's drone ATK 114, 精锐 巫恋's doll −30%), else its normal `_a` entry, else the first one.
- * @param {any} token tokens.json record
- * @param {string|null} ownerId the owner's chess id (null: unknown, e.g. a teammate's summon)
- */
-export function tokenVariantFor(token, ownerId = null) {
-  const vs = token?.variants || {};
-  if (typeof ownerId === 'string') {
-    const v = vs[ownerId] || vs[ownerId.replace(/_b$/, '_a')];
-    if (v) return v;
-  }
-  return Object.values(vs)[0] || null;
-}
-
 /** Chess id of the operator owning a token piece (`ownerUid`), from the player's own pieces (indexPieces). */
 function tokenOwnerId(piece, pieces) {
   if (!piece || piece.kind !== 'token' || !Number.isInteger(piece.ownerUid)) return null;
@@ -718,8 +706,35 @@ function TerrainDetail({ terrain }) {
 }
 
 /**
+ * A stage device's tip (GitHub #228, PR #229: 阻隔工事 / “双眼皮” / 射击台 / 源石流发生装置 — the terrain tip's sibling). Opened
+ * by a tap on the device itself: the game screen resolves it with `gameLogic.deviceInfo` (prep) or `deviceTipAt` (a battle)
+ * from the stage the board on screen is built from, so the lines carry that stage's own numbers. In a battle the
+ * crate / turret is a device unit: its live HP (`live` from the battle's own sim, else `snapHp` — the screen reads the latest
+ * snapshot tuple through `unitId`) draws a HP bar like a unit card's.
+ * @param {{ name:string, tag:string, lines:string[], facts?:string[], stats?:{k:string,v:any}[] }} device
+ * @param {{ hp:number, max:number }|null} snapHp
+ */
+function DeviceDetail({ device, snapHp = null, live = null }) {
+  const hp = hpOf(live, snapHp);
+  return html`
+    <div class="dhead">
+      <div class="dhead__icon"><${Icon} name="info" /></div>
+      <div class="dhead__info">
+        <div class="dhead__chips"><span class="dtag-kind">${device.tag}</span></div>
+        <h3 class="dhead__name">${device.name}</h3>
+        ${hp ? html`<div class="dhp"><i style=${`width:${Math.max(0, Math.min(100, (hp.hp / Math.max(1, hp.max)) * 100))}%`}></i><span class="num">${fmtNum(hp.hp)} / ${fmtNum(hp.max)}</span></div>` : null}
+      </div>
+    </div>
+    <${Section} title=${t('装置机制')} micro="DEVICE">
+      ${device.lines.map((line, i) => html`<p class="dtext" key=${i}>${line}</p>`)}
+    <//>
+    ${Array.isArray(device.stats) && device.stats.length ? html`<div class="dstats">${device.stats.map((x) => html`<${Stat} key=${x.k} k=${x.k} v=${x.v} />`)}</div>` : null}
+    ${Array.isArray(device.facts) && device.facts.length ? html`<${Section} title=${t('这一格')}><p class="dtext">${device.facts.join(' · ')}</p><//>` : null}`;
+}
+
+/**
  * Resolve what a detail target shows.
- * @param {{ kind:'piece'|'chess'|'item'|'enemy'|'unit'|'token'|'terrain', id?:string, uid?:number, unit?:any, count?:number }} target
+ * @param {{ kind:'piece'|'chess'|'item'|'enemy'|'unit'|'token'|'terrain'|'device', id?:string, uid?:number, unit?:any, count?:number }} target
  * @param {Map<number, any>} pieces indexPieces(priv)
  * @param {{ priv?: any, backups?: any }} [opts] 0.2.0 补位: the player's own pieces and cards of a chess in
  *   m.private.standIns — a unit carrying `standInFor`, and a teammate's bond popup row that says it (`target.standInFor`)
@@ -732,6 +747,12 @@ export function resolveDetail(target, pieces, { priv = null, backups = data.get(
   if (!target) return null;
   // a special terrain tile (issue #184): the screen resolved the stage's own numbers already (gameLogic.terrainInfo)
   if (target.kind === 'terrain') return target.terrain && typeof target.terrain === 'object' ? { type: 'terrain', terrain: target.terrain } : null;
+  // a stage device (#228): the screen resolved the device's stage entry (gameLogic.deviceInfo / deviceTipAt); in a battle
+  // `unitId` is the crate / turret unit whose snapshot tuple gives the live HP
+  if (target.kind === 'device') {
+    const device = target.device && typeof target.device === 'object' ? target.device : null;
+    return device ? { type: 'device', device, ...(Number.isInteger(device.unitId) ? { unitId: device.unitId } : {}) } : null;
+  }
   const ownSi = (c) => ownStandIn(c, priv, backups);
   const dd = { chess: data.get('chess'), backups };
   /** the own card of chess `c`: its 自选 record and pick when the player filled that DIY slot */
@@ -761,9 +782,14 @@ export function resolveDetail(target, pieces, { priv = null, backups = data.get(
     // (a teammate's 自选 row hands its unit's pick on, `target.diy`: their operator, not the empty 甄选干员 slot — 0.2.1)
     const mate = foreign && c && target.diy && typeof target.diy === 'object' ? diyRecordFor(c, target.diy, dd) : null;
     const d = mate ? { chess: mate, diy: target.diy } : foreign ? null : ownDiy(c);
-    if (d) return { type: 'chess', chess: d.chess, hint: target.hint || null, standIn: null, diy: d.diy, ...(items.length ? { unitItems: items } : {}) };
+    // `tap`: which card tap opened it (game.js numbers every shop / reward card it opens) — gameLogic cardVoiceKey
+    const tap = target.tap != null ? { tap: target.tap } : null;
+    // 0.2.2: a teammate's member card reads its unit's 潜能 / 练度 when the row hands it on (`target.cultivation`), else
+    // the defaults (never the viewer's own settings)
+    const cv = foreign ? (target.cultivation !== undefined ? { cultivation: target.cultivation } : { ops: null }) : null;
+    if (d) return { type: 'chess', chess: d.chess, hint: target.hint || null, standIn: null, diy: d.diy, ...(items.length ? { unitItems: items } : {}), ...(cv ? { cultOpts: cv } : {}), ...tap };
     const si = !c ? null : foreign ? (typeof target.standInFor === 'string' && target.standInFor ? standInOf(c, backups) : null) : ownSi(c);
-    return c ? { type: 'chess', chess: c, hint: target.hint || null, standIn: si, ...(items.length ? { unitItems: items } : {}) } : null;
+    return c ? { type: 'chess', chess: c, hint: target.hint || null, standIn: si, ...(items.length ? { unitItems: items } : {}), ...(cv ? { cultOpts: cv } : {}), ...tap } : null;
   }
   if (target.kind === 'item') { const it = data.lookup('items', target.id); return it ? { type: 'item', item: it } : null; }
   if (target.kind === 'enemy') { const en = data.lookup('enemies', target.id); return en ? { type: 'enemy', enemy: en, count: target.count } : null; }
@@ -782,10 +808,13 @@ export function resolveDetail(target, pieces, { priv = null, backups = data.get(
     else if (c && own?.piece) si = ownSi(c);
     // 0.2.0 自选编队: a unit says itself which operator fills its DIY slot (UnitInfo diy); an own piece's unit follows
     // m.private.diy like the piece
-    const pick = c && u.diy && typeof u.diy === 'object' ? u.diy : own?.piece ? ownDiyPick(priv, c) : null;
+    const pick = c && u.diy && typeof u.diy === 'object' ? unitPick(u) : own?.piece ? ownDiyPick(priv, c) : null;
     const dr = pick ? diyRecordFor(c, pick, dd) : null;
-    if (dr) return { type: 'chess', chess: dr, piece: own?.piece || null, unitId: u.id, unitItems: Array.isArray(u.items) ? u.items : null, standIn: null, diy: pick };
-    if (c) return { type: 'chess', chess: c, piece: own?.piece || null, unitId: u.id, unitItems: Array.isArray(u.items) ? u.items : null, standIn: si };
+    // 0.2.2: another player's unit says its 潜能 / 练度 itself (UnitInfo potential / cultivate); an own piece's unit follows
+    // m.private.ops (the panel's `cultOpts`)
+    const cv = own?.piece ? null : { cultOpts: { cultivation: unitCultivation(u) } };
+    if (dr) return { type: 'chess', chess: dr, piece: own?.piece || null, unitId: u.id, unitItems: Array.isArray(u.items) ? u.items : null, standIn: null, diy: pick, ...cv };
+    if (c) return { type: 'chess', chess: c, piece: own?.piece || null, unitId: u.id, unitItems: Array.isArray(u.items) ? u.items : null, standIn: si, ...cv };
     const t = data.lookup('tokens', u.defId) || diyToken(u.defId);
     if (t) return { type: 'token', token: t, unitId: u.id, ownerId: tokenOwnerId(own?.piece, pieces) };
     const en = data.lookup('enemies', u.defId);
@@ -801,17 +830,19 @@ export function resolveDetail(target, pieces, { priv = null, backups = data.get(
  *   bonds: the owner's m.private.bonds (counts / tiers of the bond chips); offBonds: the bonds this mode never activates
  *   (gameLogic modeOffBonds — their chips and the 变形同构体 pairing lines read 本局禁用); loadout: m.private.loadout (DESIGN §16) for
  *   the player's own operators and shop cards; a teammate's unit gets its owner's choice (gameLogic unitLoadout); null
- *   = the defaults
+ *   = the defaults; ops: m.private.ops (0.2.2 潜能 / 练度 of the player's own operators and cards — a unit the detail
+ *   resolved as another player's carries its own, `detail.cultOpts`)
  *   live: the unit's live stats (unitStatsEntry + src 'battle' | 'prep') — an object, or a getter the panel re-reads 4×
  *   a second (the battle's own sim, battle/runner.js unitStats); null ⇒ the record's numbers
- *   voice: { charId, key } | null — the 选中干员 line (audio.voice 'select') the card says when it opens on an operator of
- *   the battle on screen, or is retargeted to another one (the game screen passes gameLogic detailSelectVoice: battle
- *   phases only, battle units only — never a prep scouting board's piece —, any operator of the field on screen, a card
- *   opened in a battle: one left open from the 整备期 stays silent — DESIGN §21.30); null ⇒ silent. A tap on the unit
- *   asks for the same line with the same key first (screens/game.js pieceClick), and audio.voice drops a repeat select of
- *   one key within a second, so a tap says one line; a long-press / right-click (no tap line) is voiced by the card.
+ *   voice: { charId, key } | null — the 选中干员 line (audio.voice 'select') the card says when it opens on an operator the
+ *   player tapped, or is retargeted to another one (the game screen passes gameLogic detailSelectVoice): a battle unit of
+ *   the battle on screen (a card opened in a battle — one left open from the 整备期 stays silent, DESIGN §21.30), and in
+ *   every phase a piece on the board or in the hand, a scouted board's piece, a shop / reward card, a bond member
+ *   (upstream 0.2.2, the owner's request of 2026-10-08); null ⇒ silent. A tap on a battle unit asks for the same line with
+ *   the same key first (screens/game.js pieceClick), and audio.voice drops a repeat select of one key within a second,
+ *   so a tap says one line; a long-press / right-click (no tap line) is voiced by the card.
  */
-export function DetailPanel({ detail, editable, snapHp, onClose, onSell, onDestroy, bonds = [], offBonds = null, loadout = null, onBond = null, side = 'left', shopOpen = false, live = null, voice = null }) {
+export function DetailPanel({ detail, editable, snapHp, onClose, onSell, onDestroy, bonds = [], offBonds = null, loadout = null, ops = null, onBond = null, side = 'left', shopOpen = false, live = null, voice = null }) {
   const getter = typeof live === 'function' ? live : null;
   useTicker(detail && getter ? 250 : 0);
   // 选中干员: once per key — the panel stays mounted while its target changes, so the key names the field and the unit.
@@ -844,11 +875,12 @@ export function DetailPanel({ detail, editable, snapHp, onClose, onSell, onDestr
     <div class="dpanel__scroll">
       ${detail.type === 'chess' ? html`<${ChessDetail} chess=${detail.chess} piece=${detail.piece} snapHp=${snapHp} editable=${editable} onSell=${sellIt}
         bonds=${bonds} offBonds=${offBonds} loadout=${loadout} onBond=${onBond} live=${liveNow} hint=${detail.hint || null} unitItems=${detail.unitItems || null}
-        standIn=${detail.standIn || null} diy=${detail.diy || null} />` : null}
+        standIn=${detail.standIn || null} diy=${detail.diy || null} cultOpts=${detail.cultOpts || { ops }} />` : null}
       ${detail.type === 'item' ? html`<${ItemDetail} item=${detail.item} piece=${detail.piece} editable=${editable} onDestroy=${destroyIt} offBonds=${offBonds} />` : null}
       ${detail.type === 'enemy' ? html`<${EnemyDetail} enemy=${detail.enemy} snapHp=${snapHp} count=${detail.count} live=${liveNow} />` : null}
       ${detail.type === 'token' ? html`<${TokenDetail} token=${detail.token} piece=${detail.piece} ownerId=${detail.ownerId ?? null} snapHp=${snapHp} live=${liveNow} />` : null}
       ${detail.type === 'terrain' ? html`<${TerrainDetail} terrain=${detail.terrain} />` : null}
+      ${detail.type === 'device' ? html`<${DeviceDetail} device=${detail.device} snapHp=${snapHp} live=${liveNow} />` : null}
     </div>
   </aside>`;
 }

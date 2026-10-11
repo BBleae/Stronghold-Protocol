@@ -1,7 +1,7 @@
 // Room screen (同盟等待室): one seat card per seat of the room (avatar frame, name, ready state, AI badge, host crown) —
 // the room's capacity (room.state.capacity): 4 cards in one row as in the official room, 5–8 (a remake extension) in two
-// rows of 4 smaller cards —, host controls (difficulty picker, 同盟席位 picker 4–8 in co-op, add/remove AI in co-op,
-// start), invite code with copy code / copy link, ready toggle and leave.
+// rows of 4 smaller cards —, host controls (difficulty picker, 同盟席位 picker 4–8 in co-op, add/remove AI and the
+// 「AI 队友最后选择」 switch in co-op, start), invite code with copy code / copy link, ready toggle and leave.
 //
 // Start rule (server/lobby.js): room.start needs every *other* human connected and ready; the
 // host's start counts as the host's ready. So 开始模拟 is enabled exactly then and sends room.start
@@ -22,6 +22,8 @@ import { copyText } from '../ui/clipboard.js';
 import { GuideButton } from '../ui/guide.js';
 import { ResourceButton } from '../ui/resourceButton.js';
 import { useWakeLock } from '../ui/device.js';
+import { openStats } from './stats.js';
+import { SettingsButton } from '../ui/settings.js';
 import { LoadoutButton } from './loadout.js';
 import { loadoutStore, roomPrefsSettled } from '../ui/loadoutSync.js';
 import { net } from '../net.js';
@@ -88,6 +90,19 @@ export function roomFacts(room, myId) {
     spectators: Array.isArray(room?.spectators) ? room.spectators.filter((s) => s && typeof s === 'object') : [],
     spectating: isSpectating(room, myId),
   };
+}
+
+/**
+ * The co-op room option 「AI 队友最后选择」 (GitHub #338; room.setAiPicksLast, room.state.aiPicksLast): in the strategy and
+ * 机变 drafts every human picks before the AI teammates. null in a solo room (no AI teammates); otherwise its state (off
+ * when the server sends none) and whether this player may switch it — the host only, the others see it read-only.
+ * @param {any} room room.state payload
+ * @param {any} myId
+ * @returns {{ on: boolean, editable: boolean } | null}
+ */
+export function aiLastOption(room, myId) {
+  if (!room || room.mode === 'solo') return null;
+  return { on: room.aiPicksLast === true, editable: room.hostId != null && room.hostId === myId };
 }
 
 /** Invite link for a room code (current page URL with ?room=CODE). */
@@ -230,6 +245,21 @@ function CapacityPicker({ facts, busy, onPick }) {
   </div>`;
 }
 
+/** The 「AI 队友最后选择」 switch (co-op): the host toggles it, everybody else sees its state. */
+function AiLastToggle({ option, busy, onToggle }) {
+  if (!option) return null;
+  return html`<div class="ailast">
+    <${Tooltip} text=${t('策略与机变轮选时，所有博士先于 AI 队友选择')}>
+      <button type="button" role="switch" aria-checked=${option.on ? 'true' : 'false'}
+          class=${`dpick__opt ailast__opt${option.on ? ' is-active' : ''}`} disabled=${!option.editable || !!busy}
+          onClick=${() => option.editable && onToggle(!option.on)}>
+        <${Icon} name="check" class=${option.on ? 'is-on' : ''} />${t('AI 队友最后选择')}
+      </button>
+    <//>
+    ${option.editable ? null : html`<span class="t-dim">${t('由创建者设置')}</span>`}
+  </div>`;
+}
+
 /** Room screen component. */
 export function RoomScreen() {
   const room = useStore((s) => s.room);
@@ -359,6 +389,7 @@ export function RoomScreen() {
       if (readiedRun.current === code) readiedRun.current = null; // said again once the room is back online
     });
   }, [queue.matched, room && room.code, facts.isHost, facts.mine && facts.mine.ready, online, prefsSettled]);
+  const setAiLast = (on) => run('ailast', () => net.request('room.setAiPicksLast', { on }));
   // spectator seats: the host frees one; a spectator takes a free player seat with room.join of this room
   const removeSpectator = (playerId) => run(`rs${playerId}`, () => net.request('room.removeSpectator', { playerId }));
   const sit = () => run('sit', () => net.request('room.join', { code: room.code }));
@@ -397,6 +428,9 @@ export function RoomScreen() {
         ? html`<span class="t-mint">${t('已就绪 · 等待创建者开始模拟')}</span>`
         : html`<span class="t-lo">${t('准备就绪后，创建者即可开始模拟')}</span>`;
 
+  // FORK (2026-10-10 merge of upstream 0.2.3): the local 统计 page is Node-only — account mode has the server's 个人统计
+  // (ui/accountMenu.js); see screens/lobby.js localStats.
+  const localStats = !account.enabled;
   return html`<div class="screen room-screen">
     <header class="topbar">
       <div class="topbar__left">
@@ -407,6 +441,8 @@ export function RoomScreen() {
           <${PingPill} ms=${conn.ping} online=${online} />
           <${MicroLabel}>${t('当前延迟')}<//>
         </div>
+        ${localStats ? html`<${Button} variant="secondary" size="sm" icon="chart" class="stats-entry" onClick=${openStats} title=${t('统计数据')} aria-label=${t('统计数据')}>${t('统计')}<//>` : null}
+        <${SettingsButton} class="room-settings" variant="secondary" label=${t('设置')} />
         <${GuideButton} class="room-guide" variant="secondary" label=${t('玩法说明')} />
         <${ResourceButton} class="room-res" variant="secondary" />
       </div>
@@ -439,7 +475,10 @@ export function RoomScreen() {
     <footer class="room-bar">
       <div class=${`room-bar__left${coop && facts.isHost ? ' has-seats' : ''}`}>
         <span class="room-bar__label">${t('模拟难度')}<${MicroLabel}>DIFFICULTY<//></span>
-        <${DifficultyPicker} room=${room} isHost=${facts.isHost} busy=${busy} onPick=${setDifficulty} />
+        <div class="room-bar__opts">
+          <${DifficultyPicker} room=${room} isHost=${facts.isHost} busy=${busy} onPick=${setDifficulty} />
+          <${AiLastToggle} option=${aiLastOption(room, me.playerId)} busy=${busy} onToggle=${setAiLast} />
+        </div>
         ${coop && facts.isHost ? html`<span class="room-bar__label">${t('同盟席位')}<${MicroLabel}>SEATS<//></span>
           <${CapacityPicker} facts=${facts} busy=${busy} onPick=${setCapacity} />` : null}
       </div>

@@ -17,7 +17,7 @@ through.
 | `roster` | 49 battles: every visible chess record (normal and elite) with every selectable skill and module (DESIGN §16), 12 operators per battle on a real stage (all 11 in turn) against the round's real wave three times over, every non-leader enemy kind of `data/enemies.json` as extra spawns (half of them bounties), placeable summons on the board, every equipment item, band, battle-side 机变 card and stage map card in turn, bonds from the board |
 | `bonds` | 46 battles: every bond at its activation threshold (1 layer) and at its top tier (999 layers) |
 | `fields` | 22 battles: every Final Assault / Hidden Core leader on a pair and a solo template (shared pool, 200 s cap) and the 联防 field with 1 and 2 helpers on the round's stage, both halves (carried HP / SP, a knocked-out operator, two leakers' enemies) |
-| `matches` | 18 matches to the end in virtual time: 16 bot-only (solo 标准 / 险境 / 绝境 / 终极 × 2 seeds, co-op 2 / 3 / 4, one server-run combat match, two runs boosted to the Hidden Core), one co-op match whose human seat (AI 托管, offline) does not own 9 NORMAL chess — they fight as their 补位 stand-ins (its digest lists them per round, `standIns`) — and one whose human seat slots 自选 picks (推进之王 and prototypes) with its 调度中心 at level 5 from the first prep: its own shop draws them and its AI fields 推进之王 (its digest lists per round the 自选 shop draws and the fielded pieces, `diy`) |
+| `matches` | 20 matches to the end in virtual time: 16 bot-only (solo 标准 / 险境 / 绝境 / 终极 × 2 seeds, co-op 2 / 3 / 4, one server-run combat match, two runs boosted to the Hidden Core), one co-op match whose human seat (AI 托管, offline) does not own 9 NORMAL chess — they fight as their 补位 stand-ins (its digest lists them per round, `standIns`) — and one whose human seat slots 自选 picks (推进之王 and prototypes) with its 调度中心 at level 5 from the first prep: its own shop draws them and its AI fields 推进之王 (its digest lists per round the 自选 shop draws and the fielded pieces, `diy`) |
 | `standins` | 10 battles: every NORMAL chess record (normal and elite, 110) fielded as its 补位 stand-in (`standIn: true`: the stand-in's body, backup skill / module and kit — all 17 stand-ins, every skill a chess names for them), 12 per battle by strength band, laid out by the stand-in's position on a real stage, against the round's real wave three times over plus 8 ground enemy kinds (melee stand-ins always meet an enemy), an item each, bonds from the board |
 | `diy` | battles of 自选 pieces (a DIY slot with its `diy` pick, `shared/diy.js`): every owned 6★ with an operator kit (`kits/index.js OPERATOR_KITS`) in each form of tiers 5 and 6 (normal; elite with no module and with each module) under each skill, then every prototype pick with a kit at its locked selection, normal and elite, 12 per battle against the round's real wave; a new operator kit adds its scenarios (the battle count grows with the kits) |
 
@@ -59,18 +59,23 @@ node tools/golden.mjs --twice                   # determinism: the corpus twice 
   hook list is frozen in the tool and the corpus is regenerated only on `golden:update` — but new data records do join
   the corpus there (the roster family enumerates `data/chess.json`).
 
+After the measured shared-stock update (DESIGN §29.8), the original stand-in / DIY seeds remain as outcome regressions even when they field no such operator. Companion seeds `coop2-NORMAL-1-coverage-standins` and `coop2-NORMAL-5-coverage-diy` exercise those full paths; the corpus now contains 287 scenarios.
+
 ## This fork
 
 The digests in this directory are the fork's own (BBleae/Stronghold-Protocol), regenerated after merging upstream
-0.2.1 (2026-10-08). They differ from upstream's files in one way, and in no other:
+0.2.4 (2026-10-11, upstream 0.2.2 / 0.2.3 included). They differ from upstream's files in two ways, and in no other:
 
 - **Client effect counts** (`events.fx` and the `fx` kinds) of 31 scenarios (roster 13, bonds 5, fields 13): the fork's
   sim sends extra cosmetic effect events and parameters (fork commit 6d5c094, PR #5 — `snowTiles`, `motes`, the
   同盟支援 `link`, `shell` → `helmShell`, `beam` → `sentryRecall`). Every gameplay field of the roster, bonds and
-  fields families (units, enemies, players, hooks, `rngDraws`, `snaps`) equals upstream's, and the `matches`,
-  `standins` and `diy` families equal upstream's entirely (checked on 2026-10-08 against upstream c2a2ef7). The
-  fork's 外援 / 甄选 picks, which moved 15 of the matches until then (DESIGN §F3), were retired in favour of upstream's
-  自选编队; the bots bring no 自选 picks, as upstream's.
+  fields families (units, enemies, players, hooks, `rngDraws`, `snaps`) equals upstream's, and the `matches` and
+  `standins` families equal upstream's entirely (checked on 2026-10-11 against upstream 0.2.4). The fork's 外援 /
+  甄选 picks, which moved 15 of the matches until then (DESIGN §F3), were retired in favour of upstream's 自选编队; the
+  bots bring no 自选 picks, as upstream's.
+- **The `diy` family's tail**: the fork's 7 collab 自选 picks (DESIGN §F6 — e.g. ash, yato2) join the owned pool after
+  upstream's, so the batches of 12 pieces from diy-136 on hold other pieces and the family has 151 scenarios, not
+  upstream's 140. diy-001 … diy-135 equal upstream's entirely.
 
 After each merge, run `npm run golden:update` and compare with upstream's files (`git show
 <upstream commit>:test/golden/<family>.json`): a moved value outside `events.fx` / `fx` in the roster, bonds and

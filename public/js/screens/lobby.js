@@ -12,6 +12,7 @@
 // Texts go through t() (docs/I18N.md); the module-level tables hold msgids (N_) translated where they are shown, the
 // config.json mode texts come localized from data.js.
 
+import { ResumeMatchButton } from '../ui/resumeMatch.js';
 import { useEffect, useRef, useState } from '../../vendor/hooks.module.js';
 import { DIFFICULTIES, DIFFICULTY_NAMES, DIFFICULTY_COLORS, ROOM_CODE_LEN, MAX_SEATS, DEFAULT_SEATS, MAX_SPECTATORS, ERR, modeIdFor } from '../../../shared/constants.js';
 import {
@@ -20,6 +21,8 @@ import {
 import { toast, toastError } from '../ui/toasts.js';
 import { GuideButton } from '../ui/guide.js';
 import { ResourceButton } from '../ui/resourceButton.js';
+import { openStats } from './stats.js';
+import { SettingsButton } from '../ui/settings.js';
 import { LoadoutButton } from './loadout.js';
 import { net, identity } from '../net.js';
 import { account } from '../account.js';
@@ -345,28 +348,46 @@ export function LobbyScreen() {
     store.set((s) => ({ session: { ...s.session, entered: false } }));
   };
 
+  // FORK (2026-10-10 merge of upstream 0.2.3): the local 统计 page (screens/stats.js, browser storage) is Node-only. Account
+  // mode (Cloudflare) has the server's 个人统计 in the account menu (ui/accountMenu.js → screens/history.js), so the
+  // local entry stays hidden there. A change to either statistics page should keep both in view.
+  const localStats = !account.enabled;
   return html`<div class="screen lobby-screen">
     <header class="topbar">
       <div class="topbar__left">
         <${Button} variant="ghost" size="sm" icon="chevronLeft" onClick=${backToTitle} title=${t('返回标题')}>${t('返回')}<//>
         ${conn.status !== 'menu' ? html`<${PingPill} ms=${conn.ping} online=${conn.status === 'online'} />` : null}
         <span class="presence num" data-testid="lobby-presence" title=${presenceHint()}>${presenceLabel(presence)}</span>
+        <span class="topbar__sep" aria-hidden="true"></span>
+        <div class="topbar__tools">
+          <${SettingsButton} class="lobby-settings" variant="secondary" square=${true} />
+          <${GuideButton} class="lobby-guide" variant="secondary" square=${true} />
+          <${ResourceButton} class="lobby-res" variant="secondary" square=${true} />
+        </div>
       </div>
       <div class="topbar__center">
         <${MicroLabel} tone="mint">SIMULATION PROTOCOL SELECT<//>
         <h1 class="topbar__title">${t('选择模拟协议')}</h1>
       </div>
       <div class="topbar__right">
-        <${GuideButton} class="lobby-guide" variant="secondary" label=${t('玩法说明')} />
-        <${ResourceButton} class="lobby-res" variant="secondary" />
+        <${ResumeMatchButton} />
         <${LoadoutButton} from="lobby" size="sm" class="lobby-loadout" label=${t('干员调配')} />
-        <div class="me-chip">
-          <${AvatarFrame} size="sm" name=${displayName} src=${account.user?.avatarUrl} seat=${0} self=${true} />
-          <div class="me-chip__text">
-            <span class="me-chip__name" title=${displayName || t('博士')}><${PlayerName} name=${displayName || t('博士')} /></span>
-            <${MicroLabel}>${account.enabled || me.playerId == null ? 'DOCTOR' : `DOCTOR #${doctorNo(me.playerId)}`}<//>
-          </div>
-        </div>
+        ${localStats
+          ? html`<button type="button" class="me-chip me-chip--btn stats-entry" onClick=${openStats} title=${t('统计数据')} aria-label=${t('统计数据')}>
+              <${AvatarFrame} size="sm" name=${displayName} src=${account.user?.avatarUrl} seat=${0} self=${true} />
+              <span class="me-chip__text">
+                <span class="me-chip__name" title=${displayName || t('博士')}><${PlayerName} name=${displayName || t('博士')} /></span>
+                <${MicroLabel}>${account.enabled || me.playerId == null ? 'DOCTOR' : `DOCTOR #${doctorNo(me.playerId)}`}<//>
+              </span>
+              <${Icon} name="chart" class="me-chip__stats" />
+            </button>`
+          : html`<div class="me-chip">
+              <${AvatarFrame} size="sm" name=${displayName} src=${account.user?.avatarUrl} seat=${0} self=${true} />
+              <div class="me-chip__text">
+                <span class="me-chip__name" title=${displayName || t('博士')}><${PlayerName} name=${displayName || t('博士')} /></span>
+                <${MicroLabel}>${account.enabled || me.playerId == null ? 'DOCTOR' : `DOCTOR #${doctorNo(me.playerId)}`}<//>
+              </div>
+            </div>`}
       </div>
     </header>
 

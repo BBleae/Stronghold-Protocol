@@ -126,6 +126,13 @@
         "engine.js": "7dc5c78bfba9762fe4f084b487671be114a2d343420f8120f8dfb638afe52f75",
         "recovery.mjs": "4cb86cdc697495bfb2b65dfeebeff5a91446acd3193736b42d19e1e64c8b71b2"
       }
+    },
+    {
+      "id": "c8730628d7f36eb64b60",
+      "hashes": {
+        "engine.js": "1cbb918b8a8035c6a44969c5485c8dbc94afdd3b852c8d80a980821193537803",
+        "recovery.mjs": "37aec905327885824e52e688afdba41f58373abbc38dc09ad034ed181b2f1eff"
+      }
     }
   ]
 }

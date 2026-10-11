@@ -29,6 +29,8 @@ export const DELAYS = Object.freeze({
  * official data only gives the whole BAND_CHECK step (autoChessData.enterStepList: 50 s, hint 15 s); the turn clock is
  * the remake's. It is also the step's only countdown (m.public.deadline = draft.turnDeadline). × timerScale. A match of
  * more than 4 seats (remake extension) has gamedata.js largeRoom.bandTurn (20 s) turns instead (Match.bandTurnSeconds).
+ * Fork decision of 2026-10-10 (docs/design/fork.md §F1.3): upstream 0.2.3 made this 50 s (its owner's official-play
+ * report); this fork keeps 30 s.
  */
 export const BAND_TURN_SECONDS = 30;
 

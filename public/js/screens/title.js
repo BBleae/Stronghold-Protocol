@@ -12,6 +12,7 @@
 // entry/loading illustration names) it is layered under the CSS art; otherwise the screen is
 // pure CSS/SVG (radar, ridgelines, glow), so it never issues a request that can 404.
 
+import { ResumeMatchButton } from '../ui/resumeMatch.js';
 import { useMemo, useState } from '../../vendor/hooks.module.js';
 import { NAME_MAX_LEN, APP_VERSION, DEV_BUILD } from '../../../shared/constants.js';
 import { html, Button, Icon, MicroLabel, TextField, PingPill, AvatarFrame, PlayerName } from '../ui/components.js';
@@ -20,6 +21,7 @@ import { AccountCard } from '../ui/accountForms.js';
 import { GuideButton } from '../ui/guide.js';
 import { ResourceButton } from '../ui/resourceButton.js';
 import { InstallButton } from '../ui/install.js';
+import { openStats } from './stats.js';
 import { toast } from '../ui/toasts.js';
 import { net, identity } from '../net.js';
 import { account } from '../account.js';
@@ -197,6 +199,10 @@ export function TitleScreen() {
   // touch screens: no autofocus (it would pop the on-screen keyboard over a landscape phone's whole view)
   const touchUi = useMemo(() => detectFeatures().coarse, []);
   const signIn = account.enabled && !account.user;
+  // FORK (2026-10-10 merge of upstream 0.2.3): the local 统计 page (screens/stats.js, browser storage) is Node-only. Account
+  // mode (Cloudflare) has the server's 个人统计 in the account menu (ui/accountMenu.js → screens/history.js), so the
+  // local entry stays hidden there. A change to either statistics page should keep both in view.
+  const localStats = !account.enabled;
   // a title in an alphabetic script (English, French …) is the big one in the display face and the wordmark above it
   // hides; a CJK / kana / Hangul title keeps the Chinese layout (shared/i18nPacks.js scriptOf — a pack needs no flag)
   const alphabetic = scriptOf(t('卫戍协议')) === 'alphabetic';
@@ -226,7 +232,10 @@ export function TitleScreen() {
     <div class="title-corner title-corner--tr">
       <${InstallButton} class="title-install tapx" variant="secondary" />
       <div>
-        <${LangToggle} class="title-lang" />
+        <div class="title-corner__tools">
+          ${localStats ? html`<${Button} variant="ghost" size="sm" icon="chart" class="title-stats" onClick=${openStats} title=${t('统计数据')}>${t('统计')}<//>` : null}
+          <${LangToggle} class="title-lang" />
+        </div>
         <${MicroLabel} tone="hi">TARGET POINT<//><br /><${MicroLabel}>STRONGHOLD PROTOCOL<//>
       </div>
     </div>
@@ -277,6 +286,7 @@ export function TitleScreen() {
     <${SettingsModal} open=${settingsOpen} onClose=${() => setSettingsOpen(false)} />
 
     <footer class="title-foot">
+      <${ResumeMatchButton} />
       <span class="title-foot__note">${t('非官方同人复刻 · 游戏素材版权归 上海鹰角网络 / Yostar 所有')}</span>
       <span class="title-foot__right">
         <span class="presence num" data-testid="title-presence" title=${presenceHint()}>${presenceLabel(presence)}</span>

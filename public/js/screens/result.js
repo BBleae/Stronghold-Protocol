@@ -103,12 +103,22 @@ export function PlayerCard({ p, myId, titles, best, solo = false }) {
   </article>`;
 }
 
-/** RESULT screen. */
+/** RESULT screen of the match on screen: reads the store; 返回同盟 / 返回大厅 drops the match. */
 export function ResultScreen() {
   const res = useStore((s) => s.match.result);
   const pub = useStore((s) => s.match.public);
   const myId = useStore((s) => s.me.playerId);
   const hasRoom = useStore((s) => !!s.room);
+  const back = () => store.set({ match: emptyMatch() });
+  return html`<${ResultView} res=${res} pub=${pub} myId=${myId} backLabel=${hasRoom ? t('返回同盟') : t('返回大厅')} onBack=${back} />`;
+}
+
+/**
+ * The settlement view of one m.result payload — the live screen above, and the stats page's re-view of a stored match
+ * (screens/stats.js, which hands it the payload recordToResult rebuilt; `quiet`: no settlement jingle).
+ * @param {{ res: any, pub?: any, myId?: string|null, backLabel: string, onBack: () => void, quiet?: boolean }} props
+ */
+export function ResultView({ res, pub = null, myId = null, backLabel, onBack, quiet = false }) {
   const gd = useGameData();
   const r = normalizeResult(res, pub);
   const titles = Array.isArray(gd.config?.titles) ? gd.config.titles : [];
@@ -124,9 +134,8 @@ export function ResultScreen() {
   useEffect(() => {
     if (!res || settled.current) return;
     settled.current = true;
-    audio.sfx(r.victory ? 'settlementSucceed' : 'settlementFail');
+    if (!quiet) audio.sfx(r.victory ? 'settlementSucceed' : 'settlementFail');
   }, [res]);
-  const back = () => store.set({ match: emptyMatch() });
   const boss = r.bossId ? gd.boss(r.bossId) : null;
   // the Hidden Core medal (and its corrupted leader) only once R15 was actually fought
   const hidden = r.hiddenBossId && r.hiddenReached ? gd.boss(r.hiddenBossId) : null;
@@ -138,6 +147,7 @@ export function ResultScreen() {
     <div class="result__grid" aria-hidden="true"></div>
     <main class="result__main">
       <section class="result__hero">
+        <div class="result__summary">
         <div class="result__logo"><${Sprite} k="entry/season_logo_settle" class="result__logoimg" fallback=${html`<${MicroLabel} tone="mint">STRONGHOLD PROTOCOL</${MicroLabel}>`} /></div>
         ${r.difficulty ? html`<${DifficultyTag} difficulty=${r.difficulty} size="lg" />` : null}
         <h1 class="result__headline">${r.victory ? t('模拟完成') : t('模拟失败')}</h1>
@@ -156,8 +166,9 @@ export function ResultScreen() {
             <span class="medal__label">${t('隐秘核心')}</span></div>` : null}
         </div>
         ${mins ? html`<p class="result__time t-lo">${tParts('本局耗时 {n} 分钟', { n: html`<b class="num">${mins}</b>`, mins })}</p>` : null}
+        </div>
         <footer class="result__foot">
-          <${Button} variant="primary" size="xl" icon="chevronLeft" onClick=${back}>${hasRoom ? t('返回同盟') : t('返回大厅')}<//>
+          <${Button} variant="primary" size="xl" icon="chevronLeft" onClick=${onBack}>${backLabel}<//>
         </footer>
       </section>
       <section class="result__players">

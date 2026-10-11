@@ -376,11 +376,29 @@ export class GameData {
 
   _officialPoolCopies(baseId) {
     const ov = this.economy.poolCopiesOverrides;
-    if (ov && typeof ov === 'object' && Number.isInteger(ov[baseId]) && ov[baseId] >= 0) return ov[baseId];
     const tier = this.tierOf(baseId);
     const pc = this.economy.poolCopies;
-    const v = pc && typeof pc === 'object' ? pc[tier] : undefined;
-    return Number.isInteger(v) && v >= 0 ? v : (DEFAULTS.poolCopies[tier] ?? 10);
+    const v = ov && Number.isInteger(ov[baseId]) && ov[baseId] >= 0 ? ov[baseId] : pc?.[tier];
+    const base = Number.isInteger(v) && v >= 0 ? v : (DEFAULTS.poolCopies[tier] ?? 10);
+    // The measured doubled pool is shared by the whole co-op team, independent of team size. DIY is private stock.
+    const multiplier = this.isSolo || this.chess(baseId)?.isDiy ? 1 : posIntOr(this.economy.coopPoolMultiplier, 1);
+    return base * multiplier;
+  }
+
+  /**
+   * Normal equipment copies in the shared pool; effect-only items have no shop stock limit. A co-op match of 5–8 seats
+   * (`players`, humans + bots at match start) has ceil(count × seats / 4), like poolCopies (remake extension, the
+   * maintainer's decision of 2026-10-11, docs/design/fork.md §F8); 1–4 seats or omitted: the measured count.
+   * @param {string} id
+   * @param {number} [players]
+   */
+  itemPoolCopies(id, players) {
+    const base = this.baseIdOf(id), rec = this.item(base);
+    if (!rec || !isShopItem(rec)) return null;
+    const count = this.economy.itemPoolCopiesOverrides?.[base] ?? this.economy.itemPoolCopies?.[rec.tier];
+    if (!(Number.isInteger(count) && count >= 0)) return null;
+    if (!this.isLargeRoom(players)) return count;
+    return Math.ceil((count * Math.floor(Number(players))) / this.largeRoom.players);
   }
 
   /** Copies needed to merge (0 = never merges: golden chess). */
@@ -530,14 +548,16 @@ export class GameData {
   }
   /**
    * Team LP the overtime drain has taken when a boss field clock reads `gt` game seconds: bossOvertimeDrainReal per
-   * whole REAL second past bossOvertimeAfterReal (the first point at 151 real s). With more than 4 players alive at the
-   * boss phase's start (`aliveCount`, remake extension) the rate is bossOvertimeDrainFor(aliveCount), and the total is
+   * whole REAL second past `afterReal` (default bossOvertimeAfterReal: the first point at 151 real s; a team with an AI
+   * teammate starts later, bossRounds.js bossOvertimeStartReal — 0.2.4). With more than 4 players alive at the boss
+   * phase's start (`aliveCount`, remake extension) the rate is bossOvertimeDrainFor(aliveCount), and the total is
    * floored to whole LP (5 alive: 1, 2, 3, 5, 6, 7, 8, 10 … at 1.25 LP/s).
    * @param {number} gt
    * @param {number} [aliveCount]
+   * @param {number} [afterReal]
    */
-  bossOvertimeDue(gt, aliveCount) {
-    const over = (Number(gt) || 0) / this.combatTimeScale - this.bossOvertimeAfterReal;
+  bossOvertimeDue(gt, aliveCount, afterReal = this.bossOvertimeAfterReal) {
+    const over = (Number(gt) || 0) / this.combatTimeScale - afterReal;
     if (!(over >= 1)) return 0;
     if (!this.isLargeRoom(aliveCount)) return Math.floor(over) * this.bossOvertimeDrainReal;
     return Math.floor(Math.floor(over) * this.bossOvertimeDrainFor(aliveCount) + 1e-9);

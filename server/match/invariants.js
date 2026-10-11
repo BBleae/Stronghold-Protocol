@@ -3,8 +3,10 @@
 // (test/match/harness.js checkInvariants asserts the list is empty) and by tools/matchrun.mjs --check sweeps.
 //
 // collectViolations(m) → string[] (empty when every invariant holds):
-//   pool     cap = gd.poolCopies(base, seats) (5–8 seats scale it, remake extension); 0 ≤ left ≤ cap and left + Σ copies
-//            held by pieces == cap per base chess; no 自选 slot in the shared pool; non-pool chess hold 0 copies;
+//   pool     cap = gd.poolCopies(base, seats) (5–8 seats scale it, remake extension); raw balance ≤ cap and raw balance +
+//            Σ copies held by pieces == cap (public availability is clamped at zero) per base chess; no 自选 slot in the
+//            shared pool; non-pool chess hold 0 copies;
+//            every capped shop item is held by at most its cap (normal occupies 1, upgraded 2; effect-only items have no cap)
 //            a player's 自选 stock (0.2.0, player/diy.js) the same against its own pieces of each slotted slot — a DIY
 //            piece is always a slotted slot of its owner's, and a DIY shop / reward card one of its stocked slots
 //   economy  funds / pendingFunds non-negative integers, LP finite, shop level in range, prices ≥ 0
@@ -19,6 +21,8 @@
 //   bonds    ps.bonds equals a fresh computeBonds() (every mutation recomputed them); every bond's layers 0 … BOND_LAYER_CAP
 //   shop     slot count follows the rolled layout; ids known; banned chess never offered by the shop / rewards
 //   elim.    an eliminated player owns nothing (board, hand, temp, shop, offers, bounties, funds)
+//   choice   a player's open 教鞭 choice (`personalChoice`) is one of an alive, not-Ready player in the PREP of its own round,
+//            with one to three different cards
 //   match    phase known; teamLp / boss pool within range; combat fields match the alive players
 
 import { PHASE, BOND_LAYER_CAP } from '../../shared/constants.js';
@@ -75,6 +79,12 @@ export function collectViolations(m, { limit = 25 } = {}) {
       if (ps.hand.some(Boolean) || ps.temp.some(Boolean)) fail(`${id}: eliminated but keeps hand/temp pieces`);
       if (ps.shop.slots.length || ps.offers.length || ps.bounties.length) fail(`${id}: eliminated but keeps shop/offers/bounties`);
       if (ps.funds || ps.pendingFunds) fail(`${id}: eliminated with funds ${ps.funds}+${ps.pendingFunds}`);
+    }
+    // 教鞭's personal choice (Match.offerBountyChoice): resolved before the prep ends — by its owner, the deadline or the bot
+    const pc = ps.personalChoice;
+    if (pc) {
+      if (!ps.alive || ps.ready || m.phase !== PHASE.PREP || pc.round !== m.round) fail(`${id}: a personal choice outside its own prep (${m.phase} R${m.round}, offered in R${pc.round})`);
+      if (!Array.isArray(pc.cards) || !pc.cards.length || pc.cards.length > 3 || new Set(pc.cards.map((c) => c && c.effectId)).size !== pc.cards.length) fail(`${id}: personal choice of ${pc.cards && pc.cards.length} cards`);
     }
 
     // pieces
@@ -179,7 +189,7 @@ export function collectViolations(m, { limit = 25 } = {}) {
     }
     // 自选 stock accounting (player/diy.js): left + held == cap per slotted slot; a slot without stock holds nothing
     for (const [base, e] of ps.diyStock ? ps.diyStock.entries : []) {
-      if (!(e.left >= 0 && e.left <= e.cap)) fail(`${id}: 自选 stock ${base}: left ${e.left} cap ${e.cap}`);
+      if (!(Number.isInteger(e.left) && e.left <= e.cap)) fail(`${id}: 自选 stock ${base}: balance ${e.left} cap ${e.cap}`);
       const h = diyHeld.get(base) || 0;
       if (e.left + h !== e.cap) fail(`${id}: 自选 stock ${base}: left ${e.left} + held ${h} != cap ${e.cap}`);
     }
@@ -192,11 +202,23 @@ export function collectViolations(m, { limit = 25 } = {}) {
   for (const [base, e] of m.pool.entries) {
     if (gd.chess(base)?.isDiy) fail(`pool ${base}: a 自选 slot in the shared pool`);
     if (typeof gd.poolCopies === 'function' && e.cap !== gd.poolCopies(base, seats)) fail(`pool ${base}: cap ${e.cap} != ${gd.poolCopies(base, seats)} for ${seats} seats`);
-    if (!(e.left >= 0 && e.left <= e.cap)) fail(`pool ${base}: left ${e.left} cap ${e.cap}`);
+    if (!(Number.isInteger(e.left) && e.left <= e.cap)) fail(`pool ${base}: balance ${e.left} cap ${e.cap}`);
     const h = held.get(base) || 0;
     if (e.left + h !== e.cap) fail(`pool ${base}: left ${e.left} + held ${h} != cap ${e.cap}`);
   }
   for (const [base, n] of held) if (!m.pool.has(base) && n !== 0) fail(`non-pool chess ${base} holds ${n} copies`);
+
+  // Shared shop equipment. The chess pool above may go negative (Mimic). Item stock may not: held ≤ cap.
+  if (m.itemPool && gd.raw.items) {
+    for (const [id, rec] of Object.entries(gd.raw.items)) {
+      if (!rec || rec.isGolden) continue;
+      const cap = m.itemPool.cap(id);
+      if (cap !== gd.itemPoolCopies(id, seats)) fail(`item ${id}: cap ${cap} != ${gd.itemPoolCopies(id, seats)} for ${seats} seats`);
+      if (!Number.isInteger(cap)) continue;
+      const h = m.itemPool.held(id);
+      if (h > cap) fail(`item ${id}: held ${h} > cap ${cap}`);
+    }
+  }
 
   // combat fields
   if (m.phase === PHASE.COMBAT) {

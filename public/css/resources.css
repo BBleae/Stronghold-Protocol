@@ -2,12 +2,12 @@
 .resource-card { display: flex; flex-direction: column; gap: .18rem; min-width: 0; }
 .resource-intro { margin: 0; }
 .resource-summary { display: flex; align-items: center; justify-content: space-between; gap: .16rem; flex-wrap: wrap; }
-.resource-stat { margin: .16rem 0 .12rem; font-size: .2rem; color: var(--text-hi); }
-.resource-message { min-height: 1.5em; margin: 0; font-size: .16rem; line-height: 1.5; overflow-wrap: anywhere; }
+.resource-stat { margin: .16rem 0 .12rem; font-size: calc(.2 * var(--t)); color: var(--text-hi); }
+.resource-message { min-height: 1.5em; margin: 0; font-size: calc(.16 * var(--t)); line-height: 1.5; overflow-wrap: anywhere; }
 .resource-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .12rem; }
 .resource-actions a.btn { text-decoration: none; }
 .resource-clear, .resource-cancel { grid-column: 1 / -1; }
-.resource-note { display: flex; flex-direction: column; gap: .08rem; padding-top: .18rem; border-top: 1px solid var(--line); color: var(--text-lo); font-size: .15rem; line-height: 1.7; }
+.resource-note { display: flex; flex-direction: column; gap: .08rem; padding-top: .18rem; border-top: 1px solid var(--line); color: var(--text-lo); font-size: calc(.15 * var(--t)); line-height: 1.7; }
 .resource-note p { margin: 0; }
 @media (max-height: 460px) {
   .resource-card { gap: .12rem; }

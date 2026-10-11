@@ -275,7 +275,7 @@ test('spectators follow prep and combat without authority, and leave when the ma
 
 test('a spectator follows the player it chose through the phase changes (upstream 0.2.0 item 56)', (t) => {
   const { rt, host } = setup(t);
-  rt.lobby.seedFn = () => 17;
+  rt.lobby.seedFn = () => 17;  // a seed with a 联防 before round 5 (9 between the upstream 0.2.3 and 0.2.4 merges, when 17 had none)
   for (let i = 0; i < 3; i++) send(rt, host, 'room.addBot');
   send(rt, host, 'room.start');
   const viewer = connect(rt, 'viewer');

@@ -94,6 +94,7 @@ export class MatchPrep {
     };
     const ready = () => {
       if (!ps.ready) {
+        this.autoPickPersonalChoice(ps, 'random');
         ps.resolveTemp();
         ps.setReady(true);
       }
@@ -224,6 +225,7 @@ export class MatchPrep {
     for (const ps of this.alivePlayers()) if (!ps.ready) this._finishBotPrep(ps, budget);
     for (const ps of this.alivePlayers()) {
       if (ps.ready) continue;
+      this.autoPickPersonalChoice(ps, 'random');
       ps.resolveTemp();
       ps.ready = true;
       ps.dirty();

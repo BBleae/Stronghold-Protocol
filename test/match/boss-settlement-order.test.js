@@ -294,6 +294,8 @@ for (const leave of [['p0', 'p1', 'p2', 'p3'], ['p0', 'p1']]) test(`the boss-rou
   const mode = data.config.modes.mode_multi_normal;
   mode.rounds['1'] = structuredClone(mode.rounds[mode.bossRound]);
   mode.bossRound = mode.lastRound = 1; mode.hiddenRound = null;
+  // an all-human team's drain starts at the level's countdown (upstream 0.2.4, DESIGN §29.1), an AI team's at bossOvertimeAfter
+  mode.rounds['1'].levelMaxPlayTime = 4;
   data.config.bossOvertimeAfter = 4;
   let now = 1000;
   const options = { data, roomCode: 'RESTOT', mode: 'coop', difficulty: 'NORMAL', seed: 17,

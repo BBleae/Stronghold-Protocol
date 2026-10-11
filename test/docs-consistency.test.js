@@ -8,7 +8,8 @@
 // local art, 标准 = 战场#01 only; user playtest #3 (DESIGN §17): temp overflow kept until the first prep its player can
 // act in (never wiped at the round start), the 回环射手 boomerang and 蕾缪安's shells one by one, the live LP, the detail
 // card order and the static game data; user playtest #4 (DESIGN §18): picking by the tile under the pointer and the
-// dragged model held under it, a single human untimed, the strategy draft's one countdown, 机变 two taps, knocked-out
+// dragged model held under it (standing on that tile while it is a legal target, §27.62), a single human untimed, the
+// strategy draft's one countdown, 机变 two taps, knocked-out
 // operators and the official element gauges, live stats, the shop-only items, skill summons, 炎佑; user playtest #5
 // (DESIGN §19): blocking by contact radius, 联防 forced exit, huge-boss hit areas and 自缚, the element pipeline rules,
 // boss-field deployment, the phone prep camera — and the normative §3 / §5.1 / §5.5 / §6.1 / §7 lines that changed; user
@@ -23,7 +24,8 @@
 // the closing additions §21.26–§21.28 (GitHub issues #1 / #5 / #8), the owner's deliberate trigger deviation for six
 // 重装 skills (§21.29, GitHub issue #4 / PR #12) and upstream's operator battle voice (§21.30, #73): its moments
 // ported onto the fork's own voice engine (行动出发 / 部署 / 行动开始 / 作战中N / 选中干员 from the field on screen, a
-// settlement line after every own battle whatever field is on screen).
+// settlement line after every own battle whatever field is on screen; since the 0.2.3 merge a tap's 选中干员 in every
+// phase, upstream 0.2.2).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
@@ -297,11 +299,15 @@ test('lost models, live LP, detail card order, static game data (user playtest #
 });
 
 test('user playtest #4 (DESIGN §18): picking by tile, timers, 机变 two taps, down / element state, content — code and every doc agree', () => {
-  // #1 the tile under the pointer; the dragged model held under the pointer (no touch lift, probe or body shapes)
+  // #1 the tile under the pointer; the dragged model held under the pointer (no touch lift, probe or body shapes) —
+  // standing on the pointer's tile while that is a legal target (§27.62, the official deploy drag)
   assert.equal(ENEMY_REACH, 0.6);
   const app = readFileSync(join(ROOT, 'public/js/render/app.js'), 'utf8');
   const tune = readFileSync(join(ROOT, 'public/js/render/app/tune.js'), 'utf8');
   assert.match(tune, /export const DRAG_HOLD_TILES = 0\.45;/);
+  assert.match(app, /dragStandTile\(p\)/);
+  assert.match(DESIGN, /`dragStandTile/);
+  assert.match(PLAYING, /干员模型直接站在这一格上/);
   assert.ok(!/TOUCH_LIFT_TILES|drawnAt|pickShape|pieceDragOver/.test(app), 'no touch lift, pixel probe or body shapes (user playtest #4 item 1)');
   assert.match(DESIGN, /`DRAG_HOLD_TILES` = 0\.45 tile/);
   assert.match(DESIGN, /`ENEMY_REACH` 0\.6 tile/);
@@ -320,7 +326,7 @@ test('user playtest #4 (DESIGN §18): picking by tile, timers, 机变 two taps, 
   assert.match(DESIGN, /solo and any single-human match untimed/);
   assert.match(META, /solo \/ single human untimed/);
   assert.match(PLAYING, /只有你一名玩家/);
-  // #4 one countdown: BAND_TURN_SECONDS per turn (code = data = docs)
+  // #4 one countdown: BAND_TURN_SECONDS per turn (code = data = docs); FORK: 30 s, not upstream 0.2.3's 50 s (§F1.3)
   assert.equal(BAND_TURN_SECONDS, 30);
   assert.equal(DATA.config.timers.bandTurn, BAND_TURN_SECONDS);
   assert.match(DESIGN, /`BAND_TURN_SECONDS` 30 s per turn = m\.public\.deadline/);
@@ -493,7 +499,8 @@ test('user playtest #6 (DESIGN §20): summons, skill triggers, blocking, push fo
   assert.match(sec(17), /\*\*revised by §20\.6\*\*/);
   assert.ok(!/the own battle's count stays on show as an upper bound tagged 联防中/.test(DESIGN), '§17.5: the frozen 联防 count is gone');
   assert.match(sec(8), /uniteLeft\? \/\* 联防: the leaker's enemies still standing/);
-  assert.match(sec(14), /`b\.progress \{ battleId, gt, killed, total, leaks\?, left\?, bossDmg\?, by\?, done\? \}`/);
+  assert.match(sec(14), /`b\.progress \{ battleId, gt, killed, total, resolved\?, leaks\?, left\?, bossDmg\?, by\?, leaksBy\?, done\? \}`/);
+  assert.match(doc('shared/protocol.js'), /leaksBy: \(v\) => isMap\(v, RESULT_LIMITS\.players, isId, \(x\) => isNum\(x, 0, 1e6\)\)/);
   assert.match(sec(6), /3 \*\*different\*\* free chess of tier `min\(level\+1, 6\)`/);
   assert.match(S20, /105 cards: 56 next-battle incl\. 源石虫·特训, 42 two-battle, 7 multi-round/);
   // #11 / #9 / #13: the gauge look (§18.3 / §19.5 superseded, §8.2 fill), model scale and fear (§9, §5.3, §2)
@@ -944,7 +951,7 @@ test('干员战斗语音 (DESIGN §21.30): upstream #73\'s moments on the fork\'
   assert.ok(!/ignores the event/.test(doc('server/sim/ai.js')), 'the sim comment says the client uses engage');
   assert.match(PLAYING, /干员语音也只播你正在看的战场/);
   assert.match(PLAYING, /自己的每场战斗结束后都有一句结算语音/);
-  assert.match(PLAYING, /整备期不说话/);
+  assert.match(PLAYING, /整备期只说「选中干员」/);
   assert.match(README, /自己每场战斗后的结算；结算以外只播正在看的战场/);
   const log = doc('CHANGELOG.md');
   assert.ok(log.indexOf('### 干员战斗语音（PR #73 的触发时机，感谢 @Convey123）') > log.indexOf('## 未发布')

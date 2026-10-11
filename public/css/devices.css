@@ -168,7 +168,7 @@ html:not(.sp-in-match) .toast-host { margin-top: var(--sa-t); }
   .mode-cards { margin-bottom: .2rem; }
   .mode-card { min-height: 0; gap: .12rem; padding: .22rem .26rem .2rem; }
   .mode-card__icon { width: .66rem; height: .66rem; }
-  .mode-card__name { font-size: .4rem; }
+  .mode-card__name { font-size: calc(.4 * var(--t)); }
   .mode-card__points, .diff-card__effects, .tips, .create-box__hint { display: none; }
   .diff-list { gap: .1rem; }
   .diff-card { padding-top: .12rem; padding-bottom: .12rem; }
@@ -178,8 +178,8 @@ html:not(.sp-in-match) .toast-host { margin-top: var(--sa-t); }
   .create-box__row > * { flex: 1 1 0; min-width: 0; }
   .create-box__row .btn--lg { height: .8rem; }
   .queue-panel { gap: .02rem; padding: .04rem .16rem; line-height: 1.2; }
-  .queue-panel__time, .queue-panel__body b { font-size: max(.2rem, 12px); }
-  .queue-panel .btn { height: max(.36rem, 20px); padding: 0 max(.16rem, 8px); font-size: max(.15rem, 11px); }
+  .queue-panel__time, .queue-panel__body b { font-size: max(calc(.2 * var(--t)), 12px); }
+  .queue-panel .btn { height: max(.36rem, 20px); padding: 0 max(.16rem, 8px); font-size: max(calc(.15 * var(--t)), 11px); }
 }
 
 /* ---- 6. phone type floor (phone audit S1 / T3) ---------------------------------------------------------------------
@@ -201,15 +201,15 @@ html:not(.sp-in-match) .toast-host { margin-top: var(--sa-t); }
   .bslot__count { font-size: max(.15rem, 8px); }
   /* team panel, funds, round, the ready count, effect stacks */
   .team__name { font-size: max(.15rem, 9px); }
-  .funds__label { font-size: max(.14rem, 8px); }
+  .funds__label { font-size: max(calc(.14 * var(--t)), 8px); }
   .roundbox__label { font-size: max(.16rem, 8px); }
   .shopbar__remain { font-size: max(.2rem, 9px); }
   .readywrap__count { font-size: max(.14rem, 8px); }
   .effect__n { font-size: max(.12rem, 8px); }
   /* detail card: the stat grid, the 特质 / description texts, the header's position tag */
-  .dstat__k { font-size: max(.12rem, 7px); letter-spacing: 0; } /* 生命值 / 法术抗性 still fit their cell at 7 px */
-  .dstat__v { font-size: max(.17rem, 9px); }
-  .dtrait { font-size: max(.14rem, 9px); line-height: 1.45; }
-  .dgarrison__k { font-size: max(.14rem, 8px); }
-  .dhead__pos { font-size: max(.12rem, 8px); }
+  .dstat__k { font-size: max(calc(.12 * var(--t)), 7px); letter-spacing: 0; } /* 生命值 / 法术抗性 still fit their cell at 7 px */
+  .dstat__v { font-size: max(calc(.17 * var(--t)), 9px); }
+  .dtrait { font-size: max(calc(.14 * var(--t)), 9px); line-height: 1.45; }
+  .dgarrison__k { font-size: max(calc(.14 * var(--t)), 8px); }
+  .dhead__pos { font-size: max(calc(.12 * var(--t)), 8px); }
 }

@@ -73,6 +73,7 @@
 import { num, talentBb, moduleBb, skillRec, toggleBuff, batMod, giveSp, up } from '../shared/tier1.js';
 import { sortEnemyTargets } from '../../../targeting.js';
 import { bodyDist } from '../../../body.js';
+import { hypot } from '../../../detmath.js';
 
 const S1 = 'skchr_ash_1';
 const S2 = 'skchr_ash_2';
@@ -158,7 +159,7 @@ function grenade(battle, unit, bb, reach) {
   const [fr, fc] = unit.fwd;
   const end = grenadeEnd(battle, unit, reach);
   const x0 = unit.tileC, y0 = unit.tileR;
-  const len = Math.hypot(end.x - x0, end.y - y0);
+  const len = hypot(end.x - x0, end.y - y0);
   const atk = unit.s.atk;
   // 沿途: enemies within PATH_RADIUS (collider) of the flight segment, ahead of or beside her, by when the grenade reaches them
   const cand = battle.foesInRadius((x0 + end.x) / 2, (y0 + end.y) / 2, len / 2 + PATH_RADIUS, false);

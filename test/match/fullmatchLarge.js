@@ -1,7 +1,7 @@
 // test/match/fullmatchLarge.js — shared by the 5–8-seat soak suites (fullmatch-coop-5seats.test.js,
 // fullmatch-coop-8seats.test.js): one whole co-op match with the REAL simulation and client-side combat
 // (fullmatchRun.js runFull: zero errors, invariants at every phase change, no rejected client result), then the remake's
-// 5–8-player rules (DESIGN §F1, docs/PLAYING.md §12, docs/META.md) checked on what the match did:
+// 5–8-player rules (DESIGN §F1, docs/PLAYING.md §14, docs/META.md) checked on what the match did:
 //   * shared pool: copies per chess = ceil(base × max(1, n / 4)), n = the seats at the start (humans + AI);
 //   * strategy draft: one turn per seat; a timed draft of more than 4 seats gives 20 s a turn (30 s otherwise);
 //   * 机变: max(6, alive + 2) cards for the alive pickers (7–10 cards for 5–8 players);
@@ -40,8 +40,9 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 function baseCopies(gd, id) {
   const eco = gd.economy || gd.config?.economy || {};
   const ov = eco.poolCopiesOverrides;
-  if (ov && Number.isInteger(ov[id])) return ov[id];
-  return eco.poolCopies?.[gd.tierOf(id)];
+  const single = ov && Number.isInteger(ov[id]) ? ov[id] : eco.poolCopies?.[gd.tierOf(id)];
+  // the official co-op stock (upstream 0.2.4, DESIGN §29.8): the single-player copies doubled
+  return Number.isInteger(single) ? single * (eco.coopPoolMultiplier ?? 1) : single;
 }
 
 export function runLarge({ difficulty, humans, bots, seed }) {
@@ -160,6 +161,11 @@ export function runLarge({ difficulty, humans, bots, seed }) {
     check(m.pool.cap(id) === want, 'pool copies = ceil(base × n / 4)', `${id}: ${m.pool.cap(id)}, want ceil(${base} × ${n}/4) = ${want}`);
   }
   check(entries > 0, 'the pool has entries', 'none');
+  // the shared shop-equipment stock, sized alike (DESIGN §F8) — the measured overrides
+  for (const [id, count] of Object.entries(m.gd.economy.itemPoolCopiesOverrides || {})) {
+    const want = Math.ceil(count * f);
+    check(m.itemPool.cap(id) === want, 'equipment stock = ceil(count × n / 4)', `${id}: ${m.itemPool.cap(id)}, want ceil(${count} × ${n}/4) = ${want}`);
+  }
   check(seen.drafts === 1, 'the strategy draft was observed', `${seen.drafts} looks`);
 
   const rows = res.players || [];

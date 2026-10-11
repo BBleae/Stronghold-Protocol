@@ -1,4 +1,4 @@
-// test/local-token-models.test.js — the token (summon) models only the local client has (0.2.0): 39 summons — most of the
+// test/local-token-models.test.js — the token (summon) models only the local client has (0.2.0): 40 summon overlays — most of the
 // 自选 picks' (data/backups.json `tokens`), 凯瑟琳's 爬行号·防护单元 and 凛御银灰's 风雪之眼 — have no battle Spine in
 // any community dump (fetch-assets reported "missing skel"), so the client drew their avatar diamond. Their official
 // skeletons come from the battle token packs of the local client (tools/local-extract/extract.py TOKEN_SPINES →
@@ -15,7 +15,8 @@
 // `fallback`), and the diamond only for the summons with neither. Every other summon behaves exactly as above.
 // TOKEN_SKIN_SPINES has a 25th entry outside this list: 艾拉's 雷暴 mine (token_10033_ela_grzmot), a summon of a collab
 // pick only this fork keeps (tools/build-data.mjs FORK_INCLUDE_COLLAB_PICKS) — the skin is its only model (no extract.py
-// TOKEN_SPINES entry).
+// TOKEN_SPINES entry). Upstream's 香槟 trap (token_10031_swire2_gdtrap, 0.2.4) has a web skin model of its own (not a
+// TOKEN_SKIN_SPINES entry): the same fallback.
 
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -48,8 +49,10 @@ const TOKEN_SPINES = (() => {
   return r.status === 0 ? JSON.parse(r.stdout).tokenSpines.ids : null;
 })();
 const IDS = Object.keys(COMMITTED).sort();
-/** The web (skin) model the manifest keeps for a summon of TOKEN_SKIN_SPINES, else null (the fork, header). */
-const webSkin = (id) => (Object.hasOwn(TOKEN_SKIN_SPINES, id) ? MANIFEST.tokens[id]?.spine ?? null : null);
+/** Upstream's summon with a web skin model besides the overlay (header). */
+const CHAMPAGNE = 'token_10031_swire2_gdtrap';
+/** The web (skin) model the manifest keeps for a summon of TOKEN_SKIN_SPINES or 香槟, else null (header). */
+const webSkin = (id) => (Object.hasOwn(TOKEN_SKIN_SPINES, id) || id === CHAMPAGNE ? MANIFEST.tokens[id]?.spine ?? null : null);
 
 /** A data/local-assets.json listing the extracted files of `ids` (extract.py's group layout), minus `drop`. */
 function localManifest(ids, drop = null) {
@@ -64,7 +67,7 @@ function localManifest(ids, drop = null) {
 
 describe('the 自选 summon models from the local client are an optional overlay', () => {
   test('the committed metadata: the TOKEN_SPINES of extract.py, each a skeleton + same-stem atlas + pages, its roles on its own clips', () => {
-    assert.equal(IDS.length, 39);
+    assert.equal(IDS.length, 40);
     if (TOKEN_SPINES) assert.deepEqual(IDS, [...TOKEN_SPINES].sort(), 'one entry per extract.py TOKEN_SPINES id');
     for (const id of IDS) {
       const m = COMMITTED[id];
@@ -132,12 +135,17 @@ describe('the 自选 summon models from the local client are an optional overlay
         assert.equal(spineEntry(MANIFEST, id), MANIFEST.tokens[id].spine, `${id}: without the local art the client draws the skin`);
         continue;
       }
+      if (id === CHAMPAGNE) {
+        assert.ok(validSpine(MANIFEST.tokens[id].spine), 'champagne keeps its web skin fallback');
+        assert.equal(spineEntry(MANIFEST, id), MANIFEST.tokens[id].spine, `${id}: without the local art the client draws the skin`);
+        continue;
+      }
       assert.equal(MANIFEST.tokens[id].spine, undefined, `${id}: no web model (it was the avatar diamond)`);
       assert.equal(spineEntry(MANIFEST, id), null, `${id}: without the local art the client keeps the diamond`);
     }
     // the tokens that always had a web model keep it, without an overlay
     for (const [id, t] of Object.entries(MANIFEST.tokens)) {
-      if (t.spine && !Object.hasOwn(TOKEN_SKIN_SPINES, id)) { assert.ok(validSpine(t.spine), id); assert.equal(t.spineLocal, undefined, id); }
+      if (t.spine && !Object.hasOwn(TOKEN_SKIN_SPINES, id) && id !== CHAMPAGNE) { assert.ok(validSpine(t.spine), id); assert.equal(t.spineLocal, undefined, id); }
     }
   });
 
@@ -196,7 +204,7 @@ describe('client: the official summon model only when data/local-assets.json lis
     assert.equal(store.spineEntry('token_10002_kalts_mon3tr').skel, '/assets/local/spine/token/token_10002_kalts_mon3tr/token_10002_kalts_mon3tr.skel');
     assert.equal(createAssets({ manifest: MANIFEST }).spineEntry('token_10002_kalts_mon3tr'), webSkin('token_10002_kalts_mon3tr'),
       'before / without local(): the diamond — the fork: Mon3tr\'s skin model (TOKEN_SKIN_SPINES)');
-    const noSkin = IDS.find((id) => !Object.hasOwn(TOKEN_SKIN_SPINES, id));
+    const noSkin = IDS.find((id) => !webSkin(id));
     assert.equal(createAssets({ manifest: MANIFEST }).spineEntry(noSkin), null, `${noSkin}: before / without local(): the diamond`);
   });
 

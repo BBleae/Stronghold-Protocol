@@ -1,7 +1,7 @@
-# DESIGN §F1, §F2, §F3, §F4, §F5, §F6 — This fork's own sections (BBleae/Stronghold-Protocol)
+# DESIGN §F1, §F2, §F3, §F4, §F5, §F6, §F7, §F8 — This fork's own sections (BBleae/Stronghold-Protocol)
 
 Part of [DESIGN.md](../DESIGN.md) (the index). Upstream's section numbers are global and stay as upstream gives them;
-this fork's own sections have fork ids, §F1 … §F6, so they never take a number upstream gives a later release. Code,
+this fork's own sections have fork ids, §F1 … §F8, so they never take a number upstream gives a later release. Code,
 tests and the other documents cite them as "DESIGN §F1.4" and so on.
 
 **Ids before 2026-10-08.** Until the merge of upstream 0.2.1 the fork numbered these sections inside the global sequence
@@ -28,13 +28,13 @@ The official 同盟模拟 has 1–4 players (research 09 §3.1; the room's four 
 - Client: the room shows one seat card per seat — 4 in one row as in the official room, 5–8 in two rows of 4 smaller cards (`seats--wide`) — and the host's **同盟席位** picker 4–8 (sizes below the occupied seats disabled; the bar's difficulty labels never wrap and its ready row's icons are smaller above 4 humans, so 8 humans leave the host's pickers their room at 640×360); the lobby's co-op card reads 「默认 4 席 · 创建者可扩至 8 席」. The in-match screens fit 8 players (the team panel's compact rows above 4 players, the strategy-draft order, the 机变 order strip and its up to 10 cards, the briefing, the result screen, history and replays), at 640×360 and on phones too; 1–4 players keep their layouts.
 - Room Worker (account mode): a room saved before rooms had a capacity (its 4-slot `seats`) restores as a 4-seat room. The socket limits follow the capacity (`socketLimits(seats)`): the members keep `reserve` = capacity + 1 sockets (every player seat plus one overlap during a reconnect) and strangers share the rest — sockets = reserve + 11, socketsPerIp = reserve + 3 — so a 4-seat room keeps 16 / 8 as before and an 8-seat room has 20 / 12. The public listing's capacity is `room.seats.length` (`x/4` for a 4-seat room as before). Sign-up / login rate limits are unchanged (owner's decision).
 
-### F1.2 The shared pool — `gamedata.js poolCopies(baseId, players)`, `pool.js SharedPool({ players })`, `Match` constructor
+### F1.2 The shared pool — `gamedata.js poolCopies(baseId, players)` / `itemPoolCopies(id, players)`, `pool.js SharedPool({ players })` / `SharedItemPool({ seats })`, `Match` constructor
 
-Copies per chess = ceil(official × n / 4), n = the match's seats (humans + bots) at the match start — every tier and the per-operator overrides (缪尔赛思 4): 5 seats 15 / 18 / 23 / 20 / 10 / 7 (缪尔赛思 5), 6 seats 18 / 21 / 27 / 24 / 12 / 8 (6), 7 seats 21 / 25 / 32 / 28 / 14 / 9 (7), 8 seats 24 / 28 / 36 / 32 / 16 / 10 (8). Sized once: an elimination returns the seat's copies as before and never shrinks the pool. A player's 自选编队 stock (§25.4, `match/player/diy.js`: 8 at tier 5, 5 at tier 6 per slot) is that player's own and never enters the shared pool, so the seat count does not size it (until 2026-10-08 the same held for the retired 外援 entries of §F3).
+Copies per chess = ceil(official co-op copies × n / 4), n = the match's seats (humans + bots) at the match start — every tier and the measured per-operator overrides. Since upstream 0.2.4 the official co-op pool is the single-player count × `coopPoolMultiplier` 2 (DESIGN §29.8): 24 / 28 / 36 / 32 / 16 / 10 for tiers I–VI at 1–4 seats, so 5 seats 30 / 35 / 45 / 40 / 20 / 13, 6 seats 36 / 42 / 54 / 48 / 24 / 15, 7 seats 42 / 49 / 63 / 56 / 28 / 18, 8 seats 48 / 56 / 72 / 64 / 32 / 20 (an override scales the same way). The shop-equipment stock of 0.2.4 scales alike (§F8). Sized once: an elimination returns the seat's copies as before and never shrinks the pool. A player's 自选编队 stock (§25.4, `match/player/diy.js`: 8 at tier 5, 5 at tier 6 per slot) is that player's own and never enters the shared pool, so the seat count does not size it (until 2026-10-08 the same held for the retired 外援 entries of §F3).
 
 ### F1.3 Drafts — `Match.bandTurnSeconds`, `gamedata.js bandTurnSeconds / spTurnSeconds`, `choices.js spDraftCardCount / bountyDraftCards / shopDraftCards`, `shared/protocol.js SP_CARDS_MAX`
 
-- Strategy draft: a match of more than 4 seats has `largeRoom.bandTurn` = **20 s** turns (`BAND_TURN_SECONDS` 30 otherwise — 8 × 30 s would take 4 minutes); `draft.turnSeconds` shows it.
+- Strategy draft: a match of more than 4 seats has `largeRoom.bandTurn` = **20 s** turns (`BAND_TURN_SECONDS` 30 otherwise — 8 × 30 s would take 4 minutes); `draft.turnSeconds` shows it. Upstream 0.2.3 made `BAND_TURN_SECONDS` 50 (its owner's official-play report of 2026-10-10); this fork keeps 30 for 1–4 players and 20 above (§F7, `server/match/match/common.js`, `tools/build-data.mjs timers.bandTurn`).
 - 机变: co-op card count = max(the round's cards (6), alive + 2), alive = the players alive at the draft start — 6 for 1–4 (official), 7 / 8 / 9 / 10 for 5–8, so the last picker still chooses from 3; the former hard `Math.min(…, 6)` cap is gone. Structured drafts fill the extra cards: a 悬赏决策 tops its official structure up with other eligible bounty cards of the same kind, a 机密商店 draws its slot pattern again from the start (VI, VI, V, 盟约之币 …), 战术决策 / 道具补给 draw every card on its own anyway. `g.choice` takes `idx` < `SP_CARDS_MAX` (10). A later pick lasts `largeRoom.spTurn` = **12 s** when more than 4 are alive at the draft start (`spFirst` 30 s unchanged, `spTurn` 16 s for 1–4); `m.public.sp.turnSeconds` (5–8 only) is the current turn's length.
 
 ### F1.4 联防 with more than 4 alive players — `server/match/unite.js` (`uniteFieldBudget`, `uniteHelperGroups`, `assignLeakers`, `uniteFieldId`, `uniteGroups / uniteGroupOf`, `uniteBills / uniteResultFor`), `Match` (UNITE: `_uniteHomeField`, `settle(plan, results)`, `_watchClient`), `audit.js`, `sim/spec.js fitResult`, `battle/observe.js` (`multiUnite`, `uniteFields`, `uniteHomeField`, `uniteLocalFor`, `uniteSwitchFields`, `backTarget`), `ui/gameLogic.js fieldLabel`, `ui/combatHud.js UniteFieldSwitch`, `ui/teamPanel.js`, `screens/replay.js replayBattleLabel`
@@ -70,7 +70,7 @@ Copies per chess = ceil(official × n / 4), n = the match's seats (humans + bots
 ### F1.7 Tests and docs
 
 - Soak: `test/match/fullmatch-coop-5seats.test.js` (1 human on AI 托管 + 4 AI, NORMAL) and `test/match/fullmatch-coop-8seats.test.js` (2 humans + 6 AI, HARD — a timed match), `min(MATCH_SEEDS, 6)` seeds each so the full suite grows little, two files so `node --test` runs them in parallel: the real simulation with client combat to RESULT with zero errors (`fullmatchRun.js`), and each phase's view checked against this section (`fullmatchLarge.js`: pool copies, the 20 s draft turn, max(6, alive + 2) 机变 cards, the 联防 helpers / fields / leaker split / `unite.fields`, boss pairs and pools, a result row per seat and — above 4 — a title for every player who spent funds). Unit tests: `test/match/largeroom.test.js` (every scaled count and timer, the 1–4 side of each rule on the same code path, the titles' second pass), `test/protocol-capacity.test.js` (capacity, seat indexes, the per-player result maps, the 10th 机变 card), `test/worker/room-capacity.test.js` (the Worker's capacity, socket limits, approved applicants, snapshots and pre-capacity rooms), `test/lobby.test.js` / `test/client-static.test.js` / `test/match/finalAssault.test.js` (the room size, the seat helpers, 5–8 pairings), `test/match/unite-large.test.js` (the 联防 planning and leaker balance, several fields server-run and client-run with one of each, a field that cannot run, an empty field, 7 leakers on one field, per-field settlement, fitResult's lean stage), `test/match/fuzz.test.js` (a block of 5–8-seat rooms with their extra field ids and 机变 indexes), `test/ui/eight-players.test.js` (seat hues, the compact panels and orders, the 10-card 机变 grid and its turn, the overtime rate, replay labels) and `test/ui/unite-fields.test.js` (the client's 联防 field helpers); in a browser (`SP_E2E=1`) `test/ui/eight-players.e2e.test.js` and `test/ui/unite-fields.e2e.test.js` at 640×360 / 844×390 / 1920×1080.
-- Docs: README, PLAYING §12 (+ §1, §3, §5, §7, §8, §9), META (§1 timers, §1.2, §1.3, §3, §4, §5, §6), DATA (`largeRoom`), DEPLOY §0, CLOUDFLARE, BALANCE (the tables are measured at 4), CHANGELOG (unreleased).
+- Docs: README, PLAYING §14 (+ §1, §3, §5, §7, §8, §9), META (§1 timers, §1.2, §1.3, §3, §4, §5, §6), DATA (`largeRoom`), DEPLOY §0, CLOUDFLARE, BALANCE (the tables are measured at 4), CHANGELOG (unreleased).
 
 ---
 
@@ -457,3 +457,63 @@ Spine, sound, 中文 / 日文 voice, 艾拉's mine; `test/backups.test.js`, `tes
 family grows from 138 to 150 battles: 12 new ones field the 7 kits (diy-135 … diy-146, all forms × modules × skills), and
 the four prototype battles that followed re-pack 6 slots later (old diy-135 … 138 → diy-146 … 150); with the 7 kits
 taken out of `OPERATOR_KIT_FILES` the whole corpus of HEAD matches.
+
+---
+
+## F7. Merge of upstream 0.2.2 / 0.2.3 — the maintainer's decisions of 2026-10-10
+
+Upstream 0.2.2 and 0.2.3 (c2a2ef7 → 1db8e51, 175 commits) are merged as they are, with the fork's features kept (5–8
+player rooms, accounts and the Cloudflare Worker with its reconnect / 继续对局 / replays, resource distribution, 匹配,
+在线人数, the collab 自选 picks). Where both sides built the same thing, the maintainer chose:
+
+| Topic | Kept | Not taken from upstream | Where |
+|---|---|---|---|
+| Strategy draft turn | 30 s (1–4 players), 20 s above 4 seats (§F1.3) | 50 s per turn | `server/match/match/common.js BAND_TURN_SECONDS`, `tools/build-data.mjs timers.bandTurn` |
+| 恢复本机对局 (local seat recovery, upstream §28.18–20) | upstream's button and token claims on the **Node server**; in **account mode** the account's 继续对局 | the button in account mode; `getTokenClaim` for RoomNet (its hello carries no `noReplace` / `claimAt`: 继续对局 may take a seat over, close 4001) | `public/js/ui/resumeMatch.js`, `public/js/net.js configureTransport`, `public/js/room-net.js` |
+| 统计 (local statistics, upstream PR #323) | upstream's page on the **Node server**; in **account mode** the server's 对局记录 / 个人统计 | the 统计 entries in account mode (title, lobby, room) | `screens/title.js` / `lobby.js` / `room.js` `localStats` |
+| Operator voice | the fork's engine (official `voiceRules`, `audio.voice.<cn|jp|en|kr>`), with upstream's every-phase 选中干员 (`gameLogic detailSelectVoice` / `cardVoiceKey`), per-operator dubs (`voicePrefs.js`, `ui/operatorVoice.js`, `AudioManager._voiceUrl`), the held early cast (`pendingSkill`) and the skill-mode banks (`attacks` / `hits`) ported onto it | `audio.voiceJp`, `voiceLine`, `VoiceGate`, `audioEarly`; the JP tree in the manifest and the zip | `public/js/audio.js`, `tools/assets/plan.mjs`, `tools/fetch-assets.mjs` |
+| Blinking eyes (#177) | the clipping masks always on, clipped skeletons through the impostor atlas's clip pages; upstream's `poseHeld` (a held pose is not redrawn) ported | the clip budget (`clipAllowed` / `pickClipping`) and `_eyeMaskFallback` | `public/js/render/spine.js`, `units.js`, `app.js` |
+| Install as an app (#413) | the fork's `ui/install.js`, `manifest.webmanifest` and icons | `pwa.js`, `manifest.json`, the refined `app*.png` / favicons, 添加到桌面 buttons, `tools/export-app-icons.py` | `public/index.html`, ASSETS.md |
+| Field unit range on its open card (fork issue #8) | upstream's `screens/game/range.js inspectRange` (its port of the fork's idea, with the live range) | the fork's `ui/facing.js unitRange` (removed) | `public/js/screens/game.js` |
+| PLAYING.md numbering | upstream's §12 反馈问题 / §13 统计（本机）; the fork's sections follow as §14 (5–8 人同盟) and §15 (快速匹配) | — | `docs/PLAYING.md` |
+
+Also: the account-synced 干员调配 preference carries upstream 0.2.2's per-operator 潜能 / 练度 (`loadout.ops`,
+`preferenceSchema.js validPreference`, hydrated by `ui/loadoutSync.js`). `data/assets.json` was merged from both
+manifests, then regenerated by a full `npm run assets`: 克莱门汀's art, model, skills, sounds and her 中文 / 日文 voice (in
+the fork's `audio.voice.<lang>` shape) are listed; the run added the skill-mode swing / impact banks (`attacks` / `hits`)
+of 5 collab picks (oblvns, makoto, marcil, ela, orchd2) and the file counts, and changed nothing else.
+
+Ported onto the fork's code rather than taken as written (no maintainer choice involved — upstream's version needs
+parts the fork does not have):
+
+- **Trait attack speed (PR #293)**: upstream's engine rule (`server/sim/content/traitMods.js`) would also apply to the
+  collab pick 丰川祥子 (`char_4182_oblvns`), whose module LOR-Y has REA-Y's very sentence — her kit already owns it, on
+  her skill-off range (PRTS). `KIT_OWNED_CHARS` refuses her by charId ('kit').
+- **骨刺's A / B switch (PR #365)**: `SpineActor.syncFormPose` on the fork's swing engine — a running swing goes on in
+  the new set's clip with its strike moment kept (slowed when the new strike frame lies further in than the time
+  left); upstream's wind-up deadline (`windUntil` / `windTs`) does not exist here, and `poseHeld` drops that test.
+- **Cloud preference migration**: `preferences.js STORED_FORM` re-saves a device loadout with its `ops`; `loadoutSync.js`
+  `setEntries` / `setOpsMap` keep the other half when storage refuses the write.
+
+---
+
+## F8. Merge of upstream 0.2.4 — the maintainer's decision of 2026-10-11
+
+Upstream 0.2.4 (1db8e51 → upstream/master, released 2026-10-11) is merged as it is, the §F7 decisions kept. Its rules
+changes reach the fork's 5–8 player rooms in two places:
+
+- **Operator pool** (DESIGN §29.8): the co-op pool doubles (`coopPoolMultiplier` 2) and its measured identity
+  overrides replace 缪尔赛思's 4. The fork's ceil(× seats / 4) applies on top of the doubled count (§F1.2), so a match of
+  1–4 seats has exactly upstream's pool.
+- **Shop-equipment stock** (DESIGN §29.8, `itemPoolCopies` 4 / 6 / 7 / 8 / 7 / 3 plus eight measured overrides; normal
+  equipment holds 1, an upgraded one 2): the maintainer chose to **scale it with the seats like the operator pool** —
+  ceil(count × n / 4) for a co-op match of 5–8 seats, n = the seats at the match start, sized once
+  (`gamedata.js itemPoolCopies(id, players)`, `pool.js SharedItemPool({ seats })`, `Match` constructor, checked by
+  `invariants.js`). 8 seats: 8 / 12 / 14 / 16 / 14 / 6 per tier, 商业包装方案 4. Without it 8 players would share the
+  stock 4 players have.
+- **Final Assault overtime** (DESIGN §29.1): the drain starts at 120 real s for an all-human team, 150 with a
+  non-departed AI teammate at fight start; the fork's × alive / 4 above 4 alive (§F1) is unchanged.
+
+The 机变 draft keeps the fork's card count (§F1.3) and passes upstream's `itemAvailable` (an exhausted equipment is not
+offered). The lobby takes upstream's top-bar tool group (设置 / 玩法说明 / 资源管理 as square buttons; the 统计 entry on
+the player chip, Node server only, §F7).

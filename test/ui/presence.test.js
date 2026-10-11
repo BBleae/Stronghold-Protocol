@@ -175,8 +175,8 @@ describe('presence readout (在线人数)', () => {
     assert.equal(listeners.visibilitychange, undefined, 'stop removes the listener');
   });
 
-  test('the readout has a style shared by both screens, with a phone floor', () => {
-    assert.match(read('public/css/components.css'), /\.presence \{[^}]*font-size: max\(\.15rem, 10px\)/, 'components.css styles .presence');
-    assert.match(read('public/css/screens/title.css'), /\.title-foot \.presence \{ font-size: max\(\.13rem, 10px\); \}/);
+  test('the readout has a style shared by both screens, with a phone floor (scaled by 文字大小, --t)', () => {
+    assert.match(read('public/css/components.css'), /\.presence \{[^}]*font-size: max\(calc\(\.15 \* var\(--t\)\), 10px\)/, 'components.css styles .presence');
+    assert.match(read('public/css/screens/title.css'), /\.title-foot \.presence \{ font-size: max\(calc\(\.13 \* var\(--t\)\), 10px\); \}/);
   });
 });
