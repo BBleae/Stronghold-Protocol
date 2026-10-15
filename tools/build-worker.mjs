@@ -65,10 +65,11 @@ export async function copyRuntimeAssets({ root = ROOT, out = path.join(root, 'di
   root = path.resolve(root);
   out = path.resolve(out);
   if (out !== path.join(root, 'dist', 'client')) throw new Error('Build output must be <root>/dist/client');
-  // Validate the actual destination before recursively removing a generated tree.
+  // Validate the actual destination before recursively removing a generated tree. Compared with the root's real path, not
+  // the given one: a root reached through a link or a Windows 8.3 short name (a CI temp dir) resolves differently too.
   try {
     const resolved = await fs.realpath(out);
-    if (resolved !== out) throw new Error('Refusing to replace a linked build output');
+    if (resolved !== path.join(await fs.realpath(root), 'dist', 'client')) throw new Error('Refusing to replace a linked build output');
     await fs.rm(out, { recursive: true, force: true });
   } catch (error) { if (error.code !== 'ENOENT') throw error; }
   await fs.mkdir(out, { recursive: true });
@@ -300,7 +301,7 @@ export async function bundleWorker({ root = ROOT, outfile = path.join(root, 'dis
     [path.join(root, 'server/sim/content/bonds.js'), { call: 'import(path)', key: 'path', imports: ['./bonds/core.js', './bonds/addon.js', './support/meta.js'] }],
   ]);
   const result = await build({
-    entryPoints: [path.join(root, entry)],
+    entryPoints: [path.resolve(root, entry)],   // resolve: path.relative to an entry on another drive is absolute
     outfile,
     bundle: true, format: 'esm', platform: 'neutral', target: 'es2022',
     external: ['node:*', 'cloudflare:*'], minify: true, keepNames: true, metafile: true,
