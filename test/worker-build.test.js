@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, access, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, access, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -47,6 +47,26 @@ test('Workers static build preserves public routes and publishes the manifest re
   assert.equal(JSON.parse(await readFile(path.join(out, 'data/local-assets.json'), 'utf8')).source, 'none');
   const partial = { ...manifest, files: manifest.files.filter((file) => file.url !== '/assets/local/x.png') };
   await assert.rejects(copyRuntimeAssets({ root, out, manifest: partial }), /local-assets\.json lists 1 files the resource manifest lacks/);
+});
+
+test('Workers static build: a root reached through a link (Windows CI: the temp dir as an 8.3 short name) builds, a linked output is refused', async t => {
+  const real = await mkdtemp(path.join(tmpdir(), 'sp-build-real-'));
+  const link = real + '-link';
+  t.after(async () => { await rm(link, { recursive: true, force: true }); await rm(real, { recursive: true, force: true }); });
+  for (const dir of ['public', 'data']) await mkdir(path.join(real, dir), { recursive: true });
+  await writeFile(path.join(real, 'public/index.html'), '<html lang="zh-CN"><body></body></html>');
+  await writeFile(path.join(real, 'data/config.json'), '{}');
+  await symlink(real, link, 'junction');
+  const { copyRuntimeAssets } = await import('../tools/build-worker.mjs');
+  // twice: the guard only looks at an existing output
+  for (let i = 0; i < 2; i++) await copyRuntimeAssets({ root: link, out: path.join(link, 'dist/client') });
+  await access(path.join(real, 'dist/client/index.html'));
+  // the guard itself still holds: dist/client being a link is never replaced
+  const elsewhere = await mkdtemp(path.join(tmpdir(), 'sp-build-elsewhere-'));
+  t.after(() => rm(elsewhere, { recursive: true, force: true }));
+  await rm(path.join(real, 'dist/client'), { recursive: true, force: true });
+  await symlink(elsewhere, path.join(real, 'dist/client'), 'junction');
+  await assert.rejects(copyRuntimeAssets({ root: link, out: path.join(link, 'dist/client') }), /linked build output/);
 });
 
 const LOCAL = { version: 1, source: 'local-client', count: 1, groups: { 'ui/battle': { x: { path: '/assets/local/x.png', w: 1, h: 1 } } } };

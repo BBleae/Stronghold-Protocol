@@ -289,7 +289,7 @@ test('a solo pause parks the server-run boss pacer without logging a timer per i
 // the server takes their fields over and queues a long catch-up while the boss clock keeps ticking (its drain waits in
 // the pacer's queue: Match._bossInOrder), and the other pair's client keeps reporting b.progress every ~250 ms (those
 // credits wait there too).
-for (const leave of [['p0', 'p1', 'p2', 'p3'], ['p0', 'p1']]) test(`the boss-round work queued behind a takeover catch-up restores identically from prefixes inside it (${leave.length} of 4 leave)`, () => {
+for (const leaving of [4, 2]) test(`the boss-round work queued behind a takeover catch-up restores identically from prefixes inside it (${leaving} of 4 leave)`, () => {
   const data = structuredClone(DATA);
   const mode = data.config.modes.mode_multi_normal;
   mode.rounds['1'] = structuredClone(mode.rounds[mode.bossRound]);
@@ -315,6 +315,8 @@ for (const leave of [['p0', 'p1', 'p2', 'p3'], ['p0', 'p1']]) test(`the boss-rou
     for (let t = 0; t < 11000; t += 33) { now += 33; m.pump(now, 100, { remaining: 1 }); }
     const overtime = m.overtimeApplied;
     assert.ok(overtime > 0, 'the drain has started');
+    // everyone, or one of the match's random pairs (upstream 0.2.5: m.bossPairs)
+    const leave = leaving === 4 ? m.order.map((p) => p.playerId) : m.bossPairs[0];
     for (const pid of leave) m.onDisconnect(pid);
     assert.equal(m.pacer.catchups.length, leave.length / 2, 'one takeover per pair that left');
     const reporters = m.fields.filter((f) => f.mode === 'client').map((f) => ({ pid: f.authority, battleId: f.battleId, startAt: f.startAt }));

@@ -208,7 +208,8 @@ export function collectViolations(m, { limit = 25 } = {}) {
   }
   for (const [base, n] of held) if (!m.pool.has(base) && n !== 0) fail(`non-pool chess ${base} holds ${n} copies`);
 
-  // Shared shop equipment. The chess pool above may go negative (Mimic). Item stock may not: held ≤ cap.
+  // Fixed operator gifts may overdraw equipment stock; ownership still counts and keeps shop availability at zero.
+  // Other item families retain their cap. The chess pool above also permits explicit overdraw (Mimic).
   if (m.itemPool && gd.raw.items) {
     for (const [id, rec] of Object.entries(gd.raw.items)) {
       if (!rec || rec.isGolden) continue;
@@ -216,7 +217,7 @@ export function collectViolations(m, { limit = 25 } = {}) {
       if (cap !== gd.itemPoolCopies(id, seats)) fail(`item ${id}: cap ${cap} != ${gd.itemPoolCopies(id, seats)} for ${seats} seats`);
       if (!Number.isInteger(cap)) continue;
       const h = m.itemPool.held(id);
-      if (h > cap) fail(`item ${id}: held ${h} > cap ${cap}`);
+      if (h > cap && !gd.isUnlimitedGiftItem(id)) fail(`item ${id}: held ${h} > cap ${cap}`);
     }
   }
 

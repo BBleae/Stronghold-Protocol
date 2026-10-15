@@ -59,6 +59,10 @@
 // reward card armed for a purchase that completes a merge lights, in gold, the board tile its elite will take (the
 // deployed copy that deploys first, gameLogic.mergeTarget — none when no copy is deployed: the elite goes to the hand);
 // the elite then appears there with the promotion cue (render/app.js setPrep → fx.promote).
+// Round start (PR #416 by @Cromemadnd; the maintainer's confirmation from official play, 2026-10-13): in 回合开始 the own
+// board's pieces replay their Start clip and landing sound one after another in deployment order, once per round and on
+// the own board only (gameLogic roundStartReplay → render/app.js replayDeploys); a purchase and a move onto or across the
+// board play it too ([ASSUMED], the PR author's account: render/app.js setPrep).
 // The bond strip, its popup and a unit card's bond chips follow the player on screen (DESIGN §20.15, ui/watchBonds.js):
 // a scouted / watched / auto-observed teammate's field → that teammate's bonds (m.public players[].bonds, tagged
 // "👁 name"); 联防 / 最终攻势 → the player on the ‹ › half (全景: yours when you fight there, else the teammate picked
@@ -105,7 +109,7 @@ import { CombatHud } from '../ui/combatHud.js';
 import { SettingsModal, settingsStore } from '../ui/settings.js';
 import { ExitModal, AwayOverlay, awayStore } from '../ui/matchChrome.js';
 import { openGuide } from '../ui/guide.js';
-import { actions } from '../ui/gameActions.js';
+import { actions, onRefreshBusy } from '../ui/gameActions.js';
 import { FacingWheel, holdPiece, setPieceDir, syncPieceDirs, showRange, useTileScreen } from '../ui/facingWheel.js';
 import { Underframe, underframeRect, TempRowNotice } from '../ui/underframe.js';
 import { StandInTags } from './game/standInTags.js';
@@ -121,6 +125,7 @@ import {
   countdownState, shopBlockReason, stageOverrides, effectiveStage, watchTarget, dropFailureReason,
   previewEnemyKey, prepCamera, prepCameraFor, foldCamera, deployFieldOf, fieldTile, panelSide, panelSlots, bondPopupPlace, unitLoadout, deployedRecord,
   mergeTarget, modeOffBonds, readyFundsPrompt, readyShopFold, ownerBandId, ownDiyRecord, ownStandIn, selectVoiceKey, detailSelectVoice, bondStripFolded,
+  roundStartReplay,
 } from '../ui/gameLogic.js';
 import { toast } from '../ui/toasts.js';
 import { BriefingScreen } from './briefing.js';
@@ -239,6 +244,10 @@ function MatchScreen() {
   // deals duplicates) carry the same chess id and no piece, and each must say its 选中干员 (detailPanel selectVoiceKey)
   const cardTap = useRef(0);
   const [collapsed, setCollapsed] = useState(false);
+  // GitHub #501: a g.refresh is still waiting for its reply — the shop's 刷新 button dims while it is (gameActions.js
+  // single-flights the intent; the R hotkey is dropped by the same guard)
+  const [refreshBusy, setRefreshBusy] = useState(false);
+  useEffect(() => onRefreshBusy(setRefreshBusy), []);
   const [rewardMin, setRewardMin] = useState(false);
   const [emoteOpen, setEmoteOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -507,6 +516,7 @@ function MatchScreen() {
     if (showPrep) {
       if (field?.prep) staleFieldRef.current = field; // a prep scouting board is never a battle to enter
       if (viewModeRef.current !== 'prep') {
+        audio.stopBondCue('battle');
         // the battle we just left (or whatever was stored before mount) must not be re-entered next combat;
         // an m.field that arrives during prep (the upcoming battle) is a new object and will be entered
         staleFieldRef.current = field;
@@ -615,6 +625,17 @@ function MatchScreen() {
     // (a field entered after its end is seeded done: its end is never drawn, and its line went when it ended)
     if (leaving && leaving.own && !leaving.watch && !leaving.done && leaving.battleId) sayResult(leaving.battleId, myId, pub?.difficulty, shownCharId);
   }, [view, showPrep, priv, editable, field, combat, mode, watchingOther, watching, holdSeq]);
+
+  // the round start (PR #416 by @Cromemadnd; the maintainer's confirmation from official play, 2026-10-13): the own board's
+  // pieces replay their Start clip and landing sound one after another in deployment order — once per round, in 回合开始, on
+  // the own board only (gameLogic roundStartReplay). After the wiring effect above, so the view already holds this state's
+  // pieces; the round counts as replayed only once the view took the sequence (a view still loading or a board not built
+  // yet is asked again on the next render of the phase), and a reconnect or a re-render of the round plays nothing more.
+  const replayedRef = useRef(null);
+  useEffect(() => {
+    const plan = roundStartReplay({ phase, round: pub?.round, replayed: replayedRef.current, ownBoard: showPrep && alive && !spectator, board: priv?.board });
+    if (plan && view && view.replayDeploys?.(plan.uids) > 0) replayedRef.current = plan.round;
+  }, [view, phase, pub?.round, priv, showPrep, alive, spectator]);
 
   // battle frames straight from the socket (server-run combat, 20 Hz) or from the local simulation (client-side combat,
   // battle/runner.js, every animation frame) — never through the store. Frames go to the view as received: the game
@@ -907,7 +928,8 @@ function MatchScreen() {
   const activeBonds = (priv?.bonds || []).filter((b) => b && b.active).length;
   const prevActive = useRef(activeBonds);
   useEffect(() => {
-    if (activeBonds > prevActive.current && phase === PHASE.PREP) audio.sfx('bondUp', { volume: 0.7 });
+    // a layer gain of the same update already started the cue (audio.bondCueRecent): keep it, don't restart it
+    if (activeBonds > prevActive.current && phase === PHASE.PREP && !audio.bondCueRecent('prep')) audio.sfx('bondUp', { volume: 0.7, scope: 'prep' });
     prevActive.current = activeBonds;
   }, [activeBonds]);
 
@@ -1172,7 +1194,7 @@ function MatchScreen() {
           if (!e.detail && e.button !== 2 && op && inBattle) {
             audio.voice(e.unit.spine || e.unit.defId, 'select', { key: selectVoiceKey(lastFieldRef.current, e.unit.id ?? e.unitId) });
           }
-          setDetail({ kind: 'unit', unit: e.unit || null, unitId: e.unitId, uid: e.uid, inBattle });
+          setDetail({ kind: 'unit', unit: e.unit || null, unitId: e.unitId, uid: e.uid, inBattle, prepMapChar: e.prepMapChar === true });
           return;
         }
         if (!Number.isInteger(e.uid)) return;
@@ -1582,7 +1604,7 @@ function MatchScreen() {
     return priv?.loadout ?? null; // own pieces, shop / reward / bond-member cards
   })();
   // the open detail card's unit draws its attack range on the field (screens/game/range.js inspectRange, GitHub PR #281):
-  // an own board piece in prep (its loadout / stand-in record, its facing); in battle or on a scouted board an ally
+  // an own board piece or read-only prepared map character in prep; in battle or on a scouted board an ally
   // operator / summon on the field — the range it fights with now (the live stats' `range` and `dir`, the snapshot's
   // tile) — never an enemy, a dead unit or a bench unit (UnitInfo `area` hand / temp); drag, the wheel and the pen
   // draw their own
@@ -1652,7 +1674,7 @@ function MatchScreen() {
         ${spectator ? null : html`<${Button} size="sm" variant="primary" icon="back" onClick=${() => watchPlayer({ playerId: myId })}>${t('返回自己')}<//>`}
       </div>` : null}
 
-      ${showShop ? html`<${ShopBar} priv=${priv} editable=${editable} collapsed=${collapsed} onCollapse=${setCollapsed}
+      ${showShop ? html`<${ShopBar} priv=${priv} editable=${editable} collapsed=${collapsed} refreshBusy=${refreshBusy} onCollapse=${setCollapsed}
         barRef=${barRef} offBonds=${offBonds}
         onBuy=${buy} onLevel=${() => actions.levelUp()} onRefresh=${() => actions.refresh()} onFreeze=${() => actions.freeze()}
         onDetail=${(id, kind, hint) => setDetail({ kind: kind === 'item' ? 'item' : 'chess', id, hint: hint || null, tap: ++cardTap.current })}

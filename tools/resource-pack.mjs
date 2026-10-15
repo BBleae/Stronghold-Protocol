@@ -16,6 +16,8 @@ const RESOURCE_TYPES = Object.freeze({
   mp3: 'audio/mpeg', ogg: 'audio/ogg', wav: 'audio/wav', m4a: 'audio/mp4', mp4: 'video/mp4',
   woff: 'font/woff', woff2: 'font/woff2', ttf: 'font/ttf', otf: 'font/otf', css: 'text/css; charset=utf-8',
   atlas: 'text/plain; charset=utf-8', obj: 'text/plain; charset=utf-8', json: 'application/json', skel: 'application/octet-stream',
+  // the official battlefield scenes of upstream 0.2.5 (tools/local-extract/scenes.py: public/assets/local/scene/<stage>/scene.bin)
+  bin: 'application/octet-stream',
 });
 
 function resourceType(url) {

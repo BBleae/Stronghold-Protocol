@@ -19,9 +19,11 @@ export const TEXT_SIZES = Object.freeze(['sm', 'md', 'lg', 'xl']);
  * voice: the operator voice volume and voiceLang: the language the operators speak (js/audio.js VOICE_LANGS) or 'off' —
  * together the one 干员语音 setting; voiceOverrides: per-operator dubs (settings 此干员语音, ../../voicePrefs.js). keys: the
  * in-match shortcuts' key map (ui/gameLogic/shortcuts.js; settings → 快捷键). textSize: TEXT_SIZES (css/theme.css `--t`,
- * applied by ui/settings.js applyTextSize).
+ * applied by ui/settings.js applyTextSize). ammoCount: 设置「弹药数量」 — the rounds left / the magazine under an ammo
+ * skill's bar (render/units.js; PR #552), off by default: the official HUD has no such number (the maintainer's decision
+ * of 2026-10-13).
  */
-export const DEFAULT_SETTINGS = Object.freeze({ bgm: 0.6, sfx: 0.8, voice: 0.8, voiceLang: 'cn', voiceOverrides: Object.freeze({}), muted: false, damageNumbers: true, quality: 'high', textSize: 'sm', keys: DEFAULT_HOTKEYS });
+export const DEFAULT_SETTINGS = Object.freeze({ bgm: 0.6, sfx: 0.8, voice: 0.8, voiceLang: 'cn', voiceOverrides: Object.freeze({}), muted: false, damageNumbers: true, officialDamageNumbers: false, ammoCount: false, quality: 'high', textSize: 'sm', keys: DEFAULT_HOTKEYS });
 const QUALITIES = ['high', 'medium', 'low'];
 /**
  * The quality of a player who never chose one: 中 on a phone (phone audit P6 — 高 renders two full-screen WebGL canvases
@@ -37,8 +39,8 @@ const VOICE_LANG_KEYS = [...VOICE_LANGS, 'off'];
  * @param {any} raw
  * @param {'high'|'medium'|'low'} [fallbackQuality] the quality when none (or an unknown one) was saved: defaultQuality(phone)
  * @returns {{ bgm: number, sfx: number, voice: number, voiceLang: 'cn'|'jp'|'en'|'kr'|'off', voiceOverrides: Record<string, string>,
- *   muted: boolean, damageNumbers: boolean, quality: 'high'|'medium'|'low', textSize: 'sm'|'md'|'lg'|'xl',
- *   keys: Record<'refresh'|'freeze'|'levelUp'|'retreat'|'sell'|'ready', string> }}
+ *   muted: boolean, damageNumbers: boolean, officialDamageNumbers: boolean, ammoCount: boolean, quality: 'high'|'medium'|'low',
+ *   textSize: 'sm'|'md'|'lg'|'xl', keys: Record<'refresh'|'freeze'|'levelUp'|'retreat'|'sell'|'ready', string> }}
  */
 export function sanitizeSettings(raw, fallbackQuality = DEFAULT_SETTINGS.quality) {
   const r = isObj(raw) ? raw : {};
@@ -51,6 +53,8 @@ export function sanitizeSettings(raw, fallbackQuality = DEFAULT_SETTINGS.quality
     voiceOverrides: sanitizeVoiceOverrides(r.voiceOverrides),
     muted: typeof r.muted === 'boolean' ? r.muted : DEFAULT_SETTINGS.muted,
     damageNumbers: typeof r.damageNumbers === 'boolean' ? r.damageNumbers : DEFAULT_SETTINGS.damageNumbers,
+    officialDamageNumbers: typeof r.officialDamageNumbers === 'boolean' ? r.officialDamageNumbers : false,
+    ammoCount: typeof r.ammoCount === 'boolean' ? r.ammoCount : DEFAULT_SETTINGS.ammoCount,
     quality: QUALITIES.includes(r.quality) ? r.quality : fallbackQuality,
     textSize: TEXT_SIZES.includes(r.textSize) ? r.textSize : DEFAULT_SETTINGS.textSize,
     keys: sanitizeHotkeys(r.keys),

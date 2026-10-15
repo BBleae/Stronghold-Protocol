@@ -55,8 +55,10 @@ test('a boss round\'s scouting board is the pair\'s boss field: both halves mapp
   const h = makeMatch({ mode: 'coop', difficulty: 'NORMAL', humans: 2, seed: 52, fake: true }).start();
   const m = h.m;
   h.drive(() => m.phase === PHASE.PREP && m.round === m.gd.bossRound);
-  const p0 = h.ps('p_0');
-  const p1 = h.ps('p_1');
+  // the match's random pair (upstream 0.2.5): L on the left half, R on the right
+  const [L, R] = m.bossPairs[0];
+  const p0 = h.ps(L);
+  const p1 = h.ps(R);
   reset(p0);
   reset(p1);
   const [a, b] = plain();
@@ -69,17 +71,17 @@ test('a boss round\'s scouting board is the pair\'s boss field: both halves mapp
   const bench = p1.newPiece('chess', a);
   p1.hand[1] = bench;
 
-  assert.deepEqual(m.handle('p_0', { t: 'g.watch', fieldId: 'n:p_1' }), { ok: true });
-  const meta = wire(h.lastTo('p_0', 'm.field'));
+  assert.deepEqual(m.handle(L, { t: 'g.watch', fieldId: `n:${R}` }), { ok: true });
+  const meta = wire(h.lastTo(L, 'm.field'));
   assert.equal(meta.kind, 'boss');
   assert.equal(meta.prep, true);
   assert.deepEqual(meta.rect, GEO.BOSS_RECT);
-  assert.deepEqual(meta.players, ['p_0', 'p_1']);
-  assert.deepEqual(meta.sides, { p_0: 'L', p_1: 'R' });
+  assert.deepEqual(meta.players, [L, R]);
+  assert.deepEqual(meta.sides, { [L]: 'L', [R]: 'R' });
   const by = new Map(meta.units.map((u) => [u.uid, u]));
   // finalAssault.js bossFieldPlacement: rows ≥ 7 shift −7; the right half mirrored col c → 20 − c, RIGHT ↔ LEFT
-  assert.deepEqual([by.get(left.uid).y, by.get(left.uid).x, by.get(left.uid).dir, by.get(left.uid).ownerId], [4, 4, 'RIGHT', 'p_0']);
-  assert.deepEqual([by.get(right.uid).y, by.get(right.uid).x, by.get(right.uid).dir, by.get(right.uid).ownerId], [3, 17, 'LEFT', 'p_1']);
+  assert.deepEqual([by.get(left.uid).y, by.get(left.uid).x, by.get(left.uid).dir, by.get(left.uid).ownerId], [4, 4, 'RIGHT', L]);
+  assert.deepEqual([by.get(right.uid).y, by.get(right.uid).x, by.get(right.uid).dir, by.get(right.uid).ownerId], [3, 17, 'LEFT', R]);
   assert.deepEqual([by.get(bench.uid).area, by.get(bench.uid).y, by.get(bench.uid).x], ['hand', 0, 19]);
 
   const leaders = meta.nextEnemies.filter((e) => e.boss);
@@ -90,12 +92,12 @@ test('a boss round\'s scouting board is the pair\'s boss field: both halves mapp
   assert.ok(meta.nextEnemies.filter((e) => !e.boss).every((e) => !('start' in e)), 'only the leader carries a tile');
 
   // a change on the other half is a change of this view too (Match._prepScoutSig covers the group)
-  const before = h.allTo('p_0', 'm.field').length;
+  const before = h.allTo(L, 'm.field').length;
   const [tr, tc] = legalTileFor(m, p0, a, new Set(['11,4']));
-  assert.deepEqual(m.handle('p_0', { t: 'g.move', uid: left.uid, to: { area: 'board', row: tr, col: tc }, dir: 'RIGHT' }), { ok: true });
-  const views = h.allTo('p_0', 'm.field');
-  assert.equal(views.length, before + 1, 'one new view of n:p_1');
+  assert.deepEqual(m.handle(L, { t: 'g.move', uid: left.uid, to: { area: 'board', row: tr, col: tc }, dir: 'RIGHT' }), { ok: true });
+  const views = h.allTo(L, 'm.field');
+  assert.equal(views.length, before + 1, `one new view of n:${R}`);
   const moved = wire(views.at(-1)).units.find((u) => u.uid === left.uid);
-  assert.equal(views.at(-1).fieldId, 'n:p_1');
+  assert.equal(views.at(-1).fieldId, `n:${R}`);
   assert.deepEqual([moved.y, moved.x], [tr - 7, tc], 'the left half\'s piece where it moved');
 });

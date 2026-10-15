@@ -64,13 +64,13 @@ After the measured shared-stock update (DESIGN §29.8), the original stand-in / 
 ## This fork
 
 The digests in this directory are the fork's own (BBleae/Stronghold-Protocol), regenerated after merging upstream
-0.2.4 (2026-10-11, upstream 0.2.2 / 0.2.3 included). They differ from upstream's files in two ways, and in no other:
+0.2.6 (2026-10-15, upstream 0.2.2 – 0.2.5 included). They differ from upstream's files in two ways, and in no other:
 
 - **Client effect counts** (`events.fx` and the `fx` kinds) of 31 scenarios (roster 13, bonds 5, fields 13): the fork's
   sim sends extra cosmetic effect events and parameters (fork commit 6d5c094, PR #5 — `snowTiles`, `motes`, the
   同盟支援 `link`, `shell` → `helmShell`, `beam` → `sentryRecall`). Every gameplay field of the roster, bonds and
   fields families (units, enemies, players, hooks, `rngDraws`, `snaps`) equals upstream's, and the `matches` and
-  `standins` families equal upstream's entirely (checked on 2026-10-11 against upstream 0.2.4). The fork's 外援 /
+  `standins` families equal upstream's entirely (checked on 2026-10-15 against upstream 0.2.6). The fork's 外援 /
   甄选 picks, which moved 15 of the matches until then (DESIGN §F3), were retired in favour of upstream's 自选编队; the
   bots bring no 自选 picks, as upstream's.
 - **The `diy` family's tail**: the fork's 7 collab 自选 picks (DESIGN §F6 — e.g. ash, yato2) join the owned pool after
