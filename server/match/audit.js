@@ -34,8 +34,8 @@
 //   settle        no unite ⇒ loss = min(cap, counted leaks); after 联防 a leaker loses ≤ cap (its leaked enemies'
 //                 offspring count too; billed from its own field — one whose battle could not run: exactly its own
 //                 leaks), everybody else ≤ min(cap, own counted leaks); LP ≤ 0 ⇔ eliminated
-//   final assault fields pair alive players by seat, team LP = Σ alive LP, boss pool = bossPoolHp() (per player alive,
-//                 above 4 alive too), the overtime factor's alive count; hidden core only after a win when
+//   final assault fields follow the saved per-match pairs, team LP = Σ alive LP, boss pool = bossPoolHp() (per player
+//                 alive, above 4 alive too), the overtime factor's alive count; hidden core only after a win when
 //                 hiddenEligible() holds (threshold × players / 4 above 4 summed players)
 //   result        each title ≤ once (above 4 players: the one-each pass's titles kept, a repeat only for a player that
 //                 pass left without one), ≤ 1 title per player, onlyOnWin titles only on a win, roundsPassed per
@@ -51,7 +51,7 @@
 import { PHASE } from '../../shared/constants.js';
 import { collectViolations } from './invariants.js';
 import { mergeTile, pieceDir, canPlace, placeClass } from './board.js';
-import { pairPlayers, bossPoolHp, hiddenEligible } from './finalAssault.js';
+import { bossPoolHp, hiddenEligible } from './finalAssault.js';
 import { helperOrder, uniteHelperGroups, uniteFieldBudget, uniteFieldCount, uniteFieldId, uniteGroups, uniteFieldResults } from './unite.js';
 import { BAND_TURN_SECONDS } from './Match.js';
 import { spDraftCardCount } from './choices.js';
@@ -506,15 +506,23 @@ export function attachAudit(m, { invariants = true, limit = 200 } = {}) {
   });
   wrap(m, 'startFinalAssault', function (orig, hidden) {
     const alive = m.alivePlayers();
+    const before = m.bossPairs?.map(g => g.slice()) ?? null;
     const lpSum = alive.reduce((s, p) => s + Math.max(0, p.lp), 0);
     const teamLp0 = m.teamLp;
     const res = orig(hidden);
     runInvariants();
     check('final assault', () => {
       if (!alive.length) return;
-      const groups = pairPlayers(alive).map((g) => g.map((p) => p.playerId).join(','));
+      const pairs = m.bossPairs || [];
+      const memberIds = pairs.flat();
+      if (pairs.length !== Math.ceil(alive.length / 2) || pairs.some(g => g.length < 1 || g.length > 2)
+        || new Set(memberIds).size !== memberIds.length
+        || JSON.stringify([...memberIds].sort()) !== JSON.stringify(alive.map(p => p.playerId).sort())) fail('boss pairing does not cover every alive player once');
+      if (before && before.flat().every(id => alive.some(p => p.playerId === id)) && before.flat().length === alive.length
+        && JSON.stringify(before) !== JSON.stringify(pairs)) fail('boss pairing changed after preparation');
+      const groups = pairs.map(g => g.join(','));
       const fields = m.fields.map((f) => f.players.join(','));
-      if (JSON.stringify(groups) !== JSON.stringify(fields)) fail(`boss fields ${fields.join(' | ')} != seat pairs ${groups.join(' | ')}`);
+      if (JSON.stringify(groups) !== JSON.stringify(fields)) fail(`boss fields ${fields.join(' | ')} != saved pairs ${groups.join(' | ')}`);
       m.fields.forEach((f, i) => { if (f.fieldId !== `b${i + 1}`) fail(`boss field id ${f.fieldId}`); });
       if (!hidden && m.teamLp !== lpSum) fail(`team LP ${m.teamLp} != Σ alive LP ${lpSum}`);
       if (hidden && m.teamLp !== teamLp0) fail(`hidden core changed team LP ${teamLp0} → ${m.teamLp}`);

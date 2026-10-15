@@ -3,12 +3,13 @@
 //
 //   * Merged LP: teamLp = Σ LP of the alive players at the start of the Final Assault (no cap); the Hidden Core
 //     continues with what is left.
-//   * Pairing: alive players by seat → (1,2), (3,4), … (7,8); an odd player is alone on its own field with the `_s`
-//     template (solo modes always use `_s`). Field ids 'b1', 'b2', … 'b4'. In a pair the first player is the LEFT
-//     side, the second the RIGHT side (the sim mirrors the right side: board col c → field col 20 − c with the piece
-//     direction RIGHT ↔ LEFT, UP / DOWN unchanged (DESIGN §3, research 09 §1.2 ConvertChessPositionInfoToBossMap);
-//     board rows 9–12 → boss rows 2–5, sim/constants BOSS_ROW_OFFSET). `bossFieldPlacement` gives that mapping for UIs
-//     / tools.
+//   * Pairing: shuffled once per match before Final Assault prep; Hidden Core keeps those pairs. If players leave,
+//     intact pairs stay together and the remaining single players pair up. An odd player uses the `_s` template
+//     (solo modes always use `_s`). Field ids 'b1', 'b2', … 'b4' (a co-op match of 5–8 players has up to 4 pairs, DESIGN
+//     §F1). In a pair the first player is the LEFT side, the second the
+//     RIGHT side (the sim mirrors the right side: board col c → field col 20 − c with the piece direction RIGHT ↔
+//     LEFT, UP / DOWN unchanged (DESIGN §3, research 09 §1.2 ConvertChessPositionInfoToBossMap); board rows 9–12 →
+//     boss rows 2–5, sim/constants BOSS_ROW_OFFSET). `bossFieldPlacement` gives that mapping for UIs / tools.
 //   * Shared boss HP pool (DESIGN §20.10, §25.13.4, gamedata.js bossPoolShareOf): one pool shared by every boss field
 //     (official tip "所有人将一起对敌方领袖造成伤害"; notice 5114's "敌方领袖的总生命值不变" is about the mirrored copies of
 //     a pair field sharing it) = bloodPoint[difficulty] × the players alive when the fight starts (bots and AI 托管 seats
@@ -61,11 +62,23 @@ export function bossFieldPlacement(side, row, col, dir = 'RIGHT') {
   return side === 'R' ? { row: r, col: COLS - 1 - col, dir: mirrorDir(d) } : { row: r, col, dir: d };
 }
 
-/** Pair alive players by seat: [[a, b], [c, d]] / [[a, b], [c]] / [[a]] … up to 4 pairs for 8 players. */
-export function pairPlayers(alive) {
+/** Seeded initial pairing (up to 4 pairs for 8 players); `previous` carries player-id pairs through prep, combat and
+ *  Hidden Core. */
+export function pairPlayers(alive, rng, previous = null) {
   const sorted = alive.slice().sort((a, b) => a.seat - b.seat);
   const groups = [];
-  for (let i = 0; i < sorted.length; i += 2) groups.push(sorted.slice(i, i + 2));
+  let singles;
+  if (Array.isArray(previous)) {
+    const remaining = new Map(sorted.map(p => [p.playerId, p]));
+    singles = [];
+    for (const ids of previous) {
+      const group = [];
+      for (const id of ids) if (remaining.has(id)) { group.push(remaining.get(id)); remaining.delete(id); }
+      if (group.length === 2) groups.push(group); else singles.push(...group);
+    }
+    singles.push(...remaining.values());
+  } else singles = sorted.length > 1 ? rng.shuffle(sorted) : sorted;
+  for (let i = 0; i < singles.length; i += 2) groups.push(singles.slice(i, i + 2));
   return groups;
 }
 

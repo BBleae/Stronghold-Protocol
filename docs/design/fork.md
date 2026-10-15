@@ -1,7 +1,7 @@
-# DESIGN §F1, §F2, §F3, §F4, §F5, §F6, §F7, §F8 — This fork's own sections (BBleae/Stronghold-Protocol)
+# DESIGN §F1, §F2, §F3, §F4, §F5, §F6, §F7, §F8, §F9 — This fork's own sections (BBleae/Stronghold-Protocol)
 
 Part of [DESIGN.md](../DESIGN.md) (the index). Upstream's section numbers are global and stay as upstream gives them;
-this fork's own sections have fork ids, §F1 … §F8, so they never take a number upstream gives a later release. Code,
+this fork's own sections have fork ids, §F1 … §F9, so they never take a number upstream gives a later release. Code,
 tests and the other documents cite them as "DESIGN §F1.4" and so on.
 
 **Ids before 2026-10-08.** Until the merge of upstream 0.2.1 the fork numbered these sections inside the global sequence
@@ -47,7 +47,9 @@ Copies per chess = ceil(official co-op copies × n / 4), n = the match's seats (
 
 ### F1.5 Final Assault and Hidden Core — `finalAssault.js`, `gamedata.js bossPoolShare / bossOvertimeDrainFor / bossOvertimeDue / hiddenThreshold`, `Match.startFinalAssault / _applyOvertime` (`bossAlive`, `hiddenLayerPlayers`)
 
-- Pairing unchanged: seat pairs `b1` … `b4` (5–8 players: 3–4 fields), an odd last player alone on the `_s` template.
+- Pairing as for 1–4 players: upstream 0.2.5's random pairs, drawn once per match before the Final Assault prep and kept
+  for the Hidden Core (DESIGN §30) — `b1` … `b4` (5–8 players: 3–4 fields), an odd player alone on the `_s` template
+  (§F9).
 - Leader pool = bloodPoint per player alive, 1 to 8. Upstream 0.2.0 (PR #209, §25.13.4) made the pool bloodPoint × the
   players alive at the start of that boss phase, counting at most `bossHpScale.aliveFull` (4); above 4 alive this
   section's factor max(1, alive / 4) multiplies on top, so 4 × alive / 4 = alive and the pool keeps growing linearly
@@ -517,3 +519,30 @@ changes reach the fork's 5–8 player rooms in two places:
 The 机变 draft keeps the fork's card count (§F1.3) and passes upstream's `itemAvailable` (an exhausted equipment is not
 offered). The lobby takes upstream's top-bar tool group (设置 / 玩法说明 / 资源管理 as square buttons; the 统计 entry on
 the player chip, Node server only, §F7).
+
+---
+
+## F9. Merge of upstream 0.2.5 / 0.2.6 (2026-10-15)
+
+Upstream 0.2.5 and 0.2.6 (bc50cac → 488db49, 135 commits) are merged as they are, the §F7 / §F8 decisions kept. No
+maintainer choice was needed; where upstream's change meets a fork feature:
+
+- **Boss pairing** (DESIGN §30): the random pairs, drawn once per match before the Final Assault prep and kept for the
+  Hidden Core, apply to 5–8 players as to 1–4 (`pairPlayers` was never seat-bound beyond pairs of two): up to 4 pairs
+  `b1` … `b4`, an odd player alone on `_s`; after eliminations intact pairs stay together (§F1.5). The client reads
+  `m.public.bossPairs`, the seat pairs remaining the fallback for an older server.
+- **Attack clips** (#506): upstream's fix of its own swing engine (an operator looping one swing too many) is not taken —
+  the fork's engine (§F7) already plays one clip per attack. Its test of attacks seen late keeps the assertions that hold
+  on this engine; an attack within the running swing's strike tolerance is that swing (`spine.js attack()`).
+- **Impostor boxes** (#542): upstream's clip bounds (`spine.js clipBounds / stepClipBounds`, `units.js _impBox`) size the
+  impostor slot, with the fork's clip pages for clipped skeletons (`slot.clip`, eye masks always on). Upstream's
+  `_eyeMaskFallback` stays out (§F7).
+- **Sound**: no BGM download while the music is silent, the prep landing sounds (`deployCue`, PR #416) and the bond-layer
+  cues (`layerGain`) are ported onto the fork's voice engine; a late field's early buffer still goes through
+  `audio.replayEarly` (upstream's `audioEarly` filter is not taken, §F7), which plays no layer cue.
+- **Content-hashed asset URLs, brotli, WebSocket compression** (0.2.6 host bandwidth): Node server only. The Cloudflare
+  Worker serves the plain manifests and its static assets as before; the client accepts both URL forms (`media.js`).
+- **Title footer**: upstream's 项目仓库 link joins the fork's presence readout and version (`title-foot__right`); it opens
+  the upstream repository, like 问题反馈's `ISSUES_URL`.
+- **Korean**: 对局记录 is 전적 (upstream's correction, PR #490) instead of the fork's 플레이 기록.
+

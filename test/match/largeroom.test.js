@@ -157,7 +157,7 @@ test('overtime drain: 1 LP per real second for 1–4 alive at the boss phase sta
 });
 
 for (const n of [5, 8]) {
-  test(`Final Assault with ${n} players: ${Math.ceil(n / 2)} boss fields (seat pairs, a lone last player on _s), pool × ${n}, overtime × ${n}/4 → defeat`, () => {
+  test(`Final Assault with ${n} players: ${Math.ceil(n / 2)} boss fields (the match's random pairs, a lone player on _s), pool × ${n}, overtime × ${n}/4 → defeat`, () => {
     const h = makeMatch({ mode: 'coop', difficulty: 'FUNNY', humans: n, seed: 60 + n, fake: true, instant: false, script: (b) => (b.kind === 'boss' ? { bossDps: 1 } : {}) }).start();
     const m = h.m;
     const audit = attachAudit(m);
@@ -168,7 +168,10 @@ for (const n of [5, 8]) {
     assert.equal(m.bossAlive, n);
     const fields = bossFields();
     assert.deepEqual(fields.map((f) => f.fieldId), Array.from({ length: Math.ceil(n / 2) }, (_, i) => `b${i + 1}`));
-    assert.deepEqual(m.fields.map((f) => f.players), Array.from({ length: Math.ceil(n / 2) }, (_, i) => [`p_${2 * i}`, `p_${2 * i + 1}`].filter((id) => m.players.has(id))));
+    // the pairs saved at the prep (upstream 0.2.5, DESIGN §F1.5): everyone once, pairs and (odd n) one lone player
+    assert.deepEqual(m.fields.map((f) => f.players), m.bossPairs);
+    assert.deepEqual(m.bossPairs.flat().sort(), [...m.players.keys()].sort());
+    assert.deepEqual(m.bossPairs.map((g) => g.length).sort(), [...Array(n >> 1).fill(2), ...(n % 2 ? [1] : [])].sort());
     for (const f of fields) assert.equal(/_s$/.test(f.opts.waveId), f.opts.players.length === 1, `${f.fieldId}: ${f.opts.waveId}`);
     const bp = m.gd.boss(m.bossId).bloodPoint.FUNNY;
     assert.equal(m.bossPool.maxHp, bp * n, 'leader pool: bloodPoint per player alive, also past 4');
