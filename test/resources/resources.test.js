@@ -99,21 +99,25 @@ test('manifest build is deterministic, lists every art, audio and font file (the
   // the local client extraction and files data/assets.json does not reference are resources too
   await mkdir(join(root, 'public/assets/local/spine'), { recursive: true });
   await writeFile(join(root, 'public/assets/local/spine/x.png'), 'local');
+  // an official battlefield scene (upstream 0.2.5, tools/local-extract/scenes.py): its packed chunks are a .bin
+  await mkdir(join(root, 'public/assets/local/scene/s1'), { recursive: true });
+  await writeFile(join(root, 'public/assets/local/scene/s1/scene.bin'), 'scene');
   await writeFile(join(root, 'public/assets/audio/stale.mp3'), 'stale');
   await mkdir(join(root, 'data'), { recursive: true });
   await writeFile(join(root, 'data/assets.json'), JSON.stringify({ audio: { bgm: { a: '/assets/audio/a.mp3' } } }));
   const first = await buildResourceManifest({ root });
   const second = await buildResourceManifest({ root, output: false });
   assert.deepEqual(first, second);
-  assert.deepEqual(first.files.map(f => f.url), ['/assets/audio/a.mp3', '/assets/audio/stale.mp3', '/assets/local/spine/x.png', '/fonts/a.woff2']);
-  assert.equal(first.totalBytes, 17);
+  assert.deepEqual(first.files.map(f => f.url), ['/assets/audio/a.mp3', '/assets/audio/stale.mp3', '/assets/local/scene/s1/scene.bin', '/assets/local/spine/x.png', '/fonts/a.woff2']);
+  assert.equal(first.totalBytes, 22);
+  assert.equal(first.files.find(f => f.url.endsWith('.bin')).type, 'application/octet-stream');
   assert.equal(first.files[0].sha256, 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
   assert.equal(first.files[0].type, 'audio/mpeg');
   assert.deepEqual(JSON.parse(await readFile(join(root, 'public/resource-manifest.json'), 'utf8')), first);
   const result = await writeResourcePack({ root, manifest: first });
   assert.equal(result.path, join(root, '.cache', `stronghold-resources-${first.version.slice(0, 12)}.zip`), 'the name the Workers build reuses');
   const packed = unzipSync(await readFile(result.path));
-  assert.deepEqual(Object.keys(packed).sort(), ['assets/audio/a.mp3', 'assets/audio/stale.mp3', 'assets/local/spine/x.png', 'fonts/a.woff2']);
+  assert.deepEqual(Object.keys(packed).sort(), ['assets/audio/a.mp3', 'assets/audio/stale.mp3', 'assets/local/scene/s1/scene.bin', 'assets/local/spine/x.png', 'fonts/a.woff2']);
   assert.equal(new TextDecoder().decode(packed['assets/audio/a.mp3']), 'abc');
   const store = storeOf(first);
   await importResourceZip(new Blob([await readFile(result.path)]), store, { zipjs });
