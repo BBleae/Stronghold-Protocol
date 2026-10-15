@@ -525,6 +525,10 @@ test('the service worker maps same-origin GETs of resource files, and /media/ au
   assert.equal(await media('/media/bgm/a'), 'mp3', 'extension order of shared/media.js: mp3 first');
   assert.equal(await media('/media/bgm/b'), 'ogg');
   assert.equal(await media('/media/bgm/none'), undefined);
+  // the Node server's content-hashed URLs (upstream 0.2.6, shared/assetPaths.js) name the same cached files
+  assert.deepEqual(keys(`${ORIGIN}/assets/~0123456789abcdef/char/a.png`), ['/assets/char/a.png']);
+  assert.deepEqual(keys(`${ORIGIN}/fonts/~0123456789abcdef/fonts.css`), ['/fonts/fonts.css']);
+  assert.equal(await media('/media/~0123456789abcdef/bgm/a'), 'mp3');
 });
 
 test('the service worker answers cached files without any manifest, and everything else from the network', async t => {

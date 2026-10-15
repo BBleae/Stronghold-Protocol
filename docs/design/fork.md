@@ -540,8 +540,14 @@ maintainer choice was needed; where upstream's change meets a fork feature:
 - **Sound**: no BGM download while the music is silent, the prep landing sounds (`deployCue`, PR #416) and the bond-layer
   cues (`layerGain`) are ported onto the fork's voice engine; a late field's early buffer still goes through
   `audio.replayEarly` (upstream's `audioEarly` filter is not taken, §F7), which plays no layer cue.
-- **Content-hashed asset URLs, brotli, WebSocket compression** (0.2.6 host bandwidth): Node server only. The Cloudflare
-  Worker serves the plain manifests and its static assets as before; the client accepts both URL forms (`media.js`).
+- **Content-hashed asset URLs, brotli** (0.2.6 host bandwidth): Node server only. The Cloudflare Worker serves the plain
+  manifests and its static assets as before; the client accepts both URL forms (`media.js`), and so does the fork's
+  resource service worker (`js/resources/service.js` strips the hash segment: the resource cache keeps a file under its
+  plain path, so an imported resource pack also answers a Node server's hashed URLs).
+- **WebSocket compression**: the Node server's `WS_DEFLATE`; the Worker negotiates `permessage-deflate` itself (the
+  runtime does since compatibility date 2023-08-15, `wrangler.jsonc` has 2026-10-01), nothing to configure.
+- **Official battlefield scenes** (0.2.5): `public/assets/local/scene/<stage>/scene.bin` is a resource type
+  (`tools/resource-pack.mjs` `bin`), so the Worker build publishes the scenes `data/local-assets.json` lists.
 - **Title footer**: upstream's 项目仓库 link joins the fork's presence readout and version (`title-foot__right`); it opens
   the upstream repository, like 问题反馈's `ISSUES_URL`.
 - **Korean**: 对局记录 is 전적 (upstream's correction, PR #490) instead of the fork's 플레이 기록.
