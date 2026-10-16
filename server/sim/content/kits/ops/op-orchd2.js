@@ -197,7 +197,7 @@ function launchArrow(battle, unit, bb) {
   const flight = battle.every(TICK, () => {
     age += TICK;
     travelled = Math.min(maxD, travelled + ARROW_SPEED * TICK);
-    while ((mark + 1) * step <= travelled + 1e-9) {
+    while ((mark + 1) * step <= travelled + 1e-9) { // loop-cap: maxD / step (step > 0)
       mark++;
       const d = mark * step, x = x0 + fc * d, y = y0 + fr * d;
       if (x < R.c0 - 0.5 || x > R.c1 + 0.5 || y < R.r0 - 0.5 || y > R.r1 + 0.5) { flight.cancel(); return; }
@@ -298,14 +298,14 @@ export default {
           const s = stateOf(unit).s2;
           if (!s) return;
           const t = battle.time - s.t0 + 1e-9; // (from the cast, whichever phase of its tick the cast came in)
-          while (s.next < counts.length && t >= s.begin + s.next * S2_LOOP + S2_LOOP_HIT) fire(battle, unit, s);
+          while (s.next < counts.length && t >= s.begin + s.next * S2_LOOP + S2_LOOP_HIT) fire(battle, unit, s); // loop-cap: counts.length
           if (!s.landed && s.next >= counts.length && t >= s.landAt) land(battle, unit, s);
         },
         onEnd({ battle, unit, reason }) {
           const st = stateOf(unit), s = st.s2;
           st.s2 = null;
           if (s && !s.landed && reason === 'duration' && up(unit)) {
-            while (s.next < counts.length) fire(battle, unit, s);
+            while (s.next < counts.length) fire(battle, unit, s); // loop-cap: counts.length
             land(battle, unit, s);
           }
           battle.removeBuff(unit, FLIGHT_KEY);

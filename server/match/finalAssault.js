@@ -38,7 +38,8 @@
 //   * Hidden Core eligibility (after an R14 win): difficulty in hiddenCore.difficulties, the mode has a hidden round,
 //     Σ activated layers of the alive players measured at the end of the boss round's prep > threshold (solo 350 /
 //     co-op 1200; × players / 4 when more than 4 players' layers are summed, remake extension — gamedata.js
-//     hiddenThreshold) and team LP > minTeamLpExclusive (1).
+//     hiddenThreshold) and team LP > minTeamLpExclusive (1, so at least 2 left: PRTS's user-contributed
+//     「剩余生命值 > 1」, which the community's measurement 路标月报#2 matches — GitHub #645).
 
 import { BOSS_ROW_OFFSET, COLS, BOSS_POOL_MIN_HP } from '../sim/constants.js';
 import { mirrorDir, normDir } from '../sim/dir.js';

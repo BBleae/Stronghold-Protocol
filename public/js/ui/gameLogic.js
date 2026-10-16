@@ -26,7 +26,7 @@
 
 export { clamp, tileKey } from './gameLogic/shared.js';
 export { phaseMode, isCombatPhase, bondStripFolded, showDeadPill, isBossPhase } from './gameLogic/phases.js';
-export { prepCamera, prepCameraFor, foldCamera, deployFieldOf, fieldTile, boardTileOf, ownerBandId, teamFrameIds } from './gameLogic/camera.js';
+export { prepCamera, prepCameraFor, foldCamera, deployFoldsShop, deployFieldOf, fieldTile, boardTileOf, ownerBandId, teamFrameIds } from './gameLogic/camera.js';
 export { phaseBanner, prepCapsuleLabel, countdownState, phaseTotalSeconds, deployOrder, roundStartReplay } from './gameLogic/phases.js';
 export { RESULT_BOX_MS, ownRoundLoss, battleOverSfx, roundResultBox, uniteResultBox, battleResultBox } from './gameLogic/phases.js';
 export { STATUS_META } from './gameLogic/format.js';
@@ -40,7 +40,7 @@ export { normalizeDraft, normalizeSp, normalizePersonalChoice } from './gameLogi
 export { groupEnemies, PEN, penZoneTiles, penPlacement, previewEnemyKey, factionTypes } from './gameLogic/enemies.js';
 export { createHudDelay, pickDrawn, drawnChanged, hudChanged, drawnOf, ownFieldGate, snapUnits } from './gameLogic/format.js';
 export { snapHud, bossFrac, bossPctText, hasFlag, UF, attackInterval, fmtNum, rangeGridBox } from './gameLogic/format.js';
-export { shortcutFor, closesOnFieldPress, shortcutBlocked, HOTKEY_ACTIONS, DEFAULT_HOTKEYS, isBindableCode, hotkeyLabel, sanitizeHotkeys, rebindHotkey, isDefaultHotkeys, hotkeyOf, actionForKey, captureHotkey, facingSwallows, facingEnter } from './gameLogic/shortcuts.js';
+export { shortcutFor, closesOnFieldPress, shortcutBlocked, prepShortcutsSuspended, HOTKEY_ACTIONS, DEFAULT_HOTKEYS, isBindableCode, hotkeyLabel, sanitizeHotkeys, rebindHotkey, isDefaultHotkeys, hotkeyOf, actionForKey, captureHotkey, facingSwallows, facingEnter } from './gameLogic/shortcuts.js';
 export { DEFAULT_SETTINGS, defaultQuality, TEXT_SIZES, sanitizeSettings } from './gameLogic/settings.js';
 export { selectVoiceKey, cardVoiceKey, detailSelectVoice } from './gameLogic/voice.js';
 export { normalizeResult } from './gameLogic/result.js';

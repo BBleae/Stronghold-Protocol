@@ -11,9 +11,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  FOLDER, REFUSE, RUNTIME_RESEARCH, entryProblems, isRefused, packageOutIsUnsafe, plan, playerPackageJson,
-  rewritePlayerDoc, resolveSpecifier, scanFiles, selectTracked,
+  AUTHOR_TEST_FILES, FOLDER, REFUSE, RUNTIME_RESEARCH, entryProblems,
+  isRefused, packageOutIsUnsafe, parseArgs, plan, playerPackageJson, rewritePlayerDoc, resolveSpecifier, scanFiles,
+  selectTracked,
 } from '../tools/package.mjs';
+import { hash16 } from '../server/http/assetIndex.js';
+import { rewriteManifest } from '../server/http/assetViews.js';
 
 // a fake home path, built at run time so the repository never contains one (the local push guard scans every patch)
 const FAKE_HOME = ['', 'Users', 'someone'].join('/');
@@ -42,7 +45,7 @@ test('selection: runtime files in; tests, maintainer tools, other docs, dev page
     'data/chess.json', 'data/i18n/en.json', 'tools/setup.mjs', 'tools/vendor.mjs', 'tools/fetch-assets.mjs', 'tools/doctor.mjs',
     'tools/crop-board-atlas.mjs', 'tools/assets/plan.mjs', 'tools/assets/local-enemy-spines.json', 'tools/assets/local-token-spines.json',
     'tools/local-extract/extract.py',
-    'tools/local-extract/LICENSE-Ark-Unpacker.txt', 'scripts/start.sh', 'scripts/start-windows.bat', 'scripts/launch.mjs',
+    'tools/local-extract/LICENSE-Ark-Unpacker.txt', 'scripts/start.sh', 'scripts/start-windows.bat', 'scripts/start-windows-sandbox.bat', 'scripts/launch.mjs',
     'scripts/install-service-windows.ps1', 'docs/PLAYING.md', 'docs/DEPLOY.md', ...RUNTIME_RESEARCH, 'package.json',
     'package-lock.json', 'LICENSE', 'NOTICE.md', 'THIRD-PARTY-NOTICES.md', 'README.md', 'CHANGELOG.md',
     // out
@@ -56,11 +59,11 @@ test('selection: runtime files in; tests, maintainer tools, other docs, dev page
     'public/.DS_Store', 'tools/local-extract/.venv-extract/x.py', 'node_modules/ws/index.js',
   ]);
   for (const f of ['server/index.js', 'public/i18n/en.json', 'data/i18n/en.json', 'tools/assets/local-enemy-spines.json',
-    'tools/assets/local-token-spines.json', 'tools/local-extract/LICENSE-Ark-Unpacker.txt', 'scripts/install-service-windows.ps1',
+    'tools/assets/local-token-spines.json', 'tools/local-extract/LICENSE-Ark-Unpacker.txt', 'scripts/install-service-windows.ps1', 'scripts/start-windows-sandbox.bat',
     'docs/research/07-assets.json', 'CHANGELOG.md']) {
     assert.ok(keep.includes(f), `keeps ${f}`);
   }
-  assert.equal(keep.length, 35, keep.join(' '));
+  assert.equal(keep.length, 36, keep.join(' '));
   assert.equal(drop.length, 40, drop.join(' '));
   assert.ok(!keep.some((f) => drop.includes(f)));
 });
@@ -86,7 +89,7 @@ test('the real tracked tree: runtime in, the rest out; every shipped import, npm
     assert.ok(!got.has(f), f);
   }
   // the design document (the index docs/DESIGN.md and its parts in docs/design/, docs/history/) stays out too
-  for (const f of got) assert.ok(!/^(?:test|handoff|\.github|types|public\/dev|docs\/img|docs\/design|docs\/history)\//.test(f), f);
+  for (const f of got) if (!AUTHOR_TEST_FILES.includes(f)) assert.ok(!/^(?:test|handoff|\.github|types|public\/dev|docs\/img|docs\/design|docs\/history)\//.test(f), f);
   const code = [...got].filter((f) => /\.(?:m?js|py)$/.test(f));
   for (const f of code) {
     const src = fs.readFileSync(path.join(ROOT, f), 'utf8');
@@ -359,3 +362,4 @@ test('the personal scan reads bytes, never reports the matched text, and skips f
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+

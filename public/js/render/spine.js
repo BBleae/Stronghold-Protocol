@@ -700,6 +700,13 @@ export class SpineActor {
     this.attackUntil = this.clock + lead + (set.loop ? iv + 0.5 : Math.max(0, dur - hit) / Math.max(0.05, ts));
     this._engage(set, ts, plan.start, begin, Math.min(this._m(MIX.swingIn), lead), hit);
     this.swingAt = at;
+    // for the official effects that start with the cast (render/vfx/wiring.js castStart): how far into the attack clip
+    // the wind-up started (past its begin clip) and when the cast ends, in game s at the clip's own speed — sped up only
+    // when the attacks come quicker than the clip, as the client plays it (this actor may stretch the clip over a slower
+    // rhythm)
+    const tsOff = clampN(dur / iv, 1, 4);
+    this.windSkip = Math.max(0, plan.start - begin) / tsOff;
+    this.windCastLeft = lead + Math.max(0, dur - hit) / tsOff;
     return true;
   }
 
@@ -811,6 +818,18 @@ export class SpineActor {
   _skillIsBuffOnly() {
     const sk = this.roles.skill;
     return !!sk && sk.loop === this.roles.idle;
+  }
+
+  /**
+   * The strike frame of the attack clip playing now — { anim (the spine Animation), time (its first hit, s) } — or null
+   * when no attack clip plays (render/units.js boneOffset: a shot leaves the muzzle as that frame poses it).
+   */
+  strikePose() {
+    if (this.mode !== 'attack' || this.dead) return null;
+    const tr = this.spine && this.spine.state ? this.spine.state.tracks[0] : null;
+    const anim = tr && tr.animation;
+    if (!anim || anim.name !== this.current) return null;
+    return { anim, time: this._hitTime(anim.name, this.dur(anim.name)) };
   }
 
   _hitTime(anim, dur) {

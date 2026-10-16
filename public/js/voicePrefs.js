@@ -2,11 +2,14 @@
 // fork's voice engine, js/audio.js _voiceUrl). Every variant of an operator shares its charId; absent entries follow the
 // global 语音语言. VOICE_LANGS: the dubs the fork's voice tree may have (js/audio.js VOICE_LANGS, tools/assets/voice.mjs).
 export const VOICE_LANGS = Object.freeze(['cn', 'jp', 'en', 'kr']);
+/** Values a per-operator override may store: a VOICE_LANGS dub or 'native' — the operator's own-language dub
+ * (audio.voice.native, upstream 0.3.0); 'native' is no global 语音语言 (the 本土语言 switch is settings.voiceNative). */
+export const VOICE_PICKS = Object.freeze([...VOICE_LANGS, 'native']);
 export function sanitizeVoiceOverrides(raw) {
   const out = {};
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
   for (const [id, lang] of Object.entries(raw).slice(0, 512)) {
-    if (/^char_[0-9]+_[a-z0-9]+$/.test(id) && id.length <= 80 && VOICE_LANGS.includes(lang)) out[id] = lang;
+    if (/^char_[0-9]+_[a-z0-9]+$/.test(id) && id.length <= 80 && VOICE_PICKS.includes(lang)) out[id] = lang;
   }
   return out;
 }

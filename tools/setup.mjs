@@ -8,7 +8,7 @@
 //   2. Dependencies: `npm ci` (falls back to `npm install`) when node_modules is missing or incomplete.
 //   3. Client libraries in public/vendor (tools/vendor.mjs) when any is missing.
 //   4. Game data (data/*.json, committed) present and parseable.
-//   5. Art/audio (tools/fetch-assets.mjs, ~550 MB into public/assets, resumable, mirror fallback) when public/assets
+//   5. Art/audio (tools/fetch-assets.mjs, ~720 MB into public/assets, resumable, mirror fallback) when public/assets
 //      is missing or data/assets.json lists files that are not on disk. A failure is a warning: the game still runs
 //      with fallback visuals and the next run resumes.
 //   6. Optional: official board/UI art from a locally installed Arknights client (Windows native install, CrossOver

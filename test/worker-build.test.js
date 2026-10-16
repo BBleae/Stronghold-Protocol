@@ -78,10 +78,12 @@ test('Workers static assets (_headers): each path gets one Cache-Control; resour
   t.after(async () => { await mf?.dispose(); await rm(root, { recursive: true, force: true }); });
   const files = ['public/index.html', 'public/js/main.js', 'public/css/theme.css', 'public/vendor/preact.module.js',
     'public/resource-sw.js', 'public/resource-manifest.json', 'public/assets/char/a.png', 'public/assets/spine/a.atlas',
-    'public/assets/spine/a.skel', 'public/fonts/fonts.css', 'data/config.json'];
+    'public/assets/spine/a.skel', 'public/fonts/fonts.css', 'data/config.json', 'public/js/battle/simWorker.js', 'public/studio/index.html'];
+  const IMPORT_MAP = '{ "imports": { "preact": "/vendor/preact.module.js" } }';
   for (const name of files) {
     await mkdir(path.dirname(path.join(root, name)), { recursive: true });
-    await writeFile(path.join(root, name), name.endsWith('.html') ? '<html lang="zh-CN"><body></body></html>' : name.endsWith('.json') ? '{}' : 'x');
+    await writeFile(path.join(root, name), name.endsWith('.html')
+      ? `<html lang="zh-CN"><head><script type="importmap">${IMPORT_MAP}</script></head><body></body></html>` : name.endsWith('.json') ? '{}' : 'x');
   }
   await writeFile(path.join(root, 'data/assets.json'), JSON.stringify({ chars: { a: '/assets/char/a.png' },
     spine: { a: { atlas: '/assets/spine/a.atlas', skel: '/assets/spine/a.skel' } } }));
@@ -113,6 +115,22 @@ test('Workers static assets (_headers): each path gets one Cache-Control; resour
     if (url.endsWith('.skel')) assert.equal(response.headers.get('Content-Type'), 'application/octet-stream');
     await response.arrayBuffer();
   }
+  // upstream 0.3.0's Content-Security-Policy: the site's one policy, with the page's import map hashed; the simulation
+  // Worker script its own (not joined with the site's); the Node server's plugin studio is not published
+  const { siteCsp, SIM_WORKER_CSP } = await import('../server/http/csp.js');
+  const { createHash } = await import('node:crypto');
+  const page = await mf.dispatchFetch('https://game.example/');
+  const policy = page.headers.get('Content-Security-Policy');
+  await page.arrayBuffer();
+  assert.equal(policy, siteCsp(out));
+  assert.ok(policy.includes(`'sha256-${createHash('sha256').update(IMPORT_MAP).digest('base64')}'`), 'the import map is allowed');
+  assert.ok(!policy.includes("'unsafe-eval'"), 'the page never allows eval (only the simulation Worker does)');
+  const sim = await mf.dispatchFetch('https://game.example/js/battle/simWorker.js');
+  assert.equal(sim.headers.get('Content-Security-Policy'), SIM_WORKER_CSP);
+  await sim.arrayBuffer();
+  const studio = await mf.dispatchFetch('https://game.example/studio/index.html');
+  assert.equal(studio.status, 404, 'no plugin studio on the Workers deployment');
+  await studio.arrayBuffer();
 });
 
 test('Workers static build publishes the language packs (index, UI and game texts) and the 自选 kit list on the page', async t => {

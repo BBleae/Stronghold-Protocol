@@ -87,6 +87,10 @@ test('fetch-assets shrink guard: the committed manifest minus some audio entries
   assert.deepEqual(parseArgs(['--voice=jp']).voice, ['jp']);
   assert.deepEqual(parseArgs(['--voice=none']).voice, []);
   assert.deepEqual(parseArgs(['--voice=cn,en,kr']).voice, ['cn', 'en', 'kr']);
+  // upstream 0.3.0's 本土语言 is the fork's opt-in `native` dub; its --no-optional-voice has nothing to switch off
+  assert.equal(parseArgs([]).voice, undefined, 'a plain run: voice.mjs DEFAULT_VOICE_LANGS (cn, jp)');
+  assert.deepEqual(parseArgs(['--voice=cn,jp,native']).voice, ['cn', 'jp', 'native']);
+  assert.throws(() => parseArgs(['--no-optional-voice']), /unknown option/);
   assert.deepEqual(parseArgs(['--voice-lang=en']).voice, ['en']);
   assert.deepEqual(parseArgs(['--voice-lang=kr']).voice, ['kr']);
   assert.throws(() => parseArgs(['--voice-lang=fr']), /unknown voice language/);

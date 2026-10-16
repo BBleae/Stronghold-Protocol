@@ -267,7 +267,7 @@ export class RecordedMatch extends Match {
       || (workBudget.burst != null && !(Number.isSafeInteger(workBudget.burst) && workBudget.burst >= 0)))
       throw new Error('MATCH_WORK_BUDGET');
     let n = 0;
-    while (n < limit && !this.disposed) {
+    while (n < limit && !this.disposed) { // loop-cap: limit
       const at = this.sched.nextAt();
       if (at == null || at > until) break;
       const effectiveAt = Math.max(at, this.sched.now());

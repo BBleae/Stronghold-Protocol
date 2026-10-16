@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
 import { gzipSync } from 'node:zlib';
 import { vendor } from './vendor.mjs';
+import { siteCsp, SIM_WORKER_CSP } from '../server/http/csp.js';
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SHIM = "import { getSimData } from './sim/simdata.js';\nexport function getData() { return getSimData() || {}; }\nexport function resetData() {}\n";
@@ -35,9 +36,9 @@ async function diyKitted(root) {
   return list;
 }
 
-/** data/local-assets.json, or null when this machine has no local client extraction. */
-async function readLocalAssets(root) {
-  try { return JSON.parse(await fs.readFile(path.join(root, 'data/local-assets.json'), 'utf8')); }
+/** data/<name> (local-assets.json, local-fx.json), or null when this machine has no local client extraction of it. */
+async function readLocalList(root, name) {
+  try { return JSON.parse(await fs.readFile(path.join(root, 'data', name), 'utf8')); }
   catch (error) { if (error.code === 'ENOENT') return null; throw error; }
 }
 
@@ -73,8 +74,9 @@ export async function copyRuntimeAssets({ root = ROOT, out = path.join(root, 'di
     await fs.rm(out, { recursive: true, force: true });
   } catch (error) { if (error.code !== 'ENOENT') throw error; }
   await fs.mkdir(out, { recursive: true });
-  // Dev pages, ZIPs, logs and source maps stay out; resource files are copied from the manifest below.
-  const unpublished = /^(dev|assets|fonts)(\/|$)/;
+  // Dev pages, the Node server's plugin studio (upstream 0.3.0: plugins stay on Node, docs/design/fork.md §F10), ZIPs,
+  // logs and source maps stay out; resource files are copied from the manifest below.
+  const unpublished = /^(dev|studio|assets|fonts)(\/|$)/;
   await copyTree(path.join(root, 'public'), out, (name) => !unpublished.test(name) && !/\.(zip|log|map)$/i.test(name));
   for (const file of manifest?.files ?? []) {
     const name = decodeURIComponent(file.url.slice(1)).split('/');
@@ -90,14 +92,15 @@ export async function copyRuntimeAssets({ root = ROOT, out = path.join(root, 'di
   // data/local-assets.json lists the local client extraction (public/assets/local), which the game prefers where it
   // exists (official 3D board, module icons, emotes, guide…). It is published when the manifest publishes every file it
   // lists; a build without resource files says there is none, and one that lacks a listed file fails.
-  const local = await readLocalAssets(root);
+  // data/local-fx.json (upstream 0.3.0) the official battle effects' file list, the same way: an empty list is "none".
   const published = new Set((manifest?.files ?? []).map((file) => decodeURIComponent(file.url)));
-  const missingLocal = localAssetPaths(local).filter((url) => !published.has(url));
-  if (manifest && local && missingLocal.length) {
-    throw new Error(`data/local-assets.json lists ${missingLocal.length} files the resource manifest lacks, e.g. ${missingLocal[0]}`);
-  }
-  if (!manifest || !local) {
-    await fs.writeFile(path.join(out, 'data/local-assets.json'), JSON.stringify({ version: 1, source: 'none', count: 0, groups: {} }));
+  for (const [name, none] of [['local-assets.json', { version: 1, source: 'none', count: 0, groups: {} }], ['local-fx.json', { groups: {} }]]) {
+    const local = await readLocalList(root, name);
+    const missingLocal = localAssetPaths(local).filter((url) => !published.has(url));
+    if (manifest && local && missingLocal.length) {
+      throw new Error(`data/${name} lists ${missingLocal.length} files the resource manifest lacks, e.g. ${missingLocal[0]}`);
+    }
+    if (!manifest || !local) await fs.writeFile(path.join(out, 'data', name), JSON.stringify(none));
   }
   let html = await fs.readFile(path.join(out, 'index.html'), 'utf8');
   // data-sp-rules: the rules version of the page's own simulation (/sim/), compared with a battle's (battle/runner.js)
@@ -113,8 +116,11 @@ export async function copyRuntimeAssets({ root = ROOT, out = path.join(root, 'di
   if (!nodeClient) html = html.replace('src="/js/main.js"', 'src="/js/worker-entry.js"');
   // Local fonts and system fallbacks keep the resource gate independent of Google Fonts reachability.
   html = html.replace(/\s*<link[^>]+https:\/\/fonts\.(?:googleapis|gstatic)\.com[^>]*>/g, '');
-  html = html.replace('</head>', '  <link rel="stylesheet" href="/css/resources.css" />\n</head>');
   await fs.writeFile(path.join(out, 'index.html'), html);
+  // Content-Security-Policy (upstream 0.3.0, server/http/csp.js): the site's policy hashes the import maps of the pages
+  // published here; the simulation Worker script gets its own policy instead (a detach, then its value: rules apply in
+  // file order, so it stays below /*). SP_CSP=off builds without them, like the Node server.
+  const csp = process.env.SP_CSP === 'off' ? null : siteCsp(out);
   await fs.writeFile(path.join(out, '_headers'), `# Every rule whose path matches applies, and the values of a header set by several of them are joined:
 # each header is set by one rule per path. A path without a Cache-Control rule gets the platform default
 # "public, max-age=0, must-revalidate": pages, code, /vendor (it must match the code importing it), data,
@@ -123,7 +129,11 @@ export async function copyRuntimeAssets({ root = ROOT, out = path.join(root, 'di
 /*
   X-Content-Type-Options: nosniff
   Referrer-Policy: same-origin
-/assets/*
+${csp ? `  Content-Security-Policy: ${csp}
+/js/battle/simWorker.js
+  ! Content-Security-Policy
+  Content-Security-Policy: ${SIM_WORKER_CSP}
+` : ''}/assets/*
   Cache-Control: public, max-age=86400
 /fonts/*
   Cache-Control: public, max-age=86400

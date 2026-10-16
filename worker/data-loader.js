@@ -24,6 +24,8 @@ import backups from '../data/backups.json';
 
 export const ROOT = '';
 export const DATA_DIR = '/data';
+// The bundle imports its files above, never data/local-fx.json; the same list as server/data-node.js for its importers.
+export const UNLOADED_DATA = Object.freeze(['local-fx.json']);
 export function readDataDirectory() {
   return { config, chess, bonds, garrisons, items, bands, effects, choices, enemies, factions,
     waves, stages, bosses, tokens, assets: null, tuning, backups };
