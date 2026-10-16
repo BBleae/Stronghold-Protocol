@@ -552,3 +552,59 @@ maintainer choice was needed; where upstream's change meets a fork feature:
   the upstream repository, like 问题反馈's `ISSUES_URL`.
 - **Korean**: 对局记录 is 전적 (upstream's correction, PR #490) instead of the fork's 플레이 기록.
 
+
+## F10. Merge of upstream 0.3.0 — the maintainer's decisions of 2026-10-16
+
+Upstream 0.3.0 (v0.2.6 → v0.3.0, 390 commits: the plugin system, CSP, official battle effects, 作战统计, 秘术师能量, the
+bot changes of #315 / #452 / #577, equipment debt #624, the doubled co-op 自选 stock #650, and the fixes listed in its
+changelog) is merged with the §F7–§F9 decisions kept. The maintainer decided four questions:
+
+- **Plugins: Node server only, for now** ("这个到时候探讨一下"). The Node server takes upstream's whole plugin system
+  (`server/plugins`, the studio, content sets, `room.setPlugins` / `setMode` / `contentReady`, WorkerSimHost). The
+  Cloudflare Worker stays vanilla: no plugin code in the Worker bundle, `public/studio/` is not published
+  (`tools/build-worker.mjs`), and its rooms never offer a plugin panel (the vanilla Lobby path needs no shim).
+- **Art: the fork's resource packs on both deployments** ("统一用 fork 资源包"). The resource manager (`js/resources`:
+  download, import, export, `resource-sw.js`) now runs on the Node server too: `server/http/resourceManifest.js` answers
+  `/resource-manifest.json` from the asset index, which keeps each file's whole SHA-256 for it (`assetIndex.js`, hash
+  cache version 2), with the same URLs, types and version `tools/resource-pack.mjs` writes for the tree; the rules both
+  share are `shared/resources.js`. The import takes upstream's asset pack too (`zip.js packEntryName`: everything up to
+  the last `public/` segment is its folder). Upstream's 下载完整素材 / 导入素材包 buttons, `assetCache.js` / `assetPack.js`
+  / `assetDownload.js`, `public/sw.js` and `tools/package.mjs --assets` are not taken.
+- **Voices: onto the fork's engine, default 中文 + 日文 only** ("接到 fork 引擎，默认只下中日"). 本土语言 is the voice tree's
+  `native` language (`tools/assets/voice.mjs`: the first `CUSTOM` voiceLangType, from `voice_custom/<word key>/`), with
+  `audio.voiceNativeLangType` for the dropdown's names; `npm run assets` keeps downloading `cn,jp` unless
+  `--voice=…,en,kr,native` asks for more. The client: settings' 本土语言 switch (`voiceNative`), a per-operator `native`
+  pick (`VOICE_PICKS`), the order own pick → 本土语言 → global dub (`audio.js _voiceUrl`), and 试听
+  (`audio.previewVoice`: the asked dub's first 选中干员 / 部署 / 行动出发 line, else the operator's own). Upstream's
+  `voiceJp` / `voiceEn` / `voiceKr` / `voiceNative` trees and `voiceLine` are not used by the installation. A cosmetic
+  plugin still writes and references voices in upstream's shape (`audio.voice` / `voiceJp` / … `[charId][slot]`, as
+  docs/PLUGINS.md §9 documents); `shared/plugins/forkVoice.js` is the one bridge: `withUpstreamVoice` lets references and
+  the override / add permission see the fork tree under those names (`readAssetOverlay`, `layVisualOps`, the Forge
+  import), and `pluginVoiceLine` makes `voiceUrl` play the plugin's line first (slots: place → 部署 `deploy`, start →
+  行动出发 `depart`, faceEnemy → 行动开始 `start`, skillN → 作战中N, resultFour / Three / Two / Lose → win4 / win3 /
+  win / fail; a failed plugin file falls back to the installation's line). `FULL_ZIP_OPTIONAL_VOICE` holds
+  the `en` / `kr` / `native` folders back from the full zip like `FULL_ZIP_JP_VOICE`.
+- **CSP on both deployments** ("这次一起加"). The Node server per upstream (`server/http/csp.js`). The Worker build puts the
+  same site policy (the published pages' import maps hashed) into `_headers`, and the simulation Worker script its own
+  policy (`SIM_WORKER_CSP`) by detaching the site's first — two policies joined would forbid the eval it needs.
+  `SP_CSP=off` builds without them. The page's inline boot scripts moved to `js/boot.js` / `js/bootLegacy.js` (upstream),
+  which keeps the fork's `__spResourcesPreparing` exception for the slow-boot hint.
+
+Kept without a question:
+
+- **Eye masks always on**, `pwa.js` and its icons absent (§F7).
+- **Bot rehearsal delegation** (`SP_BOT_REHEARSAL=host`): a Node live match only. A recorded match (the Worker, a
+  replay log) never delegates: its work is sliced by recorded tick counts (`Match.botRehearsalDelegate` is false with
+  `workSlice` / `deferWork`); upstream's `RehearsalRun` gained the same `maxTicks` bound (`job.runTicks`).
+- **Equipment debt (#624) with seat scaling**: the debt counts against the stock of `GameData.itemPoolCopies(id, seats)`
+  (§F8), so 5–8 seats owe against the scaled stock.
+- **Rules versions**: the merged engine is a new rules version (`tools/build-replay.mjs --release`); the older engines
+  stay archived and replay their matches.
+- **The runner**: the fork's prep / batch structure (`runBatch`, preparations caught up in the frame batches) hosts
+  upstream's sim hosts — an in-page battle steps directly, a Worker one asynchronously outside the batch budget
+  (`stepRemote`); a Worker that fails before its battle exists fails a stand-in entry (the same toast and takeover
+  request). The final `b.progress` still goes out right ahead of its `b.result` (`deliver`).
+- **Name sanitising**: upstream's `ui/playerName.js` is the fork's `js/names.js` (shared with the Worker's accounts).
+- **Tests whose fixtures upstream's bot changes moved**: `autoplay-atomic` seed 5 now covers rounds 3–5 (its round-6
+  lineup benches 赫默), the spectator test of `test/worker/spectators.test.js` uses seed 2. The golden corpus differs from
+  upstream 0.3.0's exactly as in §F9 (test/golden/README.md).

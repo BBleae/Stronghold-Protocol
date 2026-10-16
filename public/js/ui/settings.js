@@ -1,5 +1,6 @@
 // Player settings (BGM/SFX/voice volume, voice language, mute, damage numbers, the optional 弹药数量 under an ammo
-// skill's bar — not in the official HUD, off by default, PR #552 —, render quality, 文字大小, the shortcut
+// skill's bar — not in the official HUD, off by default, PR #552 —, the optional 作战统计 panel — off by default,
+// PR #618 —, render quality, 文字大小, the shortcut
 // keys): a tiny observable store persisted in localStorage (`sp.pref.settings`), applied to the audio manager and to the
 // document on every change, plus the settings modal — which also holds the language switch (ui/lang.js; kept apart in
 // `sp.pref.lang`; under it a note while the current language's pack is a machine translation, `_meta.machineTranslated`)
@@ -8,8 +9,14 @@
 // page for a bug report (diag.js: the error log, this browser, optionally the battle on screen; nothing is uploaded). The
 // lobby and the room open it from a 设置 button next to 玩法说明 (SettingsButton, GitHub #238); the title screen and the
 // match have their own gear. The operator voice (DESIGN §21.30, js/audio.js) is one setting: its volume (干员语音) and the
-// language the operators speak (语音语言, or 关闭), shown when the site has voice lines (data/assets.json audio.voice); a
-// per-operator dub (此干员语音, ui/operatorVoice.js) is in voiceOverrides.
+// language the operators speak (语音语言, or 关闭), shown when the site has voice lines (data/assets.json audio.voice), with
+// the 本土语言 switch (voiceNative) when it has own-language dubs (audio.voice.native); a per-operator dub (此干员语音,
+// ui/operatorVoice.js) is in voiceOverrides.
+// 外观插件 (DESIGN §32 P1a, the design study's §7.5): a switch for each cosmetic plugin of scope `personal` the server's
+// catalogue lists (content.js) — kept in this browser (`sp.pref.cosmetics`), never sent, seen by this player alone and
+// never part of a battle; the section is left out when the server has none. The switched-on ones form a set like a
+// room's (content.js personalSet): one another needs is on as 「自动」 and cannot be switched off alone, a switch that
+// would make a conflict is refused with the room's message, and a chosen one left out (it conflicts now) says so.
 //
 // 文字大小 (textSize, applied by applyTextSize): the interface text root `--t` of css/theme.css — a phone clamps the
 // layout root `1rem` at 40 px (theme.css), which left the .18rem body text at 7.2 CSS px while the browser's own font
@@ -17,7 +24,7 @@
 // Only font-size declarations read `--t`, so the board, the HUD bands the prep camera keeps clear and the detail
 // card's side do not move — the field is sized from the host element's clientWidth (render/app.js).
 
-import { useLayoutEffect, useRef, useState } from '../../vendor/hooks.module.js';
+import { useEffect, useLayoutEffect, useRef, useState } from '../../vendor/hooks.module.js';
 import { html, Modal, Button, Icon, MicroLabel } from './components.js';
 import { GIcon } from './gameComponents.js';
 import { createStore, useStore, loadPref, savePref, store } from '../store.js';
@@ -31,6 +38,13 @@ import { APP_VERSION } from '../../../shared/constants.js';
 import { t, tc, N_ } from '../../../shared/i18n.js';
 import { errorCount, currentBattle, diagnosticsText } from '../diag.js';
 import { copyText } from './clipboard.js';
+import { catalog, loadCatalog, cosmeticPlugins, installedCount, personal, personalApplied, personalSet, pluginName, setPersonalPlugin } from '../content.js';
+import { setUiPlugin, uiPluginEntries, uiPlugins } from './uiPlugins.js';
+import { UI_LIMITS } from '../../../shared/plugins/ui.js';
+import { toast, describeError } from './toasts.js';
+import { pluginMicro } from './pluginTag.js';
+import { fxAvailable } from '../render/vfx/available.js';
+import { resolveOfficialFx } from '../render/vfx/tier.js';
 
 const cx = (...p) => p.flat().filter(Boolean).join(' ');
 
@@ -40,7 +54,7 @@ const BUILD = typeof document !== 'undefined' ? document.documentElement.dataset
 /** The quality a player who never chose one starts on (中 on a phone, DESIGN §F2.6); a saved choice wins. */
 const FALLBACK_QUALITY = defaultQuality(isPhone());
 
-/** Settings store: { bgm, sfx, voice, voiceLang, voiceOverrides, muted, damageNumbers, officialDamageNumbers, ammoCount, quality, textSize, keys }. */
+/** Settings store: { bgm, sfx, voice, voiceLang, voiceNative, voiceOverrides, muted, damageNumbers, officialDamageNumbers, ammoCount, combatMetrics, mysticEnergy, quality, officialFx, textSize, keys }. */
 export const settingsStore = createStore(sanitizeSettings(loadPref('settings', null), FALLBACK_QUALITY));
 
 /**
@@ -59,10 +73,12 @@ settingsStore.subscribe((s) => {
   savePref('settings', sanitizeSettings(s, FALLBACK_QUALITY));
   audio.setVolumes(s);
   audio.setVoiceOverrides(s.voiceOverrides);
+  audio.setVoiceNative(s.voiceNative);
   applyTextSize(s.textSize);
 });
 audio.setVolumes(settingsStore.get());
 audio.setVoiceOverrides(settingsStore.get().voiceOverrides);
+audio.setVoiceNative(settingsStore.get().voiceNative);
 // before the first render (main.js boot renders after its imports ran): the stored step is on screen without a flash
 applyTextSize(settingsStore.get().textSize);
 
@@ -77,7 +93,7 @@ export const useSettings = () => useStore((s) => s, Object.is, settingsStore);
 /**
  * The label of the key a rebindable shortcut has right now ('R', 'Space' …) — the HUD's key hints (shop bar, ready /
  * pause, underframe). Read at render: the game screen re-renders when the settings dialog closes.
- * @param {'refresh'|'freeze'|'levelUp'|'retreat'|'sell'|'ready'} action
+ * @param {'buy'|'refresh'|'freeze'|'levelUp'|'retreat'|'sell'|'ready'} action
  */
 export const hotkeyLabelOf = (action) => hotkeyLabel(settingsStore.get().keys?.[action]);
 
@@ -101,13 +117,21 @@ function Toggle({ label, micro, value, onChange }) {
 
 const QUALITY = [['high', N_('高')], ['medium', N_('中')], ['low', N_('低')]];
 /**
+ * 官方特效 (0.3.0, render/vfx): the official battle effects the server's owner extracted from their own client (the
+ * server serves them: every player of that server sees the owner's extraction) — normal attacks, projectiles, hits,
+ * statuses, deaths, deploys, the operators' skills and a 秘术师's stored energies; 关 / 精简 / 完整. The stored default
+ * 'auto' shows as the tier it resolves to (完整 on a desktop, 精简 on a touch device, render/vfx/tier.js); the row is
+ * left out when no effects were extracted (data/local-fx.json lists none).
+ */
+const OFFICIAL_FX = [['off', N_('关')], ['lite', N_('精简')], ['full', N_('完整')]];
+/**
  * 文字大小: one step of TEXT_SIZES (ui/gameLogic/settings.js) with its label — 小 is the design's own sizes, the others
  * raise the text root `--t` (css/theme.css) and with it every readable font-size; the board and the HUD's boxes stay.
  */
 const TEXT_SCALES = [['sm', N_('小')], ['md', N_('中')], ['lg', N_('大')], ['xl', N_('特大')]];
 /** The rebindable shortcuts' names (msgids), by action. */
-const HOTKEY_NAMES = { refresh: N_('刷新商店'), freeze: N_('冻结 / 解冻商店'), levelUp: N_('升级调度中心'), retreat: N_('撤退选中干员'),
-  sell: N_('出售选中干员'), ready: N_('准备就绪 / 暂停（独立模拟）') };
+const HOTKEY_NAMES = { buy: N_('购买鼠标指向的商品'), refresh: N_('刷新商店'), freeze: N_('冻结 / 解冻商店'), levelUp: N_('升级调度中心'), retreat: N_('撤退鼠标指向的干员'),
+  sell: N_('出售鼠标指向的干员'), ready: N_('准备就绪 / 暂停（独立模拟）') };
 
 /**
  * 快捷键: each shortcut with its key. Click its key (or Enter / Space on it) and press the new one: Esc cancels (the
@@ -215,7 +239,7 @@ function DiagSection() {
   const n = errorCount();
   const battle = currentBattle();
   const copy = async () => {
-    const text = diagnosticsText({ state: store.get(), settings: settingsStore.get(), attachBattle: attach && !!battle });
+    const text = diagnosticsText({ state: store.get(), settings: settingsStore.get(), attachBattle: attach && !!battle, personal: personalApplied() });
     const ok = await copyText(text);
     setManual(ok ? null : text);
     setNote(ok ? 'copied' : 'refused');
@@ -239,6 +263,76 @@ function DiagSection() {
 }
 
 /**
+ * 外观插件 (see the header): the server's cosmetic plugins of scope `personal`, each with its switch; nothing when there
+ * is none. The catalogue is fetched again when the section opens (a plugin dropped in meanwhile shows) — on a server that
+ * has plugins only (content.js installedCount: a server without any is never asked for it).
+ */
+function CosmeticSection() {
+  const cat = useStore((s) => s, Object.is, catalog);
+  const ids = useStore((s) => s.ids, Object.is, personal);
+  const installed = useStore(installedCount);
+  useEffect(() => { if (installed) loadCatalog({ force: true }); }, [installed]);
+  const list = installed ? cosmeticPlugins(cat.plugins, 'personal') : [];
+  if (!list.length) return null;
+  const set = personalSet(ids, list.filter((p) => typeof p.vs === 'string'));
+  const applied = new Set(set.order);
+  const auto = new Set(set.auto);
+  const flip = (id, on) => { const r = setPersonalPlugin(id, on); if ('error' in r) toast(describeError(r.error), 'warn'); };
+  return html`<section class="set-plugins" aria-labelledby="set-plugins-title" data-testid="personal-plugins">
+    <div class="set-keys__head">
+      <span class="set-row__label" id="set-plugins-title">${t('外观插件')}<${MicroLabel}>COSMETIC PLUGINS<//></span>
+    </div>
+    <p class="set-hint">${t('只改变你自己看到的画面和声音，不影响其他博士，也不影响战斗；插件为非官方制作。')}</p>
+    ${list.map((p) => {
+      // on: applied (chosen, or 「自动」: another one needs it) — or chosen but left out now (a conflict): switch it off
+      const skipped = set.skipped.includes(p.id);
+      const on = applied.has(p.id) || skipped;
+      const isAuto = auto.has(p.id);
+      return html`<div key=${p.id} class="set-row" data-plugin=${p.id}>
+        <span class="set-row__label">${pluginName(p)}${isAuto ? html` <span class="plugrow__badge">${t('自动')}</span>` : null}<${MicroLabel}>${pluginMicro(p)}<//>
+          ${skipped ? html`<span class="set-hint is-warn">${t('与其他已开启的插件冲突或缺少所需插件，没有生效')}</span>` : null}</span>
+        <button type="button" class=${`set-toggle${on ? ' is-on' : ''}`} role="switch" aria-checked=${on ? 'true' : 'false'} aria-label=${pluginName(p)}
+          disabled=${isAuto && !ids.includes(p.id)} onClick=${() => flip(p.id, !on)}><i></i><span>${on ? tc('toggle', '开启') : tc('toggle', '关闭')}</span></button>
+      </div>`;
+    })}
+  </section>`;
+}
+
+/**
+ * 界面插件 (DESIGN §32.8): each loaded ui plugin of scope `personal`, switched on in this browser only
+ * (`sp.pref.ui-plugins`). It cannot play the match and it does not change what anyone else sees.
+ */
+function UiPluginSection() {
+  const cat = useStore((s) => s, Object.is, catalog);
+  const ids = useStore((s) => s.ids, Object.is, uiPlugins);
+  const installed = useStore(installedCount);
+  useEffect(() => { if (installed) loadCatalog({ force: true }); }, [installed]);
+  const list = installed ? uiPluginEntries(cat.plugins) : [];
+  if (!installed || (cat.status !== 'ready' && !list.length && !ids.length)) return null;
+  if (!list.length && !ids.length) return null;
+  const onIds = new Set(ids);
+  const flip = (id, on) => {
+    const r = setUiPlugin(id, on);
+    if (!r.error) return;
+    toast(r.error === 'PLUGIN_LIMIT' ? t('最多同时开启 {n} 个界面插件', { n: UI_LIMITS.maxPlugins }) : describeError(r.error), 'warn');
+  };
+  return html`<section class="set-plugins" aria-labelledby="set-ui-plugins-title" data-testid="ui-plugins">
+    <div class="set-keys__head">
+      <span class="set-row__label" id="set-ui-plugins-title">${t('界面插件')}<${MicroLabel}>UI PLUGINS<//></span>
+    </div>
+    <p class="set-hint">${t('只改变这个浏览器里的界面，不能替你操作对局，也不影响其他博士；插件为非官方制作。')}</p>
+    ${!list.length ? html`<p class="set-hint">${t('本服务器没有可开启的界面插件')}</p>` : list.map((p) => {
+      const on = onIds.has(p.id);
+      return html`<div key=${p.id} class="set-row" data-plugin=${p.id}>
+        <span class="set-row__label">${pluginName(p)}<${MicroLabel}>${pluginMicro(p)}<//></span>
+        <button type="button" class=${`set-toggle${on ? ' is-on' : ''}`} role="switch" aria-checked=${on ? 'true' : 'false'} aria-label=${pluginName(p)}
+          onClick=${() => flip(p.id, !on)}><i></i><span>${on ? tc('toggle', '开启') : tc('toggle', '关闭')}</span></button>
+      </div>`;
+    })}
+  </section>`;
+}
+
+/**
  * Settings modal.
  * @param {{ open: boolean, onClose: Function }} props
  */
@@ -250,6 +344,19 @@ export function SettingsModal({ open, onClose }) {
   // the voice languages this site has (data/assets.json audio.voice); a saved one it lacks shows as the first offered
   const voiceLangs = voiceLangsIn(data.get('assets'));
   const voiceLang = s.voiceLang === 'off' || voiceLangs.some(([k]) => k === s.voiceLang) ? s.voiceLang : (voiceLangs[0]?.[0] ?? 'off');
+  // own-language dubs on this site (audio.voice.native): the 本土语言 switch beside the languages
+  const hasNative = !!Object.keys(data.get('assets')?.audio?.voice?.native || {}).length;
+  const [fxOk, setFxOk] = useState(false);  // effects extracted from the local client: the 官方特效 row shows
+  // only while it is open (the title page keeps the modal mounted, closed), and from the effects' own file list: the
+  // asset store (assets.js) is not loaded before a match (test/ui/plugins.e2e.test.js). A Phase 1a extraction (0.3.0
+  // development builds only) listed its effects in data/local-assets.json instead and shows no row: re-extract.
+  useEffect(() => {
+    if (!open) return undefined;
+    let live = true;
+    fxAvailable(null).then((ok) => { if (live) setFxOk(!!ok); }, () => {});
+    return () => { live = false; };
+  }, [open]);
+  const fxTier = resolveOfficialFx(s.officialFx, true);
   return html`<${Modal} open=${open} onClose=${onClose} title=${t('设置')} micro="SETTINGS" width="7.4rem"
                         actions=${html`<${Button} variant="secondary" icon="book" class="set-guide" onClick=${() => openGuide(0)}>${t('玩法说明')}<//>
                         <${Button} variant="primary" icon="check" onClick=${onClose}>${t('完成')}<//>`}>
@@ -265,10 +372,14 @@ export function SettingsModal({ open, onClose }) {
       ${voiceLangs.length ? html`<${Slider} label=${t('干员语音')} micro="VOICE" icon="mic" value=${s.voice} onInput=${(v) => updateSettings({ voice: v })} />
         <div class="set-row">
           <span class="set-row__label">${t('语音语言')}<${MicroLabel}>VOICE LANGUAGE<//></span>
-          <div class="set-seg" role="radiogroup">
-            ${[...voiceLangs.map(([id, name]) => [id, t(name)]), ['off', tc('toggle', '关闭')]].map(([id, label]) => html`<button key=${id} type="button" role="radio"
-              aria-checked=${voiceLang === id ? 'true' : 'false'} class=${voiceLang === id ? 'is-on' : ''}
-              onClick=${() => updateSettings({ voiceLang: id })}>${label}</button>`)}
+          <div class="set-voice">
+            <div class="set-seg" role="radiogroup" aria-label=${t('语音语言')} data-testid="voice-lang">
+              ${[...voiceLangs.map(([id, name]) => [id, t(name)]), ['off', tc('toggle', '关闭')]].map(([id, label]) => html`<button key=${id} type="button" role="radio"
+                aria-checked=${voiceLang === id ? 'true' : 'false'} class=${voiceLang === id ? 'is-on' : ''}
+                onClick=${() => updateSettings({ voiceLang: id })}>${label}</button>`)}
+            </div>
+            ${hasNative ? html`<button type="button" class=${s.voiceNative ? 'set-native is-on' : 'set-native'} data-testid="voice-native" aria-pressed=${s.voiceNative ? 'true' : 'false'}
+              title=${t('有本土语言配音时使用')} onClick=${() => updateSettings({ voiceNative: !s.voiceNative })}>${tc('voice-lang', '本土语言')}</button>` : null}
           </div>
         </div>` : null}
       <${Toggle} label=${t('静音')} micro="MUTE" value=${s.muted} onChange=${(v) => updateSettings({ muted: v })} />
@@ -277,6 +388,10 @@ export function SettingsModal({ open, onClose }) {
       <p class="set-hint">${t('只显示达到官方暴击条件的红色数字。关闭时仍显示每一次命中。')}</p>
       <${Toggle} label=${t('弹药数量')} micro="AMMO COUNT" value=${s.ammoCount} onChange=${(v) => updateSettings({ ammoCount: v })} />
       <p class="set-hint">${t('弹药类技能开启时，在弹药条下方显示剩余弹药 / 总弹药数（如 13/14）。官方界面没有这个数字。')}</p>
+      <${Toggle} label=${t('秘术师能量')} micro="STORED ENERGY" value=${s.mysticEnergy} onChange=${(v) => updateSettings({ mysticEnergy: v })} />
+      <p class="set-hint">${t('在秘术师的血条下方显示储存的攻击能量 / 上限（如 2/3）。官方用干员身上的特效表示，没有这个数字。')}</p>
+      <${Toggle} label=${t('作战统计')} micro="COMBAT STATS" value=${s.combatMetrics} onChange=${(v) => updateSettings({ combatMetrics: v })} />
+      <p class="set-hint">${t('打开后，对局左下角可以查看自己干员的伤害、治疗和 DPS / HPS。官方界面没有这个窗口。改变玩法的插件对局在 Worker 里演算，统计不到，按钮不显示。')}</p>
       <div class="set-row">
         <span class="set-row__label">${t('画面质量')}<${MicroLabel}>QUALITY<//></span>
         <div class="set-seg" role="radiogroup">
@@ -284,6 +399,14 @@ export function SettingsModal({ open, onClose }) {
             class=${s.quality === id ? 'is-on' : ''} onClick=${() => updateSettings({ quality: id })}>${t(label)}</button>`)}
         </div>
       </div>
+      ${fxOk ? html`<div class="set-row" data-testid="official-fx">
+        <span class="set-row__label">${t('官方特效')}<${MicroLabel}>OFFICIAL FX<//></span>
+        <div class="set-seg" role="radiogroup" aria-label=${t('官方特效')}>
+          ${OFFICIAL_FX.map(([id, label]) => html`<button key=${id} type="button" role="radio" aria-checked=${fxTier === id ? 'true' : 'false'}
+            class=${fxTier === id ? 'is-on' : ''} onClick=${() => updateSettings({ officialFx: id })}>${t(label)}</button>`)}
+        </div>
+      </div>
+      <p class="set-hint">${t('使用服主从自己的游戏客户端提取的官方战斗特效（普攻、弹道、命中、状态、阵亡、部署，干员、召唤物和敌人的技能与天赋，以及秘术师储存的能量），连到这台服务器的玩家看到的都是服主提取的这一份；提取里没有的或对战中没有时机的（如只在游戏内部条件下触发的天赋效果）仍为本作的特效。精简：半分辨率贴图、粒子减半，适合手机。只在 3D 棋盘上显示。')}</p>` : null}
       <div class="set-row">
         <span class="set-row__label">${t('文字大小')}<${MicroLabel}>TEXT SIZE<//></span>
         <div class="set-seg set-textsize" role="radiogroup" aria-label=${t('文字大小')} data-testid="text-size">
@@ -293,6 +416,8 @@ export function SettingsModal({ open, onClose }) {
       </div>
       <p class="set-hint set-textsize-note">${t('调整界面文字大小，棋盘保持原比例。')}</p>
       <${HotkeySection} keys=${s.keys} touchUi=${touchUi} />
+      <${CosmeticSection} />
+      <${UiPluginSection} />
       <${DiagSection} />
       <p class="set-hint">${touchUi ? t('触屏操作：点击单位选中（撤退 / 出售）· 长按单位或卡牌查看详情 · 拖动部署后滑动选择朝向') : t('右键查看详情')}</p>
       ${BUILD ? html`<p class="set-hint">${t('版本 {APP_VERSION} · 构建 {BUILD}', { APP_VERSION, BUILD })}</p>` : null}

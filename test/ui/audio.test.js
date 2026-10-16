@@ -219,6 +219,40 @@ describe('AudioManager', () => {
     assert.equal(a.voice('char_x', 'select'), false);
     assert.equal(a.unlocked, false);
   });
+  test('试听 (upstream 0.3.0) on the fork engine: the asked language or the operator\'s own, no gate, silent when muted', async () => {
+    const fw = fakeWindow();
+    const origFetch = globalThis.fetch;
+    const urls = [];
+    globalThis.fetch = async (u) => { urls.push(u); return { ok: true, arrayBuffer: async () => new ArrayBuffer(8) }; };
+    const id = 'char_102_texas';
+    const v = (lang, f) => `/assets/voice/${lang}/${id}/${f}.mp3`;
+    const vm = { audio: { sfx: { ui: {}, battle: {}, units: {} }, voice: {
+      cn: { [id]: { select: [v('cn', 'cn_021')], deploy: [v('cn', 'cn_023')] } },
+      en: { [id]: { deploy: [v('en', 'cn_023')] } },
+      native: { [id]: { select: [v('native', 'cn_021')] } },
+    } } };
+    const tick = () => new Promise((r) => setTimeout(r, 10));
+    try {
+      const a = new AudioManager({ win: fw.win, getManifest: () => vm });
+      a.install();
+      fw.fire('pointerdown');
+      await tick();
+      assert.equal(a.previewVoice(id, 'en'), true, 'EN: the first preview role it has (部署)');
+      await tick();
+      assert.ok(asked(urls, v('en', 'cn_023')));
+      assert.equal(a.previewVoice(id, 'native'), true);
+      await tick();
+      assert.ok(asked(urls, v('native', 'cn_021')), '本土语言: 选中干员');
+      assert.equal(a.previewVoice(id, 'kr'), true, 'a dub it lacks: the operator\'s own line');
+      await tick();
+      assert.ok(asked(urls, v('cn', 'cn_021')));
+      assert.equal(a.previewVoice('char_none', 'cn'), false, 'nothing to say');
+      a.setVolumes({ muted: true });
+      assert.equal(a.previewVoice(id, 'en'), false, 'muted stays silent');
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
   test('unlocks on the first gesture, then plays BGM and SFX from the manifest', async () => {
     const fw = fakeWindow();
     const origFetch = globalThis.fetch;

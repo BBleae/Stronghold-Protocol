@@ -3,6 +3,16 @@ import { addFile } from './store.js';
 
 const MAX_READ_BYTES = 16 * 1024 * 1024;
 
+/**
+ * The manifest name of a ZIP entry: the fork's own packs name 'assets/…' / 'fonts/…'; upstream 0.3.0's asset pack
+ * (package.mjs --assets) names '<folder>/public/assets/…' — everything up to the last `public/` segment goes.
+ * @param {string} name
+ */
+export function packEntryName(name) {
+  const i = name.lastIndexOf('public/');
+  return i === 0 || (i > 0 && name[i - 1] === '/') ? name.slice(i + 'public/'.length) : name;
+}
+
 /** zip.js owns ZIP parsing and decompression. Only manifest entries are extracted and validated.
  * BlobReader seeks by range; bounded writes hold at most one trusted manifest file.
  * Unrelated entries are skipped without path or content validation. Matching names with another
@@ -31,7 +41,7 @@ export async function importResourceZip(blob, store, { signal, onProgress = () =
   try {
     for await (const entry of reader.getEntriesGenerator()) {
       checkAbort(signal);
-      const trusted = expected.get(entry.filename);
+      const trusted = expected.get(packEntryName(entry.filename));
       if (entry.directory) continue;
       if (!trusted) { skipped++; continue; }
       const url = trusted.url;

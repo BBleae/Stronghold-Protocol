@@ -13,8 +13,9 @@
 // Every getter returns null for unknown ids / missing files and takes an optional data object (default:
 // the process-wide getData() singleton).
 
-import { ROOT, DATA_DIR, readDataDirectory } from './data-node.js';
-export { ROOT, DATA_DIR };
+import { ROOT, DATA_DIR, UNLOADED_DATA, readDataDirectory } from './data-node.js';
+import { forgetOfficialBounds, rememberOfficialBounds } from '../shared/plugins/officialBounds.js';
+export { ROOT, DATA_DIR, UNLOADED_DATA };
 
 /** Files the game expects (a warning lists the missing ones). */
 export const DATA_FILES = Object.freeze([
@@ -42,7 +43,7 @@ export function deepFreeze(root) {
 }
 
 /**
- * Read every `*.json` in `dir` into `{ [basename]: parsed }`, deep-frozen.
+ * Read every `*.json` in `dir` into `{ [basename]: parsed }`, deep-frozen (but UNLOADED_DATA).
  * Never throws: an unreadable directory yields `{}`; bad files are skipped with an error log.
  * @param {string} [dir] data directory (default ROOT/data)
  * @param {{ log?: { warn: Function, error: Function, info?: Function }, expected?: readonly string[] }} [opts]
@@ -64,12 +65,34 @@ let singleton = null;
  * @returns {Readonly<Record<string, any>>}
  */
 export function getData({ dir = DATA_DIR, log = console } = {}) {
-  if (!singleton) singleton = loadData(dir, { log });
+  if (!singleton) {
+    singleton = loadData(dir, { log });
+    rememberOfficialBounds(singleton);
+  }
   return singleton;
 }
 
 /** Drop the singleton so the next getData() reloads (tests / hot reload). */
-export function resetData() { singleton = null; }
+export function resetData() {
+  singleton = null;
+  forgetOfficialBounds();
+}
+
+/**
+ * Make `data` the process-wide singleton (deep-frozen) — a match host worker (server/match/host/entry.js, DESIGN §32
+ * P1c) calls it with its content set's merged data before it imports the match: every module of that worker that reads
+ * getData() (the content modules' gameData(), builtinMeta, the sim's default DataSource) then sees the content set,
+ * never the vanilla files. The main process never calls it. The official-bounds cache (shared/plugins/officialBounds.js,
+ * filled by getData() from the vanilla files in the main process) is never filled from `data` (a plugin must not raise its
+ * own caps): the match host installs the content set's snapshot after this (entry.js), as its pages do (runner.js).
+ * @param {Record<string, any>} data
+ * @returns {Readonly<Record<string, any>>}
+ */
+export function setData(data) {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) throw new TypeError('setData: a data object { <file>: record map } is required');
+  singleton = deepFreeze(data);
+  return singleton;
+}
 
 // ---------------------------------------------------------------------------------------------------
 // Index getters

@@ -25,7 +25,7 @@
 import { RAW, joinUrl, safeName, urlBase, urlDir } from './sources.mjs';
 import { kindOf } from './formats.mjs';
 import { pickUnitSfx, pickModeAttacks, pickModeHits, skillModeLetter, SLOT_MODE_LETTER, UI_SFX, BATTLE_SFX, resolveSpec } from './audio.mjs';
-import { voiceLines } from './voice.mjs';
+import { voiceLines, nativeVoiceType } from './voice.mjs';
 import { literal } from './manifest.mjs';
 import { EMOTE_CATALOG } from '../../shared/constants.js';
 
@@ -338,11 +338,12 @@ export function collectEnemyIds({ assets07, enemies05, maps05, ops03 }) {
  *   official type icon (arts/ui/uniequiptype) the 干员调配 / 自选 module tiles draw when the local-client art lacks it
  * @param {Record<string, string>} [p.tokenSkinSpines] token id → the skin variant whose web Spine a token unknown to
  *   research 07 uses (default TOKEN_SKIN_SPINES)
+ * @param {Array<{name:string,rel:string,urls:string[],kind:string}>} [p.statsTemplate] official statistics UI assets
  * @returns {{ template: any, models: Map<string, any>, notes: string[] }}
  */
 export function buildPlan({ assets07, ops03, enemies05, maps05, audio, modelsData, voice = null,
   extraEnemyIds = [], extraTokenIds = [], extraHandbook = {}, localEnemySpines = {}, localTokenSpines = {}, extraOperators = {},
-  moduleTypes = [], tokenSkinSpines = TOKEN_SKIN_SPINES }) {
+  moduleTypes = [], tokenSkinSpines = TOKEN_SKIN_SPINES, statsTemplate = [] }) {
   const notes = [];
   /** @type {Map<string, any>} */
   const models = new Map();
@@ -606,6 +607,7 @@ export function buildPlan({ assets07, ops03, enemies05, maps05, audio, modelsDat
     }
   }
   for (const [group, key, path] of UI_EXTRAS) addUi(group, key, joinUrl(RAW.aa2, path));
+  for (const { name, ...job } of statsTemplate) ui[`statistics/${name}`] = { alts: [job] };
 
   // --- audio ----------------------------------------------------------------
   const bgmLeaf = (bankName) => {
@@ -692,6 +694,12 @@ export function buildPlan({ assets07, ops03, enemies05, maps05, audio, modelsDat
   if (Object.keys(voiceByLang).length) {
     template.audio.voice = voiceByLang;
     if (voice.rules && Array.isArray(voice.rules.voiceTypeOptions)) template.audio.voiceRules = structuredClone(voice.rules);
+    // 本土语言 (upstream 0.3.0): the official voiceLangType of each own-language dub, for the per-operator dropdown's
+    // label (public/js/ui/operatorVoice.js nativeLabel)
+    if (voiceByLang.native) {
+      template.audio.voiceNativeLangType = literal(Object.fromEntries(Object.keys(voiceByLang.native).sort()
+        .map((id) => [id, nativeVoiceType(voice.index, id)])));
+    }
   }
   return { template, models, notes };
 }

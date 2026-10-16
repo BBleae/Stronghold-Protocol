@@ -25,10 +25,15 @@ export const VOICE_LANGS = Object.freeze({
   // the EN / KR dubs (upstream #73's --voice-lang en | kr, DESIGN §21.30): opt-in, `--voice=cn,jp,en,kr`
   en: { types: ['EN', 'LINKAGE'], label: '英文' },
   kr: { types: ['KR', 'LINKAGE'], label: '韩文' },
+  // upstream 0.3.0 本土语言: the operator's own-language dub (意大利语 / 俄文 / 西班牙语 / 中文-方言 …) — the first
+  // voiceLangType of `groupType` CUSTOM in voiceLangTypeDict (collab voices, LINKAGE, are not). Opt-in like en / kr.
+  native: { types: [], custom: true, label: '本土语言' },
 });
 
 /** Folder under sound_beta_2 of a voiceLangType (an entry's own voicePath wins). */
 const LANG_DIRS = Object.freeze({ CN_MANDARIN: 'voice_cn', JP: 'voice', LINKAGE: 'voice', EN: 'voice_en', KR: 'voice_kr' });
+/** Folder of every CUSTOM dub: voice_custom/<its word key lower-cased> ('char_102_texas_ITA' → char_102_texas_ita). */
+const CUSTOM_DIR = 'voice_custom';
 
 /**
  * Client role → official placeType(s) (charWords[].placeType). A string role is one line. An array role of ONE place is
@@ -54,11 +59,11 @@ export const VOICE_ROLES = Object.freeze({
 /** Array roles whose entries are positional (one line per place, in place order) rather than drawn at random. */
 export const POSITIONAL_ROLES = new Set(['combat']);
 
-/** Languages downloaded by default (`--voice` absent); en / kr only when asked for. */
+/** Languages downloaded by default (`--voice` absent); en / kr / native only when asked for. */
 export const DEFAULT_VOICE_LANGS = Object.freeze(['cn', 'jp']);
 
 /**
- * Parse the --voice option: 'cn,jp' (default) | any comma list of cn, jp, en, kr | 'none'.
+ * Parse the --voice option: 'cn,jp' (default) | any comma list of cn, jp, en, kr, native | 'none'.
  * @param {string|undefined} value
  * @returns {string[]} language keys of VOICE_LANGS
  */
@@ -89,7 +94,17 @@ export function indexCharWords(charword) {
     if (!m.has(w.placeType)) m.set(w.placeType, []);
     if (!m.get(w.placeType).includes(w.voiceAsset)) m.get(w.placeType).push(w.voiceAsset);
   }
-  return { langs: charword?.voiceLangDict || {}, byKey };
+  return { langs: charword?.voiceLangDict || {}, types: charword?.voiceLangTypeDict || {}, byKey };
+}
+
+/**
+ * The official voiceLangType of an operator's own-language dub (ITA / RUS / CN_TOPOLECT …), or null without one.
+ * @param {ReturnType<typeof indexCharWords>} index
+ * @param {string} charId
+ */
+export function nativeVoiceType(index, charId) {
+  const dict = index?.langs?.[charId]?.dict;
+  return (dict && Object.keys(dict).find((t) => index.types?.[t]?.groupType === 'CUSTOM')) || null;
 }
 
 /**
@@ -103,14 +118,14 @@ export function voiceLines(index, charId, lang) {
   const dict = index?.langs?.[charId]?.dict;
   const spec = VOICE_LANGS[lang];
   if (!dict || !spec) return null;
-  const type = spec.types.find((t) => dict[t]);
+  const type = spec.custom ? nativeVoiceType(index, charId) : spec.types.find((t) => dict[t]);
   if (!type) return null;
   const entry = dict[type];
   const words = index.byKey.get(entry.wordkey || charId);
   if (!words) return null;
   const dir = typeof entry.voicePath === 'string' && entry.voicePath
     ? entry.voicePath.replace(/^audio\/sound_beta_2\//i, '').replace(/\/+$/, '').toLowerCase()
-    : LANG_DIRS[type];
+    : spec.custom ? CUSTOM_DIR : LANG_DIRS[type];
   if (!dir || dir.includes('..')) return null;
   const paths = (place) => (words.get(place) || []).filter((a) => !a.includes('..')).map((a) => `${dir}/${a.toLowerCase()}.mp3`);
   const out = {};

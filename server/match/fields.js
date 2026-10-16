@@ -206,7 +206,7 @@ export class FieldRunner {
 
   _runInstant() {
     const cap = Math.ceil(HARD_CAP_SECONDS / TICK);
-    while (!this.stopped && !this.done && this.ticks < cap) {
+    while (!this.stopped && !this.done && this.ticks < cap) { // loop-cap: tick cap
       this._tick();
       if (this.fields.every((f) => !f.live)) break;
     }
@@ -396,7 +396,7 @@ export class HeadlessJob {
     let b = this.battle;
     try {
       let k = 0;
-      while (!b.finished && this.n < this.cap) {
+      while (!b.finished && this.n < this.cap) { // loop-cap: step cap
         b.step();
         this.n++;
         k++;
@@ -446,7 +446,7 @@ export function timelineAt(timeline, gt) {
   if (!Array.isArray(timeline) || !timeline.length) return [0, 0, 0, null];
   let lo = 0, hi = timeline.length - 1;
   if (gt >= timeline[hi][0]) return timeline[hi];
-  while (lo < hi) {
+  while (lo < hi) { // loop-cap: binary search
     const mid = (lo + hi + 1) >> 1;
     if (timeline[mid][0] <= gt) lo = mid; else hi = mid - 1;
   }
@@ -517,7 +517,7 @@ export class HeadlessPacer {
     const b = entry.battle;
     let k = 0;
     try {
-      while (!b.finished && b.tickCount < cap && k < max) { b.step(); k++; }
+      while (!b.finished && b.tickCount < cap && k < max) { b.step(); k++; } // loop-cap: tick cap
     } catch (e) {
       this.m.reportError('pacer skip', e);
       try { b.forceEnd('timeout'); } catch { /* ignore */ }
@@ -586,6 +586,7 @@ export class HeadlessPacer {
         continue;
       }
       const { entry, cap } = c;
+      // loop-cap: the entry's tick cap
       while (this.entries.has(entry) && !entry.done && !entry.battle.finished && entry.battle.tickCount < cap) {
         this._skip(entry, cap, 1);
         // The end conditions are judged tick by tick here too (a leak in the catch-up may empty the team LP
@@ -978,6 +979,7 @@ export function validateClientResult(spec, raw, { gd = null } = {}) {
       const p = raw.perPlayer[pid];
       if (!p || typeof p !== 'object') return bad('player');
       const own = B.players.get(pid);
+      if (p.creditedKills !== undefined && (!Number.isInteger(p.creditedKills) || p.creditedKills < 0 || p.creditedKills > 1e9)) return bad('kill credit');
       // `killed` counts every counted knock-out — a runtime split child / summon too — while `total` counts only the
       // enemies the round scheduled, so `killed ≤ total` no longer holds (PR #157 capsule semantics): bound it by
       // maxTotal (the spec's content-spawn allowance) instead, exactly like `total`
@@ -1069,6 +1071,7 @@ export function validateClientResult(spec, raw, { gd = null } = {}) {
         killed: p.killed, total: p.total, leaked, perfect: countedLeaks === 0, layerGains, coins,
         damageDealt: stat(p.damageDealt), bossDamage: stat(p.bossDamage), healingDone: stat(p.healingDone), deaths: Math.trunc(stat(p.deaths)),
         unitsEnd, unitStats,
+        creditedKills: Number.isInteger(p.creditedKills) ? p.creditedKills : unitStats.reduce((n, u) => n + u.kills, 0),
       };
       // the HUD capsule's numerator: kept only when the client reported one (an absent value must stay absent — the
       // teammate UI then falls back to `killed`, never to a fabricated 0); clamped to the denominator

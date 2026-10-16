@@ -352,7 +352,7 @@ export default {
           if (heal > 0) {
             battle.on('tick', () => {
               if (st.form !== 'orpheusR' || st.pulseAt == null || unit.trait.dollSwitching || !up(unit)) return;
-              while (battle.time + 1e-9 >= st.pulseAt) { pulse(); st.pulseAt += iv; }
+              while (battle.time + 1e-9 >= st.pulseAt) { pulse(); st.pulseAt += iv; } // loop-cap: iv >= 0.1 s
             }, { owner: unit });
           }
         }

@@ -17,7 +17,8 @@ import { normalizeAtlas, atlasInfo, parseAtlas } from '../tools/assets/atlas.mjs
 import { pngSize, isCompletePng, isMp3, validate } from '../tools/assets/formats.mjs';
 import { encodeWoff2, decodeWoff2Tables, readSfnt, uintBase128 } from '../tools/assets/woff2.mjs';
 import { assetToPath, pickUnitSfx, indexAudio } from '../tools/assets/audio.mjs';
-import { parseVoiceLangs, indexCharWords, voiceLines, VOICE_ROLES, POSITIONAL_ROLES } from '../tools/assets/voice.mjs';
+import { parseVoiceLangs, indexCharWords, voiceLines, nativeVoiceType, VOICE_ROLES, POSITIONAL_ROLES } from '../tools/assets/voice.mjs';
+import { tidyVoiceTrees } from '../tools/fetch-assets.mjs';
 import { mirrorUrl, safeName, encodePath } from '../tools/assets/sources.mjs';
 import { collectEnemyIds, skillIndicesByChar, buildPlan, TOKEN_SKIN_SPINES, GUIDE_PAGES, UI_EXTRAS } from '../tools/assets/plan.mjs';
 import { resolveTemplate, collectLeaves } from '../tools/assets/manifest.mjs';
@@ -466,6 +467,61 @@ describe('audio banks and plan id sets', () => {
     assert.deepEqual(r.value.empty, [], 'an array that was empty in the template stays');
     assert.deepEqual(r.misses.sort(), ['voice.a.place[0]', 'voice.a.select[0]', 'voice.a.select[1]', 'voice.b.select[0]']);
     assert.deepEqual(r.droppedLeaves.sort(), r.misses.slice().sort(), 'every dropped line is a dropped leaf too');
+  });
+
+  // upstream 0.3.0 本土语言 on the fork's voice plan (tools/assets/voice.mjs): the `native` language of audio.voice
+  const nativeTable = () => ({
+    charWords: Object.fromEntries(['char_102_texas', 'char_102_texas_ITA', 'char_196_sunbr', 'char_263_skadi', 'char_999_out'].map((k) =>
+      [`${k}_21`, { charId: k.replace(/_ITA$/, ''), wordKey: k, placeType: 'BATTLE_SELECT', voiceId: 'CN_021', voiceIndex: 21, voiceAsset: `${k}/CN_021` }])),
+    voiceLangTypeDict: { CN_MANDARIN: { groupType: 'CN_MANDARIN' }, ITA: { groupType: 'CUSTOM' }, RUS: { groupType: 'CUSTOM' }, LINKAGE: { groupType: 'LINKAGE' } },
+    voiceLangDict: {
+      char_102_texas: { dict: { CN_MANDARIN: { wordkey: 'char_102_texas' }, ITA: { wordkey: 'char_102_texas_ITA' }, RUS: { wordkey: 'char_102_texas_rus' } } },
+      char_196_sunbr: { dict: { RUS: { wordkey: 'char_196_sunbr' } } },
+      char_263_skadi: { dict: { CN_MANDARIN: { wordkey: 'char_263_skadi' }, LINKAGE: { wordkey: 'char_263_skadi' } } },
+      char_999_out: { dict: { RUS: { wordkey: 'char_999_out' } } },
+    },
+  });
+
+  test('own-language dubs are the CUSTOM voiceLangDict entries (collab LINKAGE is not), under voice_custom/<word key>', () => {
+    const idx = indexCharWords(nativeTable());
+    assert.equal(nativeVoiceType(idx, 'char_102_texas'), 'ITA', 'the first CUSTOM wins');
+    assert.equal(nativeVoiceType(idx, 'char_196_sunbr'), 'RUS');
+    assert.equal(nativeVoiceType(idx, 'char_263_skadi'), null, 'LINKAGE is not a dub');
+    assert.equal(nativeVoiceType(indexCharWords(null), 'char_102_texas'), null);
+    assert.deepEqual(voiceLines(idx, 'char_102_texas', 'native'), { select: ['voice_custom/char_102_texas_ita/cn_021.mp3'] });
+    assert.deepEqual(voiceLines(idx, 'char_196_sunbr', 'native'), { select: ['voice_custom/char_196_sunbr/cn_021.mp3'] }, 'a dub that keeps the base word key');
+    assert.equal(voiceLines(idx, 'char_263_skadi', 'native'), null);
+    assert.deepEqual(parseVoiceLangs(undefined), ['cn', 'jp'], 'opt-in: not downloaded by default');
+    assert.deepEqual(parseVoiceLangs('cn,native'), ['cn', 'native']);
+  });
+
+  test('tidyVoiceTrees drops the type of a dub that did not land', () => {
+    const m = { audio: { voice: { cn: { a: { select: '/x' } }, native: { a: { select: '/n' } } }, voiceNativeLangType: { a: 'ITA', c: 'RUS' } } };
+    tidyVoiceTrees(m);
+    assert.deepEqual(m.audio.voiceNativeLangType, { a: 'ITA' }, "c's dub has no line on disk: no type");
+    const none = { audio: { voice: { cn: {} }, voiceNativeLangType: { a: 'ITA' } } };
+    tidyVoiceTrees(none);
+    assert.deepEqual(none, { audio: { voice: { cn: {} } } }, 'no native line at all: no type map');
+    const plain = { audio: { voice: {} } };
+    tidyVoiceTrees(plain);
+    assert.deepEqual(plain, { audio: { voice: {} } }, 'a build without the native dub gains no keys');
+    tidyVoiceTrees(null);
+    tidyVoiceTrees({});
+  });
+
+  test('plan.mjs plans the native dub as audio.voice.native when asked for, with the dropdown\'s language types', () => {
+    const extraOperators = { char_102_texas: { name: '德克萨斯', skills: [] }, char_263_skadi: { name: '斯卡蒂', skills: [] } };
+    const plan = (langs) => buildPlan({ assets07: {}, ops03: {}, enemies05: {}, maps05: {}, audio: indexAudio({}), modelsData: {},
+      voice: { index: indexCharWords(nativeTable()), langs }, extraOperators }).template.audio;
+    const a = plan(['cn', 'native']);
+    assert.equal(a.voice.native.char_102_texas.select[0].alts[0].rel, 'voice/native/char_102_texas_ita/cn_021.mp3');
+    assert.match(a.voice.native.char_102_texas.select[0].alts[0].urls[0], /voice_custom\/char_102_texas_ita\/cn_021\.mp3$/);
+    assert.equal(a.voice.native.char_263_skadi, undefined, 'no own-language dub: no entry');
+    assert.equal(a.voice.native.char_999_out, undefined, 'not fielded: no entry');
+    assert.deepEqual(Object.getOwnPropertySymbols(a.voiceNativeLangType).map((s) => a.voiceNativeLangType[s]), [{ char_102_texas: 'ITA' }], 'a literal, only the fielded dubs');
+    const plain = plan(['cn', 'jp']);
+    assert.equal(plain.voice.native, undefined, 'the default plan has no native dub');
+    assert.equal(plain.voiceNativeLangType, undefined);
   });
 
   // A unit's attack sound is a leaf like any other: when its file was never downloaded (or a checkout lost it) the whole

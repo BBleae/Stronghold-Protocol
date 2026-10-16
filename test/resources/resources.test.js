@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { Zip, ZipPassThrough, zipSync, unzipSync } from 'fflate';
 import { buildResourceManifest, validateManifest, writeResourcePack } from '../../tools/resource-pack.mjs';
 import { DownloadError, ResourceStore } from '../../public/js/resources/store.js';
-import { exportResourceZip, importResourceZip } from '../../public/js/resources/zip.js';
+import { exportResourceZip, importResourceZip, packEntryName } from '../../public/js/resources/zip.js';
 import { cachedResponse, resourceKeys } from '../../public/js/resources/service.js';
 
 const zipjs = await import('@zip.js/zip.js');
@@ -375,6 +375,25 @@ test('ZIP imports use the trusted manifest, validate hashes and read files by ra
     await assert.rejects(importResourceZip(new Blob([zipSync({ [name]: bytes(content) })]), fresh, { zipjs }), /清单/);
     assert.equal((await fresh.check()).count, 0);
   }
+});
+
+test('ZIP imports take upstream 0.3.0 asset packs: everything up to the last public/ segment is the folder', async () => {
+  const a = entry('/assets/a.mp3', 'abc');
+  const b = entry('/fonts/f.woff2', 'font');
+  b.type = 'font/woff2';
+  const store = storeOf(manifest([a, b]));
+  const pack = zipSync({
+    'Stronghold-Protocol-v0.3.0-assets/README.txt': bytes('readme'),
+    'Stronghold-Protocol-v0.3.0-assets/public/assets/a.mp3': bytes('abc'),
+    'Stronghold-Protocol-v0.3.0-assets/public/fonts/f.woff2': bytes('font'),
+  });
+  const result = await importResourceZip(new Blob([pack]), store, { zipjs });
+  assert.equal(result.imported, 2);
+  assert.equal(result.skipped, 1, 'the README is not a resource');
+  assert.equal((await store.check()).complete, true);
+  assert.equal(packEntryName('public/assets/a.mp3'), 'assets/a.mp3');
+  assert.equal(packEntryName('assets/a.mp3'), 'assets/a.mp3');
+  assert.equal(packEntryName('x/notpublic/assets/a.mp3'), 'x/notpublic/assets/a.mp3', 'only a whole segment');
 });
 
 test('ZIP imports skip unrelated files and directories without validating their paths or contents', async () => {

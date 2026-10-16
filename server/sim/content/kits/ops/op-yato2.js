@@ -159,7 +159,7 @@ export default {
           onTick({ battle, unit, dt }) {
             const m = unit.mem.yatoDance;
             if (!m) return;
-            while (m.i < S2_SLASHES.length && m.t + SLASH_EPS >= S2_SLASHES[m.i]) {
+            while (m.i < S2_SLASHES.length && m.t + SLASH_EPS >= S2_SLASHES[m.i]) { // loop-cap: S2_SLASHES.length
               m.i++;
               if (up(unit) && unit.canAct && !unit.s.flags.disarm) battle.forceAttack(unit);
               if (!up(unit) || unit.mem.yatoDance !== m) return;

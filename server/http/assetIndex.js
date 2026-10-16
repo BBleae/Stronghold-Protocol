@@ -3,7 +3,8 @@
 //
 //   * built in the background shortly after the start (ASSET_INDEX_DELAY_MS): every file under public/assets/ and
 //     public/fonts/ (dot names skipped like the static server does, linked folders followed once), the first 16 hex
-//     digits of the SHA-256 of its bytes (WebCrypto, off the main thread);
+//     digits of the SHA-256 of its bytes (WebCrypto, off the main thread) — FORK: the whole SHA-256 is kept as well, for
+//     the resource manifest of the resource packs (resourceManifest.js);
 //   * remembered in .cache/asset-hashes.json by path + size + mtime: a restart only stats the files and reads none of
 //     the unchanged ones again; a file whose size or mtime changed is hashed again (a re-extraction, `setup --force`,
 //     a Docker rebuild then costs the players only the files whose bytes changed);
@@ -33,21 +34,21 @@ export const ASSET_INDEX_ROOTS = Object.freeze(['assets', 'fonts']);
 export const ASSET_INDEX_DELAY_MS = 1000;
 /** Shortest time between two rescans a stale or unknown file asks for. */
 export const RESCAN_GAP_MS = 10_000;
-/** Version of .cache/asset-hashes.json. */
-export const HASH_CACHE_VERSION = 1;
+/** Version of .cache/asset-hashes.json (FORK 2: the whole SHA-256 per file; a version-1 cache is hashed again once). */
+export const HASH_CACHE_VERSION = 2;
 const STAT_CONCURRENCY = 64;
 const HASH_CONCURRENCY = 4;
 
-const hex = (bytes) => Buffer.from(bytes).toString('hex').slice(0, ASSET_HASH_HEX);
+const SHA256_HEX = /^[0-9a-f]{64}$/;
 
 /** First ASSET_HASH_HEX hex digits of the SHA-256 of `data` (synchronous; model hashes, manifests, tests). */
 export function hash16(data) {
   return createHash('sha256').update(data).digest('hex').slice(0, ASSET_HASH_HEX);
 }
 
-/** The same for a file's bytes, computed off the main thread (WebCrypto runs in libuv's thread pool). */
-async function digest16(buf) {
-  return hex(await webcrypto.subtle.digest('SHA-256', buf));
+/** The whole SHA-256 of a file's bytes (hex), computed off the main thread (WebCrypto runs in libuv's thread pool). */
+async function digestHex(buf) {
+  return Buffer.from(await webcrypto.subtle.digest('SHA-256', buf)).toString('hex');
 }
 
 /** Run `fn` over `items` with at most `n` at a time; stops early when `stop()` says so. */
@@ -71,7 +72,7 @@ async function eachLimit(items, n, fn, stop) {
 export function createAssetIndex({ publicDir, roots = ASSET_INDEX_ROOTS, cacheFile = null, log = noopLog, delayMs = ASSET_INDEX_DELAY_MS,
   rescanGapMs = RESCAN_GAP_MS, now = Date.now }) {
   const base = path.resolve(publicDir);
-  /** @type {Map<string, { size: number, mtimeMs: number, hash: string }>} */
+  /** @type {Map<string, { size: number, mtimeMs: number, hash: string, sha256: string }>} */
   let records = new Map();
   /** @type {Map<string, string | null>} lower-case rel → the rel (null: two names differ only in case) */
   let lower = new Map();
@@ -100,8 +101,8 @@ export function createAssetIndex({ publicDir, roots = ASSET_INDEX_ROOTS, cacheFi
       if (!doc || doc.version !== HASH_CACHE_VERSION || typeof doc.files !== 'object' || !doc.files) return new Map();
       const out = new Map();
       for (const [rel, v] of Object.entries(doc.files)) {
-        if (Array.isArray(v) && Number.isFinite(v[0]) && Number.isFinite(v[1]) && typeof v[2] === 'string' && v[2].length === ASSET_HASH_HEX) {
-          out.set(rel, { size: v[0], mtimeMs: v[1], hash: v[2] });
+        if (Array.isArray(v) && Number.isFinite(v[0]) && Number.isFinite(v[1]) && typeof v[2] === 'string' && SHA256_HEX.test(v[2])) {
+          out.set(rel, { size: v[0], mtimeMs: v[1], hash: v[2].slice(0, ASSET_HASH_HEX), sha256: v[2] });
         }
       }
       return out;
@@ -114,11 +115,11 @@ export function createAssetIndex({ publicDir, roots = ASSET_INDEX_ROOTS, cacheFi
   async function saveCache(map) {
     if (!cacheFile) return;
     const files = {};
-    for (const [rel, r] of [...map].sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))) files[rel] = [r.size, r.mtimeMs, r.hash];
+    for (const [rel, r] of [...map].sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))) files[rel] = [r.size, r.mtimeMs, r.sha256];
     const tmp = `${cacheFile}.${process.pid}.tmp`;
     try {
       await fsp.mkdir(path.dirname(cacheFile), { recursive: true });
-      await fsp.writeFile(tmp, JSON.stringify({ version: HASH_CACHE_VERSION, algo: 'sha256/16', files }));
+      await fsp.writeFile(tmp, JSON.stringify({ version: HASH_CACHE_VERSION, algo: 'sha256', files }));
       await fsp.rename(tmp, cacheFile);
     } catch (e) {
       log.debug?.('[assets] hash cache not saved', e?.code || e?.message);
@@ -217,7 +218,8 @@ export function createAssetIndex({ publicDir, roots = ASSET_INDEX_ROOTS, cacheFi
         const after = await fsp.stat(abs);
         // changed while it was read: hashed again by the next build
         if (after.size !== st.size || after.mtimeMs !== st.mtimeMs || buf.length !== st.size) return;
-        next.set(rel, { size: st.size, mtimeMs: st.mtimeMs, hash: await digest16(buf) });
+        const sha256 = await digestHex(buf);
+        next.set(rel, { size: st.size, mtimeMs: st.mtimeMs, hash: sha256.slice(0, ASSET_HASH_HEX), sha256 });
         hashed++;
       } catch { /* vanished or unreadable: not in the index */ }
     }, () => closed);
@@ -303,6 +305,10 @@ export function createAssetIndex({ publicDir, roots = ASSET_INDEX_ROOTS, cacheFi
       const own = this.hashOf(rel, stat);
       if (!own) return false;
       return own === urlHash || !!modelOf.get(canonical(rel))?.has(urlHash);
+    },
+    /** FORK: every indexed file with its size and whole SHA-256 (the last build), for the resource manifest. */
+    files() {
+      return [...records].map(([rel, r]) => ({ rel, size: r.size, sha256: r.sha256 }));
     },
     /** The hash of a model (its members' hashes hashed), null while a member is unknown. */
     modelHash: (list) => modelHashOf(list),
